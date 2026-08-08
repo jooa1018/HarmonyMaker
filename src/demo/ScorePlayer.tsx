@@ -8,7 +8,8 @@ import { demoAbc, voiceLabels } from "./sample";
 
 const AUDIO_START_ERROR = "오디오를 시작하지 못했습니다. 재생 버튼을 다시 눌러 주세요.";
 const MIXER_ERROR = "파트 설정을 적용하지 못했습니다. 재생 버튼을 다시 눌러 주세요.";
-const SPEED_ERROR = "재생 속도를 변경하지 못했습니다.";
+const SPEED_ERROR = "재생 속도를 변경하지 못했습니다. 재생 버튼을 다시 눌러 주세요.";
+const DEFAULT_WARP = 100;
 
 export function ScorePlayer() {
   const scoreRef = useRef<HTMLDivElement>(null);
@@ -18,11 +19,11 @@ export function ScorePlayer() {
   const controllerRef = useRef<ABCJS.SynthObjectController | null>(null);
   const tuneInitializedRef = useRef(false);
   const playingRef = useRef(false);
-  const appliedWarpRef = useRef(100);
+  const appliedWarpRef = useRef(DEFAULT_WARP);
   const audioBusyRef = useRef(false);
   const highlightedRef = useRef<HTMLElement[]>([]);
   const [mixer, setMixer] = useState<MixerState>(initialMixerState);
-  const [speed, setSpeed] = useState(100);
+  const [speed, setSpeed] = useState(DEFAULT_WARP);
   const [playback, dispatchPlayback] = useReducer(reducePlayback, initialPlaybackState);
   const [ready, setReady] = useState(false);
   const [audioBusy, setAudioBusy] = useState(false);
@@ -44,6 +45,16 @@ export function ScorePlayer() {
     audioBusyRef.current = false;
     setAudioBusy(false);
   }, []);
+
+  const resetAudioEngine = useCallback(() => {
+    controllerRef.current?.pause();
+    controllerRef.current = null;
+    tuneInitializedRef.current = false;
+    playingRef.current = false;
+    appliedWarpRef.current = DEFAULT_WARP;
+    setAudioInitialized(false);
+    clearHighlight();
+  }, [clearHighlight]);
 
   const cursorControl = useMemo<ABCJS.CursorControl>(() => ({
       onStart: () => {
@@ -88,7 +99,7 @@ export function ScorePlayer() {
       disposed = true;
       controllerRef.current?.pause();
     };
-  }, [clearHighlight]);
+  }, []);
 
   const getController = useCallback(() => {
     const abc = abcRef.current;
@@ -102,11 +113,13 @@ export function ScorePlayer() {
         displayProgress: false,
         displayWarp: false,
       });
+      // A new SynthController always begins at the library default warp.
+      appliedWarpRef.current = DEFAULT_WARP;
     }
     return controllerRef.current;
   }, [cursorControl]);
 
-  const initializeTune = useCallback(async (nextMixer: MixerState, nextSpeed: number) => {
+  const initializeTune = useCallback(async (nextMixer: MixerState) => {
     const tune = tuneRef.current;
     if (!tune) throw new Error("Score is not ready");
     const controller = getController();
@@ -115,13 +128,6 @@ export function ScorePlayer() {
     // from Play, Mute, or Solo, so it remains inside a direct user gesture.
     const result = await controller.setTune(tune, true, { voicesOff: voicesOff(nextMixer) });
     if (result.status === "no-audio-context") throw new Error("AudioContext unavailable");
-
-    // SynthController starts at 100%. Avoid rebuilding the freshly-created buffer
-    // at the default warp; only apply a different requested speed when necessary.
-    if (appliedWarpRef.current !== nextSpeed) {
-      await controller.setWarp(nextSpeed);
-      appliedWarpRef.current = nextSpeed;
-    }
 
     tuneInitializedRef.current = true;
     playingRef.current = false;
@@ -132,16 +138,32 @@ export function ScorePlayer() {
     if (!beginAudioOperation()) return;
     dispatchPlayback({ type: "clear-error" });
     try {
-      if (!tuneInitializedRef.current) await initializeTune(mixer, speed);
+      const initializedNow = !tuneInitializedRef.current;
+      if (initializedNow) await initializeTune(mixer);
+
       if (!playingRef.current) {
-        await getController().play();
+        const controller = getController();
+
+        // On iOS/Safari, rebuilding the freshly initialized synth with setWarp()
+        // before the first actual play can leave the controller's internal warp
+        // mutated while audio never starts. Start the unlocked controller first,
+        // then let abcjs's supported setWarp path rebuild/resume it if needed.
+        await controller.play();
         playingRef.current = true;
+
+        if (initializedNow && appliedWarpRef.current !== speed) {
+          await controller.setWarp(speed);
+          appliedWarpRef.current = speed;
+          playingRef.current = true;
+        }
+
         dispatchPlayback({ type: "played" });
       }
     } catch {
-      tuneInitializedRef.current = false;
-      playingRef.current = false;
-      setAudioInitialized(false);
+      // setWarp mutates abcjs's internal warp before its rebuild promise settles.
+      // If that promise rejects, our shadow state can no longer safely describe the
+      // controller. Discard it so the next user gesture starts from a known 100% state.
+      resetAudioEngine();
       dispatchPlayback({ type: "operation-failed", message: AUDIO_START_ERROR });
     } finally {
       finishAudioOperation();
@@ -158,9 +180,7 @@ export function ScorePlayer() {
       playingRef.current = false;
       dispatchPlayback({ type: "paused" });
     } catch {
-      tuneInitializedRef.current = false;
-      playingRef.current = false;
-      setAudioInitialized(false);
+      resetAudioEngine();
       dispatchPlayback({ type: "operation-failed", message: AUDIO_START_ERROR });
     } finally {
       finishAudioOperation();
@@ -178,9 +198,7 @@ export function ScorePlayer() {
       clearHighlight();
       dispatchPlayback({ type: "reset" });
     } catch {
-      tuneInitializedRef.current = false;
-      playingRef.current = false;
-      setAudioInitialized(false);
+      resetAudioEngine();
       dispatchPlayback({ type: "operation-failed", message: AUDIO_START_ERROR });
     } finally {
       finishAudioOperation();
@@ -196,14 +214,12 @@ export function ScorePlayer() {
     if (!beginAudioOperation()) return;
     dispatchPlayback({ type: "clear-error" });
     try {
-      await initializeTune(next, speed);
+      await initializeTune(next);
       setMixer(next);
       clearHighlight();
       dispatchPlayback({ type: "mixer-applied" });
     } catch {
-      tuneInitializedRef.current = false;
-      playingRef.current = false;
-      setAudioInitialized(false);
+      resetAudioEngine();
       dispatchPlayback({ type: "operation-failed", message: MIXER_ERROR });
     } finally {
       finishAudioOperation();
@@ -212,21 +228,26 @@ export function ScorePlayer() {
 
   const updateSpeed = async (value: number) => {
     const next = normalizeSpeed(value);
+    if (next === speed) return;
+
     if (!tuneInitializedRef.current) {
+      // Before first Play this is only a desired speed. It will be applied after
+      // the first successful audio start, while the iOS audio context is unlocked.
       setSpeed(next);
       dispatchPlayback({ type: "clear-error" });
       return;
     }
-    if (next === speed || !beginAudioOperation()) return;
+    if (!beginAudioOperation()) return;
+
+    // Keep the user's requested speed even if abcjs has to be reinitialized after
+    // a failed warp. The next Play gesture will retry it from a clean controller.
+    setSpeed(next);
     dispatchPlayback({ type: "clear-error" });
     try {
       await getController().setWarp(next);
       appliedWarpRef.current = next;
-      setSpeed(next);
     } catch {
-      tuneInitializedRef.current = false;
-      playingRef.current = false;
-      setAudioInitialized(false);
+      resetAudioEngine();
       dispatchPlayback({ type: "operation-failed", message: SPEED_ERROR });
     } finally {
       finishAudioOperation();
