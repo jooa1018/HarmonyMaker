@@ -1,11 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type ABCJS from "abcjs";
-import { demoAbc, voiceLabels } from "./sample";
 import { initialMixerState, normalizeSpeed, toggleMute, toggleSolo, voicesOff, type MixerState } from "./mixer";
+import { initialPlaybackState, playbackStatusLabel, reducePlayback } from "./playback";
+import { demoAbc, voiceLabels } from "./sample";
 
-type PlaybackStatus = "준비" | "재생 중" | "일시 정지" | "처음으로 돌아감" | "재생 완료";
+const AUDIO_START_ERROR = "오디오를 시작하지 못했습니다. 재생 버튼을 다시 눌러 주세요.";
+const MIXER_ERROR = "파트 설정을 적용하지 못했습니다. 재생 버튼을 다시 눌러 주세요.";
+const SPEED_ERROR = "재생 속도를 변경하지 못했습니다.";
 
 export function ScorePlayer() {
   const scoreRef = useRef<HTMLDivElement>(null);
@@ -13,17 +16,52 @@ export function ScorePlayer() {
   const abcRef = useRef<typeof ABCJS | null>(null);
   const tuneRef = useRef<ABCJS.TuneObject | null>(null);
   const controllerRef = useRef<ABCJS.SynthObjectController | null>(null);
+  const tuneInitializedRef = useRef(false);
+  const playingRef = useRef(false);
+  const appliedWarpRef = useRef(100);
+  const audioBusyRef = useRef(false);
   const highlightedRef = useRef<HTMLElement[]>([]);
   const [mixer, setMixer] = useState<MixerState>(initialMixerState);
   const [speed, setSpeed] = useState(100);
-  const [status, setStatus] = useState<PlaybackStatus>("준비");
-  const [error, setError] = useState<string | null>(null);
+  const [playback, dispatchPlayback] = useReducer(reducePlayback, initialPlaybackState);
   const [ready, setReady] = useState(false);
+  const [audioBusy, setAudioBusy] = useState(false);
+  const [audioInitialized, setAudioInitialized] = useState(false);
 
   const clearHighlight = useCallback(() => {
     highlightedRef.current.forEach(element => element.classList.remove("abcjs-highlight"));
     highlightedRef.current = [];
   }, []);
+
+  const beginAudioOperation = useCallback(() => {
+    if (audioBusyRef.current) return false;
+    audioBusyRef.current = true;
+    setAudioBusy(true);
+    return true;
+  }, []);
+
+  const finishAudioOperation = useCallback(() => {
+    audioBusyRef.current = false;
+    setAudioBusy(false);
+  }, []);
+
+  const cursorControl = useMemo<ABCJS.CursorControl>(() => ({
+      onStart: () => {
+        playingRef.current = true;
+        dispatchPlayback({ type: "played" });
+      },
+      onFinished: () => {
+        playingRef.current = false;
+        clearHighlight();
+        dispatchPlayback({ type: "finished" });
+      },
+      onEvent: event => {
+        clearHighlight();
+        const elements = event.elements?.flat() ?? [];
+        elements.forEach(element => element.classList.add("abcjs-highlight"));
+        highlightedRef.current = elements;
+      },
+  }), [clearHighlight]);
 
   useEffect(() => {
     let disposed = false;
@@ -40,87 +78,183 @@ export function ScorePlayer() {
       })[0] ?? null;
       setReady(Boolean(tuneRef.current));
     };
-    void render().catch(() => setError("악보를 표시하지 못했습니다. 페이지를 다시 불러와 주세요."));
-    return () => { disposed = true; controllerRef.current?.pause(); };
+
+    void render().catch(() => dispatchPlayback({
+      type: "operation-failed",
+      message: "악보를 표시하지 못했습니다. 페이지를 다시 불러와 주세요.",
+    }));
+
+    return () => {
+      disposed = true;
+      controllerRef.current?.pause();
+    };
   }, [clearHighlight]);
 
-  const cursorControl: ABCJS.CursorControl = {
-    onStart: () => setStatus("재생 중"),
-    onFinished: () => { clearHighlight(); setStatus("재생 완료"); },
-    onEvent: event => {
-      clearHighlight();
-      const elements = event.elements?.flat() ?? [];
-      elements.forEach(element => element.classList.add("abcjs-highlight"));
-      highlightedRef.current = elements;
-    },
-  };
-
-  const configure = useCallback(async (nextMixer: MixerState, nextSpeed: number, userAction: boolean) => {
+  const getController = useCallback(() => {
     const abc = abcRef.current;
-    const tune = tuneRef.current;
-    if (!abc || !tune || !audioRef.current) throw new Error("Score is not ready");
+    if (!abc || !audioRef.current) throw new Error("Score is not ready");
     if (!controllerRef.current) {
       controllerRef.current = new abc.synth.SynthController();
-      controllerRef.current.load(audioRef.current, cursorControl, { displayLoop: false, displayRestart: false, displayPlay: false, displayProgress: false, displayWarp: false });
+      controllerRef.current.load(audioRef.current, cursorControl, {
+        displayLoop: false,
+        displayRestart: false,
+        displayPlay: false,
+        displayProgress: false,
+        displayWarp: false,
+      });
     }
-    const result = await controllerRef.current.setTune(tune, userAction, { voicesOff: voicesOff(nextMixer) });
+    return controllerRef.current;
+  }, [cursorControl]);
+
+  const initializeTune = useCallback(async (nextMixer: MixerState, nextSpeed: number) => {
+    const tune = tuneRef.current;
+    if (!tune) throw new Error("Score is not ready");
+    const controller = getController();
+
+    // setTune(false) cannot build a buffer in abcjs 6.7.0. This path always runs
+    // from Play, Mute, or Solo, so it remains inside a direct user gesture.
+    const result = await controller.setTune(tune, true, { voicesOff: voicesOff(nextMixer) });
     if (result.status === "no-audio-context") throw new Error("AudioContext unavailable");
-    await controllerRef.current.setWarp(nextSpeed);
-  // cursorControl intentionally delegates only to stable state setters and refs.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearHighlight]);
+
+    // SynthController starts at 100%. Avoid rebuilding the freshly-created buffer
+    // at the default warp; only apply a different requested speed when necessary.
+    if (appliedWarpRef.current !== nextSpeed) {
+      await controller.setWarp(nextSpeed);
+      appliedWarpRef.current = nextSpeed;
+    }
+
+    tuneInitializedRef.current = true;
+    playingRef.current = false;
+    setAudioInitialized(true);
+  }, [getController]);
 
   const play = async () => {
-    setError(null);
+    if (!beginAudioOperation()) return;
+    dispatchPlayback({ type: "clear-error" });
     try {
-      // This entire activation path starts in a direct Play click for iOS/Web Audio policy.
-      await configure(mixer, speed, true);
-      controllerRef.current?.play();
-      setStatus("재생 중");
+      if (!tuneInitializedRef.current) await initializeTune(mixer, speed);
+      if (!playingRef.current) {
+        await getController().play();
+        playingRef.current = true;
+        dispatchPlayback({ type: "played" });
+      }
     } catch {
-      setStatus("준비");
-      setError("오디오를 시작하지 못했습니다. 재생 버튼을 다시 눌러 주세요.");
+      tuneInitializedRef.current = false;
+      playingRef.current = false;
+      setAudioInitialized(false);
+      dispatchPlayback({ type: "operation-failed", message: AUDIO_START_ERROR });
+    } finally {
+      finishAudioOperation();
     }
   };
 
-  const pause = () => { controllerRef.current?.pause(); setStatus("일시 정지"); };
-  const reset = () => { controllerRef.current?.restart(); controllerRef.current?.pause(); clearHighlight(); setStatus("처음으로 돌아감"); };
+  const pause = async () => {
+    if (!tuneInitializedRef.current || !playingRef.current || !beginAudioOperation()) return;
+    dispatchPlayback({ type: "clear-error" });
+    try {
+      // abcjs 6.7.0 play() is the stateful toggle. Calling pause() directly does
+      // not clear its internal isStarted flag, so resume must toggle through play().
+      await getController().play();
+      playingRef.current = false;
+      dispatchPlayback({ type: "paused" });
+    } catch {
+      tuneInitializedRef.current = false;
+      playingRef.current = false;
+      setAudioInitialized(false);
+      dispatchPlayback({ type: "operation-failed", message: AUDIO_START_ERROR });
+    } finally {
+      finishAudioOperation();
+    }
+  };
+
+  const reset = async () => {
+    if (!tuneInitializedRef.current || !beginAudioOperation()) return;
+    dispatchPlayback({ type: "clear-error" });
+    try {
+      const controller = getController();
+      if (playingRef.current) await controller.play();
+      playingRef.current = false;
+      controller.restart();
+      clearHighlight();
+      dispatchPlayback({ type: "reset" });
+    } catch {
+      tuneInitializedRef.current = false;
+      playingRef.current = false;
+      setAudioInitialized(false);
+      dispatchPlayback({ type: "operation-failed", message: AUDIO_START_ERROR });
+    } finally {
+      finishAudioOperation();
+    }
+  };
 
   const updateMixer = async (next: MixerState) => {
-    setMixer(next);
-    if (!controllerRef.current) return;
-    try { await configure(next, speed, false); setStatus("처음으로 돌아감"); clearHighlight(); }
-    catch { setError("파트 설정을 적용하지 못했습니다. 재생 버튼을 다시 눌러 주세요."); }
+    if (!tuneInitializedRef.current) {
+      setMixer(next);
+      dispatchPlayback({ type: "clear-error" });
+      return;
+    }
+    if (!beginAudioOperation()) return;
+    dispatchPlayback({ type: "clear-error" });
+    try {
+      await initializeTune(next, speed);
+      setMixer(next);
+      clearHighlight();
+      dispatchPlayback({ type: "mixer-applied" });
+    } catch {
+      tuneInitializedRef.current = false;
+      playingRef.current = false;
+      setAudioInitialized(false);
+      dispatchPlayback({ type: "operation-failed", message: MIXER_ERROR });
+    } finally {
+      finishAudioOperation();
+    }
   };
 
   const updateSpeed = async (value: number) => {
     const next = normalizeSpeed(value);
-    setSpeed(next);
-    if (!controllerRef.current) return;
-    try { await controllerRef.current.setWarp(next); }
-    catch { setError("재생 속도를 변경하지 못했습니다."); }
+    if (!tuneInitializedRef.current) {
+      setSpeed(next);
+      dispatchPlayback({ type: "clear-error" });
+      return;
+    }
+    if (next === speed || !beginAudioOperation()) return;
+    dispatchPlayback({ type: "clear-error" });
+    try {
+      await getController().setWarp(next);
+      appliedWarpRef.current = next;
+      setSpeed(next);
+    } catch {
+      tuneInitializedRef.current = false;
+      playingRef.current = false;
+      setAudioInitialized(false);
+      dispatchPlayback({ type: "operation-failed", message: SPEED_ERROR });
+    } finally {
+      finishAudioOperation();
+    }
   };
+
+  const controlsDisabled = !ready || audioBusy;
 
   return <section className="panel" aria-label="S A T 악보 재생 데모">
     <div ref={scoreRef} className="score-wrap" aria-label="Soprano Alto Tenor 테스트 악보" />
     <div ref={audioRef} hidden />
     <div className="transport">
-      <button className="primary" onClick={() => void play()} disabled={!ready}>Play</button>
-      <button onClick={pause} disabled={!ready}>Pause</button>
-      <button onClick={reset} disabled={!ready}>Reset</button>
+      <button className="primary" onClick={() => void play()} disabled={controlsDisabled || playback.phase === "playing"}>Play</button>
+      <button onClick={() => void pause()} disabled={controlsDisabled || playback.phase !== "playing"}>Pause</button>
+      <button onClick={() => void reset()} disabled={controlsDisabled || !audioInitialized}>Reset</button>
     </div>
     <div className="voices">
       {voiceLabels.map((label, index) => <div className="voice" key={label}>
         <strong>{label}</strong>{" "}
-        <button aria-label={`${label} mute`} aria-pressed={mixer.muted[index]} onClick={() => void updateMixer(toggleMute(mixer, index))}>Mute</button>{" "}
-        <button aria-label={`${label} solo`} aria-pressed={mixer.solo === index} onClick={() => void updateMixer(toggleSolo(mixer, index))}>Solo</button>
+        <button disabled={controlsDisabled} aria-label={`${label} mute`} aria-pressed={mixer.muted[index]} onClick={() => void updateMixer(toggleMute(mixer, index))}>Mute</button>{" "}
+        <button disabled={controlsDisabled} aria-label={`${label} solo`} aria-pressed={mixer.solo === index} onClick={() => void updateMixer(toggleSolo(mixer, index))}>Solo</button>
       </div>)}
     </div>
     <label className="speed">Speed: <strong>{speed}%</strong>
-      <input aria-label="Playback speed" type="range" min="50" max="150" step="25" value={speed} onChange={event => void updateSpeed(Number(event.target.value))} />
+      <input disabled={controlsDisabled} aria-label="Playback speed" type="range" min="50" max="150" step="25" value={speed} onChange={event => void updateSpeed(Number(event.target.value))} />
     </label>
-    <p className="status" aria-live="polite">Playback status: {status}</p>
-    {error && <p className="status error" role="alert">{error}</p>}
+    <p className="status" aria-live="polite">Playback status: {playbackStatusLabel[playback.phase]}{audioBusy ? " (오디오 준비 중)" : ""}</p>
+    {playback.error && <p className="status error" role="alert">{playback.error}</p>}
     <p><small>규칙: Solo가 Mute보다 우선하며, 한 번에 한 성부만 Solo됩니다. 파트 설정 변경 시 재생 위치는 처음으로 돌아갑니다.</small></p>
   </section>;
 }
