@@ -21,15 +21,29 @@ export interface KeySignature {
   readonly mode: KeyMode;
 }
 
+export function isSpelledPitchClass(value: unknown): value is SpelledPitchClass {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const pitch = value as Readonly<Record<string, unknown>>;
+  return Object.keys(pitch).length === 2
+    && ["C", "D", "E", "F", "G", "A", "B"].includes(String(pitch.step))
+    && [-2, -1, 0, 1, 2].includes(pitch.alter as number);
+}
+
+export function isSpelledPitch(value: unknown): value is SpelledPitch {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const pitch = value as Readonly<Record<string, unknown>>;
+  return Object.keys(pitch).length === 3
+    && ["C", "D", "E", "F", "G", "A", "B"].includes(String(pitch.step))
+    && [-2, -1, 0, 1, 2].includes(pitch.alter as number)
+    && Number.isSafeInteger(pitch.octave);
+}
+
 export function isKeySignature(value: unknown): value is KeySignature {
   if (typeof value !== "object" || value === null) return false;
   const key = value as Readonly<Record<string, unknown>>;
   if (key.mode !== "major" && key.mode !== "minor") return false;
-  if (typeof key.tonic !== "object" || key.tonic === null) return false;
-  const tonic = key.tonic as Readonly<Record<string, unknown>>;
-  const steps: readonly Step[] = ["C", "D", "E", "F", "G", "A", "B"];
-  const alters: readonly Alter[] = [-2, -1, 0, 1, 2];
-  if (!steps.includes(tonic.step as Step) || !alters.includes(tonic.alter as Alter)) return false;
+  if (!isSpelledPitchClass(key.tonic)) return false;
+  const tonic = key.tonic;
   const typed: KeySignature = { tonic: { step: tonic.step as Step, alter: tonic.alter as Alter }, mode: key.mode };
   try { deriveFifths(typed); return true; } catch { return false; }
 }

@@ -4,10 +4,34 @@ export interface Fraction {
 }
 
 export const FRACTION_LIMITS = {
-  maxAbsoluteNumerator: 10_000_000,
+  maxAbsNumerator: 10_000_000,
   maxDenominator: 16_384,
-  maxOperationAbsoluteNumerator: 500_000,
+  maxOperationsPerRequest: 500_000,
 } as const;
+
+export class FractionOperationBudget {
+  #operations = 0;
+
+  constructor(readonly limit: number = FRACTION_LIMITS.maxOperationsPerRequest) {
+    if (!Number.isSafeInteger(limit) || limit < 0 || limit > FRACTION_LIMITS.maxOperationsPerRequest) {
+      throw new FractionError("INPUT_FRACTION_LIMIT_EXCEEDED", "fraction operation budget is invalid");
+    }
+  }
+
+  get operations(): number {
+    return this.#operations;
+  }
+
+  consume(): void {
+    if (this.#operations >= this.limit) {
+      throw new FractionError(
+        "INPUT_FRACTION_LIMIT_EXCEEDED",
+        "fraction request exceeds maxOperationsPerRequest",
+      );
+    }
+    this.#operations += 1;
+  }
+}
 
 export class FractionError extends RangeError {
   constructor(
@@ -48,7 +72,7 @@ export function fraction(numerator: number, denominator = 1): Fraction {
   const n = (numerator / divisor) * sign;
   const d = Math.abs(denominator / divisor);
   if (
-    Math.abs(n) > FRACTION_LIMITS.maxAbsoluteNumerator ||
+    Math.abs(n) > FRACTION_LIMITS.maxAbsNumerator ||
     d > FRACTION_LIMITS.maxDenominator
   ) {
     throw new FractionError("INPUT_FRACTION_LIMIT_EXCEEDED", "fraction exceeds canonical storage limits");
@@ -72,14 +96,10 @@ function checkedOperation(n: number, d: number): Fraction {
   if (!Number.isSafeInteger(n) || !Number.isSafeInteger(d)) {
     throw new FractionError("INPUT_FRACTION_LIMIT_EXCEEDED", "fraction operation overflowed safe integers");
   }
-  const result = fraction(n, d);
-  if (Math.abs(result.n) > FRACTION_LIMITS.maxOperationAbsoluteNumerator) {
-    throw new FractionError("INPUT_FRACTION_LIMIT_EXCEEDED", "fraction operation exceeds runtime limit");
-  }
-  return result;
+  return fraction(n, d);
 }
 
-export function addFractions(left: Fraction, right: Fraction): Fraction {
+function addUnchecked(left: Fraction, right: Fraction): Fraction {
   const divisor = gcd(left.d, right.d);
   return checkedOperation(
     left.n * (right.d / divisor) + right.n * (left.d / divisor),
@@ -87,11 +107,25 @@ export function addFractions(left: Fraction, right: Fraction): Fraction {
   );
 }
 
-export function subtractFractions(left: Fraction, right: Fraction): Fraction {
-  return addFractions(left, fraction(-right.n, right.d));
+export function addFractions(
+  left: Fraction,
+  right: Fraction,
+  budget?: FractionOperationBudget,
+): Fraction {
+  budget?.consume();
+  return addUnchecked(left, right);
 }
 
-export function multiplyFractions(left: Fraction, right: Fraction): Fraction {
+export function subtractFractions(
+  left: Fraction,
+  right: Fraction,
+  budget?: FractionOperationBudget,
+): Fraction {
+  budget?.consume();
+  return addUnchecked(left, fraction(-right.n, right.d));
+}
+
+function multiplyUnchecked(left: Fraction, right: Fraction): Fraction {
   const crossLeft = gcd(left.n, right.d);
   const crossRight = gcd(right.n, left.d);
   return checkedOperation(
@@ -100,11 +134,25 @@ export function multiplyFractions(left: Fraction, right: Fraction): Fraction {
   );
 }
 
-export function divideFractions(left: Fraction, right: Fraction): Fraction {
+export function multiplyFractions(
+  left: Fraction,
+  right: Fraction,
+  budget?: FractionOperationBudget,
+): Fraction {
+  budget?.consume();
+  return multiplyUnchecked(left, right);
+}
+
+export function divideFractions(
+  left: Fraction,
+  right: Fraction,
+  budget?: FractionOperationBudget,
+): Fraction {
+  budget?.consume();
   if (right.n === 0) {
     throw new FractionError("INPUT_INVALID_FRACTION", "cannot divide by zero");
   }
-  return multiplyFractions(left, fraction(right.d, right.n));
+  return multiplyUnchecked(left, fraction(right.d, right.n));
 }
 
 export function compareFractions(left: Fraction, right: Fraction): -1 | 0 | 1 {

@@ -27,6 +27,7 @@ describe("performer, track, and preset config", () => {
     expect(isCoreArrangementMode({ profileId: "worship-band-v1", harmonicContext: "standalone-vocal" })).toBe(false);
     expect(validateArrangementSettings({ mode: { profileId: "worship-band-v1", harmonicContext: "band-supported" }, requestedPresetIds: ["simple", "standard"], userCaps: { maxHarmonyTracks: 2, allowOctaveDouble: true } })).toBe(true);
     expect(validateArrangementSettings({ mode: { profileId: "worship-band-v1", harmonicContext: "band-supported" }, requestedPresetIds: ["full", "simple"], userCaps: { maxHarmonyTracks: 2, allowOctaveDouble: true } })).toBe(false);
+    expect(validateArrangementSettings({ mode: { profileId: "worship-band-v1", harmonicContext: "band-supported" }, requestedPresetIds: ["simple"], userCaps: { maxHarmonyTracks: "2", allowOctaveDouble: true } })).toBe(false);
   });
 
   it("builds independent preset provenance and applies user caps", async () => {

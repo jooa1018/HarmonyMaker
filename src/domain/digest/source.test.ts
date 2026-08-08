@@ -6,6 +6,9 @@ import type { SemanticDigest } from "./canonical";
 import type { SongSourceDocument } from "../source/model";
 import { musicalRange } from "../time";
 import { digestMusicalSource } from "./source";
+import { hasCanonicalSongSourceOrder, normalizeSongSourceDocument } from "../source/normalize";
+import { computeRevisionHistoryDigest } from "../source/revision";
+import { isSongSourceDocument, validateSongSourceDocumentIntegrity } from "../source/validation";
 
 const d = "0".repeat(64) as SemanticDigest;
 function sourceFixture(input: { readonly prefix: string; readonly title: string; readonly chord: string; readonly emphasis: "musicxml" | "metric" | "confirmed-manual" | "confirmed-imported" }): SongSourceDocument {
@@ -49,5 +52,42 @@ describe("musical source projection", () => {
     expect(await digestMusicalSource({ ...base, sectionDefinitions: [{ ...base.sectionDefinitions[0], confirmation: "suggested" }] })).not.toBe(baseDigest);
     expect(await digestMusicalSource({ ...base, sectionOccurrences: [{ ...base.sectionOccurrences[0], variant: "final" }] })).not.toBe(baseDigest);
     expect(await digestMusicalSource({ ...base, sectionOccurrences: [{ ...base.sectionOccurrences[0], lyricVerseIndex: 2 }] })).not.toBe(baseDigest);
+  });
+
+  it("canonicalizes source event, chord, lyric, and text permutations without raw-ID ordering", async () => {
+    const base = sourceFixture({ prefix: "same", title: "same", chord: "C", emphasis: "confirmed-manual" });
+    const measure = base.sourceMeasures[0];
+    const lead0 = { ...measure.leadEvents[0], id: "same:lead:0", duration: fraction(2), lyricTokenIds: ["same:lyric:0"] } as const;
+    const lead1 = { ...lead0, id: "same:lead:1", onset: fraction(2), pitch: { step: "D", alter: 0, octave: 4 }, lyricTokenIds: ["same:lyric:1"] } as const;
+    const lyric0 = { ...measure.lyricTokens[0], id: "same:lyric:0", leadEventId: lead0.id };
+    const lyric1 = { ...lyric0, id: "same:lyric:1", leadEventId: lead1.id, text: "two" };
+    const chord0 = measure.chordEvents[0];
+    const chord1 = { ...chord0, id: "same:chord:1", onset: fraction(2), sourceText: "G", parseResult: parseChord("G") };
+    const text0 = { id: "same:text:0", sourceMeasureId: measure.id, onset: fraction(0), kind: "section-label", text: "Verse" } as const;
+    const text1 = { ...text0, id: "same:text:1", onset: fraction(2), kind: "rehearsal-mark", text: "A" } as const;
+    const canonical = { ...base, sourceMeasures: [{ ...measure, leadEvents: [lead0, lead1], chordEvents: [chord0, chord1], lyricTokens: [lyric0, lyric1], textEvents: [text0, text1] }] };
+    const permuted = { ...canonical, sourceMeasures: [{ ...canonical.sourceMeasures[0], leadEvents: [lead1, lead0], chordEvents: [chord1, chord0], lyricTokens: [lyric1, lyric0], textEvents: [text1, text0] }] };
+    expect(await digestMusicalSource(permuted)).toBe(await digestMusicalSource(canonical));
+    expect(hasCanonicalSongSourceOrder(permuted)).toBe(false);
+    expect(hasCanonicalSongSourceOrder(normalizeSongSourceDocument(permuted))).toBe(true);
+  });
+
+  it("strictly validates persisted SongSourceDocument shape and canonical order", () => {
+    const fixture = { ...sourceFixture({ prefix: "valid", title: "Title", chord: "C", emphasis: "confirmed-manual" }), revisionOrdinal: 0 };
+    expect(isSongSourceDocument(fixture)).toBe(true);
+    expect(isSongSourceDocument({ ...fixture, forbidden: true })).toBe(false);
+    expect(isSongSourceDocument({ ...fixture, defaultTempo: { ...fixture.defaultTempo, bpm: "80" } })).toBe(false);
+    expect(isSongSourceDocument({ ...fixture, sourceMeasures: [{ ...fixture.sourceMeasures[0], duration: { n: 8, d: 2 } }] })).toBe(false);
+  });
+
+  it("recomputes source and revision-history digests before accepting persisted authority", async () => {
+    const fixture = {
+      ...sourceFixture({ prefix: "integrity", title: "Title", chord: "C", emphasis: "confirmed-manual" }),
+      revisionOrdinal: 0,
+      revisionHistoryDigest: await computeRevisionHistoryDigest([]),
+    };
+    const valid = { ...fixture, revisionDigest: await digestMusicalSource(fixture) };
+    expect(await validateSongSourceDocumentIntegrity(valid)).toBe(true);
+    expect(await validateSongSourceDocumentIntegrity({ ...valid, revisionDigest: d })).toBe(false);
   });
 });

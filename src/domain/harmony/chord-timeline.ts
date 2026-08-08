@@ -1,7 +1,7 @@
 import type { ResolvedChordParseResult } from "../chord/model";
-import { semanticDigest, type SemanticDigest } from "../digest/canonical";
+import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "../digest/canonical";
 import type { Diagnostic } from "../diagnostics";
-import { compareFractions, fraction } from "../fraction";
+import { addFractions, compareFractions, fraction, type Fraction } from "../fraction";
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SourceChordEvent, SourceMeasure } from "../source/model";
 import { musicalRange, type MusicalPosition, type MusicalRange } from "../time";
@@ -36,6 +36,37 @@ function resolved(event: SourceChordEvent): ResolvedChordParseResult | undefined
   return undefined;
 }
 
+function soundingLeadSegments(
+  measure: SourceMeasure,
+  performanceMeasureIndex: number,
+  start: Fraction,
+  end: Fraction,
+  durations: readonly Fraction[],
+): readonly MusicalRange[] {
+  const overlaps = measure.leadEvents
+    .filter((event) => event.kind === "note")
+    .map((event) => {
+      const eventEnd = addFractions(event.onset, event.duration);
+      const overlapStart = compareFractions(event.onset, start) < 0 ? start : event.onset;
+      const overlapEnd = compareFractions(eventEnd, end) > 0 ? end : eventEnd;
+      return { start: overlapStart, end: overlapEnd };
+    })
+    .filter((range) => compareFractions(range.start, range.end) < 0)
+    .sort((left, right) => compareFractions(left.start, right.start) || compareFractions(left.end, right.end));
+  const merged: Array<{ start: Fraction; end: Fraction }> = [];
+  for (const overlap of overlaps) {
+    const previous = merged.at(-1);
+    if (previous && compareFractions(overlap.start, previous.end) <= 0) {
+      if (compareFractions(overlap.end, previous.end) > 0) previous.end = overlap.end;
+    } else merged.push({ ...overlap });
+  }
+  return merged.map((range) => musicalRange(
+    { performanceMeasureIndex, offset: range.start },
+    { performanceMeasureIndex, offset: range.end },
+    durations,
+  ));
+}
+
 export async function resolveEffectiveChordTimeline(input: {
   readonly sourceMeasures: readonly SourceMeasure[];
   readonly performanceSequence: PerformanceSequence;
@@ -50,26 +81,42 @@ export async function resolveEffectiveChordTimeline(input: {
   const byId = new Map(input.sourceMeasures.map((measure) => [measure.id, measure]));
   const spans: PerformanceChordSpan[] = [];
   const diagnostics: Diagnostic[] = [];
+  const durations = input.performanceSequence.occurrences.map((item) => item.duration);
   let previousState: { readonly parseResult: ResolvedChordParseResult; readonly originatingSourceChordEventId: string; readonly spanId: string } | undefined;
   for (const occurrence of input.performanceSequence.occurrences) {
     const measure = byId.get(occurrence.sourceMeasureId);
     if (!measure) { diagnostics.push(diagnostic("PERFORMANCE_EXPANSION_FAILED", occurrence.occurrenceId)); continue; }
-    const events = [...measure.chordEvents].sort((a, b) => compareFractions(a.onset, b.onset) || a.id.localeCompare(b.id));
+    const events = [...measure.chordEvents].sort((left, right) =>
+      compareFractions(left.onset, right.onset)
+      || compareCanonicalValues(
+        { sourceText: left.sourceText, parseResult: left.parseResult, source: left.source, confirmation: left.confirmation },
+        { sourceText: right.sourceText, parseResult: right.parseResult, source: right.source, confirmation: right.confirmation },
+      ));
     let cursor = fraction(0);
+    const resolveUncovered = (startOffset: Fraction, endOffset: Fraction): void => {
+      for (const gapRange of soundingLeadSegments(
+        measure,
+        occurrence.performanceIndex,
+        startOffset,
+        endOffset,
+        durations,
+      )) {
+        if (input.policy.gapPolicy === "carry-until-next" && previousState) {
+          const id = performanceChordSpanId(gapRange.start, gapRange.end);
+          spans.push({ id, range: gapRange, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "gap-policy", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId } });
+          previousState = { ...previousState, spanId: id };
+        } else diagnostics.push(diagnostic("SOURCE_CHORD_GAP", `${occurrence.performanceIndex}:${gapRange.start.offset.n}/${gapRange.start.offset.d}`));
+      }
+    };
     for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
       const event = events[eventIndex];
       const start: MusicalPosition = { performanceMeasureIndex: occurrence.performanceIndex, offset: event.onset };
       if (compareFractions(cursor, event.onset) < 0) {
-        if (input.policy.gapPolicy === "carry-until-next" && previousState) {
-          const gapRange = musicalRange({ performanceMeasureIndex: occurrence.performanceIndex, offset: cursor }, start);
-          const id = performanceChordSpanId(gapRange.start, gapRange.end);
-          spans.push({ id, range: gapRange, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "gap-policy", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId } });
-          previousState = { ...previousState, spanId: id };
-        } else diagnostics.push(diagnostic("SOURCE_CHORD_GAP", `${occurrence.performanceIndex}:${cursor.n}`));
+        resolveUncovered(cursor, event.onset);
       }
       const nextOnset = events[eventIndex + 1]?.onset ?? occurrence.duration;
       if (compareFractions(nextOnset, event.onset) <= 0) { diagnostics.push(diagnostic("INPUT_EVENT_OVERLAP", event.id)); continue; }
-      const range = musicalRange(start, { performanceMeasureIndex: occurrence.performanceIndex, offset: nextOnset }, input.performanceSequence.occurrences.map((item) => item.duration));
+      const range = musicalRange(start, { performanceMeasureIndex: occurrence.performanceIndex, offset: nextOnset }, durations);
       if (event.confirmation !== "confirmed") { diagnostics.push(diagnostic("SOURCE_CHORD_UNCONFIRMED", event.id)); cursor = nextOnset; continue; }
       if (event.parseResult.status === "carry") {
         if (!previousState) diagnostics.push(diagnostic("SOURCE_CHORD_CARRY_WITHOUT_PREVIOUS", event.id));
@@ -90,13 +137,7 @@ export async function resolveEffectiveChordTimeline(input: {
       cursor = nextOnset;
     }
     if (compareFractions(cursor, occurrence.duration) < 0) {
-      const end: MusicalPosition = { performanceMeasureIndex: occurrence.performanceIndex, offset: occurrence.duration };
-      if (input.policy.gapPolicy === "carry-until-next" && previousState) {
-        const range = musicalRange({ performanceMeasureIndex: occurrence.performanceIndex, offset: cursor }, end, input.performanceSequence.occurrences.map((item) => item.duration));
-        const id = performanceChordSpanId(range.start, range.end);
-        spans.push({ id, range, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "gap-policy", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId } });
-        previousState = { ...previousState, spanId: id };
-      } else diagnostics.push(diagnostic("SOURCE_CHORD_GAP", `${occurrence.performanceIndex}:tail`));
+      resolveUncovered(cursor, occurrence.duration);
     }
   }
   if (diagnostics.length > 0) return { status: "blocked", resolutionPolicy: input.policy, diagnostics };

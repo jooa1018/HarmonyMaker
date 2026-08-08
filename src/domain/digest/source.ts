@@ -1,7 +1,8 @@
 import { chordSemanticProjection } from "../chord/parser";
 import type { SourceChordEvent, SongSourceDocument } from "../source/model";
 import { resolveProductionLyricEmphasis } from "../source/lyrics";
-import { semanticDigest, type SemanticDigest } from "./canonical";
+import { normalizeSongSourceDocument } from "../source/normalize";
+import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "./canonical";
 
 function chordProjection(event: SourceChordEvent): object | undefined {
   if (event.confirmation !== "confirmed") return undefined;
@@ -12,6 +13,7 @@ function chordProjection(event: SourceChordEvent): object | undefined {
 }
 
 export async function digestMusicalSource(source: SongSourceDocument): Promise<SemanticDigest> {
+  source = normalizeSongSourceDocument(source);
   const measureOrdinal = new Map(source.sourceMeasures.map((measure, ordinal) => [measure.id, ordinal]));
   const definitionOrdinal = new Map(source.sectionDefinitions.map((definition, ordinal) => [definition.id, ordinal]));
   const sectionOccurrenceOrdinal = new Map(source.sectionOccurrences.map((occurrence, ordinal) => [occurrence.id, ordinal]));
@@ -37,7 +39,7 @@ export async function digestMusicalSource(source: SongSourceDocument): Promise<S
     performanceSequence: source.performanceSequence.occurrences.map((occurrence) => ({ sourceMeasureOrdinal: measureOrdinal.get(occurrence.sourceMeasureId), occurrenceIndexForSource: occurrence.occurrenceIndexForSource, performanceIndex: occurrence.performanceIndex, time: occurrence.time, duration: occurrence.duration })),
     sectionDefinitions: source.sectionDefinitions.map((definition) => ({ type: definition.type, sourceMeasureOrdinals: definition.sourceMeasureIds.map((id) => measureOrdinal.get(id)), confirmation: definition.confirmation })),
     sectionOccurrences: source.sectionOccurrences.map((occurrence) => ({ definitionOrdinal: definitionOrdinal.get(occurrence.sectionDefinitionId), occurrenceIndex: occurrence.occurrenceIndex, variant: occurrence.variant, lyricVerseIndex: occurrence.lyricVerseIndex, startPerformanceMeasureIndex: occurrence.startPerformanceMeasureIndex, endPerformanceMeasureIndexExclusive: occurrence.endPerformanceMeasureIndexExclusive })),
-    phraseRegions: source.phraseRegions.map((phrase) => ({ sectionOccurrenceOrdinal: sectionOccurrenceOrdinal.get(phrase.sectionOccurrenceId), range: phrase.range })),
+    phraseRegions: source.phraseRegions.map((phrase) => ({ sectionOccurrenceOrdinal: sectionOccurrenceOrdinal.get(phrase.sectionOccurrenceId), range: phrase.range })).sort(compareCanonicalValues),
   };
   return semanticDigest(projection);
 }

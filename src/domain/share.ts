@@ -2,6 +2,11 @@ import type { ArrangementPresetId } from "./config";
 import { canonicalJson, type SemanticDigest } from "./digest/canonical";
 import type { Alter, KeySignature, Step } from "./pitch";
 import type { RightsBasis, TempoSpec } from "./source/model";
+import { addFractions, compareFractions, fraction } from "./fraction";
+import {
+  hasExactKeys, hasUniqueStrings, isCanonicalId, isCanonicalKeySignature,
+  isPlainRecord, isSemanticDigest,
+} from "./validation";
 
 export type CompactFraction = readonly [n: number, d: number];
 export type CompactPitch = readonly [step: Step, alter: Alter, octave: number];
@@ -20,19 +25,160 @@ export interface PracticeSharePayload { readonly schemaVersion: 3; readonly titl
 export interface ShareStoreRecord { readonly opaqueTokenHash: string; readonly payloadDigest: SemanticDigest; readonly encryptedPayload: Uint8Array; readonly createdAt: string; readonly expiresAt: string; readonly rightsBasis: RightsBasis }
 
 function isCompactFraction(value: unknown): value is CompactFraction {
-  return Array.isArray(value) && value.length === 2 && Number.isSafeInteger(value[0]) && Number.isSafeInteger(value[1]) && value[1] > 0;
+  if (!Array.isArray(value) || value.length !== 2 || !Number.isSafeInteger(value[0]) || !Number.isSafeInteger(value[1]) || value[1] <= 0) return false;
+  try {
+    const normalized = fraction(value[0], value[1]);
+    return normalized.n === value[0] && normalized.d === value[1];
+  } catch {
+    return false;
+  }
+}
+
+function isPositiveCompactFraction(value: unknown): value is CompactFraction {
+  return isCompactFraction(value) && value[0] > 0;
+}
+
+function compactFraction(value: CompactFraction) {
+  return fraction(value[0], value[1]);
+}
+
+function isCompactPosition(
+  occurrenceIndex: unknown,
+  offset: unknown,
+  measures: readonly unknown[],
+  allowDocumentEnd: boolean,
+): offset is CompactFraction {
+  if (!Number.isSafeInteger(occurrenceIndex) || (occurrenceIndex as number) < 0 || !isCompactFraction(offset)) return false;
+  if (occurrenceIndex === measures.length) return allowDocumentEnd && offset[0] === 0 && offset[1] === 1;
+  if ((occurrenceIndex as number) >= measures.length || offset[0] < 0) return false;
+  const measure = measures[occurrenceIndex as number];
+  return isPlainRecord(measure)
+    && isPositiveCompactFraction(measure.duration)
+    && compareFractions(compactFraction(offset), compactFraction(measure.duration)) < 0;
+}
+
+function compactPositionBefore(
+  startIndex: number,
+  startOffset: CompactFraction,
+  endIndex: number,
+  endOffset: CompactFraction,
+): boolean {
+  return startIndex < endIndex
+    || (startIndex === endIndex
+      && compareFractions(compactFraction(startOffset), compactFraction(endOffset)) < 0);
+}
+
+function isCompactPitch(value: unknown): value is CompactPitch {
+  return Array.isArray(value)
+    && value.length === 3
+    && ["C", "D", "E", "F", "G", "A", "B"].includes(String(value[0]))
+    && [-2, -1, 0, 1, 2].includes(value[1] as number)
+    && Number.isSafeInteger(value[2]);
+}
+
+function isCompactEvent(value: unknown, measureCount: number): value is CompactVocalEvent {
+  if (!isPlainRecord(value)
+    || !Number.isSafeInteger(value.occurrenceIndex)
+    || (value.occurrenceIndex as number) < 0
+    || (value.occurrenceIndex as number) >= measureCount
+    || !isCompactFraction(value.offset)
+    || value.offset[0] < 0
+    || !isPositiveCompactFraction(value.duration)) return false;
+  if (value.kind === "rest") {
+    return hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration"]);
+  }
+  return value.kind === "note"
+    && hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration", "pitch"], ["tieStart", "tieStop", "lyricTokenIds"])
+    && isCompactPitch(value.pitch)
+    && (value.tieStart === undefined || value.tieStart === true)
+    && (value.tieStop === undefined || value.tieStop === true)
+    && (value.lyricTokenIds === undefined || (Array.isArray(value.lyricTokenIds)
+      && value.lyricTokenIds.every(isCanonicalId)
+      && hasUniqueStrings(value.lyricTokenIds)));
 }
 export function isPracticeSharePayload(value: unknown): value is PracticeSharePayload {
-  if (typeof value !== "object" || value === null) return false;
-  const payload = value as Readonly<Record<string, unknown>>;
-  if (payload.schemaVersion !== 3 || payload.rightsShareConfirmed !== true || typeof payload.title !== "string" || typeof payload.arrangement !== "object" || payload.arrangement === null) return false;
-  const arrangement = payload.arrangement as Readonly<Record<string, unknown>>;
-  if (!Array.isArray(arrangement.measures) || !Array.isArray(arrangement.tracks) || arrangement.tracks.filter((track) => typeof track === "object" && track !== null && (track as Readonly<Record<string, unknown>>).kind === "source-lead").length !== 1) return false;
-  return arrangement.measures.every((measure, index) => {
-    if (typeof measure !== "object" || measure === null) return false;
-    const item = measure as Readonly<Record<string, unknown>>;
-    return item.index === index && Number.isSafeInteger(item.lyricVerseIndex) && (item.lyricVerseIndex as number) > 0 && isCompactFraction(item.duration);
-  });
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, ["schemaVersion", "title", "tempo", "key", "presetId", "arrangementArtifactDigest", "effectiveChordTimelineDigest", "arrangement", "lyrics", "rightsShareConfirmed"], ["chords", "playbackDefaults"])
+    || value.schemaVersion !== 3
+    || value.rightsShareConfirmed !== true
+    || typeof value.title !== "string"
+    || !isPlainRecord(value.tempo)
+    || !hasExactKeys(value.tempo, ["beatUnit", "dotted", "bpm"])
+    || (value.tempo.beatUnit !== 4 && value.tempo.beatUnit !== 8)
+    || typeof value.tempo.dotted !== "boolean"
+    || !Number.isSafeInteger(value.tempo.bpm)
+    || (value.tempo.bpm as number) < 20
+    || (value.tempo.bpm as number) > 300
+    || !isCanonicalKeySignature(value.key)
+    || !["simple", "standard", "full"].includes(String(value.presetId))
+    || !isSemanticDigest(value.arrangementArtifactDigest)
+    || !isSemanticDigest(value.effectiveChordTimelineDigest)
+    || !isPlainRecord(value.arrangement)
+    || !hasExactKeys(value.arrangement, ["measures", "tracks"])
+    || !Array.isArray(value.arrangement.measures)
+    || !Array.isArray(value.arrangement.tracks)
+    || !Array.isArray(value.lyrics)) return false;
+  const measures = value.arrangement.measures;
+  if (measures.length === 0 || !measures.every((measure, index) => isPlainRecord(measure)
+    && hasExactKeys(measure, ["index", "lyricVerseIndex", "timeSignature", "duration"], ["sourceMeasureNumber"])
+    && measure.index === index
+    && (measure.sourceMeasureNumber === undefined || Number.isSafeInteger(measure.sourceMeasureNumber))
+    && Number.isSafeInteger(measure.lyricVerseIndex)
+    && (measure.lyricVerseIndex as number) > 0
+    && Array.isArray(measure.timeSignature)
+    && measure.timeSignature.length === 2
+    && Number.isSafeInteger(measure.timeSignature[0])
+    && measure.timeSignature[0] > 0
+    && (measure.timeSignature[1] === 4 || measure.timeSignature[1] === 8)
+    && isPositiveCompactFraction(measure.duration))) return false;
+  const lyrics = value.lyrics;
+  if (!lyrics.every((token) => isPlainRecord(token)
+    && hasExactKeys(token, ["id", "text", "verse", "syllabic", "extend"])
+    && isCanonicalId(token.id)
+    && typeof token.text === "string"
+    && Number.isSafeInteger(token.verse)
+    && (token.verse as number) > 0
+    && ["single", "begin", "middle", "end"].includes(String(token.syllabic))
+    && typeof token.extend === "boolean")) return false;
+  const lyricIds = lyrics.map((token) => (token as Readonly<Record<string, unknown>>).id as string);
+  if (!hasUniqueStrings(lyricIds)) return false;
+  const tracks = value.arrangement.tracks;
+  if (tracks.filter((track) => isPlainRecord(track) && track.kind === "source-lead").length !== 1
+    || !tracks.every((track) => isPlainRecord(track)
+      && hasExactKeys(track, ["kind", "label", "events"])
+      && (track.kind === "source-lead" || track.kind === "generated-harmony")
+      && typeof track.label === "string"
+      && Array.isArray(track.events)
+      && track.events.every((event) => isCompactEvent(event, measures.length)))) return false;
+  for (const track of tracks) {
+    const events = (track as { readonly events: readonly CompactVocalEvent[] }).events;
+    for (const event of events) {
+      const measure = measures[event.occurrenceIndex] as Readonly<Record<string, unknown>>;
+      const measureDuration = measure.duration as CompactFraction;
+      try {
+        if (compareFractions(addFractions(compactFraction(event.offset), compactFraction(event.duration)), compactFraction(measureDuration)) > 0) return false;
+      } catch { return false; }
+      if (event.kind === "note" && event.lyricTokenIds?.some((id) => !lyricIds.includes(id))) return false;
+    }
+  }
+  if (value.chords !== undefined && (!Array.isArray(value.chords) || !value.chords.every((chord) => isPlainRecord(chord)
+    && (chord.kind === "chord" || chord.kind === "no-chord")
+    && hasExactKeys(chord, chord.kind === "chord" ? ["kind", "startOccurrenceIndex", "startOffset", "endOccurrenceIndex", "endOffset", "symbol"] : ["kind", "startOccurrenceIndex", "startOffset", "endOccurrenceIndex", "endOffset"])
+    && isCompactPosition(chord.startOccurrenceIndex, chord.startOffset, measures, false)
+    && isCompactPosition(chord.endOccurrenceIndex, chord.endOffset, measures, true)
+    && compactPositionBefore(
+      chord.startOccurrenceIndex as number,
+      chord.startOffset,
+      chord.endOccurrenceIndex as number,
+      chord.endOffset,
+    )
+    && (chord.kind !== "chord" || (typeof chord.symbol === "string" && chord.symbol.length > 0))))) return false;
+  if (value.playbackDefaults !== undefined && (!isPlainRecord(value.playbackDefaults)
+    || !hasExactKeys(value.playbackDefaults, [], ["selectedTrackIndex", "speedPercent", "accompanimentEnabled"])
+    || (value.playbackDefaults.selectedTrackIndex !== undefined && (!Number.isSafeInteger(value.playbackDefaults.selectedTrackIndex) || (value.playbackDefaults.selectedTrackIndex as number) < 0 || (value.playbackDefaults.selectedTrackIndex as number) >= tracks.length))
+    || (value.playbackDefaults.speedPercent !== undefined && ![50, 75, 100, 125, 150].includes(value.playbackDefaults.speedPercent as number))
+    || (value.playbackDefaults.accompanimentEnabled !== undefined && typeof value.playbackDefaults.accompanimentEnabled !== "boolean"))) return false;
+  return true;
 }
 export function encodePracticeShare(payload: PracticeSharePayload): string {
   if (!isPracticeSharePayload(payload)) throw new RangeError("SHARE_PAYLOAD_INVALID");

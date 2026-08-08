@@ -62,6 +62,19 @@ export function canonicalJson(value: unknown): string {
   return encode(value, new Set());
 }
 
+export function compareCanonicalValues(left: unknown, right: unknown): -1 | 0 | 1 {
+  const leftJson = canonicalJson(left);
+  const rightJson = canonicalJson(right);
+  return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+}
+
+export function sortByCanonicalProjection<T>(
+  values: readonly T[],
+  project: (value: T) => unknown,
+): readonly T[] {
+  return [...values].sort((left, right) => compareCanonicalValues(project(left), project(right)));
+}
+
 export function canonicalUtf8(value: unknown): Uint8Array {
   return new TextEncoder().encode(canonicalJson(value));
 }

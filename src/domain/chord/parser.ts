@@ -1,4 +1,8 @@
-import { spelledPitchClass, type Alter, type SpelledPitchClass, type Step } from "../pitch";
+import {
+  isSpelledPitchClass, spelledPitchClass, type Alter, type SpelledPitchClass, type Step,
+} from "../pitch";
+import { canonicalJson } from "../digest/canonical";
+import { hasExactKeys, isPlainRecord } from "../validation";
 import type {
   ChordDegree, ChordParseErrorCode, ChordParseResult, ChordToneOrigin,
   ChordToneRole, ChordToneSpec, ParsedChord,
@@ -131,25 +135,27 @@ function buildChord(sourceText: string, root: SpelledPitchClass, body: ReturnTyp
   const omissions = new Set<3 | 5>();
   for (const token of body.tokens) {
     if (token.kind === "quality") {
-      if (explicitQuality && quality !== token.value) return failure(sourceText, "TOKEN_CONFLICT");
+      if (explicitQuality) return failure(sourceText, "TOKEN_CONFLICT");
       quality = token.value; explicitQuality = true;
     } else if (token.kind === "primary") {
-      if (primary !== undefined && primary !== token.value) return failure(sourceText, "TOKEN_CONFLICT");
+      if (primary !== undefined) return failure(sourceText, "TOKEN_CONFLICT");
       primary = token.value;
     } else if (token.kind === "suspension") {
-      if (suspension !== undefined && suspension !== token.value) return failure(sourceText, "TOKEN_CONFLICT");
+      if (suspension !== undefined) return failure(sourceText, "TOKEN_CONFLICT");
       suspension = token.value;
     } else if (token.kind === "addition") {
+      if (additions.has(token.value)) return failure(sourceText, "TOKEN_CONFLICT");
       additions.add(token.value);
     } else if (token.kind === "alteration") {
       const previous = alterations.get(token.degree);
-      if (previous !== undefined && previous !== token.alteration) return failure(sourceText, "TOKEN_CONFLICT");
+      if (previous !== undefined) return failure(sourceText, "TOKEN_CONFLICT");
       alterations.set(token.degree, token.alteration);
     } else if (token.kind === "omission") {
+      if (omissions.has(token.value)) return failure(sourceText, "TOKEN_CONFLICT");
       omissions.add(token.value);
     } else {
-      if (explicitQuality && quality !== token.quality) return failure(sourceText, "TOKEN_CONFLICT");
-      if (primary !== undefined && token.primary !== undefined && primary !== token.primary) return failure(sourceText, "TOKEN_CONFLICT");
+      if (explicitQuality) return failure(sourceText, "TOKEN_CONFLICT");
+      if (primary !== undefined && token.primary !== undefined) return failure(sourceText, "TOKEN_CONFLICT");
       quality = token.quality; explicitQuality = true;
       primary = token.primary ?? primary;
       if (token.fifthAlteration !== undefined) alterations.set(5, token.fifthAlteration);
@@ -211,11 +217,51 @@ export function chordSemanticProjection(chord: ParsedChord): object {
 }
 
 export function isChordParseResult(value: unknown): value is ChordParseResult {
-  if (typeof value !== "object" || value === null) return false;
-  const result = value as Readonly<Record<string, unknown>>;
-  if (result.status === "no-chord" || result.status === "carry") return typeof result.sourceText === "string";
-  if (result.status === "failed") return typeof result.sourceText === "string" && ["UNKNOWN_ROOT", "TOKEN_CONFLICT", "UNSUPPORTED_TOKEN", "AMBIGUOUS_SLASH", "EMPTY_CHORD", "INVALID_TOKEN_ORDER"].includes(String(result.errorCode));
-  if (result.status !== "ok" || typeof result.chord !== "object" || result.chord === null) return false;
-  const chord = result.chord as Readonly<Record<string, unknown>>;
-  return typeof chord.root === "object" && Array.isArray(chord.tones) && Array.isArray(chord.omissions) && typeof chord.canonicalSymbol === "string";
+  if (!isPlainRecord(value)) return false;
+  if (value.status === "no-chord" || value.status === "carry") {
+    return hasExactKeys(value, ["status", "sourceText"])
+      && typeof value.sourceText === "string";
+  }
+  if (value.status === "failed") {
+    return hasExactKeys(value, ["status", "sourceText", "errorCode"], ["token"])
+      && typeof value.sourceText === "string"
+      && ["UNKNOWN_ROOT", "TOKEN_CONFLICT", "UNSUPPORTED_TOKEN", "AMBIGUOUS_SLASH", "EMPTY_CHORD", "INVALID_TOKEN_ORDER"].includes(String(value.errorCode))
+      && (value.token === undefined || typeof value.token === "string");
+  }
+  return value.status === "ok"
+    && hasExactKeys(value, ["status", "chord"])
+    && isParsedChord(value.chord);
+}
+
+export function isParsedChord(value: unknown): value is ParsedChord {
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, ["root", "tones", "omissions", "canonicalSymbol"], ["bass"])
+    || !isSpelledPitchClass(value.root)
+    || (value.bass !== undefined && !isSpelledPitchClass(value.bass))
+    || !Array.isArray(value.tones)
+    || !Array.isArray(value.omissions)
+    || typeof value.canonicalSymbol !== "string"
+    || value.canonicalSymbol.length === 0) return false;
+  const degrees: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 9, 11, 13];
+  const roles: readonly string[] = ["root", "third", "fifth", "seventh", "color", "suspension"];
+  const origins: readonly string[] = ["root", "quality", "extension", "addition", "alteration", "suspension"];
+  const tonesValid = value.tones.every((candidate) => {
+    if (!isPlainRecord(candidate) || !hasExactKeys(candidate, ["degree", "alteration", "role", "origin"])) return false;
+    if (!degrees.includes(candidate.degree as number)
+      || ![-2, -1, 0, 1, 2].includes(candidate.alteration as number)
+      || !roles.includes(String(candidate.role))
+      || !origins.includes(String(candidate.origin))) return false;
+    return candidate.role === roleFor(candidate.degree as ChordDegree, candidate.origin as ChordToneOrigin);
+  });
+  if (!tonesValid) return false;
+  const typedTones = value.tones as unknown as readonly ChordToneSpec[];
+  const sortedTones = [...typedTones].sort((a, b) => degreeOrder[a.degree] - degreeOrder[b.degree] || a.degree - b.degree || a.alteration - b.alteration || a.origin.localeCompare(b.origin));
+  if (canonicalJson(sortedTones) !== canonicalJson(typedTones)
+    || new Set(typedTones.map((item) => item.degree)).size !== typedTones.length) return false;
+  if (!value.omissions.every((degree) => degree === 3 || degree === 5)
+    || new Set(value.omissions).size !== value.omissions.length
+    || canonicalJson(value.omissions) !== canonicalJson([...value.omissions].sort((a, b) => (a as number) - (b as number)))) return false;
+  const reparsed = parseChord(value.canonicalSymbol);
+  return reparsed.status === "ok"
+    && canonicalJson(chordSemanticProjection(reparsed.chord)) === canonicalJson(chordSemanticProjection(value as unknown as ParsedChord));
 }

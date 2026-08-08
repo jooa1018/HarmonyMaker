@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   QUARTER_NOTE, addFractions, compareFractions, divideFractions, equalFractions,
-  fraction, multiplyFractions, subtractFractions,
+  fraction, FractionOperationBudget, multiplyFractions, subtractFractions,
 } from "./fraction";
 import { canonicalizePosition, musicalRange, positionWithinRange, splitEventAtMeasureBoundaries } from "./time";
 
@@ -25,6 +25,24 @@ describe("canonical Fraction and quarter-note time", () => {
     expect(() => fraction(1, 0)).toThrow("denominator");
     expect(() => fraction(Number.MAX_SAFE_INTEGER + 1, 1)).toThrow("safe integer");
     expect(() => fraction(10_000_001, 1)).toThrow("storage limits");
+  });
+
+  it("applies storage limits to results and operation limits to the request budget", () => {
+    expect(addFractions(fraction(300_000), fraction(300_000))).toEqual(fraction(600_000));
+    const budget = new FractionOperationBudget(2);
+    expect(addFractions(fraction(1), fraction(1), budget)).toEqual(fraction(2));
+    expect(multiplyFractions(fraction(2), fraction(2), budget)).toEqual(fraction(4));
+    expect(() => subtractFractions(fraction(2), fraction(1), budget)).toThrow(
+      "maxOperationsPerRequest",
+    );
+    expect(budget.operations).toBe(2);
+  });
+
+  it("rejects exactly the 500,001st operation in a default request budget", () => {
+    const budget = new FractionOperationBudget();
+    for (let index = 0; index < 500_000; index += 1) budget.consume();
+    expect(budget.operations).toBe(500_000);
+    expect(() => budget.consume()).toThrow("maxOperationsPerRequest");
   });
 
   it("canonicalizes an exact measure boundary to the next occurrence", () => {

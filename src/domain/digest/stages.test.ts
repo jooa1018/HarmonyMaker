@@ -20,6 +20,14 @@ describe("stage-specific semantic digests", () => {
     expect(lock).not.toBe(base);
   });
 
+  it("sorts stage locks by semantic projection and excludes lock IDs", async () => {
+    const first = { id: "lk:z", presetId: "simple", kind: "texture", phraseId: "ph:0", textureId: "UNISON" } as const;
+    const second = { id: "lk:a", presetId: "simple", kind: "placement-role", phraseId: "ph:0", trackPlanId: "track:1", placementRole: "upper" } as const;
+    const forward = await digestIntentInput({ ...baseIntent, locks: [first, second] });
+    const reversedAndRenamed = await digestIntentInput({ ...baseIntent, locks: [{ ...second, id: "random:2" }, { ...first, id: "random:1" }] });
+    expect(reversedAndRenamed).toBe(forward);
+  });
+
   it("isolates Activity, Anchor, and Generation locks to their stages", async () => {
     const common = { sourceLeadAtomizationDigest: d("2"), atomizerVersion: "atom-v1", effectiveConfigDigest: d("3"), presetProfileVersion: "preset-v1", presetProfileDigest: d("4"), diagnosticRegistryVersion: "diag-v1", diagnosticRegistryDigest: d("7") } as const;
     const activity = await digestActivityInput({ ...common, intentPlanDigest: d("8"), locks: [], activityPlannerVersion: "activity-v1", activityPlannerConfigDigest: d("9") });

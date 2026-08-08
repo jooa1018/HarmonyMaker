@@ -1,10 +1,10 @@
-import { semanticDigest, type SemanticDigest } from "../digest/canonical";
+import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "../digest/canonical";
 import type { Diagnostic } from "../diagnostics";
 import { addFractions } from "../fraction";
 import type { EffectiveChordTimeline } from "../harmony/chord-timeline";
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SpelledPitch } from "../pitch";
-import { comparePositions, musicalRange, positionWithinRange, type MusicalPosition, type MusicalRange } from "../time";
+import { comparePositions, compareRanges, musicalRange, positionWithinRange, type MusicalPosition, type MusicalRange } from "../time";
 import { timelineAtomId } from "../ids";
 import { resolveProductionLyricEmphasis } from "./lyrics";
 import type { LyricToken, PhraseRegion, SectionOccurrence, SourceMeasure } from "./model";
@@ -67,22 +67,29 @@ export async function atomizeSourceLead(input: {
 }): Promise<SourceLeadAtomization> {
   const measures = new Map(input.sourceMeasures.map((measure, ordinal) => [measure.id, { measure, ordinal }]));
   const durations = input.performanceSequence.occurrences.map((occurrence) => occurrence.duration);
-  const atoms: TimelineAtom[] = [];
-  const semanticAtoms: object[] = [];
+  const atomEntries: Array<{ readonly atom: TimelineAtom; readonly projection: object }> = [];
   for (const occurrence of input.performanceSequence.occurrences) {
     const entry = measures.get(occurrence.sourceMeasureId);
     if (!entry) throw new RangeError("performance occurrence references a missing source measure");
     const section = containingSection(occurrence.performanceIndex, input.sectionOccurrences);
     if (!section) throw new RangeError("SECTION_COVERAGE_INVALID");
     const lyricById = new Map(entry.measure.lyricTokens.map((token) => [token.id, token]));
-    for (let eventOrdinal = 0; eventOrdinal < entry.measure.leadEvents.length; eventOrdinal += 1) {
-      const event = entry.measure.leadEvents[eventOrdinal];
+    const orderedLeadEvents = [...entry.measure.leadEvents].sort((left, right) => compareCanonicalValues(
+      left.kind === "rest" ? { kind: left.kind, onset: left.onset, duration: left.duration } : { kind: left.kind, onset: left.onset, duration: left.duration, pitch: left.pitch, tieStart: left.tieStart, tieStop: left.tieStop },
+      right.kind === "rest" ? { kind: right.kind, onset: right.onset, duration: right.duration } : { kind: right.kind, onset: right.onset, duration: right.duration, pitch: right.pitch, tieStart: right.tieStart, tieStop: right.tieStop },
+    ));
+    for (let eventOrdinal = 0; eventOrdinal < orderedLeadEvents.length; eventOrdinal += 1) {
+      const event = orderedLeadEvents[eventOrdinal];
       const start: MusicalPosition = { performanceMeasureIndex: occurrence.performanceIndex, offset: event.onset };
       const rawEnd: MusicalPosition = { performanceMeasureIndex: occurrence.performanceIndex, offset: addFractions(event.onset, event.duration) };
       const eventRange = musicalRange(start, rawEnd, durations);
       const boundaries = boundariesForRange(eventRange, input.chordTimeline, input.phraseRegions, input.sectionOccurrences);
       const selectedTokens: LyricToken[] = event.kind === "note"
         ? event.lyricTokenIds.map((id) => lyricById.get(id)).filter((token): token is LyricToken => token?.verse === section.lyricVerseIndex)
+          .sort((left, right) => compareCanonicalValues(
+            { syllabic: left.syllabic, extend: left.extend, emphasis: resolveProductionLyricEmphasis(left), text: left.text.normalize("NFC") },
+            { syllabic: right.syllabic, extend: right.extend, emphasis: resolveProductionLyricEmphasis(right), text: right.text.normalize("NFC") },
+          ))
         : [];
       for (let segmentIndex = 0; segmentIndex < boundaries.length - 1; segmentIndex += 1) {
         const range = musicalRange(boundaries[segmentIndex], boundaries[segmentIndex + 1]);
@@ -98,12 +105,17 @@ export async function atomizeSourceLead(input: {
           lyricTokens: tokenProjection,
         };
         const id = timelineAtomId(occurrence.performanceIndex, eventOrdinal, range.start.offset, range.end.offset);
-        atoms.push({ id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [] });
-        semanticAtoms.push(projection);
+        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [] }, projection });
       }
     }
   }
-  atoms.sort((a, b) => comparePositions(a.range.start, b.range.start) || a.id.localeCompare(b.id));
+  atomEntries.sort((left, right) => compareRanges(left.atom.range, right.atom.range)
+    || compareCanonicalValues(left.projection, right.projection));
+  for (let index = 1; index < atomEntries.length; index += 1) {
+    if (compareCanonicalValues(atomEntries[index - 1].projection, atomEntries[index].projection) === 0) throw new RangeError("duplicate semantic TimelineAtom");
+  }
+  const atoms = atomEntries.map((entry) => entry.atom);
+  const semanticAtoms = atomEntries.map((entry) => entry.projection);
   const digest = await semanticDigest({ projectionSchema: "hm-source-lead-atomization-v1", atomizerVersion: input.atomizerVersion, musicalSourceDigest: input.musicalSourceDigest, effectiveChordTimelineDigest: input.chordTimeline.digest, atoms: semanticAtoms });
   return { atomizerVersion: input.atomizerVersion, musicalSourceDigest: input.musicalSourceDigest, effectiveChordTimelineDigest: input.chordTimeline.digest, atoms, digest };
 }

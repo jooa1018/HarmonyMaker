@@ -1,5 +1,6 @@
 import { semanticDigest, type SemanticDigest } from "./digest/canonical";
 import { extendedBasisPoints, type ExtendedBasisPoints } from "./rates";
+import { hasExactKeys, isPlainRecord } from "./validation";
 
 export type ArrangementPresetId = "simple" | "standard" | "full";
 export type ArrangementMode =
@@ -37,19 +38,24 @@ const PROFILE_PAYLOADS: Readonly<Record<ArrangementPresetId, PresetDifficultyPro
 };
 
 export function isCoreArrangementMode(value: unknown): value is CoreArrangementMode {
-  if (typeof value !== "object" || value === null) return false;
-  const mode = value as Readonly<Record<string, unknown>>;
-  return mode.profileId === "worship-band-v1" && mode.harmonicContext === "band-supported";
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["profileId", "harmonicContext"])
+    && value.profileId === "worship-band-v1"
+    && value.harmonicContext === "band-supported";
 }
 export function validateArrangementSettings(value: unknown): value is ArrangementSettings {
-  if (typeof value !== "object" || value === null) return false;
-  const settings = value as Readonly<Record<string, unknown>>;
-  if (!isCoreArrangementMode(settings.mode) || !Array.isArray(settings.requestedPresetIds) || typeof settings.userCaps !== "object" || settings.userCaps === null) return false;
-  const requested = settings.requestedPresetIds;
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, ["mode", "requestedPresetIds", "userCaps"])
+    || !isCoreArrangementMode(value.mode)
+    || !Array.isArray(value.requestedPresetIds)
+    || !isPlainRecord(value.userCaps)
+    || !hasExactKeys(value.userCaps, ["maxHarmonyTracks", "allowOctaveDouble"])) return false;
+  const requested = value.requestedPresetIds;
   if (requested.length === 0 || new Set(requested).size !== requested.length || requested.some((item) => !PRESET_ORDER.includes(item as ArrangementPresetId))) return false;
   if (requested.some((item, index) => index > 0 && PRESET_ORDER.indexOf(item as ArrangementPresetId) <= PRESET_ORDER.indexOf(requested[index - 1] as ArrangementPresetId))) return false;
-  const caps = settings.userCaps as Readonly<Record<string, unknown>>;
-  return [0, 1, 2].includes(Number(caps.maxHarmonyTracks)) && typeof caps.allowOctaveDouble === "boolean";
+  return [0, 1, 2].includes(value.userCaps.maxHarmonyTracks as number)
+    && typeof value.userCaps.maxHarmonyTracks === "number"
+    && typeof value.userCaps.allowOctaveDouble === "boolean";
 }
 export async function createPresetProfileRegistry(presetProfileVersion: string): Promise<PresetProfileRegistry> {
   const presetProfileDigest = await semanticDigest({ projectionSchema: "hm-preset-profile-registry-v1", presetProfileVersion, profiles: PRESET_ORDER.map((id) => PROFILE_PAYLOADS[id]) });

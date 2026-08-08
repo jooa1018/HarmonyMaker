@@ -1,5 +1,5 @@
 import type { ArrangementPresetId, CoreArrangementMode, UserArrangementCaps } from "../config";
-import { semanticDigest, type SemanticDigest } from "./canonical";
+import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "./canonical";
 import type { PitchRange } from "../pitch";
 import type { IntentLock, ActivityLock, AnchorLock, SolverLock } from "../locks";
 
@@ -17,9 +17,9 @@ export function earliestStaleStage(previous: StageInputDigests, next: StageInput
 }
 
 const sortedLocks = <T extends { readonly id: string }>(locks: readonly T[]): readonly object[] =>
-  [...locks].sort((a, b) => a.id.localeCompare(b.id)).map((lock) =>
-    Object.fromEntries(Object.entries(lock).filter(([key]) => key !== "id")),
-  );
+  locks
+    .map((lock) => Object.fromEntries(Object.entries(lock).filter(([key]) => key !== "id")))
+    .sort(compareCanonicalValues);
 
 export async function digestIntentInput(input: {
   readonly musicalSourceDigest: SemanticDigest; readonly effectiveChordTimelineDigest: SemanticDigest; readonly sourceLeadAtomizationDigest: SemanticDigest; readonly atomizerVersion: string; readonly performers: readonly CanonicalPerformerProjection[]; readonly tracks: readonly CanonicalTrackProjection[]; readonly assignments: readonly CanonicalAssignmentProjection[]; readonly mode: CoreArrangementMode; readonly userCaps: UserArrangementCaps; readonly presetId: ArrangementPresetId; readonly effectiveConfigDigest: SemanticDigest; readonly presetProfileVersion: string; readonly presetProfileDigest: SemanticDigest; readonly locks: readonly IntentLock[]; readonly plannerVersion: string; readonly grammarVersion: string; readonly plannerConfigDigest: SemanticDigest; readonly grammarConfigDigest: SemanticDigest; readonly diagnosticRegistryVersion: string; readonly diagnosticRegistryDigest: SemanticDigest;

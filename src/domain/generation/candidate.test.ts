@@ -38,5 +38,26 @@ describe("candidate projection and deterministic generated IDs", () => {
     expect(validateGenerationResultState("blocked", [complete], true)).toBe(false);
     expect(validateGenerationResultState("complete", [complete], false)).toBe(true);
     expect(validateGenerationResultState("partial", [partial], false)).toBe(true);
+    expect(validateGenerationResultState("complete", [complete], true)).toBe(false);
+  });
+
+  it("persists the same canonical events and realized anchors for every input permutation", async () => {
+    const laterRange = musicalRange({ performanceMeasureIndex: 0, offset: fraction(1) }, { performanceMeasureIndex: 0, offset: fraction(2) });
+    const laterEvent = { kind: "note", range: laterRange, pitch: { step: "G", alter: 0, octave: 4 }, tieStart: false, tieStop: false, lyricTokenIds: ["ly:1"], source: "anchor", originDirectiveId: "ha:1" } as const;
+    const laterAnchor = { directiveId: "ha:1", trackPlanId: "track:1", position: laterRange.start, pitch: { step: "G", alter: 0, octave: 4 } } as const;
+    const secondTrack = { trackPlanId: "track:2", events: [{ kind: "rest", range }] } as const;
+    const ordinals = { trackOrdinalById: { "track:1": 1, "track:2": 2 }, lyricOrdinalById: { "ly:0": 0, "ly:1": 1 }, anchorDirectiveOrdinalById: { "ha:0": 0, "ha:1": 1 } };
+    const first = await buildArrangementCandidate({ ...base, tracks: [{ ...base.tracks[0], events: [...base.tracks[0].events, laterEvent] }, secondTrack], realizedAnchors: [...base.realizedAnchors, laterAnchor], ordinals });
+    const permuted = await buildArrangementCandidate({ ...base, tracks: [secondTrack, { ...base.tracks[0], events: [laterEvent, ...base.tracks[0].events] }], realizedAnchors: [laterAnchor, ...base.realizedAnchors], ordinals });
+    expect(permuted.contentDigest).toBe(first.contentDigest);
+    expect(permuted.generatedEventsByTrack).toEqual(first.generatedEventsByTrack);
+    expect(permuted.realizedAnchors).toEqual(first.realizedAnchors);
+    expect(Object.keys(permuted.generatedEventsByTrack)).toEqual(["track:1", "track:2"]);
+  });
+
+  it("blocks overlapping and duplicate candidate event ambiguity", async () => {
+    const overlap = { kind: "rest", range } as const;
+    await expect(buildArrangementCandidate({ ...base, tracks: [{ ...base.tracks[0], events: [...base.tracks[0].events, overlap] }] })).rejects.toThrow("event overlap");
+    await expect(buildArrangementCandidate({ ...base, tracks: [{ ...base.tracks[0], events: [...base.tracks[0].events, ...base.tracks[0].events] }] })).rejects.toThrow("duplicate event");
   });
 });

@@ -41,6 +41,20 @@ describe("worship-leadsheet-v1 chord parser", () => {
     expect(parseChord("Csus2sus4")).toMatchObject({ status: "failed", errorCode: "TOKEN_CONFLICT" });
   });
 
+  it.each(["C77", "Cmaj7maj7", "C6/96/9", "Cmm", "Csus4sus4"])(
+    "rejects duplicate semantic tokens in %s",
+    (symbol) => expect(parseChord(symbol)).toMatchObject({
+      status: "failed",
+      errorCode: "TOKEN_CONFLICT",
+    }),
+  );
+
+  it("rejects duplicate additions, omissions, and alterations", () => {
+    for (const symbol of ["Cadd9add9", "Cno3no3", "C(b5b5)"]) {
+      expect(parseChord(symbol)).toMatchObject({ status: "failed", errorCode: "TOKEN_CONFLICT" });
+    }
+  });
+
   it("keeps aliases out of semantic chord projection", () => {
     expect(chordSemanticProjection(parsed("CM7"))).toEqual(chordSemanticProjection(parsed("CΔ7")));
   });
@@ -49,5 +63,7 @@ describe("worship-leadsheet-v1 chord parser", () => {
     expect(isChordParseResult(parseChord("C7"))).toBe(true);
     expect(isChordParseResult({ status: "ok", sourceText: "C7" })).toBe(false);
     expect(isChordParseResult({ status: "failed", sourceText: "bad", errorCode: "MADE_UP" })).toBe(false);
+    expect(isChordParseResult({ status: "ok", chord: { root: {}, tones: [], omissions: [], canonicalSymbol: "C" } })).toBe(false);
+    expect(isChordParseResult({ ...parseChord("C7"), forbidden: true })).toBe(false);
   });
 });
