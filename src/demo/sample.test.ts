@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { demoAbc } from "./sample";
+import { createDemoAbc, demoAbc } from "./sample";
 
 function finalMeasure(voice: "S" | "A" | "T"): string {
   const line = demoAbc.split("\n").find(candidate => candidate.startsWith(`[V:${voice}]`));
@@ -25,5 +25,17 @@ describe("ABC demo fixture", () => {
 
   it("uses a final barline for every voice", () => {
     expect(demoAbc.match(/\|\]/g)).toHaveLength(3);
+  });
+
+  it.each([
+    [50, 50],
+    [75, 75],
+    [100, 100],
+    [125, 125],
+    [150, 150],
+  ])("encodes %i%% speed as Q:1/4=%i", (speed, qpm) => {
+    const abc = createDemoAbc(speed);
+    expect(abc).toContain(`Q:1/4=${qpm}`);
+    expect(abc.match(/^Q:/gm)).toHaveLength(1);
   });
 });
