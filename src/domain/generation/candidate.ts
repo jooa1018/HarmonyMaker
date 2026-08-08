@@ -80,4 +80,3 @@ export function validateGenerationResultState(status: "blocked" | "complete" | "
     ? candidates.some((candidate) => candidate.candidateStatus === "complete")
     : candidates.every((candidate) => candidate.candidateStatus === "partial");
 }
-

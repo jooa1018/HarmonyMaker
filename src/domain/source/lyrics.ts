@@ -17,4 +17,3 @@ export function resolveProductionLyricEmphasis(token: LyricToken): ProductionLyr
   if (token.emphasis === "suggested" && token.emphasisSource === "musicxml-accent") return "musicxml-accent-suggested";
   return "none";
 }
-

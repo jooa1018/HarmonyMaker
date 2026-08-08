@@ -27,4 +27,3 @@ describe("Step 2 edit and PracticeShare foundation", () => {
     expect(decodePracticeShare(encodePracticeShare(payload))).toEqual(payload);
   });
 });
-

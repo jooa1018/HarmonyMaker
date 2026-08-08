@@ -42,4 +42,3 @@ export function findPitchAnchorConflicts(anchorLocks: readonly AnchorLock[], pit
   }
   return conflicts;
 }
-

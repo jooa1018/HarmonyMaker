@@ -106,4 +106,3 @@ export function compareRanges(left: MusicalRange, right: MusicalRange): -1 | 0 |
   const start = comparePositions(left.start, right.start);
   return start === 0 ? comparePositions(left.end, right.end) : start;
 }
-

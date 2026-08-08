@@ -43,4 +43,3 @@ export function decodePracticeShare(encoded: string): PracticeSharePayload {
   if (!isPracticeSharePayload(parsed)) throw new RangeError("SHARE_PAYLOAD_INVALID");
   return parsed;
 }
-

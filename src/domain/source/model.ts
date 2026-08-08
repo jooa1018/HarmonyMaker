@@ -192,4 +192,3 @@ export function validateSectionPartition(
   coverage.forEach((count, index) => { if (count !== 1) errors.push(`partition:${index}`); });
   return errors;
 }
-

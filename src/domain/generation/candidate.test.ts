@@ -40,4 +40,3 @@ describe("candidate projection and deterministic generated IDs", () => {
     expect(validateGenerationResultState("partial", [partial], false)).toBe(true);
   });
 });
-

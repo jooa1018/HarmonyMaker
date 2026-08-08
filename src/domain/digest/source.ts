@@ -41,4 +41,3 @@ export async function digestMusicalSource(source: SongSourceDocument): Promise<S
   };
   return semanticDigest(projection);
 }
-

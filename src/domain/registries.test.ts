@@ -16,4 +16,3 @@ describe("algorithm execution registry", () => {
     expect(validateExecutionRegistry(registry, { versions: { solverVersion: "2" }, configDigests: { solverConfigDigest: d } })).toMatchObject({ status: "blocked", mismatches: ["version:solverVersion"] });
   });
 });
-

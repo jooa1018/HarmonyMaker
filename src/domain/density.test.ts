@@ -24,4 +24,3 @@ describe("exact atomic interval density integration", () => {
     expect(metrics.harmonyOverLeadRestCoverage).toMatchObject({ valueBp: null, unavailableReason: "NO_EVALUABLE_ITEMS" });
   });
 });
-

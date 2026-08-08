@@ -55,4 +55,3 @@ describe("canonical Fraction and quarter-note time", () => {
     expect(segments[1]).toMatchObject({ tieStart: false, tieStop: true });
   });
 });
-

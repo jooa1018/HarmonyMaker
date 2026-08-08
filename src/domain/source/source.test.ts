@@ -57,4 +57,3 @@ describe("source canonical contracts", () => {
     expect(remap.remapDigest).toHaveLength(64);
   });
 });
-

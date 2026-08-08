@@ -63,4 +63,3 @@ export async function resolveEffectiveArrangementConfig(input: { readonly regist
   const digest = await semanticDigest({ projectionSchema: "hm-effective-arrangement-config-v1", userCaps: input.userCaps, assignedEnabledHarmonyTrackCount: input.assignedEnabledHarmonyTrackCount, ...resolved });
   return { ...resolved, digest };
 }
-

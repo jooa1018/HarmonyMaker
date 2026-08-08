@@ -50,4 +50,3 @@ export function validateExecutionRegistry(actual: AlgorithmExecutionRegistry, ex
   }
   return mismatches.length === 0 ? { status: "valid" } : { status: "blocked", code: "ALGORITHM_CONFIG_MISMATCH", mismatches };
 }
-

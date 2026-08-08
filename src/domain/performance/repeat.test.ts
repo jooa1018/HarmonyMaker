@@ -35,4 +35,3 @@ describe("repeat expansion", () => {
     expect(expandRepeats([measure("m1", { startRepeat: true }), measure("m2", { startRepeat: true })], "v")).toMatchObject({ status: "blocked", code: "PERFORMANCE_REPEAT_NESTED" });
   });
 });
-

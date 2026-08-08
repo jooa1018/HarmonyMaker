@@ -36,4 +36,3 @@ describe("revision-scoped OMR foundation", () => {
     expect(validateOmrReviewRecord({ ...record, corrections: [] })).toContain("OMR_REVIEW_RESOLUTION_INVALID:review:0");
   });
 });
-

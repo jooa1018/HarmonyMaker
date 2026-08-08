@@ -125,4 +125,3 @@ export const isNonNegativeFraction = (value: Fraction): boolean => value.n >= 0;
 
 /** Canonical time unit: one whole unit is one quarter note. */
 export const QUARTER_NOTE = fraction(1);
-

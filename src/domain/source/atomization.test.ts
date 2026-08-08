@@ -53,4 +53,3 @@ describe("canonical SourceLeadAtomization", () => {
     expect(resolveLeadAtomReference({ sourceLeadAtomizationDigest: d0, leadAtomId: result.atoms[0].id }, lookup)).toBeUndefined();
   });
 });
-

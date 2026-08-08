@@ -6,4 +6,3 @@ export function validateRenderDocumentAuthority(document: ArrangementRenderDocum
     && document.generatedHarmonyTracks.every((track) => track.trackPlanId !== "track:source-lead")
     && new Set(document.generatedHarmonyTracks.map((track) => track.trackPlanId)).size === document.generatedHarmonyTracks.length;
 }
-

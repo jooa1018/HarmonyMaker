@@ -119,4 +119,3 @@ export async function createDiagnostics(
 export function blocksGeneration(diagnostic: Diagnostic, registry: DiagnosticRegistry): boolean {
   return registry.definitions[diagnostic.code].blocksGeneration;
 }
-

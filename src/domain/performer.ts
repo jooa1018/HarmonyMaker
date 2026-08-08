@@ -38,4 +38,3 @@ export function validateAssignments(plans: readonly VocalTrackPlan[], performers
   if (new Set(assignments.map((assignment) => assignment.performerId)).size !== assignments.length) errors.push("performer-double-booked");
   return errors;
 }
-

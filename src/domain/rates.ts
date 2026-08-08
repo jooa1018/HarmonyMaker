@@ -47,4 +47,3 @@ export function durationRate(numerator: Fraction, denominator: Fraction): Durati
   return { numerator, denominator, valueBp: basisPoints(roundHalfUp(ratio.n, ratio.d)) };
 }
 export const ZERO_DURATION = fraction(0);
-

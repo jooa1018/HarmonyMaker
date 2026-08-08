@@ -27,4 +27,3 @@ export type ChordParseResult =
 export type ResolvedChordParseResult =
   | { readonly status: "ok"; readonly chord: ParsedChord }
   | { readonly status: "no-chord"; readonly sourceText: string };
-
