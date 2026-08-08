@@ -1,6 +1,7 @@
 import type { Fraction } from "../fraction";
 import type { TimeSignature } from "../meter";
 import type { SourceMeasure } from "../source/model";
+import { performanceOccurrenceId } from "../ids";
 
 export interface PerformanceMeasureOccurrence {
   readonly occurrenceId: string;
@@ -71,7 +72,7 @@ export function expandRepeats(measures: readonly SourceMeasure[], expanderVersio
     const occurrenceIndexForSource = occurrenceCounts.get(measure.id) ?? 0;
     occurrenceCounts.set(measure.id, occurrenceIndexForSource + 1);
     return {
-      occurrenceId: `pm:${sourceIndex}:${occurrenceIndexForSource}`,
+      occurrenceId: performanceOccurrenceId(performanceIndex, sourceIndex, occurrenceIndexForSource),
       sourceMeasureId: measure.id,
       sourceMeasureNumber: measure.number,
       occurrenceIndexForSource,

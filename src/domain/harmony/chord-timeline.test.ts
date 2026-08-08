@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseChord } from "../chord/parser";
-import { semanticDigest, type SemanticDigest } from "../digest/canonical";
+import type { SemanticDigest } from "../digest/canonical";
 import { fraction } from "../fraction";
 import { COMMON_TIME } from "../meter";
 import type { PerformanceSequence } from "../performance/repeat";
@@ -48,4 +48,3 @@ describe("EffectiveChordTimeline authority", () => {
     await expect(resolveEffectiveChordTimeline({ sourceMeasures: [], performanceSequence: { occurrences: [], expanderVersion: "v" }, sourceChordProjectionDigest: zeroDigest, performanceSequenceDigest: zeroDigest, policy: { gapPolicy: "allow-no-chord" } as never, resolverVersion: "v", expectedResolverVersion: "v" })).rejects.toThrow("not a Core gap policy");
   });
 });
-

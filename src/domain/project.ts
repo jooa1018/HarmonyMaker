@@ -32,6 +32,9 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
   const max = lifecycleMax[variant.lifecycle as ArrangementVariant["lifecycle"]];
   const required = ["intentPlan", "activityPlan", "anchorPlan", "generationResult"].slice(0, max + 1);
   if (required.some((field) => !(field in variant))) return false;
+  const forbidden = ["intentPlan", "activityPlan", "anchorPlan", "generationResult"].slice(max + 1);
+  if (forbidden.some((field) => field in variant)) return false;
+  if (variant.lifecycle === "generation-attempted" && (!Array.isArray(variant.outputEdits) || !Array.isArray(variant.editedSnapshots))) return false;
   if (variant.lifecycle === "empty" && variant.staleness !== undefined) return false;
   if (variant.staleness !== undefined) {
     if (typeof variant.staleness !== "object" || variant.staleness === null) return false;
@@ -42,9 +45,11 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
 }
 export function markVariantStale(variant: ArrangementVariant, staleness: VariantStaleness): ArrangementVariant {
   if (variant.lifecycle === "empty" || stages.indexOf(staleness.staleFrom) > lifecycleMax[variant.lifecycle]) throw new RangeError("GENERATION_RESULT_STATE_INVALID");
-  return { ...variant, staleness } as ArrangementVariant;
+  if (variant.lifecycle === "intent-ready") return { ...variant, staleness: { ...staleness, staleFrom: "intent" } };
+  if (variant.lifecycle === "activity-ready") return { ...variant, staleness: { ...staleness, staleFrom: staleness.staleFrom as "intent" | "activity" } };
+  if (variant.lifecycle === "anchor-ready") return { ...variant, staleness: { ...staleness, staleFrom: staleness.staleFrom as "intent" | "activity" | "anchor" } };
+  return { ...variant, staleness };
 }
 export function preserveBlockedAttempt<T>(variant: ArrangementVariant, stage: VariantBlockedAttempt["stage"], inputDigest: SemanticDigest, result: StageExecutionResult<T>): ArrangementVariant {
   return result.status === "blocked" ? { ...variant, lastBlockedAttempt: { stage, inputDigest, diagnostics: result.diagnostics }, diagnostics: [...variant.diagnostics, ...result.diagnostics] } : variant;
 }
-

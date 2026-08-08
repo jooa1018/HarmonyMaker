@@ -1,8 +1,8 @@
 import type { ArrangementPresetId } from "../config";
 import type { SemanticDigest } from "../digest/canonical";
 import type { Diagnostic } from "../diagnostics";
-import type { CountRateMetric, CostUnit, DurationRateMetric } from "../rates";
-import type { TexturePatternId, ActivityDensityMetrics, HarmonyAnchorDirective, VoiceActivityDirective } from "../plans";
+import type { CountRateMetric, DurationRateMetric } from "../rates";
+import type { TexturePatternId, ActivityDensityMetrics, VoiceActivityDirective } from "../plans";
 import type { SpelledPitch } from "../pitch";
 import type { MusicalRange, MusicalPosition } from "../time";
 import type { VocalPlacementRole } from "../performer";
@@ -20,4 +20,3 @@ export interface ArrangementCandidate { readonly id: string; readonly presetId: 
 export type GenerationStatus = "blocked" | "complete" | "partial";
 export interface GenerationDigests { readonly musicalSourceDigest: SemanticDigest; readonly effectiveChordTimelineDigest: SemanticDigest; readonly sourceLeadAtomizationDigest: SemanticDigest; readonly presetProfileDigest: SemanticDigest; readonly effectiveConfigDigest: SemanticDigest; readonly intentInputDigest: SemanticDigest; readonly activityInputDigest: SemanticDigest; readonly anchorInputDigest: SemanticDigest; readonly generationInputDigest: SemanticDigest; readonly intentPlanDigest: SemanticDigest; readonly activityPlanDigest: SemanticDigest; readonly anchorPlanDigest: SemanticDigest }
 export interface ArrangementGenerationResult { readonly presetId: ArrangementPresetId; readonly status: GenerationStatus; readonly candidates: readonly ArrangementCandidate[]; readonly diagnostics: readonly Diagnostic[]; readonly digests: GenerationDigests; readonly configDigests: Readonly<Record<string, SemanticDigest>>; readonly versions: Readonly<Record<string, string>> }
-

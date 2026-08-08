@@ -5,6 +5,7 @@ import { compareFractions, fraction } from "../fraction";
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SourceChordEvent, SourceMeasure } from "../source/model";
 import { musicalRange, type MusicalPosition, type MusicalRange } from "../time";
+import { performanceChordSpanId } from "../ids";
 
 export type ChordGapPolicy = "carry-until-next" | "block-gap";
 export interface ChordResolutionPolicy { readonly gapPolicy: ChordGapPolicy }
@@ -61,7 +62,7 @@ export async function resolveEffectiveChordTimeline(input: {
       if (compareFractions(cursor, event.onset) < 0) {
         if (input.policy.gapPolicy === "carry-until-next" && previousState) {
           const gapRange = musicalRange({ performanceMeasureIndex: occurrence.performanceIndex, offset: cursor }, start);
-          const id = `pcs:${occurrence.performanceIndex}:${cursor.n}-${cursor.d}:gap`;
+          const id = performanceChordSpanId(gapRange.start, gapRange.end);
           spans.push({ id, range: gapRange, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "gap-policy", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId } });
           previousState = { ...previousState, spanId: id };
         } else diagnostics.push(diagnostic("SOURCE_CHORD_GAP", `${occurrence.performanceIndex}:${cursor.n}`));
@@ -73,7 +74,7 @@ export async function resolveEffectiveChordTimeline(input: {
       if (event.parseResult.status === "carry") {
         if (!previousState) diagnostics.push(diagnostic("SOURCE_CHORD_CARRY_WITHOUT_PREVIOUS", event.id));
         else {
-          const id = `pcs:${occurrence.performanceIndex}:${event.onset.n}-${event.onset.d}:carry`;
+          const id = performanceChordSpanId(range.start, range.end);
           spans.push({ id, range, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "explicit-carry-token", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId, carryTokenSourceChordEventId: event.id } });
           previousState = { ...previousState, spanId: id };
         }
@@ -81,7 +82,7 @@ export async function resolveEffectiveChordTimeline(input: {
         const parseResult = resolved(event);
         if (!parseResult) diagnostics.push(diagnostic("SOURCE_CHORD_PARSE_FAILED", event.id));
         else {
-          const id = `pcs:${occurrence.performanceIndex}:${event.onset.n}-${event.onset.d}:source`;
+          const id = performanceChordSpanId(range.start, range.end);
           spans.push({ id, range, parseResult, origin: { kind: "source-event", sourceChordEventId: event.id } });
           previousState = { parseResult, originatingSourceChordEventId: event.id, spanId: id };
         }
@@ -92,15 +93,14 @@ export async function resolveEffectiveChordTimeline(input: {
       const end: MusicalPosition = { performanceMeasureIndex: occurrence.performanceIndex, offset: occurrence.duration };
       if (input.policy.gapPolicy === "carry-until-next" && previousState) {
         const range = musicalRange({ performanceMeasureIndex: occurrence.performanceIndex, offset: cursor }, end, input.performanceSequence.occurrences.map((item) => item.duration));
-        const id = `pcs:${occurrence.performanceIndex}:${cursor.n}-${cursor.d}:tail`;
+        const id = performanceChordSpanId(range.start, range.end);
         spans.push({ id, range, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "gap-policy", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId } });
         previousState = { ...previousState, spanId: id };
       } else diagnostics.push(diagnostic("SOURCE_CHORD_GAP", `${occurrence.performanceIndex}:tail`));
     }
   }
   if (diagnostics.length > 0) return { status: "blocked", resolutionPolicy: input.policy, diagnostics };
-  const projection = { projectionSchema: "hm-effective-chord-timeline-v1", sourceChordProjectionDigest: input.sourceChordProjectionDigest, performanceSequenceDigest: input.performanceSequenceDigest, policy: input.policy, resolverVersion: input.resolverVersion, spans: spans.map(({ id: _id, ...span }) => span) };
+  const projection = { projectionSchema: "hm-effective-chord-timeline-v1", sourceChordProjectionDigest: input.sourceChordProjectionDigest, performanceSequenceDigest: input.performanceSequenceDigest, policy: input.policy, resolverVersion: input.resolverVersion, spans: spans.map((span) => ({ range: span.range, parseResult: span.parseResult, origin: span.origin })) };
   const digest = await semanticDigest(projection);
   return { status: "resolved", timeline: { sourceChordProjectionDigest: input.sourceChordProjectionDigest, performanceSequenceDigest: input.performanceSequenceDigest, resolutionPolicy: input.policy, chordTimelineResolverVersion: input.resolverVersion, spans, digest }, diagnostics: [] };
 }
-

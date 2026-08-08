@@ -5,8 +5,9 @@ import type { EffectiveChordTimeline } from "../harmony/chord-timeline";
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SpelledPitch } from "../pitch";
 import { comparePositions, musicalRange, positionWithinRange, type MusicalPosition, type MusicalRange } from "../time";
+import { timelineAtomId } from "../ids";
 import { resolveProductionLyricEmphasis } from "./lyrics";
-import type { LeadEvent, LyricToken, PhraseRegion, SectionOccurrence, SourceMeasure } from "./model";
+import type { LyricToken, PhraseRegion, SectionOccurrence, SourceMeasure } from "./model";
 
 export interface TimelineAtom {
   readonly id: string;
@@ -96,7 +97,7 @@ export async function atomizeSourceLead(input: {
           tiedToNext: event.kind === "note" && (event.tieStart || segmentIndex < boundaries.length - 2),
           lyricTokens: tokenProjection,
         };
-        const id = `atom:${await semanticDigest({ projectionSchema: "hm-timeline-atom-v1", ...projection })}`;
+        const id = timelineAtomId(occurrence.performanceIndex, eventOrdinal, range.start.offset, range.end.offset);
         atoms.push({ id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [] });
         semanticAtoms.push(projection);
       }

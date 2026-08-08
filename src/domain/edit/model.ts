@@ -20,3 +20,21 @@ export function isReplacementGeneratedEventPayload(value: unknown): value is Rep
   return payload.kind === "rest" || (payload.kind === "note" && typeof payload.pitch === "object" && typeof payload.tieStart === "boolean" && typeof payload.tieStop === "boolean");
 }
 
+export function validateOutputEdits(
+  candidateId: string,
+  candidateDigest: SemanticDigest,
+  candidateEventIds: ReadonlySet<string>,
+  edits: readonly ArrangementOutputEdit[],
+): readonly string[] {
+  const errors: string[] = [];
+  const ordinals = new Set<number>();
+  for (const edit of edits) {
+    if (edit.baseCandidateId !== candidateId || edit.baseCandidateDigest !== candidateDigest) errors.push(`EDIT_BASE_CANDIDATE_STALE:${edit.id}`);
+    if (!Number.isSafeInteger(edit.editOrdinal) || edit.editOrdinal < 0 || ordinals.has(edit.editOrdinal)) errors.push(`EDIT_MATERIALIZATION_BLOCKED:${edit.id}`);
+    ordinals.add(edit.editOrdinal);
+    const eventId = edit.kind === "replace-event" ? edit.oldEventId : edit.eventId;
+    if (!candidateEventIds.has(eventId)) errors.push(`EDIT_BASE_CANDIDATE_STALE:${edit.id}:event`);
+    if (edit.kind === "replace-event" && !isReplacementGeneratedEventPayload(edit.replacement)) errors.push(`EDIT_MATERIALIZATION_BLOCKED:${edit.id}:payload`);
+  }
+  return errors;
+}

@@ -10,7 +10,7 @@ describe("variant lifecycle and rate contracts", () => {
   it("distinguishes absent stage objects from present empty arrays", () => {
     const empty: ArrangementVariant = { lifecycle: "empty", presetId: "simple", diagnostics: [] };
     expect(validateArrangementVariant(empty)).toBe(true);
-    expect(validateArrangementVariant({ ...empty, intentPlan: { sectionIntents: [], phraseIntents: [] } })).toBe(true);
+    expect(validateArrangementVariant({ ...empty, intentPlan: { sectionIntents: [], phraseIntents: [] } })).toBe(false);
     expect(validateArrangementVariant({ ...empty, staleness: { staleFrom: "intent", staleDiagnosticIds: [], previousArtifactDigests: [] } })).toBe(false);
   });
 
@@ -42,4 +42,3 @@ describe("variant lifecycle and rate contracts", () => {
     expect(() => countRate(3, 2)).toThrow();
   });
 });
-
