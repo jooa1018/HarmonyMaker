@@ -7,6 +7,14 @@ export interface CanonicalPerformerProjection { readonly performerOrdinal: numbe
 export interface CanonicalTrackProjection { readonly trackOrdinal: number; readonly kind: "source-lead" | "generated-harmony"; readonly enabled: boolean }
 export interface CanonicalAssignmentProjection { readonly trackOrdinal: number; readonly performerOrdinal: number }
 export interface StageInputDigests { readonly intentInputDigest: SemanticDigest; readonly activityInputDigest: SemanticDigest; readonly anchorInputDigest: SemanticDigest; readonly generationInputDigest: SemanticDigest }
+export type StaleStage = "intent" | "activity" | "anchor" | "generation";
+
+export function earliestStaleStage(previous: StageInputDigests, next: StageInputDigests): StaleStage | undefined {
+  if (previous.intentInputDigest !== next.intentInputDigest) return "intent";
+  if (previous.activityInputDigest !== next.activityInputDigest) return "activity";
+  if (previous.anchorInputDigest !== next.anchorInputDigest) return "anchor";
+  return previous.generationInputDigest !== next.generationInputDigest ? "generation" : undefined;
+}
 
 const sortedLocks = <T extends { readonly id: string }>(locks: readonly T[]): readonly object[] =>
   [...locks].sort((a, b) => a.id.localeCompare(b.id)).map((lock) =>

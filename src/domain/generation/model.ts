@@ -6,6 +6,10 @@ import type { TexturePatternId, ActivityDensityMetrics, VoiceActivityDirective }
 import type { SpelledPitch } from "../pitch";
 import type { MusicalRange, MusicalPosition } from "../time";
 import type { VocalPlacementRole } from "../performer";
+import type { PerformanceMeasureOccurrence } from "../performance/repeat";
+import type { TimelineAtom } from "../source/atomization";
+import type { EffectiveChordTimeline } from "../harmony/chord-timeline";
+import type { LyricToken } from "../source/model";
 
 export interface GeneratedNoteEventPayload { readonly kind: "note"; readonly range: MusicalRange; readonly pitch: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[]; readonly source: "unison" | "octave-double" | "anchor" | "connection" | "planned-nct" | "user-edit"; readonly originDirectiveId?: string }
 export interface GeneratedRestEventPayload { readonly kind: "rest"; readonly range: MusicalRange }
@@ -20,3 +24,4 @@ export interface ArrangementCandidate { readonly id: string; readonly presetId: 
 export type GenerationStatus = "blocked" | "complete" | "partial";
 export interface GenerationDigests { readonly musicalSourceDigest: SemanticDigest; readonly effectiveChordTimelineDigest: SemanticDigest; readonly sourceLeadAtomizationDigest: SemanticDigest; readonly presetProfileDigest: SemanticDigest; readonly effectiveConfigDigest: SemanticDigest; readonly intentInputDigest: SemanticDigest; readonly activityInputDigest: SemanticDigest; readonly anchorInputDigest: SemanticDigest; readonly generationInputDigest: SemanticDigest; readonly intentPlanDigest: SemanticDigest; readonly activityPlanDigest: SemanticDigest; readonly anchorPlanDigest: SemanticDigest }
 export interface ArrangementGenerationResult { readonly presetId: ArrangementPresetId; readonly status: GenerationStatus; readonly candidates: readonly ArrangementCandidate[]; readonly diagnostics: readonly Diagnostic[]; readonly digests: GenerationDigests; readonly configDigests: Readonly<Record<string, SemanticDigest>>; readonly versions: Readonly<Record<string, string>> }
+export interface ArrangementRenderDocument { readonly measures: readonly PerformanceMeasureOccurrence[]; readonly sourceLeadTrack: { readonly trackPlanId: "track:source-lead"; readonly atomizationDigest: SemanticDigest; readonly atoms: readonly TimelineAtom[] }; readonly generatedHarmonyTracks: readonly GeneratedHarmonyTrack[]; readonly effectiveChordTimeline: EffectiveChordTimeline; readonly lyricTokens: readonly LyricToken[] }

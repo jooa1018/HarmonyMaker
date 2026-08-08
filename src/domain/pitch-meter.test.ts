@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { COMPOUND_DUPLE, COMMON_TIME, timeSignature } from "./meter";
-import { deriveFifths, pitchRange, validateImportedFifths } from "./pitch";
+import { COMPOUND_DUPLE, COMMON_TIME, isTimeSignature, timeSignature } from "./meter";
+import { deriveFifths, isKeySignature, pitchRange, validateImportedFifths } from "./pitch";
 
 describe("pitch, key, and meter contracts", () => {
   it("derives fifths from tonic and mode", () => {
@@ -20,5 +20,10 @@ describe("pitch, key, and meter contracts", () => {
     expect(COMPOUND_DUPLE.beatGroups).toEqual([3, 3]);
     expect(() => timeSignature(6, 8, [2, 2])).toThrow("INPUT_BEAT_GROUPS_INVALID");
   });
-});
 
+  it("runtime-rejects invalid key and meter payloads", () => {
+    expect(isKeySignature({ tonic: { step: "D", alter: 0 }, mode: "major" })).toBe(true);
+    expect(isKeySignature({ tonic: { step: "H", alter: 0 }, mode: "major" })).toBe(false);
+    expect(isTimeSignature({ numerator: 4, denominator: 4, beatGroups: [2, 1] })).toBe(false);
+  });
+});

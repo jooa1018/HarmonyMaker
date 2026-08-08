@@ -41,5 +41,13 @@ describe("musical source projection", () => {
     const metric = sourceFixture({ prefix: "same", title: "same", chord: "C", emphasis: "metric" });
     expect(await digestMusicalSource(musicXml)).not.toBe(await digestMusicalSource(metric));
   });
-});
 
+  it("includes section type, variant, confirmation, and lyric verse authority", async () => {
+    const base = sourceFixture({ prefix: "same", title: "same", chord: "C", emphasis: "confirmed-manual" });
+    const baseDigest = await digestMusicalSource(base);
+    expect(await digestMusicalSource({ ...base, sectionDefinitions: [{ ...base.sectionDefinitions[0], type: "chorus" }] })).not.toBe(baseDigest);
+    expect(await digestMusicalSource({ ...base, sectionDefinitions: [{ ...base.sectionDefinitions[0], confirmation: "suggested" }] })).not.toBe(baseDigest);
+    expect(await digestMusicalSource({ ...base, sectionOccurrences: [{ ...base.sectionOccurrences[0], variant: "final" }] })).not.toBe(baseDigest);
+    expect(await digestMusicalSource({ ...base, sectionOccurrences: [{ ...base.sectionOccurrences[0], lyricVerseIndex: 2 }] })).not.toBe(baseDigest);
+  });
+});

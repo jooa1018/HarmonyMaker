@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chordSemanticProjection, parseChord } from "./parser";
+import { chordSemanticProjection, isChordParseResult, parseChord } from "./parser";
 
 function parsed(symbol: string) {
   const result = parseChord(symbol);
@@ -44,5 +44,10 @@ describe("worship-leadsheet-v1 chord parser", () => {
   it("keeps aliases out of semantic chord projection", () => {
     expect(chordSemanticProjection(parsed("CM7"))).toEqual(chordSemanticProjection(parsed("CΔ7")));
   });
-});
 
+  it("runtime-rejects impossible parse-result discriminants", () => {
+    expect(isChordParseResult(parseChord("C7"))).toBe(true);
+    expect(isChordParseResult({ status: "ok", sourceText: "C7" })).toBe(false);
+    expect(isChordParseResult({ status: "failed", sourceText: "bad", errorCode: "MADE_UP" })).toBe(false);
+  });
+});

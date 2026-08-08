@@ -29,3 +29,4 @@ export * from "./share";
 export * from "./digest/source";
 export * from "./digest/plans";
 export * from "./ids";
+export * from "./generation/render";

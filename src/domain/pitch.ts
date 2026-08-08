@@ -21,6 +21,19 @@ export interface KeySignature {
   readonly mode: KeyMode;
 }
 
+export function isKeySignature(value: unknown): value is KeySignature {
+  if (typeof value !== "object" || value === null) return false;
+  const key = value as Readonly<Record<string, unknown>>;
+  if (key.mode !== "major" && key.mode !== "minor") return false;
+  if (typeof key.tonic !== "object" || key.tonic === null) return false;
+  const tonic = key.tonic as Readonly<Record<string, unknown>>;
+  const steps: readonly Step[] = ["C", "D", "E", "F", "G", "A", "B"];
+  const alters: readonly Alter[] = [-2, -1, 0, 1, 2];
+  if (!steps.includes(tonic.step as Step) || !alters.includes(tonic.alter as Alter)) return false;
+  const typed: KeySignature = { tonic: { step: tonic.step as Step, alter: tonic.alter as Alter }, mode: key.mode };
+  try { deriveFifths(typed); return true; } catch { return false; }
+}
+
 const NATURAL_SEMITONES: Readonly<Record<Step, number>> = {
   C: 0,
   D: 2,
@@ -80,4 +93,3 @@ export function validateImportedFifths(
     ? { ok: true }
     : { ok: false, code: "INPUT_KEY_SIGNATURE_INCONSISTENT" };
 }
-

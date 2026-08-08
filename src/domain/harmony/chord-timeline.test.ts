@@ -47,4 +47,12 @@ describe("EffectiveChordTimeline authority", () => {
   it("rejects non-Core allow-no-chord at runtime", async () => {
     await expect(resolveEffectiveChordTimeline({ sourceMeasures: [], performanceSequence: { occurrences: [], expanderVersion: "v" }, sourceChordProjectionDigest: zeroDigest, performanceSequenceDigest: zeroDigest, policy: { gapPolicy: "allow-no-chord" } as never, resolverVersion: "v", expectedResolverVersion: "v" })).rejects.toThrow("not a Core gap policy");
   });
+
+  it("resolves explicit carry in expanded performance order on every repeat pass", async () => {
+    const repeatedPerformance: PerformanceSequence = { expanderVersion: "repeat-v1", occurrences: [0, 1].map((occurrenceIndexForSource, performanceIndex) => ({ occurrenceId: `pm:${performanceIndex}:0:${occurrenceIndexForSource}`, sourceMeasureId: "m1", sourceMeasureNumber: 1, occurrenceIndexForSource, performanceIndex, time: COMMON_TIME, duration: fraction(4) })) };
+    const result = await resolveEffectiveChordTimeline({ sourceMeasures: [measure([event("ch:0", 0, "C"), event("ch:1", 2, "%")])], performanceSequence: repeatedPerformance, sourceChordProjectionDigest: zeroDigest, performanceSequenceDigest: zeroDigest, policy: { gapPolicy: "carry-until-next" }, resolverVersion: "chord-v1", expectedResolverVersion: "chord-v1" });
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.timeline.spans.filter((span) => span.origin.kind === "carried" && span.origin.carrySource === "explicit-carry-token")).toHaveLength(2);
+  });
 });

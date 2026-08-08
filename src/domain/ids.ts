@@ -3,6 +3,7 @@ import type { SemanticDigest } from "./digest/canonical";
 import type { Fraction } from "./fraction";
 import type { SectionType } from "./source/model";
 import type { MusicalPosition } from "./time";
+import type { DiagnosticCode } from "./diagnostics";
 
 function ordinal(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative safe integer`);
@@ -15,6 +16,7 @@ export const sourceMeasureId = (sourceMeasureIndex: number): string => `sm:${ord
 export const leadEventId = (sourceMeasureIndex: number, eventOrdinal: number): string => `le:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(eventOrdinal, "event ordinal")}`;
 export const sourceChordEventId = (sourceMeasureIndex: number, chordOrdinal: number): string => `ch:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(chordOrdinal, "chord ordinal")}`;
 export const lyricTokenId = (sourceMeasureIndex: number, leadEventOrdinal: number, verse: number, tokenOrdinal: number): string => `ly:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(leadEventOrdinal, "lead event ordinal")}:${ordinal(verse - 1, "verse") + 1}:${ordinal(tokenOrdinal, "token ordinal")}`;
+export const sourceTextEventId = (sourceMeasureIndex: number, onset: Fraction, kind: string, eventOrdinal: number): string => `tx:${ordinal(sourceMeasureIndex, "source measure index")}:${fractionKey(onset)}:${kind}:${ordinal(eventOrdinal, "text event ordinal")}`;
 export const performanceOccurrenceId = (performanceIndex: number, sourceMeasureIndex: number, sourceOccurrenceIndex: number): string => `pm:${ordinal(performanceIndex, "performance index")}:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(sourceOccurrenceIndex, "source occurrence index")}`;
 export const sectionDefinitionId = (sourceStart: number, sourceEndExclusive: number, type: SectionType, duplicateOrdinal: number): string => `sd:${ordinal(sourceStart, "source start")}:${ordinal(sourceEndExclusive, "source end")}:${type}:${ordinal(duplicateOrdinal, "definition ordinal")}`;
 export const sectionOccurrenceId = (performanceStart: number, performanceEndExclusive: number, definitionOrdinal: number): string => `so:${ordinal(performanceStart, "performance start")}:${ordinal(performanceEndExclusive, "performance end")}:${ordinal(definitionOrdinal, "definition ordinal")}`;
@@ -25,4 +27,17 @@ export const timelineAtomId = (performanceMeasureIndex: number, sourceEventOrdin
 export const sectionIntentId = (preset: ArrangementPresetId, sectionOccurrenceOrdinal: number): string => `si:${preset}:${ordinal(sectionOccurrenceOrdinal, "section occurrence ordinal")}`;
 export const phraseIntentId = (preset: ArrangementPresetId, phraseOrdinal: number): string => `pi:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}`;
 export const performerId = (performerOrdinal: number): string => `pf:${ordinal(performerOrdinal, "performer ordinal")}`;
-
+export const trackRoleSegmentId = (preset: ArrangementPresetId, phraseOrdinal: number, trackOrdinal: number): string => `tr:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}:${ordinal(trackOrdinal, "track ordinal")}`;
+export const phraseActivityPlanId = (preset: ArrangementPresetId, phraseOrdinal: number): string => `pa:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}`;
+export const voiceActivitySpanId = (preset: ArrangementPresetId, phraseOrdinal: number, trackOrdinal: number, start: MusicalPosition, end: MusicalPosition): string => `vas:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}:${ordinal(trackOrdinal, "track ordinal")}:${positionKey(start)}:${positionKey(end)}`;
+export const voiceAttackEventId = (preset: ArrangementPresetId, phraseOrdinal: number, trackOrdinal: number, position: MusicalPosition, kind: "attack" | "release" | "reentry"): string => `vae:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}:${ordinal(trackOrdinal, "track ordinal")}:${positionKey(position)}:${kind}`;
+export const phraseAnchorPlanId = (preset: ArrangementPresetId, phraseOrdinal: number): string => `pn:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}`;
+export const anchorDirectiveId = (preset: ArrangementPresetId, phraseOrdinal: number, trackOrdinal: number, position: MusicalPosition, directiveOrdinal: number): string => `ad:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}:${ordinal(trackOrdinal, "track ordinal")}:${positionKey(position)}:${ordinal(directiveOrdinal, "directive ordinal")}`;
+export const nctPlanId = (preset: ArrangementPresetId, phraseOrdinal: number, trackOrdinal: number, position: MusicalPosition, kind: string): string => `nct:${preset}:${ordinal(phraseOrdinal, "phrase ordinal")}:${ordinal(trackOrdinal, "track ordinal")}:${positionKey(position)}:${kind}`;
+export const stageLockId = (preset: ArrangementPresetId, stage: "intent" | "activity" | "anchor" | "solver", targetKey: string, lockOrdinal: number): string => `lk:${preset}:${stage}:${targetKey}:${ordinal(lockOrdinal, "lock ordinal")}`;
+export const diagnosticId = (code: DiagnosticCode, locationKey: string, diagnosticOrdinal: number): string => `dg:${code}:${locationKey}:${ordinal(diagnosticOrdinal, "diagnostic ordinal")}`;
+export const outputEditId = (preset: ArrangementPresetId, baseCandidateDigest: SemanticDigest, editOrdinal: number): string => `oe:${preset}:${baseCandidateDigest}:${ordinal(editOrdinal, "edit ordinal")}`;
+export const omrReviewItemId = (reviewOrdinal: number): string => `ori:${ordinal(reviewOrdinal, "review ordinal")}`;
+export const omrReviewAlternativeId = (reviewOrdinal: number, alternativeOrdinal: number): string => `ora:${ordinal(reviewOrdinal, "review ordinal")}:${ordinal(alternativeOrdinal, "alternative ordinal")}`;
+export const sourceRevisionRecordId = (fromRevisionOrdinal: number, toRevisionOrdinal: number, editOrdinal: number): string => `ser:${ordinal(fromRevisionOrdinal, "from revision ordinal")}:${ordinal(toRevisionOrdinal, "to revision ordinal")}:${ordinal(editOrdinal, "edit ordinal")}`;
+export const sourceIdRemapId = (fromRevisionOrdinal: number, toRevisionOrdinal: number): string => `srm:${ordinal(fromRevisionOrdinal, "from revision ordinal")}:${ordinal(toRevisionOrdinal, "to revision ordinal")}`;

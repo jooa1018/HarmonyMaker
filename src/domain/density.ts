@@ -12,6 +12,9 @@ export interface DensityEvent {
   readonly pitch: SpelledPitch | null;
   readonly attack: boolean;
 }
+function hasPitch(event: DensityEvent): event is DensityEvent & { readonly pitch: SpelledPitch } {
+  return event.pitch !== null;
+}
 
 function durationBetween(start: MusicalPosition, end: MusicalPosition, measureDurations: readonly Fraction[]): Fraction {
   if (comparePositions(start, end) >= 0) throw new RangeError("interval must be positive");
@@ -44,8 +47,8 @@ export function integrateTextureDensity(
     const end = boundaries[index + 1];
     const duration = durationBetween(start, end, measureDurations);
     const sounding = events.filter((event) => positionWithinRange(start, event.range));
-    const leadPitches = sounding.filter((event) => event.isLead && event.pitch).map((event) => pitchMidiNumber(event.pitch as SpelledPitch));
-    const harmonyPitches = sounding.filter((event) => !event.isLead && event.pitch).map((event) => pitchMidiNumber(event.pitch as SpelledPitch));
+    const leadPitches = sounding.filter((event) => event.isLead).filter(hasPitch).map((event) => pitchMidiNumber(event.pitch));
+    const harmonyPitches = sounding.filter((event) => !event.isLead).filter(hasPitch).map((event) => pitchMidiNumber(event.pitch));
     const leadSounding = leadPitches.length > 0;
     if (leadSounding) leadNoteDuration = addFractions(leadNoteDuration, duration);
     else leadRestDuration = addFractions(leadRestDuration, duration);
@@ -87,4 +90,3 @@ export function integrateTextureDensity(
 export function activityDensity(metrics: TextureDensityMetrics): ActivityDensityMetrics {
   return { participationCoverage: metrics.participationCoverage, harmonyAttackRatio: metrics.harmonyAttackRatio, harmonyOverLeadRestCoverage: metrics.harmonyOverLeadRestCoverage, maxSimultaneousHarmonyTracks: metrics.maxSimultaneousHarmonyTracks };
 }
-

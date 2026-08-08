@@ -27,3 +27,9 @@ export function timeSignature(
 export const COMMON_TIME = timeSignature(4, 4, [1, 1, 1, 1]);
 export const COMPOUND_DUPLE = timeSignature(6, 8, [3, 3]);
 
+export function isTimeSignature(value: unknown): value is TimeSignature {
+  if (typeof value !== "object" || value === null) return false;
+  const time = value as Readonly<Record<string, unknown>>;
+  if (typeof time.numerator !== "number" || (time.denominator !== 4 && time.denominator !== 8) || !Array.isArray(time.beatGroups)) return false;
+  try { timeSignature(time.numerator, time.denominator, time.beatGroups as readonly number[]); return true; } catch { return false; }
+}

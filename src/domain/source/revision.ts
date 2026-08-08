@@ -1,4 +1,5 @@
 import { canonicalJson, semanticDigest, type SemanticDigest } from "../digest/canonical";
+import { sourceIdRemapId } from "../ids";
 
 export interface SourceRevisionRef {
   readonly documentId: string;
@@ -48,7 +49,7 @@ export async function createSourceIdRemap(
   const sorted = [...entries].sort((a, b) => a.entityKind.localeCompare(b.entityKind) || a.fromId.localeCompare(b.fromId));
   const projection = { projectionSchema: "hm-source-id-remap-v1", fromRevision, toRevision, entries: sorted };
   const remapDigest = await semanticDigest(projection);
-  return { id: `remap:${fromRevision.revisionOrdinal}:${toRevision.revisionOrdinal}`, fromRevision, toRevision, entries: sorted, remapDigest };
+  return { id: sourceIdRemapId(fromRevision.revisionOrdinal, toRevision.revisionOrdinal), fromRevision, toRevision, entries: sorted, remapDigest };
 }
 
 export function remapSourceId(remap: SourceIdRemap, entityKind: SourceEntityKind, fromId: string): readonly string[] | undefined {
@@ -59,13 +60,23 @@ export function remapSourceId(remap: SourceIdRemap, entityKind: SourceEntityKind
 export function validateRevisionHistory(current: SourceRevisionRef, history: readonly SourceRevisionRecord[]): boolean {
   if (current.revisionOrdinal === 0) return history.length === 0;
   if (history.length === 0) return false;
-  for (let index = 0; index < history.length; index += 1) {
-    const record = history[index];
-    if (record.editOrdinal !== 0 || record.fromRevision.documentId !== current.documentId || record.toRevision.documentId !== current.documentId) return false;
-    if (index > 0) {
-      const previous = history[index - 1].toRevision;
-      if (canonicalJson(previous) !== canonicalJson(record.fromRevision)) return false;
+  let previousTo: SourceRevisionRef | undefined;
+  let pairKey = "";
+  let expectedEditOrdinal = 0;
+  for (const record of history) {
+    if (record.fromRevision.documentId !== current.documentId || record.toRevision.documentId !== current.documentId) return false;
+    try {
+      if (canonicalJson(JSON.parse(record.beforeProjection)) !== record.beforeProjection || canonicalJson(JSON.parse(record.afterProjection)) !== record.afterProjection) return false;
+    } catch { return false; }
+    const nextPairKey = `${record.fromRevision.revisionOrdinal}:${record.toRevision.revisionOrdinal}`;
+    if (nextPairKey !== pairKey) {
+      if (previousTo && canonicalJson(previousTo) !== canonicalJson(record.fromRevision)) return false;
+      pairKey = nextPairKey;
+      expectedEditOrdinal = 0;
     }
+    if (record.editOrdinal !== expectedEditOrdinal) return false;
+    expectedEditOrdinal += 1;
+    previousTo = record.toRevision;
   }
-  return canonicalJson(history.at(-1)?.toRevision) === canonicalJson(current);
+  return canonicalJson(previousTo) === canonicalJson(current);
 }

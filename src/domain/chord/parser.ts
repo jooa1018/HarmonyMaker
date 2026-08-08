@@ -209,3 +209,13 @@ export function parseChord(sourceText: string): ChordParseResult {
 export function chordSemanticProjection(chord: ParsedChord): object {
   return { root: chord.root, tones: chord.tones, bass: chord.bass ?? null, omissions: chord.omissions };
 }
+
+export function isChordParseResult(value: unknown): value is ChordParseResult {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Readonly<Record<string, unknown>>;
+  if (result.status === "no-chord" || result.status === "carry") return typeof result.sourceText === "string";
+  if (result.status === "failed") return typeof result.sourceText === "string" && ["UNKNOWN_ROOT", "TOKEN_CONFLICT", "UNSUPPORTED_TOKEN", "AMBIGUOUS_SLASH", "EMPTY_CHORD", "INVALID_TOKEN_ORDER"].includes(String(result.errorCode));
+  if (result.status !== "ok" || typeof result.chord !== "object" || result.chord === null) return false;
+  const chord = result.chord as Readonly<Record<string, unknown>>;
+  return typeof chord.root === "object" && Array.isArray(chord.tones) && Array.isArray(chord.omissions) && typeof chord.canonicalSymbol === "string";
+}

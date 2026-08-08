@@ -3,8 +3,10 @@ import type { SemanticDigest } from "./digest/canonical";
 import { fraction } from "./fraction";
 import { markVariantStale, preserveBlockedAttempt, validateArrangementVariant, type ArrangementVariant } from "./project";
 import { countRate, durationRate, extendedCountRate } from "./rates";
+import type { ArrangementIntentPlan } from "./plans";
 
 const digest = "0".repeat(64) as SemanticDigest;
+const intentPlan: ArrangementIntentPlan = { stage: "intent", presetId: "simple", intentInputDigest: digest, effectiveChordTimelineDigest: digest, sourceLeadAtomizationDigest: digest, effectiveConfigDigest: digest, presetProfileVersion: "v", presetProfileDigest: digest, grammarId: "worship-arrangement-grammar-v1", grammarVersion: "v", plannerVersion: "v", grammarConfigDigest: digest, plannerConfigDigest: digest, diagnosticRegistryVersion: "v", diagnosticRegistryDigest: digest, sectionIntents: [], phraseIntents: [], intentPlanDigest: digest };
 
 describe("variant lifecycle and rate contracts", () => {
   it("distinguishes absent stage objects from present empty arrays", () => {
@@ -15,7 +17,6 @@ describe("variant lifecycle and rate contracts", () => {
   });
 
   it("preserves realized artifacts when marking a variant stale", () => {
-    const intentPlan = { stage: "intent" } as never;
     const variant: ArrangementVariant = { lifecycle: "intent-ready", presetId: "simple", diagnostics: [], intentPlan };
     const stale = markVariantStale(variant, { staleFrom: "intent", staleDiagnosticIds: [], previousArtifactDigests: [digest] });
     expect(stale.lifecycle).toBe("intent-ready");
@@ -23,11 +24,11 @@ describe("variant lifecycle and rate contracts", () => {
   });
 
   it("preserves the previous variant on a blocked retry", () => {
-    const intentPlan = { stage: "intent" } as never;
-    const variant: ArrangementVariant = { lifecycle: "intent-ready", presetId: "standard", diagnostics: [], intentPlan };
+    const standardPlan: ArrangementIntentPlan = { ...intentPlan, presetId: "standard" };
+    const variant: ArrangementVariant = { lifecycle: "intent-ready", presetId: "standard", diagnostics: [], intentPlan: standardPlan };
     const updated = preserveBlockedAttempt(variant, "activity", digest, { status: "blocked", diagnostics: [{ id: "dg:block", code: "GRAMMAR_BLOCKED", severity: "blocking", messageKo: "blocked" }] });
     expect(updated.lifecycle).toBe("intent-ready");
-    expect("intentPlan" in updated && updated.intentPlan).toBe(intentPlan);
+    expect("intentPlan" in updated && updated.intentPlan).toBe(standardPlan);
     expect(updated.lastBlockedAttempt?.stage).toBe("activity");
   });
 

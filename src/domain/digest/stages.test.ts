@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SemanticDigest } from "./canonical";
-import { digestActivityInput, digestAnchorInput, digestGenerationInput, digestIntentInput } from "./stages";
+import { digestActivityInput, digestAnchorInput, digestGenerationInput, digestIntentInput, earliestStaleStage } from "./stages";
 import { fraction } from "../fraction";
 
 const d = (digit: string) => digit.repeat(64) as SemanticDigest;
@@ -31,5 +31,12 @@ describe("stage-specific semantic digests", () => {
     const differentVersion = await digestGenerationInput({ anchorPlanDigest: d("c"), effectiveConfigDigest: d("3"), presetProfileVersion: "preset-v1", presetProfileDigest: d("4"), locks: [], solverVersion: "s2", assemblerVersion: "a1", validatorVersion: "v1", metricsVersion: "m1", candidateProjectionVersion: "cp1", solverConfigDigest: d("d"), assemblerConfigDigest: d("e"), validatorConfigDigest: d("f"), metricConfigDigest: d("0"), diagnosticRegistryVersion: "diag-v1", diagnosticRegistryDigest: d("7") });
     expect(differentVersion).not.toBe(generation);
   });
-});
 
+  it("classifies exact earliest invalidation stage", () => {
+    const previous = { intentInputDigest: d("0"), activityInputDigest: d("1"), anchorInputDigest: d("2"), generationInputDigest: d("3") };
+    expect(earliestStaleStage(previous, { ...previous, intentInputDigest: d("9") })).toBe("intent");
+    expect(earliestStaleStage(previous, { ...previous, activityInputDigest: d("9") })).toBe("activity");
+    expect(earliestStaleStage(previous, { ...previous, anchorInputDigest: d("9") })).toBe("anchor");
+    expect(earliestStaleStage(previous, { ...previous, generationInputDigest: d("9") })).toBe("generation");
+  });
+});
