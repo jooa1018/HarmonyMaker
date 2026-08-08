@@ -6,4 +6,10 @@ export * from "./digest/canonical";
 export * from "./diagnostics";
 export * from "./chord/model";
 export * from "./chord/parser";
-
+export * from "./source/model";
+export * from "./source/lyrics";
+export * from "./source/revision";
+export * from "./source/atomization";
+export * from "./performance/repeat";
+export * from "./harmony/chord-timeline";
+export * from "./omr/foundation";
