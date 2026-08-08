@@ -1,3 +1,10 @@
+> **SUPERSEDED / HISTORICAL SPEC**
+>
+> Step 2 이후의 authoritative specification은
+> [`docs/HARMONYMAKER_SPEC_v3.1.5.md`](HARMONYMAKER_SPEC_v3.1.5.md)이다.
+> 이 v2.3.1 문서는 과거 설계 기록으로 보존하며,
+> v3.1.5와 충돌할 경우 v3.1.5가 우선한다.
+
 # 화음 생성기 (가칭) — 개발 기획서 v2.3.1 최종 통합본
 
 > 결정적 규칙 기반 3성부 화음 엔진 + 공정한 Reference 평가 + 구현량 절감형 Core gate
