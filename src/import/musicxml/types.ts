@@ -5,6 +5,7 @@ import type { Fraction } from "../../domain/fraction";
 import type { TimeSignature } from "../../domain/meter";
 import type { PerformerProfile } from "../../domain/performer";
 import type { KeySignature, SpelledPitch } from "../../domain/pitch";
+import type { AlgorithmVersionRegistry } from "../../domain/registries";
 import type {
   MeasureRepeatDirectives,
   RightsMetadata,
@@ -126,6 +127,18 @@ export interface ImportedSectionDraft {
   readonly confirmation: "confirmed" | "suggested";
 }
 
+export interface ImportedSectionOccurrenceReview {
+  readonly key: string;
+  readonly candidateKey: string;
+  readonly partOrdinal: number;
+  readonly sectionKey: string;
+  readonly occurrenceIndex: number;
+  readonly startPerformanceMeasureIndex: number;
+  readonly endPerformanceMeasureIndexExclusive: number;
+  readonly availableLyricVerses: readonly number[];
+  readonly selectedLyricVerse?: number;
+}
+
 export interface UnsupportedPerformanceFlow {
   readonly id: string;
   readonly partOrdinal: number;
@@ -151,10 +164,11 @@ export interface MusicXmlImportDraft {
   readonly leadCandidates: readonly LeadVoiceCandidate[];
   readonly selectedLeadStaffKey?: string;
   readonly sections: readonly ImportedSectionDraft[];
+  readonly sectionOccurrences: readonly ImportedSectionOccurrenceReview[];
   readonly unsupportedPerformanceFlows: readonly UnsupportedPerformanceFlow[];
   readonly defaultKey?: KeySignature;
   readonly defaultTempo?: TempoSpec;
-  readonly selectedLyricVerse?: number;
+  readonly algorithmVersions: Step3ImportVersions;
   readonly singerCount: 1 | 2 | 3;
   readonly performerSlots: readonly PerformerReviewSlot[];
   readonly rights?: RightsMetadata;
@@ -172,16 +186,19 @@ export type MusicImportResult =
       readonly diagnostics: readonly Diagnostic[];
     };
 
-export interface Step3ImportVersions {
-  readonly performanceExpanderVersion: string;
-  readonly chordTimelineResolverVersion: string;
-  readonly sourceLeadAtomizerVersion: string;
-}
+export type Step3ImportVersions = Pick<
+  AlgorithmVersionRegistry,
+  "performanceExpanderVersion" | "chordTimelineResolverVersion" | "sourceLeadAtomizerVersion"
+>;
 
-export const STEP3_IMPORT_VERSIONS: Step3ImportVersions = Object.freeze({
-  performanceExpanderVersion: "repeat-v1",
-  chordTimelineResolverVersion: "chord-timeline-v1",
-  sourceLeadAtomizerVersion: "source-lead-atomizer-v1",
-});
+export function step3ImportVersionsFromRegistry(
+  registry: AlgorithmVersionRegistry,
+): Step3ImportVersions {
+  return {
+    performanceExpanderVersion: registry.performanceExpanderVersion,
+    chordTimelineResolverVersion: registry.chordTimelineResolverVersion,
+    sourceLeadAtomizerVersion: registry.sourceLeadAtomizerVersion,
+  };
+}
 
 export type DocumentIdentityFactory = () => string;

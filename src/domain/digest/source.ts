@@ -1,5 +1,15 @@
 import { chordSemanticProjection } from "../chord/parser";
-import type { SourceChordEvent, SongSourceDocument } from "../source/model";
+import type {
+  PhraseRegion,
+  SectionDefinition,
+  SectionOccurrence,
+  SourceChordEvent,
+  SourceMeasure,
+  SongSourceDocument,
+  TempoSpec,
+} from "../source/model";
+import type { PerformanceSequence } from "../performance/repeat";
+import type { KeySignature } from "../pitch";
 import { resolveProductionLyricEmphasis } from "../source/lyrics";
 import { normalizeSongSourceDocument } from "../source/normalize";
 import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "./canonical";
@@ -12,8 +22,19 @@ function chordProjection(event: SourceChordEvent): object | undefined {
   return { onset: event.onset, status: "failed", errorCode: event.parseResult.errorCode };
 }
 
-export async function digestMusicalSource(source: SongSourceDocument): Promise<SemanticDigest> {
-  source = normalizeSongSourceDocument(source);
+export interface MusicalSourceDigestInput {
+  readonly defaultKey: KeySignature;
+  readonly defaultTempo: TempoSpec;
+  readonly sourceMeasures: readonly SourceMeasure[];
+  readonly performanceSequence: PerformanceSequence;
+  readonly sectionDefinitions: readonly SectionDefinition[];
+  readonly sectionOccurrences: readonly SectionOccurrence[];
+  readonly phraseRegions: readonly PhraseRegion[];
+}
+
+export async function digestMusicalSourceComponents(
+  source: MusicalSourceDigestInput,
+): Promise<SemanticDigest> {
   const measureOrdinal = new Map(source.sourceMeasures.map((measure, ordinal) => [measure.id, ordinal]));
   const definitionOrdinal = new Map(source.sectionDefinitions.map((definition, ordinal) => [definition.id, ordinal]));
   const sectionOccurrenceOrdinal = new Map(source.sectionOccurrences.map((occurrence, ordinal) => [occurrence.id, ordinal]));
@@ -42,4 +63,9 @@ export async function digestMusicalSource(source: SongSourceDocument): Promise<S
     phraseRegions: source.phraseRegions.map((phrase) => ({ sectionOccurrenceOrdinal: sectionOccurrenceOrdinal.get(phrase.sectionOccurrenceId), range: phrase.range })).sort(compareCanonicalValues),
   };
   return semanticDigest(projection);
+}
+
+export async function digestMusicalSource(source: SongSourceDocument): Promise<SemanticDigest> {
+  const normalized = normalizeSongSourceDocument(source);
+  return digestMusicalSourceComponents(normalized);
 }

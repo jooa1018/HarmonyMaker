@@ -1,0 +1,26 @@
+import type { AlgorithmVersionRegistry } from "../domain/registries";
+
+export const APPLICATION_ALGORITHM_VERSION_REGISTRY: AlgorithmVersionRegistry = Object.freeze({
+  domainSchemaVersion: "9",
+  digestCodecVersion: "canonical-json-v1",
+  chordParserVersion: "chord-parser-v1",
+  chordTimelineResolverVersion: "chord-timeline-v1",
+  performanceExpanderVersion: "repeat-v1",
+  sourceLeadAtomizerVersion: "source-lead-atomizer-v1",
+  presetProfileVersion: "preset-profile-v1",
+  candidateProjectionVersion: "candidate-projection-v1",
+  plannerVersion: "planner-v1",
+  grammarVersion: "grammar-v1",
+  activityPlannerVersion: "activity-planner-v1",
+  anchorPlannerVersion: "anchor-planner-v1",
+  solverVersion: "solver-v1",
+  assemblerVersion: "assembler-v1",
+  validatorVersion: "validator-v1",
+  metricsVersion: "metrics-v1",
+  diagnosticRegistryVersion: "diagnostic-registry-v1",
+  accompanimentVersion: "accompaniment-v1",
+  editMaterializerVersion: "edit-materializer-v1",
+  practiceShareCodecVersion: "practice-share-v1",
+  omrNormalizerVersion: "omr-normalizer-v1",
+  evidenceMappingVersion: "evidence-mapping-v1",
+});

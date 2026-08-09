@@ -5,6 +5,11 @@ import { DEFAULT_IMPORT_SECURITY_LIMITS } from "../musicxml/types";
 import { extractMusicXmlFromMxl } from "./archive";
 
 const score = `<score-partwise><work><work-title>MXL</work-title></work><part-list><score-part id="P1"><part-name>Lead</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><direction><sound tempo="100"/></direction><harmony><root><root-step>C</root-step></root><kind>major</kind></harmony><note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><staff>1</staff></note></measure></part></score-partwise>`;
+const TEST_ALGORITHM_VERSIONS = {
+  performanceExpanderVersion: "repeat-v1",
+  chordTimelineResolverVersion: "chord-timeline-v1",
+  sourceLeadAtomizerVersion: "source-lead-atomizer-v1",
+} as const;
 
 function container(root = "score.musicxml"): string {
   return `<?xml version="1.0"?><container><rootfiles><rootfile full-path="${root}" media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>`;
@@ -46,6 +51,7 @@ function findSignature(bytes: Uint8Array, signature: readonly number[], start = 
 describe("MXL archive security boundary", () => {
   it("imports a valid container and only its declared rootfile", async () => {
     const result = await importMusicXml(validMxl(), {
+      algorithmVersions: TEST_ALGORITHM_VERSIONS,
       originalFileName: "safe.mxl",
       identityFactory: () => "doc:mxl-test",
     });

@@ -133,11 +133,19 @@ export function editSection(
   };
 }
 
-export function setSectionLyricVerse(
+export function setSectionOccurrenceLyricVerse(
   draft: MusicXmlImportDraft,
+  occurrenceKey: string,
   verse: number,
 ): MusicXmlImportDraft {
-  return Number.isSafeInteger(verse) && verse >= 1 ? { ...draft, selectedLyricVerse: verse } : draft;
+  if (!Number.isSafeInteger(verse) || verse < 1) return draft;
+  let found = false;
+  const sectionOccurrences = draft.sectionOccurrences.map((occurrence) => {
+    if (occurrence.key !== occurrenceKey || !occurrence.availableLyricVerses.includes(verse)) return occurrence;
+    found = true;
+    return { ...occurrence, selectedLyricVerse: verse };
+  });
+  return found ? { ...draft, sectionOccurrences } : draft;
 }
 
 export function setSingerCount(

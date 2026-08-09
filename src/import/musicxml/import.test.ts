@@ -10,19 +10,26 @@ import {
   confirmChord,
   confirmRights,
   confirmSection,
-  deriveQuickReview,
+  deriveQuickReview as deriveQuickReviewWithRegistry,
   importMusicXml,
   replaceChord,
   selectLeadCandidate,
   setDefaultTempo,
   setPerformerRange,
-  setSectionLyricVerse,
+  setSectionOccurrenceLyricVerse,
   setSingerCount,
   type MusicXmlImportDraft,
 } from "..";
 
 const encoder = new TextEncoder();
 const identityFactory = () => "doc:step3-test";
+const TEST_ALGORITHM_VERSIONS = {
+  performanceExpanderVersion: "repeat-v1",
+  chordTimelineResolverVersion: "chord-timeline-v1",
+  sourceLeadAtomizerVersion: "source-lead-atomizer-v1",
+} as const;
+const deriveQuickReview = (draft: MusicXmlImportDraft) =>
+  deriveQuickReviewWithRegistry(draft, TEST_ALGORITHM_VERSIONS);
 
 interface ScoreOptions {
   readonly title?: string;
@@ -116,7 +123,11 @@ function repeatScoreXml(withEndings = false): string {
 }
 
 async function imported(xml: string, fileName = "fixture.musicxml"): Promise<MusicXmlImportDraft> {
-  const result = await importMusicXml(encoder.encode(xml), { originalFileName: fileName, identityFactory });
+  const result = await importMusicXml(encoder.encode(xml), {
+    algorithmVersions: TEST_ALGORITHM_VERSIONS,
+    originalFileName: fileName,
+    identityFactory,
+  });
   expect(result.status).toBe("review-required");
   if (result.status !== "review-required") throw new Error("fixture import was blocked");
   return result.draft;
@@ -294,7 +305,10 @@ describe("MusicXML import and canonical review", () => {
     );
     let draft = finishReview(await imported(xml));
     expect((await deriveQuickReview(draft)).state.readyForPlanning).toBe(false);
-    draft = setSectionLyricVerse(draft, 2);
+    const occurrence = draft.sectionOccurrences.find((item) => item.candidateKey === draft.selectedLeadStaffKey);
+    expect(occurrence).toBeDefined();
+    if (!occurrence) return;
+    draft = setSectionOccurrenceLyricVerse(draft, occurrence.key, 2);
     expect((await deriveQuickReview(draft)).state.readyForPlanning).toBe(true);
   });
 
@@ -346,7 +360,10 @@ describe("valid import fixture matrix", () => {
   };
 
   it.each(Object.entries(fixtures))("imports %s", async (_name, xml) => {
-    const result = await importMusicXml(encoder.encode(xml), { identityFactory });
+    const result = await importMusicXml(encoder.encode(xml), {
+      algorithmVersions: TEST_ALGORITHM_VERSIONS,
+      identityFactory,
+    });
     expect(result.status).toBe("review-required");
   });
 });

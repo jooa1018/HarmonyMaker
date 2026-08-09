@@ -13,19 +13,26 @@ import {
 import type { Diagnostic } from "../../domain/diagnostics";
 import type { PitchRange, SpelledPitch } from "../../domain/pitch";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
+import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../algorithm-version-registry";
 import { importMusicXml } from "../../import/musicxml/parser";
-import type { ImportedChordDraft, MusicXmlImportDraft } from "../../import/musicxml/types";
+import {
+  step3ImportVersionsFromRegistry,
+  type ImportedChordDraft,
+  type ImportedSectionDraft,
+  type MusicXmlImportDraft,
+} from "../../import/musicxml/types";
 import {
   addChord,
   confirmChord,
   confirmRights,
   confirmSection,
+  editSection,
   replaceChord,
   selectLeadCandidate,
   setDefaultKey,
   setDefaultTempo,
   setPerformerRange,
-  setSectionLyricVerse,
+  setSectionOccurrenceLyricVerse,
   setSingerCount,
 } from "../../import/review/commands";
 import { deriveQuickReview, type QuickReviewAnalysis } from "../../import/review/quick-review";
@@ -41,6 +48,12 @@ const KEY_OPTIONS = [
   "Cb major", "Gb major", "Db major", "Ab major", "Eb major", "Bb major", "F major", "C major", "G major", "D major", "A major", "E major", "B major", "F# major", "C# major",
   "Ab minor", "Eb minor", "Bb minor", "F minor", "C minor", "G minor", "D minor", "A minor", "E minor", "B minor", "F# minor", "C# minor", "G# minor", "D# minor", "A# minor",
 ] as const;
+const SECTION_TYPES: readonly ImportedSectionDraft["type"][] = [
+  "intro", "verse", "pre-chorus", "chorus", "bridge", "tag", "ending", "other",
+];
+const STEP3_ALGORITHM_VERSIONS = step3ImportVersionsFromRegistry(
+  APPLICATION_ALGORITHM_VERSION_REGISTRY,
+);
 
 function parsePitch(text: string): SpelledPitch | undefined {
   const match = /^([A-G])(#?)(-?\d+)$/u.exec(text);
@@ -169,6 +182,41 @@ function ChordEditor({ chord, onCommit }: { readonly chord: ImportedChordDraft; 
   );
 }
 
+function SectionEditor({
+  section,
+  onEdit,
+  onConfirm,
+}: {
+  readonly section: ImportedSectionDraft;
+  readonly onEdit: (key: string, type: ImportedSectionDraft["type"], label: string) => void;
+  readonly onConfirm: (key: string) => void;
+}) {
+  const [type, setType] = useState(section.type);
+  const [label, setLabel] = useState(section.label);
+  return (
+    <li className={styles.reviewItem}>
+      <div>
+        <strong>{section.label}</strong>
+        <span className={styles.meta}> {section.type} · 마디 {section.startMeasureOrdinal + 1}–{section.endMeasureOrdinalExclusive} · {section.confirmation}</span>
+      </div>
+      <label className={styles.inlineField} htmlFor={`section-label-${section.key}`}>
+        <span>label</span>
+        <input id={`section-label-${section.key}`} value={label} onChange={(event) => setLabel(event.target.value)} />
+      </label>
+      <label className={styles.inlineField} htmlFor={`section-type-${section.key}`}>
+        <span>type</span>
+        <select id={`section-type-${section.key}`} value={type} onChange={(event) => setType(event.target.value as ImportedSectionDraft["type"])}>
+          {SECTION_TYPES.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      </label>
+      <div className={styles.presetRow}>
+        <button type="button" onClick={() => onEdit(section.key, type, label)}>type/label 수정 저장</button>
+        <button type="button" disabled={section.confirmation === "confirmed"} onClick={() => onConfirm(section.key)}>{section.confirmation === "confirmed" ? "확인됨" : "Section 확인"}</button>
+      </div>
+    </li>
+  );
+}
+
 function AddChordForm({
   partOrdinal,
   measureCount,
@@ -232,7 +280,6 @@ export function ImportReviewClient() {
   const [reviewing, setReviewing] = useState(false);
   const [tempoText, setTempoText] = useState("");
   const [keyText, setKeyText] = useState("");
-  const [verseText, setVerseText] = useState("1");
 
   const updateDraft = useCallback((updater: DraftUpdater) => {
     setReviewing(true);
@@ -242,7 +289,7 @@ export function ImportReviewClient() {
   useEffect(() => {
     if (!draft) return;
     let active = true;
-    void deriveQuickReview(draft).then((next) => {
+    void deriveQuickReview(draft, STEP3_ALGORITHM_VERSIONS).then((next) => {
       if (!active) return;
       setAnalysis(next);
       setDiagnostics(next.diagnostics);
@@ -262,7 +309,10 @@ export function ImportReviewClient() {
     setDiagnostics([]);
     setFileStatus(`${file.name} 보안 검사 중…`);
     try {
-      const result = await importMusicXml(new Uint8Array(await file.arrayBuffer()), { originalFileName: file.name });
+      const result = await importMusicXml(new Uint8Array(await file.arrayBuffer()), {
+        algorithmVersions: STEP3_ALGORITHM_VERSIONS,
+        originalFileName: file.name,
+      });
       if (result.status === "blocked") {
         setDiagnostics(result.diagnostics);
         setFileStatus("가져오기가 안전하게 차단되었습니다.");
@@ -297,6 +347,8 @@ export function ImportReviewClient() {
     : draft?.parts.find((part) => part.measures.some((measure) => measure.chords.length > 0)), [draft, selectedPart]);
   const chords = chordPart?.measures.flatMap((measure) => measure.chords) ?? [];
   const sections = draft?.sections.filter((section) => section.partOrdinal === selectedCandidate?.partOrdinal) ?? [];
+  const sectionOccurrences = draft?.sectionOccurrences
+    .filter((occurrence) => occurrence.candidateKey === selectedCandidate?.key) ?? [];
 
   const commitChord = (key: string, text: string) => updateDraft((current) => confirmChord(replaceChord(current, key, text), key));
   const addChordAt = (partOrdinal: number, measureOrdinal: number, onsetText: string, chordText: string) => {
@@ -354,8 +406,25 @@ export function ImportReviewClient() {
           <section className={styles.panel} aria-labelledby="section-heading">
             <h2 id="section-heading">4. Section suggestion 확인</h2>
             <p className={styles.help}>MusicXML의 rehearsal/명시적 section text만 제안으로 사용했습니다. 확인 전에는 authority가 아닙니다.</p>
-            <ul className={styles.reviewList}>{sections.map((section) => <li className={styles.reviewItem} key={section.key}><div><strong>{section.label}</strong><span className={styles.meta}> {section.type} · 마디 {section.startMeasureOrdinal + 1}–{section.endMeasureOrdinalExclusive} · {section.confirmation}</span></div><button type="button" disabled={section.confirmation === "confirmed"} onClick={() => updateDraft((current) => confirmSection(current, section.key))}>{section.confirmation === "confirmed" ? "확인됨" : "Section 확인"}</button></li>)}</ul>
-            <form className={styles.addRow} onSubmit={(event) => { event.preventDefault(); const verse = Number(verseText); if (Number.isSafeInteger(verse) && verse >= 1) updateDraft((current) => setSectionLyricVerse(current, verse)); }}><label>production lyric verse<input type="number" min="1" value={verseText} onChange={(event) => setVerseText(event.target.value)} /></label><button type="submit">verse 확인</button></form>
+            <ul className={styles.reviewList}>{sections.map((section) => <SectionEditor key={section.key} section={section} onEdit={(key, type, label) => updateDraft((current) => editSection(current, key, { type, label }))} onConfirm={(key) => updateDraft((current) => confirmSection(current, key))} />)}</ul>
+            <p className={styles.help}>이 단계에서 section 범위는 MusicXML source measure 경계로 고정되며, type과 label만 수정할 수 있습니다.</p>
+            <ul className={styles.reviewList}>{sectionOccurrences.map((occurrence) => {
+              const section = sections.find((candidate) => candidate.key === occurrence.sectionKey);
+              return (
+                <li className={styles.reviewItem} key={occurrence.key}>
+                  <div><strong>{section?.label ?? occurrence.sectionKey} · occurrence {occurrence.occurrenceIndex + 1}</strong><span className={styles.meta}> performance {occurrence.startPerformanceMeasureIndex + 1}–{occurrence.endPerformanceMeasureIndexExclusive}</span></div>
+                  {occurrence.availableLyricVerses.length === 0 ? <span className={styles.meta}>가사 없음 · verse 1 authority</span> : (
+                    <label className={styles.inlineField} htmlFor={`occurrence-verse-${occurrence.key}`}>
+                      <span>production lyric verse</span>
+                      <select id={`occurrence-verse-${occurrence.key}`} value={occurrence.selectedLyricVerse ?? ""} onChange={(event) => updateDraft((current) => setSectionOccurrenceLyricVerse(current, occurrence.key, Number(event.target.value)))}>
+                        <option value="">verse 선택</option>
+                        {occurrence.availableLyricVerses.map((verse) => <option key={verse} value={verse}>{verse}</option>)}
+                      </select>
+                    </label>
+                  )}
+                </li>
+              );
+            })}</ul>
           </section>
 
           <section className={styles.panel} aria-labelledby="flow-heading">

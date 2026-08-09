@@ -12,17 +12,22 @@ import {
   type EffectiveChordTimelineState,
 } from "../../domain/harmony/chord-timeline";
 import { performerId } from "../../domain/ids";
+import { validateCoreInputLimits } from "../../domain/limits";
 import { validatePerformer } from "../../domain/performer";
+import { comparePitches } from "../../domain/pitch";
 import { atomizeSourceLead, type SourceLeadAtomization } from "../../domain/source/atomization";
-import type { SongSourceDocument } from "../../domain/source/model";
+import type { SongSourceDocument, SourceMeasure } from "../../domain/source/model";
 import type { ImportedLeadEventDraft, MusicXmlImportDraft, Step3ImportVersions } from "../musicxml/types";
-import { STEP3_IMPORT_VERSIONS } from "../musicxml/types";
 import {
   diagnosticInputsFromDiagnostics,
   materializeImportDiagnostics,
   type ImportDiagnosticInput,
 } from "../musicxml/diagnostics";
-import { finalizeImportedSource } from "./finalize";
+import {
+  finalizeNormalizedImportedSource,
+  normalizeImportedSource,
+  type ImportedSourceNormalization,
+} from "./finalize";
 
 export interface QuickReviewState {
   readonly selectedLeadStaffKey?: string;
@@ -40,6 +45,7 @@ export interface QuickReviewAnalysis {
   readonly state: QuickReviewState;
   readonly diagnostics: readonly Diagnostic[];
   readonly source?: SongSourceDocument;
+  readonly normalization?: ImportedSourceNormalization;
   readonly chordTimelineState: EffectiveChordTimelineState;
   readonly atomization?: SourceLeadAtomization;
 }
@@ -121,8 +127,8 @@ function selectedLeadDiagnostics(draft: MusicXmlImportDraft): readonly ImportDia
   return diagnostics;
 }
 
-function supportedPlanningMeter(source: SongSourceDocument): boolean {
-  return source.sourceMeasures.every((measure) => {
+function supportedPlanningMeter(sourceMeasures: readonly SourceMeasure[]): boolean {
+  return sourceMeasures.every((measure) => {
     const time = measure.time;
     return (time.numerator === 4
         && time.denominator === 4
@@ -133,15 +139,18 @@ function supportedPlanningMeter(source: SongSourceDocument): boolean {
   });
 }
 
-function hasUnsupportedModulation(source: SongSourceDocument): boolean {
-  return source.sourceMeasures.some((measure) => measure.key !== undefined
-    && (measure.key.mode !== source.defaultKey.mode
-      || measure.key.tonic.step !== source.defaultKey.tonic.step
-      || measure.key.tonic.alter !== source.defaultKey.tonic.alter));
+function hasUnsupportedModulation(
+  sourceMeasures: readonly SourceMeasure[],
+  defaultKey: MusicXmlImportDraft["defaultKey"],
+): boolean {
+  return defaultKey !== undefined && sourceMeasures.some((measure) => measure.key !== undefined
+    && (measure.key.mode !== defaultKey.mode
+      || measure.key.tonic.step !== defaultKey.tonic.step
+      || measure.key.tonic.alter !== defaultKey.tonic.alter));
 }
 
-function invalidPerformerSlotIds(draft: MusicXmlImportDraft): readonly string[] {
-  const invalid = new Set<string>();
+function performerReviewIssues(draft: MusicXmlImportDraft): ReadonlyMap<string, string> {
+  const invalid = new Map<string, string>();
   for (let ordinal = 0; ordinal < draft.singerCount; ordinal += 1) {
     const expectedId = performerId(ordinal);
     const slot = draft.performerSlots[ordinal];
@@ -149,38 +158,56 @@ function invalidPerformerSlotIds(draft: MusicXmlImportDraft): readonly string[] 
       || slot.id !== expectedId
       || !slot.profile
       || slot.profile.id !== expectedId
-      || !validatePerformer(slot.profile)) invalid.add(expectedId);
+      || !validatePerformer(slot.profile)) invalid.set(expectedId, "invalid-performer-profile");
   }
-  for (const slot of draft.performerSlots.slice(draft.singerCount)) invalid.add(slot.id);
-  return [...invalid].sort();
-}
-
-function hasUnresolvedLyricAmbiguity(
-  draft: MusicXmlImportDraft,
-  source: SongSourceDocument | undefined,
-): boolean {
-  if (draft.selectedLyricVerse !== undefined || !draft.selectedLeadStaffKey) return false;
+  for (const slot of draft.performerSlots.slice(draft.singerCount)) invalid.set(slot.id, "unexpected-performer-slot");
   const candidate = draft.leadCandidates.find((item) => item.key === draft.selectedLeadStaffKey);
   const part = candidate ? draft.parts.find((item) => item.partOrdinal === candidate.partOrdinal) : undefined;
-  if (!candidate || !part) return false;
-  const verses = [...new Set(part.measures.flatMap((measure) => measure.leadEvents
-    .filter((event) => event.candidateKey === candidate.key && event.kind === "note")
-    .flatMap((event) => event.kind === "note" ? event.lyrics.map((lyric) => lyric.verse) : [])))].sort((left, right) => left - right);
-  if (verses.length <= 1) return false;
-  if (!source) return true;
-  const occurrencesByDefinition = new Map<string, typeof source.sectionOccurrences>();
-  for (const occurrence of source.sectionOccurrences) {
-    occurrencesByDefinition.set(occurrence.sectionDefinitionId, [
-      ...(occurrencesByDefinition.get(occurrence.sectionDefinitionId) ?? []),
-      occurrence,
-    ]);
+  const leadProfile = draft.performerSlots[0]?.profile;
+  if (candidate && part && leadProfile && validatePerformer(leadProfile)) {
+    const pitches = part.measures.flatMap((measure) => measure.leadEvents
+      .filter((event) => event.candidateKey === candidate.key && event.kind === "note")
+      .map((event) => event.kind === "note" ? event.pitch : undefined)
+      .filter((pitch): pitch is NonNullable<typeof pitch> => pitch !== undefined));
+    if (pitches.some((pitch) => comparePitches(pitch, leadProfile.hardRange.low) < 0
+      || comparePitches(pitch, leadProfile.hardRange.high) > 0)) {
+      invalid.set(performerId(0), "selected-lead-outside-hard-range");
+    }
   }
-  const repeated = [...occurrencesByDefinition.values()].filter((occurrences) => occurrences.length > 1);
-  return repeated.length === 0 || repeated.some((occurrences) => {
-    const ordered = [...occurrences].sort((left, right) => left.occurrenceIndex - right.occurrenceIndex);
-    return ordered.length !== verses.length
-      || ordered.some((occurrence, index) => occurrence.lyricVerseIndex !== verses[index]);
-  });
+  return invalid;
+}
+
+function diagnosticAppliesToSelection(
+  diagnostic: Diagnostic,
+  draft: MusicXmlImportDraft,
+  normalization: ImportedSourceNormalization | undefined,
+): boolean {
+  const scope = diagnostic.details?.diagnosticScope;
+  if (scope === undefined) return true;
+  if (!draft.selectedLeadStaffKey) return true;
+  if (scope === "lead-candidate") return diagnostic.details?.candidateKey === draft.selectedLeadStaffKey;
+  if (scope !== "lead-part") return true;
+  const selectedCandidate = draft.leadCandidates.find((candidate) => candidate.key === draft.selectedLeadStaffKey);
+  const selectedPartOrdinal = selectedCandidate?.partOrdinal;
+  const rawChordPartOrdinal = draft.parts.find((part) => part.measures.some((measure) => measure.chords.length > 0))?.partOrdinal;
+  const partOrdinal = diagnostic.details?.partOrdinal;
+  return partOrdinal === selectedPartOrdinal
+    || partOrdinal === normalization?.chordAuthorityPartOrdinal
+    || partOrdinal === rawChordPartOrdinal;
+}
+
+function inputLimitDiagnostics(
+  counts: Parameters<typeof validateCoreInputLimits>[0],
+): readonly ImportDiagnosticInput[] {
+  return validateCoreInputLimits(counts).map((violation) => ({
+    code: "INPUT_LIMIT_EXCEEDED",
+    messageKo: "Core 입력 상한을 초과했습니다.",
+    details: {
+      issue: violation.limit,
+      actual: violation.actual,
+      maximum: violation.maximum,
+    },
+  }));
 }
 
 function dedupeInputs(inputs: readonly ImportDiagnosticInput[]): readonly ImportDiagnosticInput[] {
@@ -199,12 +226,18 @@ function dedupeInputs(inputs: readonly ImportDiagnosticInput[]): readonly Import
 
 export async function deriveQuickReview(
   draft: MusicXmlImportDraft,
-  versions: Step3ImportVersions = STEP3_IMPORT_VERSIONS,
+  versions: Step3ImportVersions,
 ): Promise<QuickReviewAnalysis> {
+  const normalized = await normalizeImportedSource(draft, versions);
+  const normalization = normalized.status === "complete" ? normalized.normalization : undefined;
   const diagnosticInputs: ImportDiagnosticInput[] = [
-    ...diagnosticInputsFromDiagnostics(draft.diagnostics),
+    ...diagnosticInputsFromDiagnostics(draft.diagnostics
+      .filter((diagnostic) => diagnosticAppliesToSelection(diagnostic, draft, normalization))),
     ...selectedLeadDiagnostics(draft),
   ];
+  if (normalized.status === "blocked") {
+    diagnosticInputs.push(...diagnosticInputsFromDiagnostics(normalized.diagnostics));
+  }
   if (!draft.defaultKey) diagnosticInputs.push({
     code: "UNSUPPORTED_KEY_SIGNATURE",
     messageKo: "기본 조성을 확인해야 합니다.",
@@ -215,11 +248,14 @@ export async function deriveQuickReview(
     messageKo: "초기 tempo를 명시적으로 입력해야 합니다.",
     details: { issue: "missing-tempo" },
   });
-  const invalidPerformerIds = invalidPerformerSlotIds(draft);
+  const performerIssues = performerReviewIssues(draft);
+  const invalidPerformerIds = [...performerIssues.keys()].sort();
   for (const performerId of invalidPerformerIds) diagnosticInputs.push({
     code: "PERFORMER_RANGE_INVALID",
-    messageKo: "hard/comfortable/preferred 음역의 포함 관계를 확인해야 합니다.",
-    details: { performerId },
+    messageKo: performerIssues.get(performerId) === "selected-lead-outside-hard-range"
+      ? "선택한 Source Lead의 실제 음역이 Lead performer hardRange를 벗어납니다."
+      : "hard/comfortable/preferred 음역의 포함 관계를 확인해야 합니다.",
+    details: { performerId, issue: performerIssues.get(performerId) ?? "invalid-performer-profile" },
   });
   const missingRightsUses: readonly "generation"[] = draft.rights?.allowedUses.includes("generation") ? [] : ["generation"];
   if (missingRightsUses.length > 0) diagnosticInputs.push({
@@ -227,10 +263,7 @@ export async function deriveQuickReview(
     messageKo: "generation 권리를 확인해야 합니다.",
     details: { issue: "missing-generation-right" },
   });
-  const finalized = await finalizeImportedSource(draft, versions);
   let source: SongSourceDocument | undefined;
-  if (finalized.status === "complete") source = finalized.source;
-  else diagnosticInputs.push(...diagnosticInputsFromDiagnostics(finalized.diagnostics));
   let chordTimelineState: EffectiveChordTimelineState = {
     status: "unresolved",
     resolutionPolicy: { gapPolicy: "carry-until-next" },
@@ -239,21 +272,21 @@ export async function deriveQuickReview(
   let atomization: SourceLeadAtomization | undefined;
   let unconfirmedChordEventIds: readonly string[] = [];
   let unconfirmedSectionDefinitionIds: readonly string[] = [];
-  if (source) {
-    if (!supportedPlanningMeter(source)) diagnosticInputs.push({
+  if (normalization) {
+    if (!supportedPlanningMeter(normalization.sourceMeasures)) diagnosticInputs.push({
       code: "UNSUPPORTED_METER",
       messageKo: "Core planning readiness는 4/4와 6/8만 지원합니다.",
       details: { issue: "planning-meter" },
     });
-    if (hasUnsupportedModulation(source)) diagnosticInputs.push({
+    if (hasUnsupportedModulation(normalization.sourceMeasures, draft.defaultKey)) diagnosticInputs.push({
       code: "UNSUPPORTED_MODULATION",
       messageKo: "선택한 Source Lead의 곡 중간 조바꿈은 Core planning에서 지원하지 않습니다.",
       details: { issue: "selected-source-modulation" },
     });
-    unconfirmedChordEventIds = source.sourceMeasures.flatMap((measure) => measure.chordEvents
+    unconfirmedChordEventIds = normalization.sourceMeasures.flatMap((measure) => measure.chordEvents
       .filter((event) => event.confirmation !== "confirmed")
       .map((event) => event.id));
-    unconfirmedSectionDefinitionIds = source.sectionDefinitions
+    unconfirmedSectionDefinitionIds = normalization.sectionDefinitions
       .filter((section) => section.confirmation !== "confirmed")
       .map((section) => section.id);
     for (const sectionId of unconfirmedSectionDefinitionIds) diagnosticInputs.push({
@@ -261,11 +294,14 @@ export async function deriveQuickReview(
       messageKo: "가져온 Section suggestion을 확인해야 합니다.",
       details: { sectionDefinitionId: sectionId },
     });
-    const sourceChordProjectionDigest = await digestSourceChordProjection(source.sourceMeasures);
-    const performanceSequenceDigest = await digestPerformanceSequence(source.performanceSequence, source.sourceMeasures);
+    const sourceChordProjectionDigest = await digestSourceChordProjection(normalization.sourceMeasures);
+    const performanceSequenceDigest = await digestPerformanceSequence(
+      normalization.performanceSequence,
+      normalization.sourceMeasures,
+    );
     chordTimelineState = await resolveEffectiveChordTimeline({
-      sourceMeasures: source.sourceMeasures,
-      performanceSequence: source.performanceSequence,
+      sourceMeasures: normalization.sourceMeasures,
+      performanceSequence: normalization.performanceSequence,
       sourceChordProjectionDigest,
       performanceSequenceDigest,
       policy: { gapPolicy: "carry-until-next" },
@@ -274,29 +310,50 @@ export async function deriveQuickReview(
     });
     diagnosticInputs.push(...diagnosticInputsFromDiagnostics(chordTimelineState.diagnostics));
     if (chordTimelineState.status === "resolved") {
+      diagnosticInputs.push(...inputLimitDiagnostics({
+        maxResolvedChordSpans: chordTimelineState.timeline.spans.length,
+      }));
+    }
+    if (chordTimelineState.status === "resolved") {
       try {
+        if (!normalization.musicalSourceDigest) throw new RangeError(
+          normalization.unresolvedLyricOccurrenceKeys.length > 0
+            ? "lyric-verse-authority-incomplete"
+            : "musical-source-digest-prerequisite-incomplete",
+        );
         atomization = await atomizeSourceLead({
-          sourceMeasures: source.sourceMeasures,
-          performanceSequence: source.performanceSequence,
-          sectionOccurrences: source.sectionOccurrences,
-          phraseRegions: source.phraseRegions,
+          sourceMeasures: normalization.sourceMeasures,
+          performanceSequence: normalization.performanceSequence,
+          sectionOccurrences: normalization.sectionOccurrences,
+          phraseRegions: normalization.phraseRegions,
           chordTimeline: chordTimelineState.timeline,
-          musicalSourceDigest: source.revisionDigest,
+          musicalSourceDigest: normalization.musicalSourceDigest,
           atomizerVersion: versions.sourceLeadAtomizerVersion,
         });
+        diagnosticInputs.push(...inputLimitDiagnostics({ maxLeadAtoms: atomization.atoms.length }));
       } catch (error) {
-        diagnosticInputs.push({
-          code: "SOURCE_LEAD_ATOMIZATION_STALE",
-          messageKo: "Source Lead atomization을 현재 Source에서 계산할 수 없습니다.",
-          details: { issue: error instanceof Error ? error.message : "atomization-failed" },
-        });
+        const issue = error instanceof Error ? error.message : "atomization-failed";
+        if (issue !== "musical-source-digest-prerequisite-incomplete"
+          && issue !== "lyric-verse-authority-incomplete") diagnosticInputs.push({
+            code: "SOURCE_LEAD_ATOMIZATION_STALE",
+            messageKo: "Source Lead atomization을 현재 Source에서 계산할 수 없습니다.",
+            details: { issue },
+          });
       }
     }
+    if (draft.defaultKey
+      && draft.defaultTempo
+      && draft.rights?.allowedUses.includes("generation")
+      && normalization.unresolvedLyricOccurrenceKeys.length === 0) {
+      const finalized = await finalizeNormalizedImportedSource(draft, versions, normalization);
+      if (finalized.status === "complete") source = finalized.source;
+      else diagnosticInputs.push(...diagnosticInputsFromDiagnostics(finalized.diagnostics));
+    }
   }
-  if (hasUnresolvedLyricAmbiguity(draft, source)) diagnosticInputs.push({
+  for (const occurrenceKey of normalization?.unresolvedLyricOccurrenceKeys ?? []) diagnosticInputs.push({
     code: "IMPORT_UNSUPPORTED_ELEMENT",
-    messageKo: "여러 lyric verse 중 production verse를 명시적으로 선택해야 합니다.",
-    details: { issue: "lyric-verse-ambiguity" },
+    messageKo: "Section occurrence별 production lyric verse를 명시적으로 선택해야 합니다.",
+    details: { issue: "lyric-verse-ambiguity", occurrenceKey },
   });
   const diagnostics = await materializeImportDiagnostics(dedupeInputs(diagnosticInputs));
   const unresolvedChordGapDiagnosticIds = diagnostics
@@ -306,10 +363,10 @@ export async function deriveQuickReview(
   const blockingDiagnosticIds = diagnostics
     .filter((diagnostic) => diagnostic.severity === "blocking")
     .map((diagnostic) => diagnostic.id);
-  const allChordsConfirmed = source !== undefined
-    && source.sourceMeasures.every((measure) => measure.chordEvents.every((event) => event.confirmation === "confirmed"));
-  const allSectionsConfirmed = source !== undefined
-    && source.sectionDefinitions.every((section) => section.confirmation === "confirmed");
+  const allChordsConfirmed = normalization !== undefined
+    && normalization.sourceMeasures.every((measure) => measure.chordEvents.every((event) => event.confirmation === "confirmed"));
+  const allSectionsConfirmed = normalization !== undefined
+    && normalization.sectionDefinitions.every((section) => section.confirmation === "confirmed");
   const state: QuickReviewState = {
     ...(draft.selectedLeadStaffKey ? { selectedLeadStaffKey: draft.selectedLeadStaffKey } : {}),
     unresolvedChordGapDiagnosticIds,
@@ -325,6 +382,7 @@ export async function deriveQuickReview(
       && atomization !== undefined
       && allChordsConfirmed
       && allSectionsConfirmed
+      && normalization?.unresolvedLyricOccurrenceKeys.length === 0
       && invalidPerformerIds.length === 0
       && missingRightsUses.length === 0
       && draft.unsupportedPerformanceFlows.length === 0
@@ -334,6 +392,7 @@ export async function deriveQuickReview(
     state,
     diagnostics,
     ...(source ? { source } : {}),
+    ...(normalization ? { normalization } : {}),
     chordTimelineState,
     ...(atomization ? { atomization } : {}),
   };

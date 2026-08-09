@@ -4,17 +4,24 @@ import {
   confirmChord,
   confirmRights,
   confirmSection,
-  deriveQuickReview,
+  deriveQuickReview as deriveQuickReviewWithRegistry,
   importMusicXml,
   replaceChord,
   selectLeadCandidate,
   setPerformerRange,
-  setSectionLyricVerse,
+  setSectionOccurrenceLyricVerse,
   type MusicXmlImportDraft,
 } from "..";
 
 const encoder = new TextEncoder();
 const identityFactory = () => "doc:quick-review";
+const TEST_ALGORITHM_VERSIONS = {
+  performanceExpanderVersion: "repeat-v1",
+  chordTimelineResolverVersion: "chord-timeline-v1",
+  sourceLeadAtomizerVersion: "source-lead-atomizer-v1",
+} as const;
+const deriveQuickReview = (draft: MusicXmlImportDraft) =>
+  deriveQuickReviewWithRegistry(draft, TEST_ALGORITHM_VERSIONS);
 
 function score(body: string, options: { readonly time?: string; readonly flow?: string; readonly secondMeasure?: string } = {}): string {
   return `<score-partwise><work><work-title>Review</work-title></work><part-list><score-part id="P1"><part-name>Lead</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key>${options.time ?? "<time><beats>4</beats><beat-type>4</beat-type></time>"}</attributes><direction><sound tempo="100"/></direction><direction><direction-type><rehearsal>Verse</rehearsal></direction-type></direction>${options.flow ? `<direction><direction-type><words>${options.flow}</words></direction-type></direction>` : ""}<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>${body}</measure>${options.secondMeasure ?? ""}</part></score-partwise>`;
@@ -23,7 +30,10 @@ function score(body: string, options: { readonly time?: string; readonly flow?: 
 const wholeNote = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><staff>1</staff></note>";
 
 async function draftFrom(xml = score(wholeNote)): Promise<MusicXmlImportDraft> {
-  const result = await importMusicXml(encoder.encode(xml), { identityFactory });
+  const result = await importMusicXml(encoder.encode(xml), {
+    algorithmVersions: TEST_ALGORITHM_VERSIONS,
+    identityFactory,
+  });
   expect(result.status).toBe("review-required");
   if (result.status !== "review-required") throw new Error("review fixture blocked");
   return result.draft;
@@ -176,7 +186,10 @@ describe("Quick Review blocking completeness", () => {
     const lyrics = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><staff>1</staff><lyric number=\"1\"><text>one</text></lyric><lyric number=\"2\"><text>two</text></lyric></note>";
     const draft = selectAndConfirm(await draftFrom(score(lyrics)));
     expect((await deriveQuickReview(draft)).diagnostics.some((item) => item.details?.issue === "lyric-verse-ambiguity")).toBe(true);
-    expect((await deriveQuickReview(setSectionLyricVerse(draft, 2))).state.readyForPlanning).toBe(true);
+    const occurrence = draft.sectionOccurrences.find((item) => item.candidateKey === draft.selectedLeadStaffKey);
+    expect(occurrence).toBeDefined();
+    if (!occurrence) return;
+    expect((await deriveQuickReview(setSectionOccurrenceLyricVerse(draft, occurrence.key, 2))).state.readyForPlanning).toBe(true);
   });
 
   it("reports tie mismatch on the selected voice", async () => {
@@ -214,8 +227,14 @@ describe("exact MusicXML cursor and selected-lead validation", () => {
   });
 
   it("blocks negative and overflowing cursors", async () => {
-    const negative = await importMusicXml(encoder.encode(score("<backup><duration>1</duration></backup>")), { identityFactory });
-    const overflow = await importMusicXml(encoder.encode(score(`${wholeNote}<forward><duration>1</duration></forward>`)), { identityFactory });
+    const negative = await importMusicXml(encoder.encode(score("<backup><duration>1</duration></backup>")), {
+      algorithmVersions: TEST_ALGORITHM_VERSIONS,
+      identityFactory,
+    });
+    const overflow = await importMusicXml(encoder.encode(score(`${wholeNote}<forward><duration>1</duration></forward>`)), {
+      algorithmVersions: TEST_ALGORITHM_VERSIONS,
+      identityFactory,
+    });
     expect(negative.status).toBe("blocked");
     expect(overflow.status).toBe("blocked");
   });

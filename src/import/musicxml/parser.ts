@@ -19,7 +19,9 @@ import {
   type Step,
 } from "../../domain/pitch";
 import { performerId } from "../../domain/ids";
+import { validateCoreInputLimits } from "../../domain/limits";
 import { extractMusicXmlFromMxl } from "../mxl/archive";
+import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { materializeImportDiagnostics, type ImportDiagnosticInput } from "./diagnostics";
 import {
   DEFAULT_IMPORT_SECURITY_LIMITS,
@@ -35,6 +37,7 @@ import {
   type LeadVoiceCandidate,
   type MusicImportResult,
   type MusicXmlImportDraft,
+  type Step3ImportVersions,
   type UnsupportedPerformanceFlow,
 } from "./types";
 import {
@@ -92,6 +95,15 @@ function parseDecimalInteger(text: string | undefined): number | undefined {
   if (text === undefined || !/^[+-]?\d+(?:\.0+)?$/u.test(text.trim())) return undefined;
   const value = Number(text);
   return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function integerChild(
+  parent: XmlElement,
+  name: string,
+  missingValue: number,
+): number | undefined {
+  const child = xmlChild(parent, name);
+  return child === undefined ? missingValue : parseInteger(xmlText(child));
 }
 
 function fixedCompare(left: string, right: string): -1 | 0 | 1 {
@@ -239,15 +251,22 @@ function parsePitch(note: XmlElement): SpelledPitch | undefined {
   const pitch = xmlChild(note, "pitch");
   if (!pitch) return undefined;
   const step = xmlText(xmlChild(pitch, "step"));
-  const alter = parseInteger(xmlText(xmlChild(pitch, "alter"))) ?? 0;
+  const alter = integerChild(pitch, "alter", 0);
   const octave = parseInteger(xmlText(xmlChild(pitch, "octave")));
   if (!step || !["A", "B", "C", "D", "E", "F", "G"].includes(step)
+    || alter === undefined
     || ![-2, -1, 0, 1, 2].includes(alter)
     || octave === undefined) return undefined;
   return { step: step as Step, alter: alter as Alter, octave };
 }
 
-function parseLyrics(note: XmlElement, accent: boolean, context: ParseContext, measureOrdinal: number) {
+function parseLyrics(
+  note: XmlElement,
+  accent: boolean,
+  context: ParseContext,
+  measureOrdinal: number,
+  leadCandidateKey: string,
+) {
   return xmlChildren(note, "lyric").flatMap((lyric) => {
     const text = xmlText(xmlChild(lyric, "text"));
     const rawVerse = lyric.attributes.number ?? "1";
@@ -258,7 +277,13 @@ function parseLyrics(note: XmlElement, accent: boolean, context: ParseContext, m
       context.diagnostics.push({
         code: "IMPORT_UNSUPPORTED_ELEMENT",
         messageKo: "가사 verse 또는 syllabic 표기가 모호합니다.",
-        details: { issue: "lyric-verse-ambiguity", measureOrdinal, partOrdinal: context.partOrdinal },
+        details: {
+          issue: "lyric-verse-ambiguity",
+          measureOrdinal,
+          partOrdinal: context.partOrdinal,
+          diagnosticScope: "lead-candidate",
+          candidateKey: leadCandidateKey,
+        },
       });
       return [];
     }
@@ -312,10 +337,11 @@ function failedChord(sourceText: string, token: string): ChordParseResult {
 
 function parseHarmony(
   harmony: XmlElement,
-  partOrdinal: number,
+  context: ParseContext,
   measureOrdinal: number,
   onset: Fraction,
 ): RawChordDraft {
+  const partOrdinal = context.partOrdinal;
   const kindElement = xmlChild(harmony, "kind");
   const kind = (xmlText(kindElement) ?? "major").toLowerCase();
   if (kind === "none") {
@@ -331,21 +357,23 @@ function parseHarmony(
   }
   const root = xmlChild(harmony, "root");
   const rootStep = xmlText(xmlChild(root ?? harmony, "root-step")) ?? "";
-  const rootAlter = parseInteger(xmlText(xmlChild(root ?? harmony, "root-alter"))) ?? 0;
-  const rootSymbol = pitchClassSymbol(rootStep, rootAlter);
+  const rootAlter = integerChild(root ?? harmony, "root-alter", 0);
+  const rootSymbol = rootAlter === undefined ? undefined : pitchClassSymbol(rootStep, rootAlter);
   const bass = xmlChild(harmony, "bass");
   const bassStep = xmlText(xmlChild(bass ?? harmony, "bass-step"));
-  const bassAlter = parseInteger(xmlText(xmlChild(bass ?? harmony, "bass-alter"))) ?? 0;
-  const bassSymbol = bassStep ? pitchClassSymbol(bassStep, bassAlter) : undefined;
+  const bassAlter = integerChild(bass ?? harmony, "bass-alter", 0);
+  const bassSymbol = bassStep && bassAlter !== undefined ? pitchClassSymbol(bassStep, bassAlter) : undefined;
   const kindText = kindElement?.attributes.text?.trim();
   const suffix = HARMONY_KIND_SUFFIX[kind];
   const degreeTokens: string[] = [];
-  let unsupportedToken: string | undefined;
+  let unsupportedToken = rootAlter === undefined
+    ? "root-alter:invalid"
+    : bassStep && bassAlter === undefined ? "bass-alter:invalid" : undefined;
   for (const degree of xmlChildren(harmony, "degree")) {
     const value = parseInteger(xmlText(xmlChild(degree, "degree-value")));
-    const alter = parseInteger(xmlText(xmlChild(degree, "degree-alter"))) ?? 0;
+    const alter = integerChild(degree, "degree-alter", 0);
     const type = xmlText(xmlChild(degree, "degree-type"));
-    if (value === undefined || ![2, 3, 4, 5, 6, 7, 9, 11, 13].includes(value)) {
+    if (value === undefined || alter === undefined || ![2, 3, 4, 5, 6, 7, 9, 11, 13].includes(value)) {
       unsupportedToken = `degree:${value ?? "?"}`;
       continue;
     }
@@ -532,10 +560,21 @@ function parseMeasure(
   for (const child of measure.children) {
     if (child.kind !== "element") continue;
     if (child.name === "attributes") {
-      const nextDivisions = parseInteger(xmlText(xmlChild(child, "divisions")));
-      if (nextDivisions !== undefined) {
-        if (nextDivisions <= 0) throw new RangeError("MusicXML divisions must be positive");
-        divisions = nextDivisions;
+      const divisionsElement = xmlChild(child, "divisions");
+      if (divisionsElement) {
+        const nextDivisions = parseInteger(xmlText(divisionsElement));
+        if (nextDivisions === undefined || nextDivisions <= 0) {
+          context.diagnostics.push({
+            code: "IMPORT_UNSUPPORTED_ELEMENT",
+            messageKo: "divisions는 존재하면 양의 정수여야 합니다.",
+            details: {
+              issue: "invalid-divisions",
+              measureOrdinal: ordinal,
+              partOrdinal: context.partOrdinal,
+              diagnosticScope: "lead-part",
+            },
+          });
+        } else divisions = nextDivisions;
       }
       const nextTime = parseTime(child, context, ordinal);
       if (nextTime) time = nextTime;
@@ -552,22 +591,55 @@ function parseMeasure(
       continue;
     }
     if (child.name === "note") {
-      if (xmlChild(child, "grace") || xmlChild(child, "cue")
+      const staffElement = xmlChild(child, "staff");
+      const staff = staffElement === undefined ? 1 : parseInteger(xmlText(staffElement));
+      const voice = xmlText(xmlChild(child, "voice")) ?? "1";
+      const isChordMember = xmlChild(child, "chord") !== undefined;
+      if (staff === undefined || staff <= 0) {
+        context.diagnostics.push({
+          code: "IMPORT_UNSUPPORTED_ELEMENT",
+          messageKo: "staff는 존재하면 양의 정수여야 합니다.",
+          details: {
+            issue: "invalid-staff",
+            measureOrdinal: ordinal,
+            partOrdinal: context.partOrdinal,
+            diagnosticScope: "lead-part",
+          },
+        });
+        const durationText = xmlText(xmlChild(child, "duration"));
+        const parsedDuration = durationText === undefined ? undefined : parseInteger(durationText);
+        if (!isChordMember && parsedDuration !== undefined && parsedDuration > 0) {
+          cursor = addFractions(cursor, fraction(parsedDuration, divisions));
+          if (compareFractions(cursor, maximum) > 0) maximum = cursor;
+        }
+        continue;
+      }
+      const keyForCandidate = candidateKey(context.partOrdinal, staff, voice);
+      const unsupported = xmlChild(child, "grace") || xmlChild(child, "cue")
         || xmlDescendants(child, "ornaments").length > 0
-        || xmlChild(child, "time-modification")) {
+        || xmlChild(child, "time-modification");
+      if (unsupported) {
         context.diagnostics.push({
           code: "IMPORT_UNSUPPORTED_ELEMENT",
           messageKo: "grace/cue/ornament/tuplet note는 의미 손실 없이 가져올 수 없습니다.",
-          details: { measureOrdinal: ordinal, partOrdinal: context.partOrdinal },
+          details: {
+            issue: "unsupported-lead-note",
+            measureOrdinal: ordinal,
+            partOrdinal: context.partOrdinal,
+            diagnosticScope: "lead-candidate",
+            candidateKey: keyForCandidate,
+          },
         });
+        const durationText = xmlText(xmlChild(child, "duration"));
+        const parsedDuration = durationText === undefined ? undefined : parseInteger(durationText);
+        if (!isChordMember && parsedDuration !== undefined && parsedDuration > 0) {
+          const duration = fraction(parsedDuration, divisions);
+          cursor = addFractions(cursor, duration);
+          if (compareFractions(cursor, maximum) > 0) maximum = cursor;
+        }
         continue;
       }
       const duration = durationFraction(xmlText(xmlChild(child, "duration")), divisions);
-      const staff = parseInteger(xmlText(xmlChild(child, "staff")) ?? "1") ?? 1;
-      const voice = xmlText(xmlChild(child, "voice")) ?? "1";
-      if (staff <= 0) throw new RangeError("MusicXML staff must be positive");
-      const keyForCandidate = candidateKey(context.partOrdinal, staff, voice);
-      const isChordMember = xmlChild(child, "chord") !== undefined;
       const onset = isChordMember ? lastOnset.get(keyForCandidate) : cursor;
       if (!onset) throw new RangeError("MusicXML chord member has no preceding note");
       if (!isChordMember) lastOnset.set(keyForCandidate, onset);
@@ -582,7 +654,13 @@ function parseMeasure(
           context.diagnostics.push({
             code: "IMPORT_UNSUPPORTED_ELEMENT",
             messageKo: "pitched note의 step/alter/octave를 해석할 수 없습니다.",
-            details: { measureOrdinal: ordinal, partOrdinal: context.partOrdinal },
+            details: {
+              issue: "invalid-pitch",
+              measureOrdinal: ordinal,
+              partOrdinal: context.partOrdinal,
+              diagnosticScope: "lead-candidate",
+              candidateKey: keyForCandidate,
+            },
           });
         } else {
           const tieTypes = new Set([
@@ -598,7 +676,7 @@ function parseMeasure(
             pitch,
             tieStart: tieTypes.has("start"),
             tieStop: tieTypes.has("stop"),
-            lyrics: parseLyrics(child, accent, context, ordinal),
+            lyrics: parseLyrics(child, accent, context, ordinal, keyForCandidate),
           });
         }
       }
@@ -606,16 +684,44 @@ function parseMeasure(
       continue;
     }
     if (child.name === "harmony") {
-      const offsetText = xmlText(xmlChild(child, "offset"));
-      const offset = offsetText === undefined ? ZERO : fraction(parseInteger(offsetText) ?? 0, divisions);
+      const offsetElement = xmlChild(child, "offset");
+      const parsedOffset = offsetElement === undefined ? 0 : parseInteger(xmlText(offsetElement));
+      if (parsedOffset === undefined) {
+        context.diagnostics.push({
+          code: "IMPORT_UNSUPPORTED_ELEMENT",
+          messageKo: "harmony offset은 존재하면 정수여야 합니다.",
+          details: {
+            issue: "invalid-harmony-offset",
+            measureOrdinal: ordinal,
+            partOrdinal: context.partOrdinal,
+            diagnosticScope: "lead-part",
+          },
+        });
+        continue;
+      }
+      const offset = fraction(parsedOffset, divisions);
       const onset = addFractions(cursor, offset);
       if (onset.n < 0) throw new RangeError("MusicXML harmony offset precedes measure start");
-      rawChords.push(parseHarmony(child, context.partOrdinal, ordinal, onset));
+      rawChords.push(parseHarmony(child, context, ordinal, onset));
       continue;
     }
     if (child.name === "direction") {
-      const offsetText = xmlText(xmlChild(child, "offset"));
-      const offset = offsetText === undefined ? ZERO : fraction(parseInteger(offsetText) ?? 0, divisions);
+      const offsetElement = xmlChild(child, "offset");
+      const parsedOffset = offsetElement === undefined ? 0 : parseInteger(xmlText(offsetElement));
+      if (parsedOffset === undefined) {
+        context.diagnostics.push({
+          code: "IMPORT_UNSUPPORTED_ELEMENT",
+          messageKo: "direction offset은 존재하면 정수여야 합니다.",
+          details: {
+            issue: "invalid-direction-offset",
+            measureOrdinal: ordinal,
+            partOrdinal: context.partOrdinal,
+            diagnosticScope: "lead-part",
+          },
+        });
+        continue;
+      }
+      const offset = fraction(parsedOffset, divisions);
       const onset = addFractions(cursor, offset);
       if (onset.n < 0) throw new RangeError("MusicXML direction offset precedes measure start");
       textEvents.push(...directionTextEvents(child, onset));
@@ -807,6 +913,20 @@ function parseScore(root: XmlElement): ParseScoreResult | undefined {
   ));
   if (parsedParts.length === 0) return undefined;
   const parts = parsedParts.map((parsed) => parsed.part);
+  for (const part of parts) {
+    for (const violation of validateCoreInputLimits({ maxSourceMeasures: part.measures.length })) {
+      diagnostics.push({
+        code: "INPUT_LIMIT_EXCEEDED",
+        messageKo: "Core source measure 상한을 초과했습니다.",
+        details: {
+          issue: violation.limit,
+          actual: violation.actual,
+          maximum: violation.maximum,
+          partOrdinal: part.partOrdinal,
+        },
+      });
+    }
+  }
   const firstPart = parts[0];
   const defaultKey = firstPart.measures[0]?.key;
   if (defaultKey && firstPart.measures.some((measure) => measure.key
@@ -879,10 +999,11 @@ export function createSecureDocumentId(): string {
 export async function importMusicXml(
   rawBytes: Uint8Array,
   options: {
+    readonly algorithmVersions: Step3ImportVersions;
     readonly originalFileName?: string;
     readonly securityLimits?: ImportSecurityLimits;
     readonly identityFactory?: DocumentIdentityFactory;
-  } = {},
+  },
 ): Promise<MusicImportResult> {
   const limits = options.securityLimits ?? DEFAULT_IMPORT_SECURITY_LIMITS;
   const isMxl = rawBytes.byteLength >= 2
@@ -921,11 +1042,23 @@ export async function importMusicXml(
     }]);
     return { status: "blocked", diagnostics };
   }
+  if (score.diagnostics.some((diagnostic) => diagnostic.code === "INPUT_LIMIT_EXCEEDED")) {
+    return {
+      status: "blocked",
+      diagnostics: await materializeImportDiagnostics(score.diagnostics),
+    };
+  }
   const documentId = (options.identityFactory ?? createSecureDocumentId)();
   if (!/^[A-Za-z0-9][A-Za-z0-9:._/-]*$/u.test(documentId) || /\s/u.test(documentId)) {
     throw new RangeError("document identity factory returned an invalid canonical ID");
   }
   const diagnostics = await materializeImportDiagnostics(score.diagnostics);
+  const sectionOccurrences = buildImportedSectionOccurrenceReviews(
+    score.parts,
+    score.candidates,
+    score.sections,
+    options.algorithmVersions.performanceExpanderVersion,
+  );
   const draft: MusicXmlImportDraft = {
     importerVersion: MUSICXML_IMPORTER_VERSION,
     documentId,
@@ -937,9 +1070,15 @@ export async function importMusicXml(
     parts: score.parts,
     leadCandidates: score.candidates,
     sections: score.sections,
+    sectionOccurrences,
     unsupportedPerformanceFlows: score.flows,
     ...(score.defaultKey ? { defaultKey: score.defaultKey } : {}),
     ...(score.defaultTempo ? { defaultTempo: score.defaultTempo } : {}),
+    algorithmVersions: {
+      performanceExpanderVersion: options.algorithmVersions.performanceExpanderVersion,
+      chordTimelineResolverVersion: options.algorithmVersions.chordTimelineResolverVersion,
+      sourceLeadAtomizerVersion: options.algorithmVersions.sourceLeadAtomizerVersion,
+    },
     singerCount: 1,
     performerSlots: [{ id: performerId(0), displayName: "Lead" }],
     diagnostics,

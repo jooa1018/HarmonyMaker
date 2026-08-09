@@ -4,4 +4,5 @@ export * from "./musicxml/xml";
 export * from "./mxl/archive";
 export * from "./review/commands";
 export * from "./review/finalize";
+export * from "./review/occurrences";
 export * from "./review/quick-review";
