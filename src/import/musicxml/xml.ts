@@ -190,4 +190,3 @@ export function xmlDescendants(element: XmlElement, name: string): readonly XmlE
   visit(element);
   return result;
 }
-
