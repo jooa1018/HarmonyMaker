@@ -7,6 +7,7 @@ import {
   sourceTextEventId,
 } from "../ids";
 import { validatePerformanceSequence } from "../performance/repeat";
+import { validateCoreInputLimits } from "../limits";
 import type { AlgorithmExecutionRegistry } from "../registries";
 import { comparePositions } from "../time";
 import {
@@ -317,6 +318,12 @@ export function isSongSourceDocument(value: unknown): value is SongSourceDocumen
     || !Array.isArray(value.phraseRegions)
     || !isRightsMetadata(value.rights)) return false;
   const source = value as unknown as SongSourceDocument;
+  if (validateCoreInputLimits({
+    maxSourceMeasures: source.sourceMeasures.length,
+    maxPerformanceMeasures: source.performanceSequence.occurrences.length,
+    maxPhraseRegions: source.phraseRegions.length,
+    maxSectionOccurrences: source.sectionOccurrences.length,
+  }).length > 0) return false;
   const current = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
   if (source.importInfo !== undefined && !isImportInfo(source.importInfo)) return false;
   if (source.sourceEvidence !== undefined && (!validateSourceEvidenceIndex(source.sourceEvidence)

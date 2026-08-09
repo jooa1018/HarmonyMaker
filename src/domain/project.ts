@@ -15,6 +15,7 @@ import type { SourceLeadAtomizationState } from "./source/atomization";
 import type { SongSourceDocument } from "./source/model";
 import { isSongSourceDocument } from "./source/validation";
 import type { AlgorithmExecutionRegistry } from "./registries";
+import { validateCoreInputLimits } from "./limits";
 import {
   blockedHarmonyProjectIntegrity,
   validateHarmonyProjectIntegrity as validateProjectIntegrity,
@@ -763,11 +764,32 @@ export function isHarmonyProjectShape(value: unknown): value is HarmonyProject {
     || Object.keys(value.variants).some((key) => !isPresetId(key))
     || (value.selectedPresetId !== undefined && (!isPresetId(value.selectedPresetId)
       || !(value.settings as ArrangementSettings).requestedPresetIds.includes(value.selectedPresetId)))) return false;
+  const trackPlans = value.trackPlans as unknown as readonly VocalTrackPlan[];
+  let lockCount = 0;
+  for (const locks of Object.values(value.locksByPreset)) {
+    if (!isPlainRecord(locks)) continue;
+    for (const stage of ["intent", "activity", "anchor", "solver"] as const) {
+      if (Array.isArray(locks[stage])) lockCount += locks[stage].length;
+    }
+  }
+  if (validateCoreInputLimits({
+    maxGeneratedTrackPlans: trackPlans.filter((track) => track.kind === "generated-harmony").length,
+    maxLocks: lockCount,
+  }).length > 0) return false;
   for (const [presetId, variant] of Object.entries(value.variants)) {
     if (!validateArrangementVariant(variant) || variant.presetId !== presetId) return false;
   }
-  return isChordTimelineState(value.chordTimelineState)
-    && isAtomizationState(value.sourceLeadAtomizationState);
+  if (!isChordTimelineState(value.chordTimelineState)
+    || !isAtomizationState(value.sourceLeadAtomizationState)) return false;
+  const project = value as unknown as HarmonyProject;
+  return validateCoreInputLimits({
+    ...(project.chordTimelineState.status === "resolved"
+      ? { maxResolvedChordSpans: project.chordTimelineState.timeline.spans.length }
+      : {}),
+    ...(project.sourceLeadAtomizationState.status === "resolved"
+      ? { maxLeadAtoms: project.sourceLeadAtomizationState.atomization.atoms.length }
+      : {}),
+  }).length === 0;
 }
 export async function validateHarmonyProjectIntegrity(
   project: HarmonyProject,

@@ -3,6 +3,7 @@ import type { TimeSignature } from "../meter";
 import type { SourceMeasure } from "../source/model";
 import { performanceOccurrenceId } from "../ids";
 import { canonicalJson } from "../digest/canonical";
+import { CORE_INPUT_LIMITS } from "../limits";
 
 export interface PerformanceMeasureOccurrence {
   readonly occurrenceId: string;
@@ -19,7 +20,7 @@ export interface PerformanceSequence {
 }
 export type RepeatExpansionResult =
   | { readonly status: "complete"; readonly sequence: PerformanceSequence }
-  | { readonly status: "blocked"; readonly code: "PERFORMANCE_REPEAT_UNMATCHED" | "PERFORMANCE_REPEAT_NESTED" | "PERFORMANCE_EXPANSION_FAILED" };
+  | { readonly status: "blocked"; readonly code: "PERFORMANCE_REPEAT_UNMATCHED" | "PERFORMANCE_REPEAT_NESTED" | "PERFORMANCE_EXPANSION_FAILED" | "INPUT_LIMIT_EXCEEDED" };
 
 interface RepeatRegion { readonly start: number; readonly end: number; readonly totalPasses: 2 | 3 | 4 }
 
@@ -52,6 +53,9 @@ function includeOnPass(measure: SourceMeasure, pass: number, totalPasses: number
 }
 
 export function expandRepeats(measures: readonly SourceMeasure[], expanderVersion: string): RepeatExpansionResult {
+  if (measures.length > CORE_INPUT_LIMITS.maxSourceMeasures) {
+    return { status: "blocked", code: "INPUT_LIMIT_EXCEEDED" };
+  }
   const found = findRepeatRegions(measures);
   if ("status" in found) return found;
   const order: number[] = [];
@@ -66,7 +70,9 @@ export function expandRepeats(measures: readonly SourceMeasure[], expanderVersio
     cursor = region.end + 1;
   }
   while (cursor < measures.length) order.push(cursor++);
-  if (order.length > 160) return { status: "blocked", code: "PERFORMANCE_EXPANSION_FAILED" };
+  if (order.length > CORE_INPUT_LIMITS.maxPerformanceMeasures) {
+    return { status: "blocked", code: "INPUT_LIMIT_EXCEEDED" };
+  }
   const occurrenceCounts = new Map<string, number>();
   const occurrences = order.map((sourceIndex, performanceIndex): PerformanceMeasureOccurrence => {
     const measure = measures[sourceIndex];
