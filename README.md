@@ -5,7 +5,7 @@ HarmonyMaker는 멜로디·확인된 코드·곡 구간·실제 가수 음역을
 - 유일한 authoritative specification: [`docs/HARMONYMAKER_SPEC_v3.1.5.md`](docs/HARMONYMAKER_SPEC_v3.1.5.md)
 - Step 0: **accepted**
 - Step 1: **accepted for v3 foundation**
-- Step 2: **foundation accepted / ready to start / not yet implemented**
+- Step 2: **canonical domain foundation accepted**
 - Worship Arrangement Grammar v1: **별도 승인 후 Step 4 시작 가능**
 
 ## 실행 및 검증
@@ -30,6 +30,7 @@ npm run build
 - Play, Pause, Reset 및 실제 abcjs playback callback과 연결된 악보 highlight
 - 성부별 Mute, single-Solo, 50–150% 속도
 - Play 사용자 동작 안에서 수행되는 Web Audio/synth 활성화와 사용자 오류 안내
+- v3.1.5 Step 2 canonical domain foundation: exact Fraction/time, spelled pitch/key/meter, worship-leadsheet-v1 chord semantics, source revision/performance/section/phrase authorities, EffectiveChordTimeline, SourceLeadAtomization, performer/track/config, variant/plan/lock lifecycle, canonical digest/ID/diagnostic registries, candidate/generation provenance, density metrics, edit/share 및 revision-scoped OMR foundation contracts
 
 Step 1의 S/A/T ABC demo는 렌더·재생·모바일 audio path 검증용 기술 fixture로 그대로 보존되며, production의 고정 성부 모델이나 authoritative product definition이 아닙니다.
 
@@ -37,7 +38,7 @@ Solo는 Mute보다 우선합니다. 즉 mute된 성부도 해당 성부를 solo�
 
 ## 아직 구현하지 않은 기능
 
-Step 2 foundation은 승인되어 시작할 준비가 되었지만 아직 구현되지 않았습니다. 이후의 정식 음악 도메인, 편곡 생성·검증, 편집, MusicXML, OMR, 저장, 공유와 이조도 구현하지 않았습니다. ABC는 이 demo fixture와 abcjs adapter 입력일 뿐 원본 데이터 모델이나 저장 형식이 아닙니다. Worship Arrangement Grammar v1은 별도 승인이 필요한 Step 4 blocker입니다.
+Step 2 canonical domain foundation은 exact-head 외부 acceptance review를 통과하여 `STEP_2_ACCEPTED` 상태입니다. Worship Arrangement Grammar의 음악 결정표, Activity/rhythm planning algorithm, Anchor selection, pitch generation, automatic harmony, MusicXML import, OMR Vendor 연동, 실제 편집·PracticeShare 서비스, 저장·인증·데이터베이스와 Step 3 이상은 구현하지 않았습니다. ABC는 demo fixture와 abcjs adapter 입력일 뿐 원본 데이터 모델이나 저장 형식이 아닙니다. Worship Arrangement Grammar v1은 별도 승인이 필요한 Step 4 blocker입니다.
 
 ## 실기기 확인 필요
 
