@@ -1,4 +1,5 @@
 import type { ResolvedChordParseResult } from "../chord/model";
+import { chordSemanticProjection } from "../chord/parser";
 import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "../digest/canonical";
 import type { Diagnostic } from "../diagnostics";
 import { addFractions, compareFractions, fraction, type Fraction } from "../fraction";
@@ -26,6 +27,160 @@ export type EffectiveChordTimelineState =
   | { readonly status: "resolved"; readonly timeline: EffectiveChordTimeline; readonly diagnostics: readonly Diagnostic[] }
   | { readonly status: "stale"; readonly previousTimeline: EffectiveChordTimeline; readonly resolutionPolicy: ChordResolutionPolicy; readonly diagnostics: readonly Diagnostic[] }
   | { readonly status: "blocked"; readonly previousTimeline?: EffectiveChordTimeline; readonly resolutionPolicy: ChordResolutionPolicy; readonly diagnostics: readonly Diagnostic[] };
+
+export interface CanonicalSourceChordOrdinal {
+  readonly sourceMeasureOrdinal: number;
+  readonly chordOrdinalWithinMeasure: number;
+}
+
+function sourceChordSemanticProjection(event: SourceChordEvent): object {
+  const parseResult = event.parseResult.status === "ok"
+    ? { status: "ok", chord: chordSemanticProjection(event.parseResult.chord) }
+    : event.parseResult.status === "failed"
+      ? { status: "failed", errorCode: event.parseResult.errorCode, token: event.parseResult.token ?? null }
+      : { status: event.parseResult.status };
+  return {
+    onset: event.onset,
+    parseResult,
+    confirmation: event.confirmation,
+  };
+}
+
+function orderedChordEvents(measure: SourceMeasure): readonly SourceChordEvent[] {
+  return measure.chordEvents
+    .map((event, originalOrdinal) => ({ event, originalOrdinal }))
+    .sort((left, right) => compareCanonicalValues(
+      sourceChordSemanticProjection(left.event),
+      sourceChordSemanticProjection(right.event),
+    ) || left.originalOrdinal - right.originalOrdinal)
+    .map((entry) => entry.event);
+}
+
+export function buildSourceChordOrdinalRegistry(
+  sourceMeasures: readonly SourceMeasure[],
+): Readonly<Record<string, CanonicalSourceChordOrdinal>> {
+  const entries: Array<readonly [string, CanonicalSourceChordOrdinal]> = [];
+  sourceMeasures.forEach((measure, sourceMeasureOrdinal) => {
+    orderedChordEvents(measure).forEach((event, chordOrdinalWithinMeasure) => {
+      entries.push([event.id, { sourceMeasureOrdinal, chordOrdinalWithinMeasure }]);
+    });
+  });
+  if (new Set(entries.map(([id]) => id)).size !== entries.length) {
+    throw new RangeError("duplicate SourceChordEvent ID");
+  }
+  return Object.fromEntries(entries);
+}
+
+function requiredSourceChordOrdinal(
+  registry: Readonly<Record<string, CanonicalSourceChordOrdinal>>,
+  id: string,
+): CanonicalSourceChordOrdinal {
+  const ordinal = registry[id];
+  if (!ordinal) throw new RangeError(`missing canonical source chord ordinal: ${id}`);
+  return ordinal;
+}
+
+export async function digestSourceChordProjection(
+  sourceMeasures: readonly SourceMeasure[],
+): Promise<SemanticDigest> {
+  return semanticDigest({
+    projectionSchema: "hm-source-chord-projection-v1",
+    measures: sourceMeasures.map((measure, sourceMeasureOrdinal) => ({
+      sourceMeasureOrdinal,
+      chordEvents: orderedChordEvents(measure).map(sourceChordSemanticProjection),
+    })),
+  });
+}
+
+export async function digestPerformanceSequence(
+  performanceSequence: PerformanceSequence,
+  sourceMeasures: readonly SourceMeasure[],
+): Promise<SemanticDigest> {
+  const measureOrdinalById = Object.fromEntries(
+    sourceMeasures.map((measure, ordinal) => [measure.id, ordinal]),
+  );
+  if (Object.keys(measureOrdinalById).length !== sourceMeasures.length) {
+    throw new RangeError("duplicate SourceMeasure ID");
+  }
+  return semanticDigest({
+    projectionSchema: "hm-performance-sequence-v1",
+    expanderVersion: performanceSequence.expanderVersion,
+    occurrences: performanceSequence.occurrences.map((occurrence) => {
+      const sourceMeasureOrdinal = measureOrdinalById[occurrence.sourceMeasureId];
+      if (!Number.isSafeInteger(sourceMeasureOrdinal) || sourceMeasureOrdinal < 0) {
+        throw new RangeError(`missing canonical source measure ordinal: ${occurrence.sourceMeasureId}`);
+      }
+      return {
+        sourceMeasureOrdinal,
+        sourceMeasureNumber: occurrence.sourceMeasureNumber,
+        occurrenceIndexForSource: occurrence.occurrenceIndexForSource,
+        performanceIndex: occurrence.performanceIndex,
+        time: occurrence.time,
+        duration: occurrence.duration,
+      };
+    }),
+  });
+}
+
+function timelineProjection(
+  timeline: Omit<EffectiveChordTimeline, "digest">,
+  sourceMeasures: readonly SourceMeasure[],
+): object {
+  const sourceChordOrdinalById = buildSourceChordOrdinalRegistry(sourceMeasures);
+  const spanOrdinalById = Object.fromEntries(
+    timeline.spans.map((span, ordinal) => [span.id, ordinal]),
+  );
+  if (Object.keys(spanOrdinalById).length !== timeline.spans.length) {
+    throw new RangeError("duplicate PerformanceChordSpan ID");
+  }
+  const spans = timeline.spans.map((span) => {
+    const origin = span.origin.kind === "source-event"
+      ? {
+          kind: span.origin.kind,
+          sourceChordOrdinal: requiredSourceChordOrdinal(
+            sourceChordOrdinalById,
+            span.origin.sourceChordEventId,
+          ),
+        }
+      : {
+          kind: span.origin.kind,
+          carrySource: span.origin.carrySource,
+          originatingSourceChordOrdinal: requiredSourceChordOrdinal(
+            sourceChordOrdinalById,
+            span.origin.originatingSourceChordEventId,
+          ),
+          previousSpanOrdinal: (() => {
+            const ordinal = spanOrdinalById[span.origin.previousSpanId];
+            if (!Number.isSafeInteger(ordinal) || ordinal < 0) {
+              throw new RangeError(`missing canonical chord span ordinal: ${span.origin.previousSpanId}`);
+            }
+            return ordinal;
+          })(),
+          carryTokenSourceChordOrdinal: span.origin.carryTokenSourceChordEventId === undefined
+            ? null
+            : requiredSourceChordOrdinal(
+                sourceChordOrdinalById,
+                span.origin.carryTokenSourceChordEventId,
+              ),
+        };
+    return { range: span.range, parseResult: span.parseResult, origin };
+  });
+  return {
+    projectionSchema: "hm-effective-chord-timeline-v1",
+    sourceChordProjectionDigest: timeline.sourceChordProjectionDigest,
+    performanceSequenceDigest: timeline.performanceSequenceDigest,
+    policy: timeline.resolutionPolicy,
+    resolverVersion: timeline.chordTimelineResolverVersion,
+    spans,
+  };
+}
+
+export async function digestEffectiveChordTimeline(
+  timeline: Omit<EffectiveChordTimeline, "digest">,
+  sourceMeasures: readonly SourceMeasure[],
+): Promise<SemanticDigest> {
+  return semanticDigest(timelineProjection(timeline, sourceMeasures));
+}
 
 function diagnostic(code: Diagnostic["code"], suffix: string): Diagnostic {
   return { id: `dg:${code}:${suffix}:0`, code, severity: "blocking", messageKo: code };
@@ -86,12 +241,7 @@ export async function resolveEffectiveChordTimeline(input: {
   for (const occurrence of input.performanceSequence.occurrences) {
     const measure = byId.get(occurrence.sourceMeasureId);
     if (!measure) { diagnostics.push(diagnostic("PERFORMANCE_EXPANSION_FAILED", occurrence.occurrenceId)); continue; }
-    const events = [...measure.chordEvents].sort((left, right) =>
-      compareFractions(left.onset, right.onset)
-      || compareCanonicalValues(
-        { sourceText: left.sourceText, parseResult: left.parseResult, source: left.source, confirmation: left.confirmation },
-        { sourceText: right.sourceText, parseResult: right.parseResult, source: right.source, confirmation: right.confirmation },
-      ));
+    const events = orderedChordEvents(measure);
     let cursor = fraction(0);
     const resolveUncovered = (startOffset: Fraction, endOffset: Fraction): void => {
       for (const gapRange of soundingLeadSegments(
@@ -141,7 +291,13 @@ export async function resolveEffectiveChordTimeline(input: {
     }
   }
   if (diagnostics.length > 0) return { status: "blocked", resolutionPolicy: input.policy, diagnostics };
-  const projection = { projectionSchema: "hm-effective-chord-timeline-v1", sourceChordProjectionDigest: input.sourceChordProjectionDigest, performanceSequenceDigest: input.performanceSequenceDigest, policy: input.policy, resolverVersion: input.resolverVersion, spans: spans.map((span) => ({ range: span.range, parseResult: span.parseResult, origin: span.origin })) };
-  const digest = await semanticDigest(projection);
+  const timeline = {
+    sourceChordProjectionDigest: input.sourceChordProjectionDigest,
+    performanceSequenceDigest: input.performanceSequenceDigest,
+    resolutionPolicy: input.policy,
+    chordTimelineResolverVersion: input.resolverVersion,
+    spans,
+  };
+  const digest = await digestEffectiveChordTimeline(timeline, input.sourceMeasures);
   return { status: "resolved", timeline: { sourceChordProjectionDigest: input.sourceChordProjectionDigest, performanceSequenceDigest: input.performanceSequenceDigest, resolutionPolicy: input.policy, chordTimelineResolverVersion: input.resolverVersion, spans, digest }, diagnostics: [] };
 }

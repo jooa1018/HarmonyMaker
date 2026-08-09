@@ -34,4 +34,24 @@ describe("repeat expansion", () => {
     expect(expandRepeats([measure("m1", { startRepeat: true })], "v")).toMatchObject({ status: "blocked", code: "PERFORMANCE_REPEAT_UNMATCHED" });
     expect(expandRepeats([measure("m1", { startRepeat: true }), measure("m2", { startRepeat: true })], "v")).toMatchObject({ status: "blocked", code: "PERFORMANCE_REPEAT_NESTED" });
   });
+
+  it("rejects persisted occurrence time, duration, identity, version, and repeat-order mismatches", () => {
+    const measures = [
+      measure("m1", { startRepeat: true }),
+      measure("m2", { startRepeat: false, endRepeat: { totalPasses: 2 } }),
+    ];
+    const result = expandRepeats(measures, "repeat-v1");
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") return;
+    const first = result.sequence.occurrences[0];
+    const replaceFirst = (replacement: typeof first) => ({
+      ...result.sequence,
+      occurrences: [replacement, ...result.sequence.occurrences.slice(1)],
+    });
+    expect(validatePerformanceSequence(replaceFirst({ ...first, time: { numerator: 3, denominator: 4, beatGroups: [1, 1, 1] } }), measures, "repeat-v1")).toBe(false);
+    expect(validatePerformanceSequence(replaceFirst({ ...first, duration: fraction(3) }), measures, "repeat-v1")).toBe(false);
+    expect(validatePerformanceSequence(replaceFirst({ ...first, occurrenceId: "pm:forged" }), measures, "repeat-v1")).toBe(false);
+    expect(validatePerformanceSequence({ ...result.sequence, occurrences: result.sequence.occurrences.slice(0, -1) }, measures, "repeat-v1")).toBe(false);
+    expect(validatePerformanceSequence(result.sequence, measures, "repeat-v2")).toBe(false);
+  });
 });

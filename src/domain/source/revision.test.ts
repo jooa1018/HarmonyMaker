@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SemanticDigest } from "../digest/canonical";
 import { sourceRevisionRecordId } from "../ids";
 import {
-  computeRevisionHistoryDigest, createSourceIdRemap, validateRevisionHistory,
+  computeRevisionHistoryDigest, createSourceIdRemap, createSourceRevisionProjection, validateRevisionHistory,
   validateRevisionHistoryIntegrity, type SourceRevisionRecord, type SourceRevisionRef,
 } from "./revision";
 
@@ -13,7 +13,7 @@ async function chainFixture() {
   const revisions = [revision(0, "0"), revision(1, "1"), revision(2, "2")];
   const remap01 = await createSourceIdRemap(revisions[0], revisions[1], [{ entityKind: "lead-event", fromId: "le:0:0", toIds: ["le:0:1"], status: "mapped-one" }]);
   const remap12 = await createSourceIdRemap(revisions[1], revisions[2], [{ entityKind: "phrase", fromId: "ph:0", toIds: [], status: "deleted" }]);
-  const record = (index: number, idRemap: typeof remap01): SourceRevisionRecord => ({ id: sourceRevisionRecordId(index, index + 1, 0), editOrdinal: 0, fromRevision: revisions[index], toRevision: revisions[index + 1], commandKind: "manual-source-edit", beforeProjection: "{}", afterProjection: "{}", idRemap });
+  const record = (index: number, idRemap: typeof remap01): SourceRevisionRecord => ({ id: sourceRevisionRecordId(index, index + 1, 0), editOrdinal: 0, fromRevision: revisions[index], toRevision: revisions[index + 1], commandKind: "manual-source-edit", beforeProjection: createSourceRevisionProjection("manual-source-edit", { revisionOrdinal: index }), afterProjection: createSourceRevisionProjection("manual-source-edit", { revisionOrdinal: index + 1 }), idRemap });
   const history = [record(0, remap01), record(1, remap12)];
   return { current: revisions[2], history, historyDigest: await computeRevisionHistoryDigest(history) };
 }
@@ -42,5 +42,11 @@ describe("source revision chain integrity", () => {
       { entityKind: "measure", fromId: "sm:0", toIds: ["sm:1"], status: "mapped-one" },
       { entityKind: "measure", fromId: "sm:0", toIds: [], status: "deleted" },
     ])).rejects.toThrow("SOURCE_ID_REMAP_FAILED");
+  });
+
+  it("rejects free-form or command-mismatched before/after projections", async () => {
+    const fixture = await chainFixture();
+    expect(validateRevisionHistory(fixture.current, [{ ...fixture.history[0], beforeProjection: "{}" }, fixture.history[1]])).toBe(false);
+    expect(validateRevisionHistory(fixture.current, [{ ...fixture.history[0], afterProjection: createSourceRevisionProjection("phrase-edit", { phrase: 0 }) }, fixture.history[1]])).toBe(false);
   });
 });

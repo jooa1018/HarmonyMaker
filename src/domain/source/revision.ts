@@ -21,15 +21,47 @@ export interface SourceIdRemap {
   readonly entries: readonly SourceIdRemapEntry[];
   readonly remapDigest: SemanticDigest;
 }
+export type SourceRevisionCommandKind = "source-chord-edit" | "omr-correction" | "section-edit" | "phrase-edit" | "manual-source-edit" | "undo-redo";
 export interface SourceRevisionRecord {
   readonly id: string;
   readonly editOrdinal: number;
   readonly fromRevision: SourceRevisionRef;
   readonly toRevision: SourceRevisionRef;
-  readonly commandKind: "source-chord-edit" | "omr-correction" | "section-edit" | "phrase-edit" | "manual-source-edit" | "undo-redo";
+  readonly commandKind: SourceRevisionCommandKind;
   readonly beforeProjection: string;
   readonly afterProjection: string;
   readonly idRemap: SourceIdRemap;
+}
+
+export function sourceRevisionProjectionSchema(commandKind: SourceRevisionCommandKind): string {
+  return `hm-source-revision-${commandKind}-v1`;
+}
+
+export function createSourceRevisionProjection(
+  commandKind: SourceRevisionCommandKind,
+  value: Readonly<Record<string, unknown>>,
+): string {
+  if (!isPlainRecord(value) || Object.keys(value).length === 0) {
+    throw new RangeError("source revision projection value must be a non-empty record");
+  }
+  return canonicalJson({ projectionSchema: sourceRevisionProjectionSchema(commandKind), value });
+}
+
+export function isSourceRevisionProjection(
+  projection: string,
+  commandKind: SourceRevisionCommandKind,
+): boolean {
+  try {
+    const parsed: unknown = JSON.parse(projection);
+    return isPlainRecord(parsed)
+      && hasExactKeys(parsed, ["projectionSchema", "value"])
+      && parsed.projectionSchema === sourceRevisionProjectionSchema(commandKind)
+      && isPlainRecord(parsed.value)
+      && Object.keys(parsed.value).length > 0
+      && canonicalJson(parsed) === projection;
+  } catch {
+    return false;
+  }
 }
 
 export function isSourceRevisionRef(value: unknown): value is SourceRevisionRef {
@@ -122,9 +154,8 @@ export function validateRevisionHistory(current: SourceRevisionRef, history: rea
       .map((entry) => ({ ...entry, toIds: [...entry.toIds].sort() }))
       .sort((left, right) => left.entityKind.localeCompare(right.entityKind) || left.fromId.localeCompare(right.fromId));
     if (canonicalJson(record.idRemap.entries) !== canonicalJson(canonicalRemapEntries)) return false;
-    try {
-      if (canonicalJson(JSON.parse(record.beforeProjection)) !== record.beforeProjection || canonicalJson(JSON.parse(record.afterProjection)) !== record.afterProjection) return false;
-    } catch { return false; }
+    if (!isSourceRevisionProjection(record.beforeProjection, record.commandKind)
+      || !isSourceRevisionProjection(record.afterProjection, record.commandKind)) return false;
     const nextPairKey = `${record.fromRevision.revisionOrdinal}:${record.toRevision.revisionOrdinal}`;
     if (nextPairKey !== pairKey) {
       if (previousTo && !revisionRefsEqual(previousTo, record.fromRevision)) return false;

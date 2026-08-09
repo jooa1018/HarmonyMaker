@@ -6,14 +6,35 @@ import { COMMON_TIME } from "./meter";
 import { SOURCE_LEAD_TRACK } from "./performer";
 import { pitchRange } from "./pitch";
 import {
-  markVariantStale, preserveBlockedAttempt, validateArrangementVariant,
-  validateHarmonyProject, type ArrangementVariant,
+  isHarmonyProjectShape, markVariantStale, preserveBlockedAttempt,
+  validateArrangementVariant, validateHarmonyProject, type ArrangementVariant,
 } from "./project";
+import type { AlgorithmExecutionRegistry } from "./registries";
 import { countRate, durationRate, extendedCountRate } from "./rates";
 import type { ArrangementIntentPlan } from "./plans";
 import { musicalRange } from "./time";
 
 const digest = "0".repeat(64) as SemanticDigest;
+const executionRegistry: AlgorithmExecutionRegistry = {
+  versions: {
+    domainSchemaVersion: "v", digestCodecVersion: "v", chordParserVersion: "v",
+    chordTimelineResolverVersion: "v", performanceExpanderVersion: "repeat-v1",
+    sourceLeadAtomizerVersion: "v", presetProfileVersion: "preset-v1",
+    candidateProjectionVersion: "v", plannerVersion: "v", grammarVersion: "v",
+    activityPlannerVersion: "v", anchorPlannerVersion: "v", solverVersion: "v",
+    assemblerVersion: "v", validatorVersion: "v", metricsVersion: "v",
+    diagnosticRegistryVersion: "v", accompanimentVersion: "v",
+    editMaterializerVersion: "v", practiceShareCodecVersion: "v",
+    omrNormalizerVersion: "v", evidenceMappingVersion: "v",
+  },
+  configDigests: {
+    plannerConfigDigest: digest, grammarConfigDigest: digest,
+    activityPlannerConfigDigest: digest, anchorPlannerConfigDigest: digest,
+    solverConfigDigest: digest, assemblerConfigDigest: digest,
+    validatorConfigDigest: digest, metricConfigDigest: digest,
+    accompanimentConfigDigest: digest, diagnosticRegistryDigest: digest,
+  },
+};
 const intentPlan: ArrangementIntentPlan = { stage: "intent", presetId: "simple", intentInputDigest: digest, effectiveChordTimelineDigest: digest, sourceLeadAtomizationDigest: digest, effectiveConfigDigest: digest, presetProfileVersion: "v", presetProfileDigest: digest, grammarId: "worship-arrangement-grammar-v1", grammarVersion: "v", plannerVersion: "v", grammarConfigDigest: digest, plannerConfigDigest: digest, diagnosticRegistryVersion: "v", diagnosticRegistryDigest: digest, sectionIntents: [], phraseIntents: [], intentPlanDigest: digest };
 
 describe("variant lifecycle and rate contracts", () => {
@@ -83,9 +104,10 @@ describe("variant lifecycle and rate contracts", () => {
       locksByPreset: { simple: { intent: [], activity: [], anchor: [], solver: [] } },
       variants: { simple: { lifecycle: "empty", presetId: "simple", diagnostics: [] } }, selectedPresetId: "simple",
     } as const;
-    expect(validateHarmonyProject(project)).toBe(true);
-    expect(validateHarmonyProject({ ...project, chordTimelineState: { ...project.chordTimelineState, injectedAuthority: true } })).toBe(false);
-    expect(validateHarmonyProject({ ...project, performers: [{ ...performer, hardRange: { low: {}, high: {} } }] })).toBe(false);
-    expect(validateHarmonyProject({ ...project, variants: { simple: { ...project.variants.simple, diagnostics: [{}] } } })).toBe(false);
+    expect(isHarmonyProjectShape(project)).toBe(true);
+    expect(isHarmonyProjectShape({ ...project, chordTimelineState: { ...project.chordTimelineState, injectedAuthority: true } })).toBe(false);
+    expect(isHarmonyProjectShape({ ...project, performers: [{ ...performer, hardRange: { low: {}, high: {} } }] })).toBe(false);
+    expect(isHarmonyProjectShape({ ...project, variants: { simple: { ...project.variants.simple, diagnostics: [{}] } } })).toBe(false);
+    expect((await validateHarmonyProject(project, executionRegistry)).status).toBe("blocked");
   });
 });

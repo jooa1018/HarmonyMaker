@@ -81,13 +81,49 @@ describe("musical source projection", () => {
   });
 
   it("recomputes source and revision-history digests before accepting persisted authority", async () => {
-    const fixture = {
-      ...sourceFixture({ prefix: "integrity", title: "Title", chord: "C", emphasis: "confirmed-manual" }),
+    const raw = sourceFixture({ prefix: "integrity", title: "Title", chord: "C", emphasis: "confirmed-manual" });
+    const rawMeasure = raw.sourceMeasures[0];
+    const lead = { ...rawMeasure.leadEvents[0], id: "le:0:0", sourceMeasureId: "sm:0", lyricTokenIds: ["ly:0:0:1:0"] } as const;
+    const fixture: SongSourceDocument = {
+      ...raw,
+      documentId: "document:integrity",
       revisionOrdinal: 0,
       revisionHistoryDigest: await computeRevisionHistoryDigest([]),
+      sourceMeasures: [{
+        ...rawMeasure,
+        id: "sm:0",
+        leadEvents: [lead],
+        chordEvents: [{ ...rawMeasure.chordEvents[0], id: "ch:0:0", sourceMeasureId: "sm:0" }],
+        lyricTokens: [{ ...rawMeasure.lyricTokens[0], id: "ly:0:0:1:0", leadEventId: lead.id }],
+      }],
+      performanceSequence: { ...raw.performanceSequence, occurrences: [{ ...raw.performanceSequence.occurrences[0], occurrenceId: "pm:0:0:0", sourceMeasureId: "sm:0" }] },
+      sectionDefinitions: [{ ...raw.sectionDefinitions[0], id: "sd:0:1:verse:0", sourceMeasureIds: ["sm:0"] }],
+      sectionOccurrences: [{ ...raw.sectionOccurrences[0], id: "so:0:1:0", sectionDefinitionId: "sd:0:1:verse:0" }],
+      phraseRegions: [{ ...raw.phraseRegions[0], id: "ph:0:0:0/1:1:0/1", sectionOccurrenceId: "so:0:1:0" }],
     };
     const valid = { ...fixture, revisionDigest: await digestMusicalSource(fixture) };
-    expect(await validateSongSourceDocumentIntegrity(valid)).toBe(true);
-    expect(await validateSongSourceDocumentIntegrity({ ...valid, revisionDigest: d })).toBe(false);
+    expect(await validateSongSourceDocumentIntegrity(valid, "repeat-v1")).toBe(true);
+    expect(await validateSongSourceDocumentIntegrity({ ...valid, revisionDigest: d }, "repeat-v1")).toBe(false);
+    const firstLead = valid.sourceMeasures[0].leadEvents[0];
+    const overlapping = {
+      ...valid,
+      sourceMeasures: [{
+        ...valid.sourceMeasures[0],
+        leadEvents: [
+          { ...firstLead, duration: fraction(2) },
+          { kind: "rest", id: "le:0:1", sourceMeasureId: "sm:0", onset: fraction(1), duration: fraction(1) },
+        ],
+      }],
+    } as SongSourceDocument;
+    expect(await validateSongSourceDocumentIntegrity({ ...overlapping, revisionDigest: await digestMusicalSource(overlapping) }, "repeat-v1")).toBe(false);
+    if (firstLead.kind !== "note") throw new Error("fixture lead must be a note");
+    const danglingTie = {
+      ...valid,
+      sourceMeasures: [{
+        ...valid.sourceMeasures[0],
+        leadEvents: [{ ...firstLead, tieStart: true }],
+      }],
+    } as SongSourceDocument;
+    expect(await validateSongSourceDocumentIntegrity({ ...danglingTie, revisionDigest: await digestMusicalSource(danglingTie) }, "repeat-v1")).toBe(false);
   });
 });

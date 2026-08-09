@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chordSemanticProjection, isChordParseResult, parseChord } from "./parser";
+import { chordSemanticProjection, isChordParseResult, isParsedChord, parseChord } from "./parser";
 
 function parsed(symbol: string) {
   const result = parseChord(symbol);
@@ -53,6 +53,20 @@ describe("worship-leadsheet-v1 chord parser", () => {
     for (const symbol of ["Cadd9add9", "Cno3no3", "C(b5b5)"]) {
       expect(parseChord(symbol)).toMatchObject({ status: "failed", errorCode: "TOKEN_CONFLICT" });
     }
+  });
+
+  it.each(["C()", "C(,)", "C(add9,)", "C(,add9)", "C(add9,,b5)"])(
+    "rejects malformed parenthesized modifier grammar in %s",
+    (symbol) => expect(parseChord(symbol)).toMatchObject({
+      status: "failed",
+      errorCode: "INVALID_TOKEN_ORDER",
+    }),
+  );
+
+  it("requires persisted ParsedChord canonicalSymbol to be exactly canonical", () => {
+    const chord = parsed("Cmaj7");
+    expect(isParsedChord(chord)).toBe(true);
+    expect(isParsedChord({ ...chord, canonicalSymbol: "CM7" })).toBe(false);
   });
 
   it("keeps aliases out of semantic chord projection", () => {

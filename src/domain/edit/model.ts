@@ -1,5 +1,5 @@
 import type { ArrangementPresetId } from "../config";
-import type { SemanticDigest } from "../digest/canonical";
+import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "../digest/canonical";
 import type { Diagnostic } from "../diagnostics";
 import type { FullSongMetrics, GeneratedHarmonyTrack, RealizedHarmonyAnchor } from "../generation/model";
 import type { SpelledPitch } from "../pitch";
@@ -72,4 +72,38 @@ export function validateOutputEdits(
     if (edit.kind === "replace-event" && !isReplacementGeneratedEventPayload(edit.replacement)) errors.push(`EDIT_MATERIALIZATION_BLOCKED:${edit.id}:payload`);
   }
   return errors;
+}
+
+function outputEditProjection(edit: ArrangementOutputEdit): object {
+  const common = {
+    presetId: edit.presetId,
+    baseCandidateDigest: edit.baseCandidateDigest,
+    editOrdinal: edit.editOrdinal,
+    kind: edit.kind,
+  };
+  if (edit.kind === "replace-pitch") {
+    return { ...common, eventId: edit.eventId, pitch: edit.pitch };
+  }
+  if (edit.kind === "replace-event") {
+    return { ...common, oldEventId: edit.oldEventId, replacement: edit.replacement };
+  }
+  return {
+    ...common,
+    eventId: edit.eventId,
+    tieStart: edit.tieStart,
+    tieStop: edit.tieStop,
+  };
+}
+
+export async function digestAppliedOutputEditSet(
+  edits: readonly ArrangementOutputEdit[],
+): Promise<SemanticDigest> {
+  if (new Set(edits.map((edit) => edit.editOrdinal)).size !== edits.length) {
+    throw new RangeError("duplicate output edit ordinal");
+  }
+  const projections = edits.map(outputEditProjection).sort(compareCanonicalValues);
+  return semanticDigest({
+    projectionSchema: "hm-applied-output-edit-set-v1",
+    edits: projections,
+  });
 }

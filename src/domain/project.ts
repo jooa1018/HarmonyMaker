@@ -14,6 +14,12 @@ import type { ArrangementActivityPlan, ArrangementAnchorPlan, ArrangementIntentP
 import type { SourceLeadAtomizationState } from "./source/atomization";
 import type { SongSourceDocument } from "./source/model";
 import { isSongSourceDocument } from "./source/validation";
+import type { AlgorithmExecutionRegistry } from "./registries";
+import {
+  blockedHarmonyProjectIntegrity,
+  validateHarmonyProjectIntegrity as validateProjectIntegrity,
+  type HarmonyProjectIntegrityResult,
+} from "./project-integrity";
 import {
   comparePositions, compareRanges, type MusicalPosition, type MusicalRange,
 } from "./time";
@@ -727,7 +733,7 @@ function isVariantStageLocks(value: unknown, presetId: ArrangementPresetId): val
       && hasUniqueStrings(value[stage].map((lock) => (lock as Readonly<Record<string, unknown>>).id as string)));
 }
 
-export function validateHarmonyProject(value: unknown): value is HarmonyProject {
+export function isHarmonyProjectShape(value: unknown): value is HarmonyProject {
   if (!isPlainRecord(value)
     || !hasExactKeys(value, ["schemaVersion", "source", "chordTimelineState", "sourceLeadAtomizationState", "presetProfiles", "performers", "trackPlans", "assignments", "settings", "locksByPreset", "variants"], ["selectedPresetId"])
     || value.schemaVersion !== 9
@@ -756,6 +762,21 @@ export function validateHarmonyProject(value: unknown): value is HarmonyProject 
   }
   return isChordTimelineState(value.chordTimelineState)
     && isAtomizationState(value.sourceLeadAtomizationState);
+}
+export async function validateHarmonyProjectIntegrity(
+  project: HarmonyProject,
+  expectedExecutionRegistry: AlgorithmExecutionRegistry,
+): Promise<HarmonyProjectIntegrityResult> {
+  return validateProjectIntegrity(project, expectedExecutionRegistry);
+}
+export async function validateHarmonyProject(
+  value: unknown,
+  expectedExecutionRegistry: AlgorithmExecutionRegistry,
+): Promise<HarmonyProjectIntegrityResult> {
+  if (!isHarmonyProjectShape(value)) {
+    return blockedHarmonyProjectIntegrity("HarmonyProject shape validation failed");
+  }
+  return validateProjectIntegrity(value, expectedExecutionRegistry);
 }
 export function markVariantStale(variant: ArrangementVariant, staleness: VariantStaleness): ArrangementVariant {
   if (variant.lifecycle === "empty" || stages.indexOf(staleness.staleFrom) > lifecycleMax[variant.lifecycle]) throw new RangeError("GENERATION_RESULT_STATE_INVALID");

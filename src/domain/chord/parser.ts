@@ -62,6 +62,11 @@ const tokenDefinitions: readonly TokenDefinition[] = [
   defineToken("2", { kind: "primary", value: "2" }),
 ].sort((left, right) => right.text.length - left.text.length);
 
+const parenthesizedModifierDefinitions = tokenDefinitions.filter((definition) =>
+  definition.semantic.kind === "addition"
+  || definition.semantic.kind === "alteration"
+  || definition.semantic.kind === "omission");
+
 const degreeOrder: Readonly<Record<ChordDegree, number>> = { 1: 0, 3: 1, 4: 1, 5: 2, 6: 3, 7: 4, 2: 5, 9: 6, 11: 7, 13: 8 };
 const tokenRank: Readonly<Record<SemanticToken["kind"], number>> = {
   composite: 1, quality: 1, primary: 2, suspension: 3, addition: 4, alteration: 5, omission: 6,
@@ -101,8 +106,26 @@ function parseBody(sourceText: string, body: string): { readonly tokens: readonl
   if (/\s/u.test(compact)) return failure(sourceText, "UNSUPPORTED_TOKEN", compact);
   let flattened = compact;
   if (flattened.includes("(")) {
-    if (!/^([^()]*)\(([^()]*)\)(\/[^()]*)?$/.test(flattened)) return failure(sourceText, "INVALID_TOKEN_ORDER");
-    flattened = flattened.replace(/[(),]/g, "");
+    const match = /^([^()]*)\(([^()]*)\)(\/[^()]*)?$/.exec(flattened);
+    if (!match) return failure(sourceText, "INVALID_TOKEN_ORDER");
+    const parenthesized = match[2];
+    if (parenthesized.length === 0
+      || parenthesized.startsWith(",")
+      || parenthesized.endsWith(",")
+      || parenthesized.includes(",,")) return failure(sourceText, "INVALID_TOKEN_ORDER");
+    for (const group of parenthesized.split(",")) {
+      let remainingGroup = group;
+      let modifierCount = 0;
+      while (remainingGroup.length > 0) {
+        const definition = parenthesizedModifierDefinitions.find((entry) =>
+          remainingGroup.startsWith(entry.text));
+        if (!definition) return failure(sourceText, "INVALID_TOKEN_ORDER", remainingGroup);
+        modifierCount += 1;
+        remainingGroup = remainingGroup.slice(definition.text.length);
+      }
+      if (modifierCount === 0) return failure(sourceText, "INVALID_TOKEN_ORDER");
+    }
+    flattened = `${match[1]}${parenthesized.replaceAll(",", "")}${match[3] ?? ""}`;
   } else if (flattened.includes(")") || flattened.includes(",")) {
     return failure(sourceText, "INVALID_TOKEN_ORDER");
   }
@@ -263,5 +286,6 @@ export function isParsedChord(value: unknown): value is ParsedChord {
     || canonicalJson(value.omissions) !== canonicalJson([...value.omissions].sort((a, b) => (a as number) - (b as number)))) return false;
   const reparsed = parseChord(value.canonicalSymbol);
   return reparsed.status === "ok"
+    && reparsed.chord.canonicalSymbol === value.canonicalSymbol
     && canonicalJson(chordSemanticProjection(reparsed.chord)) === canonicalJson(chordSemanticProjection(value as unknown as ParsedChord));
 }

@@ -2,6 +2,7 @@ import type { Fraction } from "../fraction";
 import type { TimeSignature } from "../meter";
 import type { SourceMeasure } from "../source/model";
 import { performanceOccurrenceId } from "../ids";
+import { canonicalJson } from "../digest/canonical";
 
 export interface PerformanceMeasureOccurrence {
   readonly occurrenceId: string;
@@ -84,13 +85,13 @@ export function expandRepeats(measures: readonly SourceMeasure[], expanderVersio
   return { status: "complete", sequence: { occurrences, expanderVersion } };
 }
 
-export function validatePerformanceSequence(sequence: PerformanceSequence, measures: readonly SourceMeasure[]): boolean {
-  const byId = new Map(measures.map((measure) => [measure.id, measure]));
-  const counts = new Map<string, number>();
-  return sequence.occurrences.every((occurrence, index) => {
-    const source = byId.get(occurrence.sourceMeasureId);
-    const expectedCount = counts.get(occurrence.sourceMeasureId) ?? 0;
-    counts.set(occurrence.sourceMeasureId, expectedCount + 1);
-    return occurrence.performanceIndex === index && occurrence.occurrenceIndexForSource === expectedCount && source !== undefined && source.duration.n === occurrence.duration.n && source.duration.d === occurrence.duration.d;
-  });
+export function validatePerformanceSequence(
+  sequence: PerformanceSequence,
+  measures: readonly SourceMeasure[],
+  expectedExpanderVersion: string = sequence.expanderVersion,
+): boolean {
+  if (sequence.expanderVersion !== expectedExpanderVersion) return false;
+  const expanded = expandRepeats(measures, expectedExpanderVersion);
+  return expanded.status === "complete"
+    && canonicalJson(expanded.sequence) === canonicalJson(sequence);
 }

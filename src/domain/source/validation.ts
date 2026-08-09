@@ -1,6 +1,13 @@
 import { isChordParseResult } from "../chord/parser";
 import { digestMusicalSource } from "../digest/source";
-import { addFractions, compareFractions, isPositiveFraction } from "../fraction";
+import { addFractions, compareFractions, isPositiveFraction, type Fraction } from "../fraction";
+import {
+  fractionKey, leadEventId, lyricTokenId, performanceOccurrenceId, phraseRegionId,
+  sectionDefinitionId, sectionOccurrenceId, sourceChordEventId, sourceMeasureId,
+  sourceTextEventId,
+} from "../ids";
+import { validatePerformanceSequence } from "../performance/repeat";
+import type { AlgorithmExecutionRegistry } from "../registries";
 import { comparePositions } from "../time";
 import {
   validateOmrEvidenceArchive, validateOmrReviewRecord, validateSourceEvidenceIndex,
@@ -17,7 +24,7 @@ import type {
 import { validateRights, validateSectionPartition } from "./model";
 import { hasCanonicalSongSourceOrder } from "./normalize";
 import {
-  isSourceRevisionRef, validateRevisionHistory, validateRevisionHistoryIntegrity,
+  isSourceRevisionRef, revisionRefsEqual, validateRevisionHistory, validateRevisionHistoryIntegrity,
 } from "./revision";
 
 const SOURCE_KINDS = ["manual", "musicxml", "omr", "suggested"] as const;
@@ -91,6 +98,136 @@ function eventFitsMeasure(event: LeadEvent, measure: SourceMeasure): boolean {
   } catch {
     return false;
   }
+}
+
+function samePitch(left: Extract<LeadEvent, { readonly kind: "note" }>, right: Extract<LeadEvent, { readonly kind: "note" }>): boolean {
+  return left.pitch.step === right.pitch.step
+    && left.pitch.alter === right.pitch.alter
+    && left.pitch.octave === right.pitch.octave;
+}
+
+function hasValidMonophonicLead(source: SongSourceDocument): boolean {
+  const events: Array<{
+    readonly event: LeadEvent;
+    readonly start: Fraction;
+    readonly end: Fraction;
+  }> = [];
+  let measureStart = { n: 0, d: 1 } as Fraction;
+  for (const measure of source.sourceMeasures) {
+    for (const event of measure.leadEvents) {
+      const start = addFractions(measureStart, event.onset);
+      events.push({ event, start, end: addFractions(start, event.duration) });
+    }
+    measureStart = addFractions(measureStart, measure.duration);
+  }
+  events.sort((left, right) => compareFractions(left.start, right.start)
+    || compareFractions(left.end, right.end));
+  for (let index = 0; index < events.length; index += 1) {
+    const current = events[index];
+    const previous = events[index - 1];
+    const next = events[index + 1];
+    if (previous && compareFractions(previous.end, current.start) > 0) return false;
+    if (current.event.kind !== "note") continue;
+    if (current.event.tieStop && (!previous
+      || previous.event.kind !== "note"
+      || compareFractions(previous.end, current.start) !== 0
+      || !previous.event.tieStart
+      || !samePitch(previous.event, current.event))) return false;
+    if (current.event.tieStart && (!next
+      || next.event.kind !== "note"
+      || compareFractions(current.end, next.start) !== 0
+      || !next.event.tieStop
+      || !samePitch(current.event, next.event))) return false;
+  }
+  return true;
+}
+
+export function hasCanonicalSourceIdGraph(source: SongSourceDocument): boolean {
+  const measureOrdinalById = Object.fromEntries(
+    source.sourceMeasures.map((measure, ordinal) => [measure.id, ordinal]),
+  );
+  if (Object.keys(measureOrdinalById).length !== source.sourceMeasures.length) return false;
+  for (let measureOrdinal = 0; measureOrdinal < source.sourceMeasures.length; measureOrdinal += 1) {
+    const measure = source.sourceMeasures[measureOrdinal];
+    if (measure.id !== sourceMeasureId(measureOrdinal)) return false;
+    const leadOrdinalById = Object.fromEntries(
+      measure.leadEvents.map((event, ordinal) => [event.id, ordinal]),
+    );
+    if (Object.keys(leadOrdinalById).length !== measure.leadEvents.length
+      || measure.leadEvents.some((event, ordinal) => event.id !== leadEventId(measureOrdinal, ordinal))
+      || measure.chordEvents.some((event, ordinal) => event.id !== sourceChordEventId(measureOrdinal, ordinal))) return false;
+    const lyricCounts = new Map<string, number>();
+    for (const token of measure.lyricTokens) {
+      const leadOrdinal = leadOrdinalById[token.leadEventId];
+      if (!Number.isSafeInteger(leadOrdinal) || leadOrdinal < 0) return false;
+      const key = `${leadOrdinal}:${token.verse}`;
+      const tokenOrdinal = lyricCounts.get(key) ?? 0;
+      lyricCounts.set(key, tokenOrdinal + 1);
+      if (token.id !== lyricTokenId(measureOrdinal, leadOrdinal, token.verse, tokenOrdinal)) return false;
+    }
+    const textCounts = new Map<string, number>();
+    for (const event of measure.textEvents) {
+      const key = `${fractionKey(event.onset)}:${event.kind}`;
+      const eventOrdinal = textCounts.get(key) ?? 0;
+      textCounts.set(key, eventOrdinal + 1);
+      if (event.id !== sourceTextEventId(measureOrdinal, event.onset, event.kind, eventOrdinal)) return false;
+    }
+  }
+  if (source.performanceSequence.occurrences.some((occurrence) => {
+    const measureOrdinal = measureOrdinalById[occurrence.sourceMeasureId];
+    return !Number.isSafeInteger(measureOrdinal)
+      || measureOrdinal < 0
+      || occurrence.occurrenceId !== performanceOccurrenceId(
+        occurrence.performanceIndex,
+        measureOrdinal,
+        occurrence.occurrenceIndexForSource,
+      );
+  })) return false;
+  const definitionOrdinalById: Record<string, number> = {};
+  const definitionCounts = new Map<string, number>();
+  for (let definitionOrdinal = 0; definitionOrdinal < source.sectionDefinitions.length; definitionOrdinal += 1) {
+    const definition = source.sectionDefinitions[definitionOrdinal];
+    const measureOrdinals = definition.sourceMeasureIds.map((id) => measureOrdinalById[id]);
+    if (measureOrdinals.length === 0 || measureOrdinals.some((ordinal) => !Number.isSafeInteger(ordinal) || ordinal < 0)) return false;
+    const sourceStart = measureOrdinals[0];
+    const sourceEndExclusive = measureOrdinals[measureOrdinals.length - 1] + 1;
+    const key = `${sourceStart}:${sourceEndExclusive}:${definition.type}`;
+    const duplicateOrdinal = definitionCounts.get(key) ?? 0;
+    definitionCounts.set(key, duplicateOrdinal + 1);
+    if (definition.id !== sectionDefinitionId(sourceStart, sourceEndExclusive, definition.type, duplicateOrdinal)) return false;
+    definitionOrdinalById[definition.id] = definitionOrdinal;
+  }
+  const occurrenceOrdinalById: Record<string, number> = {};
+  for (let occurrenceOrdinal = 0; occurrenceOrdinal < source.sectionOccurrences.length; occurrenceOrdinal += 1) {
+    const occurrence = source.sectionOccurrences[occurrenceOrdinal];
+    const definitionOrdinal = definitionOrdinalById[occurrence.sectionDefinitionId];
+    if (!Number.isSafeInteger(definitionOrdinal) || definitionOrdinal < 0
+      || occurrence.id !== sectionOccurrenceId(
+        occurrence.startPerformanceMeasureIndex,
+        occurrence.endPerformanceMeasureIndexExclusive,
+        definitionOrdinal,
+      )) return false;
+    occurrenceOrdinalById[occurrence.id] = occurrenceOrdinal;
+  }
+  return source.phraseRegions.every((phrase) => {
+    const occurrenceOrdinal = occurrenceOrdinalById[phrase.sectionOccurrenceId];
+    return Number.isSafeInteger(occurrenceOrdinal)
+      && occurrenceOrdinal >= 0
+      && phrase.id === phraseRegionId(occurrenceOrdinal, phrase.range.start, phrase.range.end);
+  });
+}
+
+function currentSourceIdsByKind(source: SongSourceDocument): Readonly<Record<string, ReadonlySet<string>>> {
+  return {
+    measure: new Set(source.sourceMeasures.map((measure) => measure.id)),
+    "lead-event": new Set(source.sourceMeasures.flatMap((measure) => measure.leadEvents.map((event) => event.id))),
+    "chord-event": new Set(source.sourceMeasures.flatMap((measure) => measure.chordEvents.map((event) => event.id))),
+    "lyric-token": new Set(source.sourceMeasures.flatMap((measure) => measure.lyricTokens.map((token) => token.id))),
+    "source-text": new Set(source.sourceMeasures.flatMap((measure) => measure.textEvents.map((event) => event.id))),
+    "section-definition": new Set(source.sectionDefinitions.map((definition) => definition.id)),
+    "section-occurrence": new Set(source.sectionOccurrences.map((occurrence) => occurrence.id)),
+    phrase: new Set(source.phraseRegions.map((phrase) => phrase.id)),
+  };
 }
 
 function isSourceMeasure(value: unknown): value is SourceMeasure {
@@ -254,13 +391,32 @@ export function isSongSourceDocument(value: unknown): value is SongSourceDocumen
   return hasCanonicalSongSourceOrder(source);
 }
 
-export async function validateSongSourceDocumentIntegrity(value: unknown): Promise<boolean> {
+export async function validateSongSourceDocumentIntegrity(
+  value: unknown,
+  expectation: string | Pick<AlgorithmExecutionRegistry, "versions">,
+): Promise<boolean> {
   if (!isSongSourceDocument(value)) return false;
+  const expectedExpanderVersion = typeof expectation === "string"
+    ? expectation
+    : expectation.versions.performanceExpanderVersion;
+  if (!validatePerformanceSequence(
+    value.performanceSequence,
+    value.sourceMeasures,
+    expectedExpanderVersion,
+  ) || !hasCanonicalSourceIdGraph(value) || !hasValidMonophonicLead(value)) return false;
   const current = {
     documentId: value.documentId,
     revisionOrdinal: value.revisionOrdinal,
     revisionDigest: value.revisionDigest,
   };
+  if (value.revisionOrdinal > 0) {
+    const lastRecord = value.revisionHistory.at(-1);
+    if (!lastRecord || !value.previousRevision
+      || !revisionRefsEqual(value.previousRevision, lastRecord.fromRevision)) return false;
+    const idsByKind = currentSourceIdsByKind(value);
+    if (lastRecord.idRemap.entries.some((entry) => entry.toIds.some((id) =>
+      !idsByKind[entry.entityKind]?.has(id)))) return false;
+  }
   return await validateRevisionHistoryIntegrity(
     current,
     value.revisionHistory,
