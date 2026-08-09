@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseChord } from "./chord/parser";
 import {
   createPresetProfileRegistry, resolveEffectiveArrangementConfig,
 } from "./config";
@@ -22,15 +23,17 @@ import { COMMON_TIME } from "./meter";
 import { SOURCE_LEAD_TRACK } from "./performer";
 import { pitchRange } from "./pitch";
 import {
-  isHarmonyProjectShape, validateHarmonyProject, type HarmonyProject,
+  isHarmonyProjectShape, validateHarmonyProject, type ArrangementVariant,
+  type HarmonyProject,
 } from "./project";
-import { countRate } from "./rates";
+import { basisPoints, countRate, extendedBasisPoints } from "./rates";
 import type { AlgorithmExecutionRegistry } from "./registries";
 import { atomizeSourceLead } from "./source/atomization";
 import type { SongSourceDocument } from "./source/model";
 import {
   computeRevisionHistoryDigest, createSourceIdRemap,
-  createSourceRevisionProjection, type SourceRevisionRecord,
+  createSourceRevisionProjection, type SourceIdRemapEntry,
+  type SourceRevisionRecord,
 } from "./source/revision";
 import { musicalRange } from "./time";
 
@@ -75,6 +78,16 @@ const executionRegistry: AlgorithmExecutionRegistry = {
   },
 };
 
+function registryWith(overrides: {
+  readonly versions?: Partial<AlgorithmExecutionRegistry["versions"]>;
+  readonly configDigests?: Partial<AlgorithmExecutionRegistry["configDigests"]>;
+}): AlgorithmExecutionRegistry {
+  return {
+    versions: { ...executionRegistry.versions, ...overrides.versions },
+    configDigests: { ...executionRegistry.configDigests, ...overrides.configDigests },
+  };
+}
+
 async function canonicalSource(): Promise<SongSourceDocument> {
   const measure = {
     id: "sm:0",
@@ -82,8 +95,26 @@ async function canonicalSource(): Promise<SongSourceDocument> {
     implicit: false,
     time: COMMON_TIME,
     duration: fraction(4),
-    leadEvents: [],
-    chordEvents: [],
+    leadEvents: [{
+      kind: "note",
+      id: "le:0:0",
+      sourceMeasureId: "sm:0",
+      onset: fraction(0),
+      duration: fraction(4),
+      pitch: { step: "C", alter: 0, octave: 4 },
+      tieStart: false,
+      tieStop: false,
+      lyricTokenIds: [],
+    }],
+    chordEvents: [{
+      id: "ch:0:0",
+      sourceMeasureId: "sm:0",
+      onset: fraction(0),
+      sourceText: "C",
+      parseResult: parseChord("C"),
+      source: "manual",
+      confirmation: "confirmed",
+    }],
     lyricTokens: [],
     textEvents: [],
     repeat: { startRepeat: false },
@@ -182,10 +213,12 @@ async function emptyProject(): Promise<HarmonyProject> {
   };
 }
 
-async function generationProject(): Promise<HarmonyProject> {
+async function generationProject(
+  registry: AlgorithmExecutionRegistry = executionRegistry,
+): Promise<HarmonyProject> {
   const source = await canonicalSource();
   const presetProfiles = await createPresetProfileRegistry(
-    executionRegistry.versions.presetProfileVersion,
+    registry.versions.presetProfileVersion,
   );
   const sourceChordProjectionDigest = await digestSourceChordProjection(source.sourceMeasures);
   const performanceSequenceDigest = await digestPerformanceSequence(
@@ -198,8 +231,8 @@ async function generationProject(): Promise<HarmonyProject> {
     sourceChordProjectionDigest,
     performanceSequenceDigest,
     policy: { gapPolicy: "block-gap" },
-    resolverVersion: executionRegistry.versions.chordTimelineResolverVersion,
-    expectedResolverVersion: executionRegistry.versions.chordTimelineResolverVersion,
+    resolverVersion: registry.versions.chordTimelineResolverVersion,
+    expectedResolverVersion: registry.versions.chordTimelineResolverVersion,
   });
   if (timelineState.status !== "resolved") throw new Error("fixture timeline failed");
   const atomization = await atomizeSourceLead({
@@ -209,7 +242,7 @@ async function generationProject(): Promise<HarmonyProject> {
     phraseRegions: source.phraseRegions,
     chordTimeline: timelineState.timeline,
     musicalSourceDigest: source.revisionDigest,
-    atomizerVersion: executionRegistry.versions.sourceLeadAtomizerVersion,
+    atomizerVersion: registry.versions.sourceLeadAtomizerVersion,
   });
   const leadRange = pitchRange(
     { step: "C", alter: 0, octave: 3 },
@@ -238,7 +271,7 @@ async function generationProject(): Promise<HarmonyProject> {
   } as const;
   const effectiveConfig = await resolveEffectiveArrangementConfig({
     registry: presetProfiles,
-    expectedPresetProfileVersion: executionRegistry.versions.presetProfileVersion,
+    expectedPresetProfileVersion: registry.versions.presetProfileVersion,
     mode: settings.mode,
     presetId: "simple",
     userCaps: settings.userCaps,
@@ -271,12 +304,12 @@ async function generationProject(): Promise<HarmonyProject> {
     presetProfileVersion: presetProfiles.presetProfileVersion,
     presetProfileDigest: presetProfiles.presetProfileDigest,
     locks: [],
-    plannerVersion: executionRegistry.versions.plannerVersion,
-    grammarVersion: executionRegistry.versions.grammarVersion,
-    plannerConfigDigest: executionRegistry.configDigests.plannerConfigDigest,
-    grammarConfigDigest: executionRegistry.configDigests.grammarConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    plannerVersion: registry.versions.plannerVersion,
+    grammarVersion: registry.versions.grammarVersion,
+    plannerConfigDigest: registry.configDigests.plannerConfigDigest,
+    grammarConfigDigest: registry.configDigests.grammarConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
   }, ordinals);
   const intentBase = {
     stage: "intent",
@@ -288,12 +321,12 @@ async function generationProject(): Promise<HarmonyProject> {
     presetProfileVersion: presetProfiles.presetProfileVersion,
     presetProfileDigest: presetProfiles.presetProfileDigest,
     grammarId: "worship-arrangement-grammar-v1",
-    grammarVersion: executionRegistry.versions.grammarVersion,
-    plannerVersion: executionRegistry.versions.plannerVersion,
-    grammarConfigDigest: executionRegistry.configDigests.grammarConfigDigest,
-    plannerConfigDigest: executionRegistry.configDigests.plannerConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    grammarVersion: registry.versions.grammarVersion,
+    plannerVersion: registry.versions.plannerVersion,
+    grammarConfigDigest: registry.configDigests.grammarConfigDigest,
+    plannerConfigDigest: registry.configDigests.plannerConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
     sectionIntents: [],
     phraseIntents: [],
     intentPlanDigest: d("0"),
@@ -307,20 +340,20 @@ async function generationProject(): Promise<HarmonyProject> {
     presetProfileVersion: presetProfiles.presetProfileVersion,
     presetProfileDigest: presetProfiles.presetProfileDigest,
     locks: [],
-    activityPlannerVersion: executionRegistry.versions.activityPlannerVersion,
-    activityPlannerConfigDigest: executionRegistry.configDigests.activityPlannerConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    activityPlannerVersion: registry.versions.activityPlannerVersion,
+    activityPlannerConfigDigest: registry.configDigests.activityPlannerConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
   }, ordinals);
   const activityBase = {
     stage: "activity-realized",
     presetId: "simple",
     intentPlanDigest: intentPlan.intentPlanDigest,
     activityInputDigest,
-    activityPlannerVersion: executionRegistry.versions.activityPlannerVersion,
-    activityPlannerConfigDigest: executionRegistry.configDigests.activityPlannerConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    activityPlannerVersion: registry.versions.activityPlannerVersion,
+    activityPlannerConfigDigest: registry.configDigests.activityPlannerConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
     sourceLeadAtomizationDigest: atomization.digest,
     effectiveConfigDigest: effectiveConfig.digest,
     presetProfileDigest: presetProfiles.presetProfileDigest,
@@ -336,20 +369,20 @@ async function generationProject(): Promise<HarmonyProject> {
     presetProfileVersion: presetProfiles.presetProfileVersion,
     presetProfileDigest: presetProfiles.presetProfileDigest,
     locks: [],
-    anchorPlannerVersion: executionRegistry.versions.anchorPlannerVersion,
-    anchorPlannerConfigDigest: executionRegistry.configDigests.anchorPlannerConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    anchorPlannerVersion: registry.versions.anchorPlannerVersion,
+    anchorPlannerConfigDigest: registry.configDigests.anchorPlannerConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
   }, ordinals);
   const anchorBase = {
     stage: "anchor-realized",
     presetId: "simple",
     activityPlanDigest: activityPlan.activityPlanDigest,
     anchorInputDigest,
-    anchorPlannerVersion: executionRegistry.versions.anchorPlannerVersion,
-    anchorPlannerConfigDigest: executionRegistry.configDigests.anchorPlannerConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    anchorPlannerVersion: registry.versions.anchorPlannerVersion,
+    anchorPlannerConfigDigest: registry.configDigests.anchorPlannerConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
     sourceLeadAtomizationDigest: atomization.digest,
     effectiveConfigDigest: effectiveConfig.digest,
     presetProfileDigest: presetProfiles.presetProfileDigest,
@@ -363,17 +396,17 @@ async function generationProject(): Promise<HarmonyProject> {
     presetProfileVersion: presetProfiles.presetProfileVersion,
     presetProfileDigest: presetProfiles.presetProfileDigest,
     locks: [],
-    solverVersion: executionRegistry.versions.solverVersion,
-    assemblerVersion: executionRegistry.versions.assemblerVersion,
-    validatorVersion: executionRegistry.versions.validatorVersion,
-    metricsVersion: executionRegistry.versions.metricsVersion,
-    candidateProjectionVersion: executionRegistry.versions.candidateProjectionVersion,
-    solverConfigDigest: executionRegistry.configDigests.solverConfigDigest,
-    assemblerConfigDigest: executionRegistry.configDigests.assemblerConfigDigest,
-    validatorConfigDigest: executionRegistry.configDigests.validatorConfigDigest,
-    metricConfigDigest: executionRegistry.configDigests.metricConfigDigest,
-    diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
-    diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+    solverVersion: registry.versions.solverVersion,
+    assemblerVersion: registry.versions.assemblerVersion,
+    validatorVersion: registry.versions.validatorVersion,
+    metricsVersion: registry.versions.metricsVersion,
+    candidateProjectionVersion: registry.versions.candidateProjectionVersion,
+    solverConfigDigest: registry.configDigests.solverConfigDigest,
+    assemblerConfigDigest: registry.configDigests.assemblerConfigDigest,
+    validatorConfigDigest: registry.configDigests.validatorConfigDigest,
+    metricConfigDigest: registry.configDigests.metricConfigDigest,
+    diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
+    diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
   }, ordinals);
   const metrics: FullSongMetrics = {
     densityBySectionOccurrence: {},
@@ -424,30 +457,30 @@ async function generationProject(): Promise<HarmonyProject> {
       anchorPlanDigest: anchorPlan.anchorPlanDigest,
     },
     configDigests: {
-      solverConfigDigest: executionRegistry.configDigests.solverConfigDigest,
-      assemblerConfigDigest: executionRegistry.configDigests.assemblerConfigDigest,
-      validatorConfigDigest: executionRegistry.configDigests.validatorConfigDigest,
-      metricConfigDigest: executionRegistry.configDigests.metricConfigDigest,
-      diagnosticRegistryDigest: executionRegistry.configDigests.diagnosticRegistryDigest,
+      solverConfigDigest: registry.configDigests.solverConfigDigest,
+      assemblerConfigDigest: registry.configDigests.assemblerConfigDigest,
+      validatorConfigDigest: registry.configDigests.validatorConfigDigest,
+      metricConfigDigest: registry.configDigests.metricConfigDigest,
+      diagnosticRegistryDigest: registry.configDigests.diagnosticRegistryDigest,
     },
     versions: {
-      domainSchemaVersion: executionRegistry.versions.domainSchemaVersion,
-      digestCodecVersion: executionRegistry.versions.digestCodecVersion,
-      chordParserVersion: executionRegistry.versions.chordParserVersion,
-      chordTimelineResolverVersion: executionRegistry.versions.chordTimelineResolverVersion,
-      performanceExpanderVersion: executionRegistry.versions.performanceExpanderVersion,
-      sourceLeadAtomizerVersion: executionRegistry.versions.sourceLeadAtomizerVersion,
-      presetProfileVersion: executionRegistry.versions.presetProfileVersion,
-      candidateProjectionVersion: executionRegistry.versions.candidateProjectionVersion,
-      plannerVersion: executionRegistry.versions.plannerVersion,
-      grammarVersion: executionRegistry.versions.grammarVersion,
-      activityPlannerVersion: executionRegistry.versions.activityPlannerVersion,
-      anchorPlannerVersion: executionRegistry.versions.anchorPlannerVersion,
-      solverVersion: executionRegistry.versions.solverVersion,
-      assemblerVersion: executionRegistry.versions.assemblerVersion,
-      validatorVersion: executionRegistry.versions.validatorVersion,
-      metricsVersion: executionRegistry.versions.metricsVersion,
-      diagnosticRegistryVersion: executionRegistry.versions.diagnosticRegistryVersion,
+      domainSchemaVersion: registry.versions.domainSchemaVersion,
+      digestCodecVersion: registry.versions.digestCodecVersion,
+      chordParserVersion: registry.versions.chordParserVersion,
+      chordTimelineResolverVersion: registry.versions.chordTimelineResolverVersion,
+      performanceExpanderVersion: registry.versions.performanceExpanderVersion,
+      sourceLeadAtomizerVersion: registry.versions.sourceLeadAtomizerVersion,
+      presetProfileVersion: registry.versions.presetProfileVersion,
+      candidateProjectionVersion: registry.versions.candidateProjectionVersion,
+      plannerVersion: registry.versions.plannerVersion,
+      grammarVersion: registry.versions.grammarVersion,
+      activityPlannerVersion: registry.versions.activityPlannerVersion,
+      anchorPlannerVersion: registry.versions.anchorPlannerVersion,
+      solverVersion: registry.versions.solverVersion,
+      assemblerVersion: registry.versions.assemblerVersion,
+      validatorVersion: registry.versions.validatorVersion,
+      metricsVersion: registry.versions.metricsVersion,
+      diagnosticRegistryVersion: registry.versions.diagnosticRegistryVersion,
     },
   } as const;
   return {
@@ -473,6 +506,101 @@ async function generationProject(): Promise<HarmonyProject> {
       editedSnapshots: [],
     } },
     selectedPresetId: "simple",
+  };
+}
+
+type StaleStage = "intent" | "activity" | "anchor" | "generation";
+
+function generatedVariant(
+  project: HarmonyProject,
+): Extract<ArrangementVariant, { readonly lifecycle: "generation-attempted" }> {
+  const variant = project.variants.simple;
+  if (!variant || variant.lifecycle !== "generation-attempted") {
+    throw new Error("missing generation fixture variant");
+  }
+  return variant;
+}
+
+function withVariantStaleness(
+  project: HarmonyProject,
+  staleFrom: StaleStage,
+): HarmonyProject {
+  const variant = generatedVariant(project);
+  return {
+    ...project,
+    variants: { ...project.variants, simple: {
+      ...variant,
+      staleness: { staleFrom, staleDiagnosticIds: [], previousArtifactDigests: [] },
+    } },
+  };
+}
+
+function withHistoricalAuthorities(project: HarmonyProject): HarmonyProject {
+  if (project.chordTimelineState.status !== "resolved"
+    || project.sourceLeadAtomizationState.status !== "resolved") {
+    throw new Error("fixture lacks resolved authorities");
+  }
+  return {
+    ...project,
+    chordTimelineState: {
+      status: "stale",
+      previousTimeline: project.chordTimelineState.timeline,
+      resolutionPolicy: project.chordTimelineState.timeline.resolutionPolicy,
+      diagnostics: [],
+    },
+    sourceLeadAtomizationState: {
+      status: "stale",
+      previousAtomization: project.sourceLeadAtomizationState.atomization,
+      diagnostics: [],
+    },
+  };
+}
+
+async function revisedSource(
+  source: SongSourceDocument,
+  sourceMeasures: SongSourceDocument["sourceMeasures"],
+  remapEntries: readonly SourceIdRemapEntry[],
+): Promise<SongSourceDocument> {
+  const fromRevision = {
+    documentId: source.documentId,
+    revisionOrdinal: source.revisionOrdinal,
+    revisionDigest: source.revisionDigest,
+  };
+  const provisional = {
+    ...source,
+    revisionOrdinal: source.revisionOrdinal + 1,
+    revisionDigest: d("0"),
+    sourceMeasures,
+    revisionHistory: [],
+    revisionHistoryDigest: await computeRevisionHistoryDigest([]),
+  } as SongSourceDocument;
+  const revisionDigest = await digestMusicalSource(provisional);
+  const toRevision = {
+    documentId: source.documentId,
+    revisionOrdinal: provisional.revisionOrdinal,
+    revisionDigest,
+  };
+  const idRemap = await createSourceIdRemap(fromRevision, toRevision, remapEntries);
+  const record: SourceRevisionRecord = {
+    id: `ser:${fromRevision.revisionOrdinal}:${toRevision.revisionOrdinal}:0`,
+    editOrdinal: 0,
+    fromRevision,
+    toRevision,
+    commandKind: "manual-source-edit",
+    beforeProjection: createSourceRevisionProjection("manual-source-edit", {
+      revisionOrdinal: fromRevision.revisionOrdinal,
+    }),
+    afterProjection: createSourceRevisionProjection("manual-source-edit", {
+      revisionOrdinal: toRevision.revisionOrdinal,
+    }),
+    idRemap,
+  };
+  return {
+    ...provisional,
+    revisionDigest,
+    previousRevision: fromRevision,
+    revisionHistory: [record],
+    revisionHistoryDigest: await computeRevisionHistoryDigest([record]),
   };
 }
 
@@ -519,6 +647,306 @@ describe("persisted HarmonyProject integrity gate", () => {
     expect(isHarmonyProjectShape(forgedEventProject)).toBe(true);
     expect((await validateHarmonyProject(forgedEventProject, executionRegistry)).status).toBe("blocked");
   });
+
+  it("preserves a C timeline after a current-source edit to G without making it executable", async () => {
+    const r0 = await generationProject();
+    if (r0.chordTimelineState.status !== "resolved"
+      || r0.sourceLeadAtomizationState.status !== "resolved") {
+      throw new Error("missing R0 authority");
+    }
+    const t0 = r0.chordTimelineState.timeline;
+    const a0 = r0.sourceLeadAtomizationState.atomization;
+    const sourceMeasures = r0.source.sourceMeasures.map((measure, index) => index === 0
+      ? {
+          ...measure,
+          chordEvents: measure.chordEvents.map((event) => ({
+            ...event,
+            sourceText: "G",
+            parseResult: parseChord("G"),
+          })),
+        }
+      : measure);
+    const r1Source = await revisedSource(r0.source, sourceMeasures, [{
+      entityKind: "chord-event",
+      fromId: "ch:0:0",
+      toIds: ["ch:0:0"],
+      status: "mapped-one",
+    }]);
+    const preserved = withVariantStaleness(withHistoricalAuthorities({
+      ...r0,
+      source: r1Source,
+    }), "intent");
+
+    expect(isHarmonyProjectShape(preserved)).toBe(true);
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+    expect(preserved.chordTimelineState.status).toBe("stale");
+    if (preserved.chordTimelineState.status !== "stale") throw new Error("missing stale timeline");
+    expect(preserved.chordTimelineState.previousTimeline).toBe(t0);
+
+    const disguisedAsCurrent: HarmonyProject = {
+      ...preserved,
+      chordTimelineState: { status: "resolved", timeline: t0, diagnostics: [] },
+    };
+    expect((await validateHarmonyProject(disguisedAsCurrent, executionRegistry)).status).toBe("blocked");
+
+    const historicalBlockingDiagnostic = {
+      id: "dg:STALE_REFERENCE:historical-authority:0",
+      code: "STALE_REFERENCE",
+      severity: "blocking",
+      messageKo: "historical authority is not executable",
+    } as const;
+    const blockedPreservation: HarmonyProject = {
+      ...preserved,
+      chordTimelineState: {
+        status: "blocked",
+        previousTimeline: t0,
+        resolutionPolicy: t0.resolutionPolicy,
+        diagnostics: [historicalBlockingDiagnostic],
+      },
+      sourceLeadAtomizationState: {
+        status: "blocked",
+        previousAtomization: a0,
+        diagnostics: [historicalBlockingDiagnostic],
+      },
+    };
+    expect(isHarmonyProjectShape(blockedPreservation)).toBe(true);
+    expect((await validateHarmonyProject(blockedPreservation, executionRegistry)).status).toBe("complete");
+  });
+
+  it("preserves structurally deleted source targets and stale locks but blocks them when fresh", async () => {
+    const r0 = await generationProject();
+    if (r0.chordTimelineState.status !== "resolved"
+      || r0.sourceLeadAtomizationState.status !== "resolved") {
+      throw new Error("missing R0 authority");
+    }
+    const t0 = r0.chordTimelineState.timeline;
+    const a0 = r0.sourceLeadAtomizationState.atomization;
+    const oldSpan = t0.spans[0];
+    const oldAtom = a0.atoms[0];
+    const parsedC = parseChord("C");
+    if (!oldSpan || !oldAtom || parsedC.status !== "ok") throw new Error("missing historical targets");
+    const sourceMeasures = r0.source.sourceMeasures.map((measure, index) => index === 0
+      ? { ...measure, leadEvents: [], chordEvents: [], lyricTokens: [] }
+      : measure);
+    const r1Source = await revisedSource(r0.source, sourceMeasures, [{
+      entityKind: "lead-event",
+      fromId: "le:0:0",
+      toIds: [],
+      status: "deleted",
+    }, {
+      entityKind: "chord-event",
+      fromId: "ch:0:0",
+      toIds: [],
+      status: "deleted",
+    }]);
+    const basePreserved = withVariantStaleness(withHistoricalAuthorities({
+      ...r0,
+      source: r1Source,
+    }), "intent");
+    const historicalDiagnostic = {
+      id: "dg:STALE_REFERENCE:removed-source:0",
+      code: "STALE_REFERENCE",
+      severity: "warning",
+      messageKo: "historical target was removed",
+      location: {
+        phraseId: "ph:removed",
+        sourceEventIds: ["le:0:0", "ch:0:0"],
+        trackPlanIds: ["track:removed"],
+      },
+    } as const;
+    const variant = generatedVariant(basePreserved);
+    const preservedWithOldReferences: HarmonyProject = {
+      ...basePreserved,
+      locksByPreset: { simple: {
+        intent: [],
+        activity: [],
+        anchor: [{
+          id: "lk:simple:anchor:historical-chord:0",
+          presetId: "simple",
+          kind: "anchor-chord-tone",
+          phraseId: "ph:removed",
+          trackPlanId: "track:removed",
+          position: oldSpan.range.start,
+          chordSpanId: oldSpan.id,
+          selectedTone: parsedC.chord.tones[0],
+        }, {
+          id: "lk:simple:anchor:historical-atom:0",
+          presetId: "simple",
+          kind: "anchor-lead-derived",
+          phraseId: "ph:removed",
+          trackPlanId: "track:removed",
+          position: oldAtom.range.start,
+          leadAtom: {
+            sourceLeadAtomizationDigest: a0.digest,
+            leadAtomId: oldAtom.id,
+          },
+          relation: "unison",
+        }],
+        solver: [],
+      } },
+      variants: { simple: {
+        ...variant,
+        diagnostics: [historicalDiagnostic],
+        staleness: {
+          staleFrom: "intent",
+          staleDiagnosticIds: [historicalDiagnostic.id],
+          previousArtifactDigests: [],
+        },
+      } },
+    };
+
+    expect(isHarmonyProjectShape(preservedWithOldReferences)).toBe(true);
+    expect((await validateHarmonyProject(
+      preservedWithOldReferences,
+      executionRegistry,
+    )).status).toBe("complete");
+
+    const freshAnchorLocks = withVariantStaleness(
+      preservedWithOldReferences,
+      "generation",
+    );
+    expect((await validateHarmonyProject(freshAnchorLocks, executionRegistry)).status).toBe("blocked");
+  });
+
+  it("allows an old resolver only as previousTimeline", async () => {
+    const oldRegistry = registryWith({
+      versions: { chordTimelineResolverVersion: "chord-resolver-v0" },
+    });
+    const oldProject = await generationProject(oldRegistry);
+    const preserved = withVariantStaleness(
+      withHistoricalAuthorities(oldProject),
+      "intent",
+    );
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+    if (preserved.chordTimelineState.status !== "stale") throw new Error("missing previous timeline");
+    const disguisedAsResolved: HarmonyProject = {
+      ...preserved,
+      chordTimelineState: {
+        status: "resolved",
+        timeline: preserved.chordTimelineState.previousTimeline,
+        diagnostics: [],
+      },
+    };
+    expect((await validateHarmonyProject(disguisedAsResolved, executionRegistry)).status).toBe("blocked");
+  });
+
+  it("allows an old atomizer only as previousAtomization", async () => {
+    const oldRegistry = registryWith({
+      versions: { sourceLeadAtomizerVersion: "atomizer-v0" },
+    });
+    const oldProject = await generationProject(oldRegistry);
+    if (oldProject.sourceLeadAtomizationState.status !== "resolved") {
+      throw new Error("missing old atomization");
+    }
+    const preserved = withVariantStaleness({
+      ...oldProject,
+      sourceLeadAtomizationState: {
+        status: "stale",
+        previousAtomization: oldProject.sourceLeadAtomizationState.atomization,
+        diagnostics: [],
+      },
+    }, "intent");
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+    const disguisedAsResolved = withVariantStaleness(oldProject, "intent");
+    expect((await validateHarmonyProject(disguisedAsResolved, executionRegistry)).status).toBe("blocked");
+  });
+
+  it("allows historical downstream provenance to differ from a replaced fresh upstream plan", async () => {
+    const project = await generationProject();
+    const variant = generatedVariant(project);
+    const ordinals: PlanOrdinalRegistry = {
+      sectionOccurrenceOrdinalById: { "so:0:1:0": 0 },
+      phraseOrdinalById: { "ph:0:0:0/1:1:0/1": 0 },
+      trackOrdinalById: { "track:source-lead": 0, "track:h1": 1 },
+      leadAtomOrdinalById: {},
+      chordSpanOrdinalById: {},
+    };
+    const replacementBase = {
+      ...variant.intentPlan,
+      sectionIntents: [{
+        id: "si:simple:0",
+        sectionOccurrenceId: "so:0:1:0",
+        presetId: "simple",
+        intensityTarget: {
+          participationCoverageBp: basisPoints(0),
+          harmonicDivergenceCoverageBp: basisPoints(0),
+          exactlyTwoPitchCoverageBp: basisPoints(0),
+          exactlyThreePitchCoverageBp: basisPoints(0),
+          maxHarmonyAttackRatioBp: extendedBasisPoints(0),
+          registerSpreadRange: [0, 0] as const,
+          maxActiveVoiceCount: 1 as const,
+        },
+        grammarRuleIds: [],
+      }],
+      phraseIntents: [{
+        id: "pi:simple:0",
+        phraseId: "ph:0:0:0/1:1:0/1",
+        presetId: "simple",
+        sectionIntentId: "si:simple:0",
+        textureId: "UNISON",
+        trackRoles: [],
+        lyricPolicy: "same-lyrics",
+        cadencePolicy: "closed",
+        grammarRuleIds: [],
+      }],
+      intentPlanDigest: d("0"),
+    } as const;
+    const replacementIntent = {
+      ...replacementBase,
+      intentPlanDigest: await digestIntentPlan(replacementBase, ordinals),
+    };
+    expect(replacementIntent.intentPlanDigest).not.toBe(variant.activityPlan.intentPlanDigest);
+    const preserved: HarmonyProject = {
+      ...project,
+      variants: { simple: {
+        ...variant,
+        intentPlan: replacementIntent,
+        staleness: {
+          staleFrom: "activity",
+          staleDiagnosticIds: [],
+          previousArtifactDigests: [],
+        },
+      } },
+    };
+
+    expect(isHarmonyProjectShape(preserved)).toBe(true);
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+  });
+
+  const staleStageCases = [{
+    label: "intent planner",
+    staleFrom: "intent",
+    registry: registryWith({ versions: { plannerVersion: "planner-v0" } }),
+  }, {
+    label: "activity planner",
+    staleFrom: "activity",
+    registry: registryWith({ versions: { activityPlannerVersion: "activity-v0" } }),
+  }, {
+    label: "anchor planner",
+    staleFrom: "anchor",
+    registry: registryWith({ versions: { anchorPlannerVersion: "anchor-v0" } }),
+  }, {
+    label: "generation solver and config",
+    staleFrom: "generation",
+    registry: registryWith({
+      versions: { solverVersion: "solver-v0" },
+      configDigests: { solverConfigDigest: d("b") },
+    }),
+  }] as const;
+
+  it.each(staleStageCases)(
+    "applies the $staleFrom freshness boundary for $label artifacts",
+    async ({ staleFrom, registry }) => {
+      const historicalProject = await generationProject(registry);
+      const preserved = withVariantStaleness(historicalProject, staleFrom);
+      expect(isHarmonyProjectShape(preserved)).toBe(true);
+      expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+      expect((await validateHarmonyProject(
+        historicalProject,
+        executionRegistry,
+      )).status).toBe("blocked");
+    },
+  );
 
   it("requires previousRevision to exactly equal the final transition fromRevision", async () => {
     const project = await emptyProject();

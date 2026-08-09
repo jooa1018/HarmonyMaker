@@ -459,7 +459,24 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
   if (max >= 3 && ((variant.generationResult as ArrangementGenerationResult).presetId !== variant.presetId
     || (variant.outputEdits as readonly ArrangementOutputEdit[]).some((edit) => edit.presetId !== variant.presetId)
     || (variant.editedSnapshots as readonly EditedArrangementSnapshot[]).some((snapshot) => snapshot.presetId !== variant.presetId))) return false;
-  if (max >= 1) {
+  if (variant.lifecycle === "empty" && variant.staleness !== undefined) return false;
+  if (variant.staleness !== undefined) {
+    if (!isPlainRecord(variant.staleness)
+      || !hasExactKeys(variant.staleness, ["staleFrom", "staleDiagnosticIds", "previousArtifactDigests"])
+      || !Array.isArray(variant.staleness.staleDiagnosticIds)
+      || !variant.staleness.staleDiagnosticIds.every(isCanonicalId)
+      || !hasUniqueStrings(variant.staleness.staleDiagnosticIds)
+      || !Array.isArray(variant.staleness.previousArtifactDigests)
+      || !variant.staleness.previousArtifactDigests.every(isSemanticDigest)) return false;
+    const staleFrom = variant.staleness.staleFrom;
+    if (!stages.includes(staleFrom as typeof stages[number]) || stages.indexOf(staleFrom as typeof stages[number]) > max) return false;
+  }
+  const validatedStaleness = variant.staleness as VariantStaleness | undefined;
+  const stageIsFresh = (stage: typeof stages[number]): boolean => validatedStaleness === undefined
+    || stages.indexOf(stage) < stages.indexOf(
+      validatedStaleness.staleFrom,
+    );
+  if (max >= 1 && stageIsFresh("activity")) {
     const intent = variant.intentPlan as ArrangementIntentPlan;
     const activity = variant.activityPlan as ArrangementActivityPlan;
     const intentById = new Map(intent.phraseIntents.map((item) => [item.id, item]));
@@ -469,7 +486,7 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
       || activity.presetProfileDigest !== intent.presetProfileDigest
       || activity.phraseActivityPlans.some((item) => intentById.get(item.intentId)?.phraseId !== item.phraseId)) return false;
   }
-  if (max >= 2) {
+  if (max >= 2 && stageIsFresh("anchor")) {
     const activity = variant.activityPlan as ArrangementActivityPlan;
     const anchor = variant.anchorPlan as ArrangementAnchorPlan;
     const activityById = new Map(activity.phraseActivityPlans.map((item) => [item.id, item]));
@@ -484,9 +501,10 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
     const activity = variant.activityPlan as ArrangementActivityPlan;
     const anchor = variant.anchorPlan as ArrangementAnchorPlan;
     const generation = variant.generationResult as ArrangementGenerationResult;
-    if (generation.digests.intentPlanDigest !== intent.intentPlanDigest
+    if (stageIsFresh("generation")
+      && (generation.digests.intentPlanDigest !== intent.intentPlanDigest
       || generation.digests.activityPlanDigest !== activity.activityPlanDigest
-      || generation.digests.anchorPlanDigest !== anchor.anchorPlanDigest) return false;
+      || generation.digests.anchorPlanDigest !== anchor.anchorPlanDigest)) return false;
     const edits = variant.outputEdits as readonly ArrangementOutputEdit[];
     const snapshots = variant.editedSnapshots as readonly EditedArrangementSnapshot[];
     if (!hasUniqueStrings(edits.map((edit) => edit.id))
@@ -502,18 +520,6 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
       return !candidate || candidate.contentDigest !== snapshot.baseCandidateDigest
         || snapshot.appliedEditIds.some((editId) => !edits.some((edit) => edit.id === editId && edit.baseCandidateId === candidate.id));
     })) return false;
-  }
-  if (variant.lifecycle === "empty" && variant.staleness !== undefined) return false;
-  if (variant.staleness !== undefined) {
-    if (!isPlainRecord(variant.staleness)
-      || !hasExactKeys(variant.staleness, ["staleFrom", "staleDiagnosticIds", "previousArtifactDigests"])
-      || !Array.isArray(variant.staleness.staleDiagnosticIds)
-      || !variant.staleness.staleDiagnosticIds.every(isCanonicalId)
-      || !hasUniqueStrings(variant.staleness.staleDiagnosticIds)
-      || !Array.isArray(variant.staleness.previousArtifactDigests)
-      || !variant.staleness.previousArtifactDigests.every(isSemanticDigest)) return false;
-    const staleFrom = variant.staleness.staleFrom;
-    if (!stages.includes(staleFrom as typeof stages[number]) || stages.indexOf(staleFrom as typeof stages[number]) > max) return false;
   }
   if (variant.lastBlockedAttempt !== undefined && (!isPlainRecord(variant.lastBlockedAttempt)
     || !hasExactKeys(variant.lastBlockedAttempt, ["stage", "inputDigest", "diagnostics"])

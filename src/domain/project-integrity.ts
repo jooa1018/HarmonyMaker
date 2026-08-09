@@ -97,18 +97,16 @@ function exact(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right);
 }
 
-function currentTimeline(project: HarmonyProject): EffectiveChordTimeline | undefined {
-  const state = project.chordTimelineState;
-  if (state.status === "resolved") return state.timeline;
-  if (state.status === "stale") return state.previousTimeline;
-  return state.status === "blocked" ? state.previousTimeline : undefined;
+function resolvedTimeline(project: HarmonyProject): EffectiveChordTimeline | undefined {
+  return project.chordTimelineState.status === "resolved"
+    ? project.chordTimelineState.timeline
+    : undefined;
 }
 
-function currentAtomization(project: HarmonyProject): SourceLeadAtomization | undefined {
-  const state = project.sourceLeadAtomizationState;
-  if (state.status === "resolved") return state.atomization;
-  if (state.status === "stale") return state.previousAtomization;
-  return state.status === "blocked" ? state.previousAtomization : undefined;
+function resolvedAtomization(project: HarmonyProject): SourceLeadAtomization | undefined {
+  return project.sourceLeadAtomizationState.status === "resolved"
+    ? project.sourceLeadAtomizationState.atomization
+    : undefined;
 }
 
 function resolvedChordFromSource(event: SongSourceDocument["sourceMeasures"][number]["chordEvents"][number]): object | undefined {
@@ -297,8 +295,8 @@ function performerOrdinalRegistry(project: HarmonyProject): Readonly<Record<stri
 }
 
 function buildProjectOrdinals(project: HarmonyProject): ProjectOrdinals {
-  const timeline = currentTimeline(project);
-  const atomization = currentAtomization(project);
+  const timeline = resolvedTimeline(project);
+  const atomization = resolvedAtomization(project);
   const trackOrdinalById = Object.fromEntries(
     project.trackPlans.map((track) => [track.id, track.canonicalOrdinal]),
   );
@@ -350,29 +348,53 @@ function validateEndpointReference(
   requireIntegrity(endpoint.leadAtom.sourceLeadAtomizationDigest === atomizationDigest, "lead atom digest binding mismatch", "ANCHOR_LOCK_INVALID");
 }
 
+function validateLockReference(
+  lock: VariantStageLocks[keyof VariantStageLocks][number],
+  ordinals: ProjectOrdinals,
+  atomizationDigest: SemanticDigest | undefined,
+): void {
+  requiredOrdinal(ordinals.phraseOrdinalById, lock.phraseId, "phrase");
+  if ("trackPlanId" in lock) {
+    requiredOrdinal(ordinals.trackOrdinalById, lock.trackPlanId, "track");
+  }
+  if (lock.kind === "anchor-chord-tone") {
+    requiredOrdinal(ordinals.chordSpanOrdinalById, lock.chordSpanId, "chord span");
+  } else if (lock.kind === "anchor-lead-derived") {
+    requiredOrdinal(ordinals.leadAtomOrdinalById, lock.leadAtom.leadAtomId, "lead atom");
+    requireIntegrity(
+      lock.leadAtom.sourceLeadAtomizationDigest === atomizationDigest,
+      "AnchorLock lead atom digest mismatch",
+      "ANCHOR_LOCK_INVALID",
+    );
+  } else if (lock.kind === "anchor-planned-nct") {
+    requiredOrdinal(ordinals.chordSpanOrdinalById, lock.nctSpec.contextChordSpanId, "chord span");
+    requiredOrdinal(ordinals.chordSpanOrdinalById, lock.nctSpec.targetChordSpanId, "chord span");
+    validateEndpointReference(lock.nctSpec.preparation, ordinals, atomizationDigest);
+    validateEndpointReference(lock.nctSpec.resolution, ordinals, atomizationDigest);
+  }
+}
+
 function validateLockReferences(
-  locksByPreset: HarmonyProject["locksByPreset"],
+  project: HarmonyProject,
   ordinals: ProjectOrdinals,
   atomizationDigest: SemanticDigest | undefined,
 ): void {
   const lockIds: string[] = [];
-  for (const locks of Object.values(locksByPreset)) {
+  for (const [presetId, locks] of Object.entries(project.locksByPreset)) {
     if (!locks) continue;
-    const allLocks = [...locks.intent, ...locks.activity, ...locks.anchor, ...locks.solver];
-    for (const lock of allLocks) {
-      lockIds.push(lock.id);
-      requiredOrdinal(ordinals.phraseOrdinalById, lock.phraseId, "phrase");
-      if ("trackPlanId" in lock) requiredOrdinal(ordinals.trackOrdinalById, lock.trackPlanId, "track");
-      if (lock.kind === "anchor-chord-tone") {
-        requiredOrdinal(ordinals.chordSpanOrdinalById, lock.chordSpanId, "chord span");
-      } else if (lock.kind === "anchor-lead-derived") {
-        requiredOrdinal(ordinals.leadAtomOrdinalById, lock.leadAtom.leadAtomId, "lead atom");
-        requireIntegrity(lock.leadAtom.sourceLeadAtomizationDigest === atomizationDigest, "AnchorLock lead atom digest mismatch", "ANCHOR_LOCK_INVALID");
-      } else if (lock.kind === "anchor-planned-nct") {
-        requiredOrdinal(ordinals.chordSpanOrdinalById, lock.nctSpec.contextChordSpanId, "chord span");
-        requiredOrdinal(ordinals.chordSpanOrdinalById, lock.nctSpec.targetChordSpanId, "chord span");
-        validateEndpointReference(lock.nctSpec.preparation, ordinals, atomizationDigest);
-        validateEndpointReference(lock.nctSpec.resolution, ordinals, atomizationDigest);
+    const variant = project.variants[presetId as ArrangementPresetId];
+    const stages = [
+      { stage: "intent", locks: locks.intent },
+      { stage: "activity", locks: locks.activity },
+      { stage: "anchor", locks: locks.anchor },
+      { stage: "generation", locks: locks.solver },
+    ] as const;
+    for (const stage of stages) {
+      for (const lock of stage.locks) {
+        lockIds.push(lock.id);
+        if (variant === undefined || isFresh(variant, stage.stage)) {
+          validateLockReference(lock, ordinals, atomizationDigest);
+        }
       }
     }
   }
@@ -680,14 +702,16 @@ function isFresh(variant: ArrangementVariant, stage: "intent" | "activity" | "an
     || stageIndex(stage) < stageIndex(variant.staleness.staleFrom);
 }
 
-function diagnosticArrays(project: HarmonyProject): readonly (readonly Diagnostic[])[] {
+function freshDiagnosticArrays(project: HarmonyProject): readonly (readonly Diagnostic[])[] {
   const values: Array<readonly Diagnostic[]> = [];
   const timelineState = project.chordTimelineState;
-  if ("diagnostics" in timelineState) values.push(timelineState.diagnostics);
+  if (timelineState.status === "resolved" || timelineState.status === "unresolved") {
+    values.push(timelineState.diagnostics);
+  }
   const atomizationState = project.sourceLeadAtomizationState;
-  if ("diagnostics" in atomizationState) values.push(atomizationState.diagnostics);
+  if (atomizationState.status === "resolved") values.push(atomizationState.diagnostics);
   for (const variant of Object.values(project.variants)) {
-    if (!variant) continue;
+    if (!variant || variant.staleness !== undefined) continue;
     values.push(variant.diagnostics);
     if (variant.lastBlockedAttempt) values.push(variant.lastBlockedAttempt.diagnostics);
     if (variant.lifecycle !== "generation-attempted") continue;
@@ -707,7 +731,7 @@ function assertDiagnosticReferences(
     ...measure.chordEvents.map((event) => event.id),
     ...measure.textEvents.map((event) => event.id),
   ]));
-  for (const diagnostics of diagnosticArrays(project)) {
+  for (const diagnostics of freshDiagnosticArrays(project)) {
     for (const diagnostic of diagnostics) {
       const location = diagnostic.location;
       if (!location) continue;
@@ -727,13 +751,12 @@ async function validateSnapshots(
   project: HarmonyProject,
   expected: AlgorithmExecutionRegistry,
   ordinals: ProjectOrdinals,
-  requireCurrentProvenance: boolean,
 ): Promise<void> {
   const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   const editById = new Map(edits.map((edit) => [edit.id, edit]));
   const directiveOrdinals = anchorDirectiveOrdinalRegistry(anchor, ordinals);
-  const timeline = currentTimeline(project);
-  const atomization = currentAtomization(project);
+  const timeline = resolvedTimeline(project);
+  const atomization = resolvedAtomization(project);
   for (const snapshot of snapshots) {
     validateMetricReferences(snapshot.metrics, ordinals);
     const candidate = candidateById.get(snapshot.baseCandidateId);
@@ -746,10 +769,8 @@ async function validateSnapshots(
     requireIntegrity(snapshot.validatorConfigDigest === expected.configDigests.validatorConfigDigest, "snapshot validator config mismatch", "ALGORITHM_CONFIG_MISMATCH");
     requireIntegrity(snapshot.metricConfigDigest === expected.configDigests.metricConfigDigest, "snapshot metric config mismatch", "ALGORITHM_CONFIG_MISMATCH");
     requireIntegrity(snapshot.diagnosticRegistryDigest === expected.configDigests.diagnosticRegistryDigest, "snapshot diagnostic config mismatch", "ALGORITHM_CONFIG_MISMATCH");
-    if (requireCurrentProvenance) {
-      requireIntegrity(snapshot.effectiveChordTimelineDigest === timeline?.digest, "snapshot timeline provenance mismatch", "EDIT_SNAPSHOT_INVALID");
-      requireIntegrity(snapshot.sourceLeadAtomizationDigest === atomization?.digest, "snapshot atomization provenance mismatch", "EDIT_SNAPSHOT_INVALID");
-    }
+    requireIntegrity(snapshot.effectiveChordTimelineDigest === timeline?.digest, "snapshot timeline provenance mismatch", "EDIT_SNAPSHOT_INVALID");
+    requireIntegrity(snapshot.sourceLeadAtomizationDigest === atomization?.digest, "snapshot atomization provenance mismatch", "EDIT_SNAPSHOT_INVALID");
     const appliedEdits = snapshot.appliedEditIds.map((id) => {
       const edit = editById.get(id);
       requireIntegrity(edit !== undefined && edit.baseCandidateId === candidate.id, "Snapshot references a missing OutputEdit", "EDIT_BASE_CANDIDATE_STALE");
@@ -799,10 +820,19 @@ async function validateVariantIntegrity(
   timeline: EffectiveChordTimeline | undefined,
   atomization: SourceLeadAtomization | undefined,
 ): Promise<void> {
+  if (variant.staleness) {
+    const diagnosticIds = new Set(variant.diagnostics.map((diagnostic) => diagnostic.id));
+    requireIntegrity(
+      variant.staleness.staleDiagnosticIds.every((id) => diagnosticIds.has(id)),
+      "Variant staleness references a missing diagnostic",
+      "STALE_REFERENCE",
+    );
+  }
   if (variant.lifecycle === "empty") return;
   const locks: VariantStageLocks = project.locksByPreset[variant.presetId]
     ?? { intent: [], activity: [], anchor: [], solver: [] };
   const intent = variant.intentPlan;
+  if (!isFresh(variant, "intent")) return;
   assertIntentReferences(intent, project, ordinals);
   requireIntegrity(intent.plannerVersion === expected.versions.plannerVersion, "Intent planner version mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(intent.grammarVersion === expected.versions.grammarVersion, "Intent grammar version mismatch", "ALGORITHM_CONFIG_MISMATCH");
@@ -811,10 +841,8 @@ async function validateVariantIntegrity(
   requireIntegrity(intent.grammarConfigDigest === expected.configDigests.grammarConfigDigest, "Intent grammar config mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(intent.diagnosticRegistryDigest === expected.configDigests.diagnosticRegistryDigest, "Intent diagnostic config mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(intent.intentPlanDigest === await digestIntentPlan(intent, ordinals), "Intent Plan digest mismatch");
-  let currentIntentInput: SemanticDigest | undefined;
-  if (isFresh(variant, "intent")) {
-    requireIntegrity(timeline !== undefined && atomization !== undefined, "fresh Intent Plan lacks resolved timeline/atomization");
-    currentIntentInput = await digestIntentInput({
+  requireIntegrity(timeline !== undefined && atomization !== undefined, "fresh Intent Plan lacks resolved timeline/atomization");
+  const currentIntentInput = await digestIntentInput({
       musicalSourceDigest,
       effectiveChordTimelineDigest: timeline.digest,
       sourceLeadAtomizationDigest: atomization.digest,
@@ -835,26 +863,23 @@ async function validateVariantIntegrity(
       grammarConfigDigest: expected.configDigests.grammarConfigDigest,
       diagnosticRegistryVersion: expected.versions.diagnosticRegistryVersion,
       diagnosticRegistryDigest: expected.configDigests.diagnosticRegistryDigest,
-    }, ordinals);
-    requireIntegrity(intent.intentInputDigest === currentIntentInput, "Intent input digest mismatch");
-    requireIntegrity(intent.effectiveChordTimelineDigest === timeline.digest
-      && intent.sourceLeadAtomizationDigest === atomization.digest
-      && intent.effectiveConfigDigest === effectiveConfig.digest
-      && intent.presetProfileVersion === project.presetProfiles.presetProfileVersion
-      && intent.presetProfileDigest === project.presetProfiles.presetProfileDigest, "Intent provenance mismatch");
-  }
+  }, ordinals);
+  requireIntegrity(intent.intentInputDigest === currentIntentInput, "Intent input digest mismatch");
+  requireIntegrity(intent.effectiveChordTimelineDigest === timeline.digest
+    && intent.sourceLeadAtomizationDigest === atomization.digest
+    && intent.effectiveConfigDigest === effectiveConfig.digest
+    && intent.presetProfileVersion === project.presetProfiles.presetProfileVersion
+    && intent.presetProfileDigest === project.presetProfiles.presetProfileDigest, "Intent provenance mismatch");
   if (variant.lifecycle === "intent-ready") return;
   const activity = variant.activityPlan;
+  if (!isFresh(variant, "activity")) return;
   assertActivityReferences(activity, intent, ordinals);
   requireIntegrity(activity.activityPlannerVersion === expected.versions.activityPlannerVersion, "Activity planner version mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(activity.diagnosticRegistryVersion === expected.versions.diagnosticRegistryVersion, "Activity diagnostic registry version mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(activity.activityPlannerConfigDigest === expected.configDigests.activityPlannerConfigDigest, "Activity planner config mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(activity.diagnosticRegistryDigest === expected.configDigests.diagnosticRegistryDigest, "Activity diagnostic config mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(activity.activityPlanDigest === await digestActivityPlan(activity, ordinals), "Activity Plan digest mismatch");
-  let currentActivityInput: SemanticDigest | undefined;
-  if (isFresh(variant, "activity")) {
-    requireIntegrity(atomization !== undefined, "fresh Activity Plan lacks resolved atomization");
-    currentActivityInput = await digestActivityInput({
+  const currentActivityInput = await digestActivityInput({
       intentPlanDigest: intent.intentPlanDigest,
       sourceLeadAtomizationDigest: atomization.digest,
       atomizerVersion: atomization.atomizerVersion,
@@ -866,25 +891,22 @@ async function validateVariantIntegrity(
       activityPlannerConfigDigest: expected.configDigests.activityPlannerConfigDigest,
       diagnosticRegistryVersion: expected.versions.diagnosticRegistryVersion,
       diagnosticRegistryDigest: expected.configDigests.diagnosticRegistryDigest,
-    }, ordinals);
-    requireIntegrity(activity.activityInputDigest === currentActivityInput, "Activity input digest mismatch");
-    requireIntegrity(activity.intentPlanDigest === intent.intentPlanDigest
-      && activity.sourceLeadAtomizationDigest === atomization.digest
-      && activity.effectiveConfigDigest === effectiveConfig.digest
-      && activity.presetProfileDigest === project.presetProfiles.presetProfileDigest, "Activity provenance mismatch");
-  }
+  }, ordinals);
+  requireIntegrity(activity.activityInputDigest === currentActivityInput, "Activity input digest mismatch");
+  requireIntegrity(activity.intentPlanDigest === intent.intentPlanDigest
+    && activity.sourceLeadAtomizationDigest === atomization.digest
+    && activity.effectiveConfigDigest === effectiveConfig.digest
+    && activity.presetProfileDigest === project.presetProfiles.presetProfileDigest, "Activity provenance mismatch");
   if (variant.lifecycle === "activity-ready") return;
   const anchor = variant.anchorPlan;
-  assertAnchorReferences(anchor, activity, ordinals, atomization?.digest ?? anchor.sourceLeadAtomizationDigest);
+  if (!isFresh(variant, "anchor")) return;
+  assertAnchorReferences(anchor, activity, ordinals, atomization.digest);
   requireIntegrity(anchor.anchorPlannerVersion === expected.versions.anchorPlannerVersion, "Anchor planner version mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(anchor.diagnosticRegistryVersion === expected.versions.diagnosticRegistryVersion, "Anchor diagnostic registry version mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(anchor.anchorPlannerConfigDigest === expected.configDigests.anchorPlannerConfigDigest, "Anchor planner config mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(anchor.diagnosticRegistryDigest === expected.configDigests.diagnosticRegistryDigest, "Anchor diagnostic config mismatch", "ALGORITHM_CONFIG_MISMATCH");
   requireIntegrity(anchor.anchorPlanDigest === await digestAnchorPlan(anchor, ordinals), "Anchor Plan digest mismatch");
-  let currentAnchorInput: SemanticDigest | undefined;
-  if (isFresh(variant, "anchor")) {
-    requireIntegrity(atomization !== undefined, "fresh Anchor Plan lacks resolved atomization");
-    currentAnchorInput = await digestAnchorInput({
+  const currentAnchorInput = await digestAnchorInput({
       activityPlanDigest: activity.activityPlanDigest,
       sourceLeadAtomizationDigest: atomization.digest,
       atomizerVersion: atomization.atomizerVersion,
@@ -896,21 +918,19 @@ async function validateVariantIntegrity(
       anchorPlannerConfigDigest: expected.configDigests.anchorPlannerConfigDigest,
       diagnosticRegistryVersion: expected.versions.diagnosticRegistryVersion,
       diagnosticRegistryDigest: expected.configDigests.diagnosticRegistryDigest,
-    }, ordinals);
-    requireIntegrity(anchor.anchorInputDigest === currentAnchorInput, "Anchor input digest mismatch");
-    requireIntegrity(anchor.activityPlanDigest === activity.activityPlanDigest
-      && anchor.sourceLeadAtomizationDigest === atomization.digest
-      && anchor.effectiveConfigDigest === effectiveConfig.digest
-      && anchor.presetProfileDigest === project.presetProfiles.presetProfileDigest, "Anchor provenance mismatch");
-  }
+  }, ordinals);
+  requireIntegrity(anchor.anchorInputDigest === currentAnchorInput, "Anchor input digest mismatch");
+  requireIntegrity(anchor.activityPlanDigest === activity.activityPlanDigest
+    && anchor.sourceLeadAtomizationDigest === atomization.digest
+    && anchor.effectiveConfigDigest === effectiveConfig.digest
+    && anchor.presetProfileDigest === project.presetProfiles.presetProfileDigest, "Anchor provenance mismatch");
   if (variant.lifecycle === "anchor-ready") return;
   const generation = variant.generationResult;
+  if (!isFresh(variant, "generation")) return;
   const registryKeys = generationRegistryKeys();
   assertExactRegistrySubset(generation.versions, expected.versions, registryKeys.versions, "version");
   assertExactRegistrySubset(generation.configDigests, expected.configDigests, registryKeys.configs, "config");
-  let currentGenerationInput: SemanticDigest | undefined;
-  if (isFresh(variant, "generation")) {
-    currentGenerationInput = await digestGenerationInput({
+  const currentGenerationInput = await digestGenerationInput({
       anchorPlanDigest: anchor.anchorPlanDigest,
       effectiveConfigDigest: effectiveConfig.digest,
       presetProfileVersion: project.presetProfiles.presetProfileVersion,
@@ -927,27 +947,21 @@ async function validateVariantIntegrity(
       metricConfigDigest: expected.configDigests.metricConfigDigest,
       diagnosticRegistryVersion: expected.versions.diagnosticRegistryVersion,
       diagnosticRegistryDigest: expected.configDigests.diagnosticRegistryDigest,
-    }, ordinals);
-    requireIntegrity(timeline !== undefined && atomization !== undefined, "fresh Generation Result lacks resolved timeline/atomization");
-    requireIntegrity(exact(generation.digests, {
-      musicalSourceDigest,
-      effectiveChordTimelineDigest: timeline.digest,
-      sourceLeadAtomizationDigest: atomization.digest,
-      presetProfileDigest: project.presetProfiles.presetProfileDigest,
-      effectiveConfigDigest: effectiveConfig.digest,
-      intentInputDigest: currentIntentInput,
-      activityInputDigest: currentActivityInput,
-      anchorInputDigest: currentAnchorInput,
-      generationInputDigest: currentGenerationInput,
-      intentPlanDigest: intent.intentPlanDigest,
-      activityPlanDigest: activity.activityPlanDigest,
-      anchorPlanDigest: anchor.anchorPlanDigest,
-    }), "Generation digest envelope mismatch");
-  } else {
-    requireIntegrity(generation.digests.intentPlanDigest === intent.intentPlanDigest
-      && generation.digests.activityPlanDigest === activity.activityPlanDigest
-      && generation.digests.anchorPlanDigest === anchor.anchorPlanDigest, "Generation Plan provenance mismatch");
-  }
+  }, ordinals);
+  requireIntegrity(exact(generation.digests, {
+    musicalSourceDigest,
+    effectiveChordTimelineDigest: timeline.digest,
+    sourceLeadAtomizationDigest: atomization.digest,
+    presetProfileDigest: project.presetProfiles.presetProfileDigest,
+    effectiveConfigDigest: effectiveConfig.digest,
+    intentInputDigest: currentIntentInput,
+    activityInputDigest: currentActivityInput,
+    anchorInputDigest: currentAnchorInput,
+    generationInputDigest: currentGenerationInput,
+    intentPlanDigest: intent.intentPlanDigest,
+    activityPlanDigest: activity.activityPlanDigest,
+    anchorPlanDigest: anchor.anchorPlanDigest,
+  }), "Generation digest envelope mismatch");
   for (const candidate of generation.candidates) {
     requireIntegrity(candidate.presetId === variant.presetId
       && candidate.anchorPlanDigest === anchor.anchorPlanDigest
@@ -981,12 +995,7 @@ async function validateVariantIntegrity(
     project,
     expected,
     ordinals,
-    isFresh(variant, "generation"),
   );
-  if (variant.staleness) {
-    const diagnosticIds = new Set(variant.diagnostics.map((diagnostic) => diagnostic.id));
-    requireIntegrity(variant.staleness.staleDiagnosticIds.every((id) => diagnosticIds.has(id)), "Variant staleness references a missing diagnostic", "STALE_REFERENCE");
-  }
 }
 
 export async function validateHarmonyProjectIntegrity(
@@ -1011,7 +1020,7 @@ export async function validateHarmonyProjectIntegrity(
       project.source.performanceSequence,
       project.source.sourceMeasures,
     );
-    const timeline = currentTimeline(project);
+    const timeline = resolvedTimeline(project);
     if (timeline) {
       requireIntegrity(
         timeline.chordTimelineResolverVersion
@@ -1020,24 +1029,21 @@ export async function validateHarmonyProjectIntegrity(
         "ALGORITHM_CONFIG_MISMATCH",
       );
       await validateTimelineArtifact(timeline, project.source);
-    }
-    if (project.chordTimelineState.status === "resolved") {
-      const stored = project.chordTimelineState.timeline;
-      requireIntegrity(stored.sourceChordProjectionDigest === sourceChordProjectionDigest, "source chord projection digest mismatch", "EFFECTIVE_CHORD_TIMELINE_STALE");
-      requireIntegrity(stored.performanceSequenceDigest === performanceSequenceDigest, "performance sequence digest mismatch", "EFFECTIVE_CHORD_TIMELINE_STALE");
+      requireIntegrity(timeline.sourceChordProjectionDigest === sourceChordProjectionDigest, "source chord projection digest mismatch", "EFFECTIVE_CHORD_TIMELINE_STALE");
+      requireIntegrity(timeline.performanceSequenceDigest === performanceSequenceDigest, "performance sequence digest mismatch", "EFFECTIVE_CHORD_TIMELINE_STALE");
       const recalculated = await resolveEffectiveChordTimeline({
         sourceMeasures: project.source.sourceMeasures,
         performanceSequence: project.source.performanceSequence,
         sourceChordProjectionDigest,
         performanceSequenceDigest,
-        policy: stored.resolutionPolicy,
-        resolverVersion: stored.chordTimelineResolverVersion,
+        policy: timeline.resolutionPolicy,
+        resolverVersion: timeline.chordTimelineResolverVersion,
         expectedResolverVersion: expectedExecutionRegistry.versions.chordTimelineResolverVersion,
       });
-      requireIntegrity(recalculated.status === "resolved" && exact(recalculated.timeline, stored), "authoritative EffectiveChordTimeline recalculation mismatch", "EFFECTIVE_CHORD_TIMELINE_STALE");
+      requireIntegrity(recalculated.status === "resolved" && exact(recalculated.timeline, timeline), "authoritative EffectiveChordTimeline recalculation mismatch", "EFFECTIVE_CHORD_TIMELINE_STALE");
     }
 
-    const atomization = currentAtomization(project);
+    const atomization = resolvedAtomization(project);
     if (atomization) {
       requireIntegrity(
         atomization.atomizerVersion
@@ -1046,11 +1052,7 @@ export async function validateHarmonyProjectIntegrity(
         "ALGORITHM_CONFIG_MISMATCH",
       );
       await validateAtomizationArtifact(atomization, project.source);
-    }
-    if (project.sourceLeadAtomizationState.status === "resolved") {
       requireIntegrity(project.chordTimelineState.status === "resolved", "resolved atomization lacks resolved chord timeline", "SOURCE_LEAD_ATOMIZATION_STALE");
-      const stored = project.sourceLeadAtomizationState.atomization;
-      requireIntegrity(stored.atomizerVersion === expectedExecutionRegistry.versions.sourceLeadAtomizerVersion, "atomizer version mismatch", "ALGORITHM_CONFIG_MISMATCH");
       const recalculated = await atomizeSourceLead({
         sourceMeasures: project.source.sourceMeasures,
         performanceSequence: project.source.performanceSequence,
@@ -1060,11 +1062,11 @@ export async function validateHarmonyProjectIntegrity(
         musicalSourceDigest,
         atomizerVersion: expectedExecutionRegistry.versions.sourceLeadAtomizerVersion,
       });
-      requireIntegrity(exact(recalculated, stored), "authoritative SourceLeadAtomization recalculation mismatch", "SOURCE_LEAD_ATOMIZATION_STALE");
+      requireIntegrity(exact(recalculated, atomization), "authoritative SourceLeadAtomization recalculation mismatch", "SOURCE_LEAD_ATOMIZATION_STALE");
     }
 
     const ordinals = buildProjectOrdinals(project);
-    validateLockReferences(project.locksByPreset, ordinals, atomization?.digest);
+    validateLockReferences(project, ordinals, atomization?.digest);
     const enabledAssignedHarmonyTracks = project.trackPlans.filter((track) =>
       track.kind === "generated-harmony"
       && track.enabled
