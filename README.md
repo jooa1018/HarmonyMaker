@@ -5,7 +5,7 @@ HarmonyMaker는 멜로디·확인된 코드·곡 구간·실제 가수 음역을
 - 유일한 authoritative specification: [`docs/HARMONYMAKER_SPEC_v3.1.5.md`](docs/HARMONYMAKER_SPEC_v3.1.5.md)
 - Step 0: **accepted**
 - Step 1: **accepted for v3 foundation**
-- Step 2: **canonical domain implementation complete / external review pending**
+- Step 2: **canonical domain foundation accepted**
 - Worship Arrangement Grammar v1: **별도 승인 후 Step 4 시작 가능**
 
 ## 실행 및 검증
@@ -38,7 +38,7 @@ Solo는 Mute보다 우선합니다. 즉 mute된 성부도 해당 성부를 solo�
 
 ## 아직 구현하지 않은 기능
 
-Step 2 구현은 외부 acceptance review 전이며 `STEP_2_ACCEPTED` 상태로 선언하지 않습니다. Worship Arrangement Grammar의 음악 결정표, Activity/rhythm planning algorithm, Anchor selection, pitch generation, automatic harmony, MusicXML import, OMR Vendor 연동, 실제 편집·PracticeShare 서비스, 저장·인증·데이터베이스와 Step 3 이상은 구현하지 않았습니다. ABC는 demo fixture와 abcjs adapter 입력일 뿐 원본 데이터 모델이나 저장 형식이 아닙니다. Worship Arrangement Grammar v1은 별도 승인이 필요한 Step 4 blocker입니다.
+Step 2 canonical domain foundation은 exact-head 외부 acceptance review를 통과하여 `STEP_2_ACCEPTED` 상태입니다. Worship Arrangement Grammar의 음악 결정표, Activity/rhythm planning algorithm, Anchor selection, pitch generation, automatic harmony, MusicXML import, OMR Vendor 연동, 실제 편집·PracticeShare 서비스, 저장·인증·데이터베이스와 Step 3 이상은 구현하지 않았습니다. ABC는 demo fixture와 abcjs adapter 입력일 뿐 원본 데이터 모델이나 저장 형식이 아닙니다. Worship Arrangement Grammar v1은 별도 승인이 필요한 Step 4 blocker입니다.
 
 ## 실기기 확인 필요
 
