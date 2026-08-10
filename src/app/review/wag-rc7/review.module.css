@@ -1,0 +1,143 @@
+.shell {
+  --ink: #1b2234;
+  --muted: #697089;
+  --line: #d9deea;
+  --violet: #5b42b7;
+  --violet-dark: #3f2a96;
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 2rem 1rem 5rem;
+  color: var(--ink);
+}
+
+.header { margin-bottom: 1.25rem; }
+.header h1 { margin: .15rem 0 .5rem; font-size: clamp(2rem, 6vw, 4rem); letter-spacing: -.045em; }
+.eyebrow, .kicker { color: var(--violet); font-size: .78rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.lede { max-width: 900px; margin: 0; color: #4b5369; font-size: 1.04rem; line-height: 1.65; }
+
+.boundary {
+  display: grid;
+  gap: .25rem;
+  margin-top: 1.1rem;
+  padding: .9rem 1rem;
+  border: 1px solid #e3b44d;
+  border-left-width: 5px;
+  border-radius: 12px;
+  background: #fff8e8;
+  color: #6d4b00;
+}
+.boundary span { font-size: .9rem; }
+
+.selectorPanel, .card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 28px #26314a12;
+}
+.selectorPanel {
+  display: grid;
+  grid-template-columns: minmax(260px, 2fr) minmax(150px, .7fr) auto auto;
+  gap: .8rem;
+  align-items: end;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.selectorPanel label { display: grid; gap: .35rem; font-weight: 750; }
+.selectorPanel select {
+  width: 100%;
+  min-height: 44px;
+  padding: .6rem .7rem;
+  border: 1px solid #9299aa;
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+.selectorPanel button, .selectorPanel a, .card button {
+  min-height: 44px;
+  border: 1px solid #8991a3;
+  border-radius: 9px;
+  padding: .65rem .85rem;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 720;
+  cursor: pointer;
+}
+.selectorPanel button:hover, .selectorPanel a:hover, .card button:hover { background: #f1edff; }
+.selectorPanel button:focus-visible, .selectorPanel a:focus-visible, .selectorPanel select:focus-visible, .card button:focus-visible, .speed input:focus-visible { outline: 3px solid #a793ff; outline-offset: 2px; }
+.selectorPanel button:disabled, .card button:disabled { cursor: not-allowed; opacity: .45; }
+.selectorPanel .generate, .transport .play {
+  border-color: var(--violet);
+  background: var(--violet);
+  color: #fff;
+}
+.selectorPanel .generate:hover, .transport .play:hover { background: var(--violet-dark); }
+.download { display: inline-grid; place-items: center; text-decoration: none; }
+.generateStatus, .errorStatus { grid-column: 1 / -1; margin: 0; padding: .7rem .8rem; border-radius: 9px; background: #eef6ff; color: #244f77; }
+.errorStatus { background: #fff0f0; color: #8b1a1a; }
+
+.primaryGrid, .secondaryGrid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 1rem; margin-top: 1rem; }
+.secondaryGrid { grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); }
+.card { min-width: 0; padding: 1rem; }
+.card h2 { margin: .15rem 0; font-size: 1.35rem; }
+.card p { line-height: 1.55; }
+.cardHeading { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
+.cardHeading p { margin: 0; }
+.texture, .renderer, .pass, .cardHeading > span {
+  flex: 0 0 auto;
+  padding: .38rem .6rem;
+  border-radius: 999px;
+  background: #eeeaff;
+  color: var(--violet-dark);
+  font-size: .75rem;
+  font-weight: 800;
+}
+.pass { background: #e7f7ec; color: #19713a; }
+
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: .55rem; margin: 1rem 0; }
+.metrics div { padding: .7rem; border-radius: 10px; background: #f4f6fb; }
+.metrics dt { color: var(--muted); font-size: .76rem; }
+.metrics dd { margin: .2rem 0 0; font-size: 1.1rem; font-weight: 800; }
+.digestList { display: grid; gap: .45rem; }
+.digestList p { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: .6rem; margin: 0; }
+.digestList span { color: var(--muted); font-size: .82rem; }
+.digestList code { overflow-wrap: anywhere; font-size: .76rem; }
+.roles { margin-bottom: 0; }
+
+.modeSwitch, .transport, .voices { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: .8rem; }
+.modeSwitch button[aria-pressed="true"], .voice button[aria-pressed="true"] { border-color: var(--violet); background: var(--violet); color: #fff; }
+.score { width: 100%; min-height: 285px; margin-top: .85rem; overflow-x: auto; border: 1px solid #e1e5ee; border-radius: 10px; background: #fff; }
+.score :global(svg) { max-width: 100%; height: auto; }
+.voice { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: .4rem; min-width: 205px; padding: .55rem; border-radius: 9px; background: #f4f6fb; }
+.voice button { min-height: 38px; padding: .45rem .6rem; }
+.speed { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 1rem; margin-top: 1rem; }
+.speedControls { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .5rem; }
+.speedControls input { width: 100%; }
+.speedControls button { min-height: 36px; padding: .35rem .65rem; }
+.playbackStatus { margin: .8rem 0 0; padding: .65rem .75rem; border-radius: 8px; background: #eef6ff; }
+.provenance { margin-bottom: 0; color: var(--muted); font-size: .78rem; }
+
+.tableWrap { overflow-x: auto; }
+.tableWrap table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+.tableWrap th, .tableWrap td { padding: .6rem; border-bottom: 1px solid #e4e7ef; text-align: left; white-space: nowrap; }
+.tableWrap th { color: var(--muted); font-size: .74rem; text-transform: uppercase; }
+.empty { padding: 1rem; border-radius: 10px; background: #f4f6fb; color: var(--muted); }
+.checks { display: grid; gap: .65rem; padding-left: 1.2rem; }
+.checks li { overflow-wrap: anywhere; }
+.breakdown { display: grid; gap: .4rem; margin: .8rem 0 0; }
+.breakdown div { display: flex; justify-content: space-between; gap: 1rem; padding-bottom: .35rem; border-bottom: 1px solid #e4e7ef; }
+.breakdown dd { margin: 0; font-weight: 800; }
+
+@media (max-width: 940px) {
+  .selectorPanel { grid-template-columns: 1fr 1fr; }
+  .primaryGrid, .secondaryGrid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .shell { padding: 1rem .65rem 3rem; }
+  .selectorPanel { grid-template-columns: 1fr; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .score { min-height: 230px; }
+  .speed { grid-template-columns: 1fr; }
+}
