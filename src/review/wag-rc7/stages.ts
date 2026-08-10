@@ -91,6 +91,12 @@ export interface Rc7AnchorStageResult {
   readonly winner: Rc7ScoredOpportunity;
 }
 
+export interface Rc7ReviewAlternativeStageResult {
+  readonly intent: Rc7IntentStageResult;
+  readonly activity: Rc7ActivityStageResult;
+  readonly anchor: Rc7AnchorStageResult;
+}
+
 function splitReason(
   reason: Rc7ScoredOpportunity["splitReason"],
 ): "LATE_LONG_NOTE" | "LATE_CHORD_CHANGE" | "CONFIRMED_LYRIC_EMPHASIS" | "PHRASE_MIDPOINT" {
@@ -719,4 +725,58 @@ export async function runRc7AnchorStage(
   };
   const plan = { ...base, anchorPlanDigest: await digestAnchorPlan(base, context.ordinals) };
   return { plan, winner: activity.winner };
+}
+
+/**
+ * Review-only adapter for realizing one already-enumerated legal Grammar
+ * opportunity. It never changes the automatic winner or persisted product
+ * authority: the caller must first run the normal Intent stage, and the
+ * selected key must belong to that exact canonical input's opportunity set.
+ */
+export async function runRc7ReviewAlternativeStages(
+  context: Rc7PipelineContext,
+  automaticIntent: Rc7IntentStageResult,
+  opportunityKey: string,
+): Promise<Rc7ReviewAlternativeStageResult> {
+  const opportunity = automaticIntent.selection.opportunities.find((candidate) => (
+    candidate.key === opportunityKey
+  ));
+  if (!opportunity) throw new RangeError("RC7_REVIEW_ALTERNATIVE_NOT_ENUMERATED");
+
+  const selection: Rc7GrammarSelection = {
+    ...automaticIntent.selection,
+    winner: opportunity,
+  };
+  const plan = await buildIntentPlan(
+    context,
+    automaticIntent.plan.intentInputDigest,
+    selection,
+  );
+  const serializedAuthoritativePlan = canonicalJson(plan);
+  const reloadedPlan = JSON.parse(serializedAuthoritativePlan) as ArrangementIntentPlan;
+  if (await digestIntentPlan(reloadedPlan, context.ordinals) !== plan.intentPlanDigest) {
+    throw new RangeError("STALE_REFERENCE:review alternative Intent authority");
+  }
+
+  const intent: Rc7IntentStageResult = {
+    ...automaticIntent,
+    plan,
+    serializedAuthoritativePlan,
+    reloadedPlan,
+    selection,
+    rehydratedSelection: selection,
+    rehydratedWinner: opportunity,
+  };
+  const activityPlan = await activityPlanForWinner(context, reloadedPlan, selection, opportunity);
+  if (winnerActivityProjection(context, opportunity)
+    !== activityProjection(context, activityPlan.phraseActivityPlans[0].activitySpans)) {
+    throw new RangeError("ACTIVITY_SPAN_INVALID:review alternative opportunity parity");
+  }
+  const activity: Rc7ActivityStageResult = {
+    plan: activityPlan,
+    winner: opportunity,
+    rehydratedOpportunityKey: opportunity.key,
+  };
+  const anchor = await runRc7AnchorStage(context, activity);
+  return { intent, activity, anchor };
 }
