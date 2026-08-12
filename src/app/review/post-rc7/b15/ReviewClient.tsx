@@ -7,7 +7,7 @@ import type { ResearchMetrics } from "@/review/post-rc7/metrics";
 import { createPlaybackArtifact } from "@/review/post-rc7/playback";
 import { closePlaybackForContextChange, isListeningScoreEligible, type PlaybackAttempt, type PlaybackInvalidReason, type PlaybackValidity } from "@/review/post-rc7/playback-validity";
 import { RENDERER_TIERS } from "@/review/post-rc7/renderer";
-import type { PlaybackMix, RendererTier, ResearchArrangement, ResearchBaselineId } from "@/review/post-rc7/types";
+import type { PlaybackMix, RendererTier, ResearchArrangement, ResearchBaselineId, ResearchChordSpan } from "@/review/post-rc7/types";
 import styles from "./review.module.css";
 
 export interface ReviewCaseView {
@@ -20,7 +20,7 @@ export interface ReviewCaseView {
   readonly repeatedRelation: { readonly relation: string | null; readonly count: number };
 }
 
-interface FixtureView {
+interface FixtureSummary {
   readonly id: string;
   readonly title: string;
   readonly placement: "upper" | "lower";
@@ -29,14 +29,23 @@ interface FixtureView {
   readonly tags: readonly string[];
 }
 
-interface ManifestItem extends FixtureView {
+interface FixtureView extends FixtureSummary {
+  readonly chords: readonly ResearchChordSpan[];
+}
+
+interface ManifestItem extends FixtureSummary {
   readonly authorshipKind: string;
 }
 
-const MIXES: readonly PlaybackMix[] = ["LEAD_ONLY", "HARMONY_ONLY", "LEAD_AND_HARMONY"];
+const MIXES: readonly PlaybackMix[] = ["BAND_LEAD_AND_HARMONY", "LEAD_AND_HARMONY", "LEAD_ONLY", "HARMONY_ONLY", "BAND_ONLY"];
+const REQUIRED_MIXES: readonly PlaybackMix[] = ["LEAD_ONLY", "HARMONY_ONLY", "LEAD_AND_HARMONY", "BAND_LEAD_AND_HARMONY"];
 const NOT_STARTED_VALIDITY: PlaybackValidity = { status: "not-started" };
 const MIX_LABEL: Readonly<Record<PlaybackMix, string>> = {
-  LEAD_ONLY: "Lead only", HARMONY_ONLY: "Harmony only", LEAD_AND_HARMONY: "Lead + Harmony",
+  LEAD_ONLY: "Lead only",
+  HARMONY_ONLY: "Harmony only",
+  LEAD_AND_HARMONY: "Lead + Harmony",
+  BAND_ONLY: "Source chord band only",
+  BAND_LEAD_AND_HARMONY: "Source chord band + Lead + Harmony",
 };
 
 const ratio = (metric: { readonly valueBp: number | null }): string => metric.valueBp === null ? "n/a" : `${(metric.valueBp / 100).toFixed(2)}%`;
@@ -51,7 +60,7 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
   readonly cases: readonly ReviewCaseView[];
 }) {
   const [baselineId, setBaselineId] = useState<ResearchBaselineId>("B1.5-MATCHED");
-  const [mix, setMix] = useState<PlaybackMix>("LEAD_AND_HARMONY");
+  const [mix, setMix] = useState<PlaybackMix>("BAND_LEAD_AND_HARMONY");
   const [tier, setTier] = useState<RendererTier>("COMPETENT_PLAIN");
   const [validityByAttempt, setValidityByAttempt] = useState<Readonly<Record<string, PlaybackValidity>>>({});
   const [transportCompleteByAttempt, setTransportCompleteByAttempt] = useState<Readonly<Record<string, boolean>>>({});
@@ -64,7 +73,7 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
   const controllerRef = useRef<ABCJS.SynthObjectController | null>(null);
   const activeAttemptRef = useRef<string | null>(null);
   const current = cases.find((candidate) => candidate.baselineId === baselineId) ?? cases[0];
-  const artifact = useMemo(() => createPlaybackArtifact(current.arrangement, mix, tier), [current, mix, tier]);
+  const artifact = useMemo(() => createPlaybackArtifact(current.arrangement, mix, tier, fixture.chords), [current, fixture.chords, mix, tier]);
   const ready = renderedAbc === artifact.abc;
   const attemptKey = `${fixture.id}:${baselineId}:${mix}:${tier}`;
   const validity = validityByAttempt[attemptKey] ?? NOT_STARTED_VALIDITY;
@@ -144,9 +153,9 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
     markValidity({ status: "invalid", reason });
   };
 
-  const requiredKeys = useMemo(() => MIXES.map((requiredMix) => `${fixture.id}:${baselineId}:${requiredMix}:COMPETENT_PLAIN`), [baselineId, fixture.id]);
+  const requiredKeys = useMemo(() => REQUIRED_MIXES.map((requiredMix) => `${fixture.id}:${baselineId}:${requiredMix}:COMPETENT_PLAIN`), [baselineId, fixture.id]);
   const playbackAttempts = useMemo(() => {
-    const required: PlaybackAttempt[] = MIXES.map((requiredMix, index) => ({
+    const required: PlaybackAttempt[] = REQUIRED_MIXES.map((requiredMix, index) => ({
       id: requiredKeys[index],
       fixtureId: fixture.id,
       baselineId,
@@ -183,7 +192,7 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
     humanReferenceCandidateSpaceHook: "AVAILABLE_NOT_POPULATED",
     playbackAttempts: playbackAttempts.map((attempt) => ({
       ...attempt,
-      artifact: createPlaybackArtifact(current.arrangement, attempt.mix, attempt.rendererTier),
+      artifact: createPlaybackArtifact(current.arrangement, attempt.mix, attempt.rendererTier, fixture.chords),
     })),
     requiredAttemptIds: requiredKeys,
     listeningScoreEligible: eligible,
@@ -248,7 +257,8 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
       {transportComplete && validity.status !== "heard-complete" && <p className={styles.ineligible}>Transport reached the end. A human listener must confirm that the full attempt was actually audible before it becomes heard-complete.</p>}
       <div className={styles.auditActions}><span>Audible problem:</span><button type="button" onClick={() => manuallyInvalidate("NO_AUDIO_OUTPUT")}>No audio</button><button type="button" onClick={() => manuallyInvalidate("AUDIBLE_GLITCH")}>Glitch</button></div>
       <p className={styles.muted}>{selectedTier.note} Beauty ceiling established: <strong>{selectedTier.beautyCeilingEstablished ? "yes" : "no"}</strong>.</p>
-      <p className={eligible ? styles.eligible : styles.ineligible}>Three-mix competent-plain listening record: {eligible ? "eligible" : "incomplete"}</p>
+      <p className={styles.muted}>The band is a deterministic playback projection of the frozen Source chord spans: Source bass, then fifth, root, and remaining declared tones. It never enters B1/B1.5 generation or ranking.</p>
+      <p className={eligible ? styles.eligible : styles.ineligible}>Four-mix competent-plain listening record, including Source-chord band context: {eligible ? "eligible" : "incomplete"}</p>
     </section>
 
     <section className={styles.panel} aria-labelledby="trace-heading">

@@ -4,7 +4,12 @@ import type { PerformerProfile, VocalPlacementRole } from "../../domain/performe
 import type { KeySignature, SpelledPitch } from "../../domain/pitch";
 
 export type ResearchBaselineId = "B0" | "B1" | "B1.5-MATCHED" | "B1.5-E2E";
-export type PlaybackMix = "LEAD_ONLY" | "HARMONY_ONLY" | "LEAD_AND_HARMONY";
+export type PlaybackMix =
+  | "LEAD_ONLY"
+  | "HARMONY_ONLY"
+  | "LEAD_AND_HARMONY"
+  | "BAND_ONLY"
+  | "BAND_LEAD_AND_HARMONY";
 export type RendererTier = "POOR" | "COMPETENT_PLAIN" | "HIGH";
 
 export interface ResearchNoteEvent {

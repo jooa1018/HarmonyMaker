@@ -40,6 +40,7 @@ export default async function B15ReviewPage({ searchParams }: { readonly searchP
       rightsNote: fixture.rightsNote,
       acceptanceEligibility: fixture.acceptanceEligibility,
       tags: fixture.tags,
+      chords: fixture.chords,
     }}
     fixtureManifest={RIGHTS_SAFE_FIXTURE_MANIFEST}
     cases={cases}
