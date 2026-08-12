@@ -1,6 +1,6 @@
 import { parseChord } from "../../domain/chord/parser";
 import { fraction } from "../../domain/fraction";
-import { pitchRange, type SpelledPitch, type Step, type Alter } from "../../domain/pitch";
+import { pitchRange, type KeySignature, type SpelledPitch, type Step, type Alter } from "../../domain/pitch";
 import type { ResearchActivitySchedule, ResearchChordSpan, ResearchFixture, ResearchNoteEvent } from "./types";
 
 type NoteSeed = readonly [step: Step, alter: Alter, octave: number, onsetQ: number, durationQ: number, syllable: string];
@@ -43,7 +43,7 @@ function fixture(
   notes: readonly NoteSeed[],
   chords: readonly ChordSeed[],
   tags: readonly string[],
-  options: { readonly seedHarmonyPitch?: SpelledPitch; readonly hardLow?: SpelledPitch; readonly hardHigh?: SpelledPitch } = {},
+  options: { readonly seedHarmonyPitch?: SpelledPitch; readonly hardLow?: SpelledPitch; readonly hardHigh?: SpelledPitch; readonly tonalContext?: KeySignature; readonly matchedHarmonyEntryQ?: number } = {},
 ): ResearchFixture {
   const upper = placement === "upper";
   const hardLow = options.hardLow ?? (upper ? p("C", 4) : p("G", 2));
@@ -68,7 +68,7 @@ function fixture(
         id: `${id}:activity:slot:${index}`,
         onsetQ: fraction(onsetQ),
         durationQ: fraction(endQ - onsetQ),
-        allowHarmony: true,
+        allowHarmony: onsetQ >= (options.matchedHarmonyEntryQ ?? 0),
         allowRest: true,
         source: "EXPLICIT_MATCHED" as const,
       }] : [];
@@ -91,6 +91,7 @@ function fixture(
     preferredLeapSemitones: 5,
     hardLeapSemitones: 12,
     ...(options.seedHarmonyPitch ? { seedHarmonyPitch: options.seedHarmonyPitch } : {}),
+    tonalContext: options.tonalContext ?? { tonic: { step: "C", alter: 0 }, mode: "major" },
     matchedActivitySchedule,
     lead,
     chords: parsedChords,
@@ -103,8 +104,8 @@ const stepwise: readonly NoteSeed[] = [
 ];
 
 export const RIGHTS_SAFE_FIXTURES: readonly ResearchFixture[] = [
-  fixture("hm-original-major-stepwise-v0", "Lantern Steps", "upper", stepwise, [["C", 0, 2], ["F", 2, 2]], ["major", "stepwise"]),
-  fixture("hm-original-minor-phrase-v0", "Quiet Current", "lower", [["A",0,4,0,1,"so"],["C",0,5,1,1,"la"],["B",0,4,2,1,"ri"],["A",0,4,3,1,"um"]], [["Am",0,2],["Em7",2,2]], ["minor"]),
+  fixture("hm-original-major-stepwise-v0", "Lantern Steps", "upper", stepwise, [["C", 0, 2], ["F", 2, 2]], ["major", "stepwise"], { matchedHarmonyEntryQ: 1 }),
+  fixture("hm-original-minor-phrase-v0", "Quiet Current", "lower", [["A",0,4,0,1,"so"],["C",0,5,1,1,"la"],["B",0,4,2,1,"ri"],["A",0,4,3,1,"um"]], [["Am",0,2],["Em7",2,2]], ["minor"], { tonalContext: { tonic: { step: "A", alter: 0 }, mode: "minor" }, matchedHarmonyEntryQ: 1 }),
   fixture("hm-original-slash-chord-v0", "Bass Lantern", "upper", stepwise, [["C/E",0,2],["F/A",2,2]], ["slash-chord"]),
   fixture("hm-original-sus-omission-v0", "Open Rail", "lower", [["G",0,4,0,1,"o"],["A",0,4,1,1,"pen"],["D",0,5,2,2,"way"]], [["Csus2",0,2],["Gsus4",2,2]], ["sus", "omission"]),
   fixture("hm-original-add9-v0", "Ninth Window", "upper", stepwise, [["Cadd9",0,2],["Fadd9",2,2]], ["explicit-extension", "add9"]),

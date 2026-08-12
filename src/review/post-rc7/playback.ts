@@ -1,5 +1,16 @@
-import { addFractions, compareFractions, fraction, multiplyFractions, subtractFractions, type Fraction } from "../../domain/fraction";
+import { addFractions, compareFractions, equalFractions, fraction, multiplyFractions, subtractFractions, type Fraction } from "../../domain/fraction";
+import { pitchMidiNumber, type SpelledPitch } from "../../domain/pitch";
 import type { ResearchArrangement, ResearchNoteEvent, PlaybackMix, RendererTier } from "./types";
+
+export interface PlaybackProjectionEvent {
+  readonly onsetQ: Fraction;
+  readonly durationQ: Fraction;
+  readonly pitch: SpelledPitch;
+  readonly syllableId: string;
+  readonly attack: boolean;
+  readonly lyricOnset: boolean;
+  readonly sourceEventIds: readonly string[];
+}
 
 export interface ResearchPlaybackArtifact {
   readonly mix: PlaybackMix;
@@ -9,6 +20,10 @@ export interface ResearchPlaybackArtifact {
   readonly licenseProvenance: "synthetic-original-fixtures";
   readonly abc: string;
   readonly sourceEventIds: readonly string[];
+  readonly playbackProjection: {
+    readonly lead: readonly PlaybackProjectionEvent[];
+    readonly harmony: readonly PlaybackProjectionEvent[];
+  };
 }
 
 function accidental(pitch: ResearchNoteEvent["pitch"]): string {
@@ -29,11 +44,47 @@ function abcLength(durationQ: Fraction): string {
   return `${eighthUnits.n}/${eighthUnits.d}`;
 }
 
-function voiceAbc(events: readonly ResearchNoteEvent[], totalDurationQ: Fraction): string {
+function sameSoundingPitch(left: SpelledPitch, right: SpelledPitch): boolean {
+  return pitchMidiNumber(left) === pitchMidiNumber(right);
+}
+
+export function coalescePlaybackEvents(events: readonly ResearchNoteEvent[]): readonly PlaybackProjectionEvent[] {
   const ordered = [...events].sort((left, right) => compareFractions(left.onsetQ, right.onsetQ));
+  const projected: PlaybackProjectionEvent[] = [];
+  for (const event of ordered) {
+    const previous = projected[projected.length - 1];
+    const contiguous = previous && equalFractions(addFractions(previous.onsetQ, previous.durationQ), event.onsetQ);
+    if (
+      previous
+      && contiguous
+      && sameSoundingPitch(previous.pitch, event.pitch)
+      && previous.syllableId === event.syllableId
+      && event.attack === false
+    ) {
+      projected[projected.length - 1] = {
+        ...previous,
+        durationQ: addFractions(previous.durationQ, event.durationQ),
+        sourceEventIds: [...previous.sourceEventIds, event.id],
+      };
+      continue;
+    }
+    projected.push({
+      onsetQ: event.onsetQ,
+      durationQ: event.durationQ,
+      pitch: event.pitch,
+      syllableId: event.syllableId,
+      attack: event.attack,
+      lyricOnset: event.lyricOnset,
+      sourceEventIds: [event.id],
+    });
+  }
+  return projected;
+}
+
+function voiceAbc(events: readonly PlaybackProjectionEvent[], totalDurationQ: Fraction): string {
   const tokens: string[] = [];
   let cursor = fraction(0);
-  for (const event of ordered) {
+  for (const event of events) {
     if (compareFractions(cursor, event.onsetQ) < 0) tokens.push(`z${abcLength(subtractFractions(event.onsetQ, cursor))}`);
     tokens.push(`${abcPitch(event.pitch)}${abcLength(event.durationQ)}`);
     cursor = addFractions(event.onsetQ, event.durationQ);
@@ -53,6 +104,8 @@ export function createPlaybackArtifact(arrangement: ResearchArrangement, mix: Pl
   const includeLead = mix !== "HARMONY_ONLY";
   const includeHarmony = mix !== "LEAD_ONLY";
   const totalDurationQ = maxEnd([...arrangement.lead, ...arrangement.harmony]);
+  const projectedLead = coalescePlaybackEvents(arrangement.lead);
+  const projectedHarmony = coalescePlaybackEvents(arrangement.harmony);
   const voices = [includeLead ? "lead" : null, includeHarmony ? "harmony" : null].filter((voice): voice is string => voice !== null);
   const program = rendererTier === "POOR" ? 80 : 53;
   const headers = [
@@ -62,8 +115,8 @@ export function createPlaybackArtifact(arrangement: ResearchArrangement, mix: Pl
     ...(includeHarmony ? ['V:harmony name="Harmony 1" clef=treble'] : []),
   ];
   const body = [
-    ...(includeLead ? [`[V:lead] %%MIDI program ${program}\n${voiceAbc(arrangement.lead, totalDurationQ)}`] : []),
-    ...(includeHarmony ? [`[V:harmony] %%MIDI program ${program}\n${voiceAbc(arrangement.harmony, totalDurationQ)}`] : []),
+    ...(includeLead ? [`[V:lead] %%MIDI program ${program}\n${voiceAbc(projectedLead, totalDurationQ)}`] : []),
+    ...(includeHarmony ? [`[V:harmony] %%MIDI program ${program}\n${voiceAbc(projectedHarmony, totalDurationQ)}`] : []),
   ];
   const sourceEvents = [...(includeLead ? arrangement.lead : []), ...(includeHarmony ? arrangement.harmony : [])];
   return {
@@ -74,5 +127,9 @@ export function createPlaybackArtifact(arrangement: ResearchArrangement, mix: Pl
     licenseProvenance: "synthetic-original-fixtures",
     abc: `${headers.join("\n")}\n${body.join("\n")}\n`,
     sourceEventIds: sourceEvents.map((event) => event.id),
+    playbackProjection: {
+      lead: includeLead ? projectedLead : [],
+      harmony: includeHarmony ? projectedHarmony : [],
+    },
   };
 }

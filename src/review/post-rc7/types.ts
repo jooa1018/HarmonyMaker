@@ -1,7 +1,7 @@
 import type { ParsedChord } from "../../domain/chord/model";
 import type { Fraction } from "../../domain/fraction";
 import type { PerformerProfile, VocalPlacementRole } from "../../domain/performer";
-import type { SpelledPitch } from "../../domain/pitch";
+import type { KeySignature, SpelledPitch } from "../../domain/pitch";
 
 export type ResearchBaselineId = "B0" | "B1" | "B1.5-MATCHED" | "B1.5-E2E";
 export type PlaybackMix = "LEAD_ONLY" | "HARMONY_ONLY" | "LEAD_AND_HARMONY";
@@ -53,6 +53,8 @@ export interface ResearchFixture {
   readonly preferredLeapSemitones: number;
   readonly hardLeapSemitones: number;
   readonly seedHarmonyPitch?: SpelledPitch;
+  /** Review-fixture-only tonal declaration for the intentionally naive B1 control. */
+  readonly tonalContext: KeySignature;
   readonly matchedActivitySchedule: ResearchActivitySchedule;
   readonly lead: readonly ResearchNoteEvent[];
   readonly chords: readonly ResearchChordSpan[];

@@ -6,6 +6,7 @@ import { RIGHTS_SAFE_FIXTURES, RIGHTS_SAFE_FIXTURE_MANIFEST } from "./fixtures";
 import { measureArrangement, POST_RC7_METRIC_DEFINITIONS } from "./metrics";
 import {
   beginPlayback,
+  closePlaybackForContextChange,
   completePlayback,
   invalidatePlayback,
   isListeningScoreEligible,
@@ -50,18 +51,59 @@ describe("post-rc.7 Phase 0 evidence infrastructure", () => {
     expect(metrics.independentRuns).toEqual([{ onsetQ: fraction(1), durationQ: fraction(2) }]);
     expect(metrics.meanIndependentRunDurationQ).toEqual(fraction(2));
     expect(metrics.relationDurations).toEqual([{ relation: "UPPER_3", durationQ: fraction(2) }]);
+    expect(metrics.oneAttackRunCount).toBe(0);
+    expect(metrics.orphanAttackCount).toBe(1);
     expect(POST_RC7_METRIC_DEFINITIONS.actualUnison).toContain("same MIDI pitch");
+  });
+
+
+  it("folds compound generic intervals and preserves exact duration denominators and half-up basis-point rounding", () => {
+    const lead = note("lead-compound", 0, 4, pitch("C", 4));
+    const harmony = [
+      note("tenth", 0, 1, pitch("E", 5)),
+      note("thirteenth", 1, 1, pitch("A", 5)),
+      note("octave", 2, 1, pitch("C", 5)),
+      note("other", 3, 1, pitch("D", 5)),
+    ];
+    const metrics = measureArrangement({ fixtureId: "compound", baselineId: "B1.5-E2E", lead: [lead], harmony }, {
+      hard: pitchRange(pitch("C", 4), pitch("C", 6)),
+      comfortable: pitchRange(pitch("E", 5), pitch("A", 5)),
+      preferred: pitchRange(pitch("E", 5), pitch("E", 5)),
+      preferredLeapSemitones: 12,
+      hardLeapSemitones: 24,
+    });
+    expect(metrics.thirdClassCoverage).toMatchObject({ numerator: fraction(1), denominator: fraction(4), valueBp: 2500 });
+    expect(metrics.sixthClassCoverage).toMatchObject({ numerator: fraction(1), denominator: fraction(4), valueBp: 2500 });
+    expect(metrics.unisonClassCoverage).toMatchObject({ numerator: fraction(1), denominator: fraction(4), valueBp: 2500 });
+    expect(metrics.otherIntervalCoverage).toMatchObject({ numerator: fraction(1), denominator: fraction(4), valueBp: 2500 });
+    expect(metrics.comfortableRangeMissCoverage).toMatchObject({ numerator: fraction(2), denominator: fraction(4), valueBp: 5000 });
+    expect(metrics.preferredTessituraMissCoverage).toMatchObject({ numerator: fraction(3), denominator: fraction(4), valueBp: 7500 });
+
+    const thirds = measureArrangement({
+      fixtureId: "rounding",
+      baselineId: "B1.5-E2E",
+      lead: [note("lead-rounding", 0, 3, pitch("C", 4))],
+      harmony: [note("third-rounding", 0, 1, pitch("E", 4)), note("other-a", 1, 1, pitch("D", 4)), note("other-b", 2, 1, pitch("D", 4))],
+    }, {
+      hard: pitchRange(pitch("C", 4), pitch("G", 5)),
+      comfortable: pitchRange(pitch("C", 4), pitch("G", 5)),
+      preferredLeapSemitones: 12,
+      hardLeapSemitones: 24,
+    });
+    expect(thirds.thirdClassCoverage).toMatchObject({ numerator: fraction(1), denominator: fraction(3), valueBp: 3333 });
   });
 
   it("requires heard-complete playback and excludes invalid attempts from listening scores", () => {
     const running = beginPlayback("2026-08-12T00:00:00.000Z");
     const complete = completePlayback(running, "2026-08-12T00:00:05.000Z");
     const attempts: readonly PlaybackAttempt[] = [
-      { id: "lead", fixtureId: "fixture", baselineId: "B0", mix: "LEAD_ONLY", validity: complete },
-      { id: "harmony", fixtureId: "fixture", baselineId: "B1.5-E2E", mix: "HARMONY_ONLY", validity: invalidatePlayback("NO_AUDIO_OUTPUT") },
+      { id: "lead", fixtureId: "fixture", baselineId: "B0", mix: "LEAD_ONLY", rendererTier: "COMPETENT_PLAIN", validity: complete },
+      { id: "harmony", fixtureId: "fixture", baselineId: "B1.5-E2E", mix: "HARMONY_ONLY", rendererTier: "COMPETENT_PLAIN", validity: invalidatePlayback("NO_AUDIO_OUTPUT") },
     ];
     expect(isListeningScoreEligible(attempts, ["lead"])).toBe(true);
     expect(isListeningScoreEligible(attempts, ["lead", "harmony"])).toBe(false);
+    expect(closePlaybackForContextChange(running)).toEqual({ status: "invalid", reason: "CONTEXT_CHANGED" });
+    expect(closePlaybackForContextChange(complete)).toBe(complete);
     expect(() => completePlayback({ status: "not-started" }, "2026-08-12T00:00:05.000Z")).toThrow("PLAYBACK_NOT_RUNNING");
   });
 

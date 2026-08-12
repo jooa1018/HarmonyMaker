@@ -5,7 +5,7 @@ import { auditHumanReferenceCandidateSpace, generateBaseline, longestRepeatedRel
 import { fixtureById, RIGHTS_SAFE_FIXTURES } from "./fixtures";
 
 describe("post-rc.7 isolated controls and serious B1.5 baseline", () => {
-  it("implements B0 as Lead-only and B1 as a naive fixed-third control on the same schedule", async () => {
+  it("implements B0 as Lead-only and B1 as a naive diatonic-third control on the same schedule", async () => {
     const fixture = fixtureById("hm-original-major-stepwise-v0");
     const b0 = await generateBaseline(fixture, "B0");
     const b1 = await generateBaseline(fixture, "B1");
@@ -13,7 +13,61 @@ describe("post-rc.7 isolated controls and serious B1.5 baseline", () => {
     expect(b0.arrangement.harmony).toEqual([]);
     expect(b1.arrangement.harmony).toHaveLength(matched.arrangement.harmony.length);
     expect(b1.scheduleDigest).toBe(matched.scheduleDigest);
-    expect(b1.decisionTrace.every((decision) => decision.candidates[0].family === "NAIVE_FIXED_THIRD")).toBe(true);
+    expect(b1.decisionTrace.every((decision) => decision.candidates[0].family === "NAIVE_DIATONIC_THIRD")).toBe(true);
+  });
+
+
+  it("uses the declared fixture tonal context for major and minor diatonic thirds", async () => {
+    const fixture = fixtureById("hm-original-major-stepwise-v0");
+    const fullMatched = {
+      ...fixture,
+      matchedActivitySchedule: {
+        ...fixture.matchedActivitySchedule,
+        slots: fixture.matchedActivitySchedule.slots.map((slot) => ({ ...slot, allowHarmony: true })),
+      },
+    };
+    const b1 = await generateBaseline(fullMatched, "B1");
+    const intervals = b1.arrangement.harmony.slice(0, 2).map((harmony, index) =>
+      pitchMidiNumber(harmony.pitch) - pitchMidiNumber(fixture.lead[index].pitch));
+    expect(intervals).toEqual([4, 3]);
+    expect(b1.arrangement.harmony[0].pitch).toMatchObject({ step: "E", alter: 0 });
+    expect(b1.arrangement.harmony[1].pitch).toMatchObject({ step: "F", alter: 0 });
+  });
+
+  it("keeps the previous B1 pitch inside the hard leap and rests or fails honestly when impossible", async () => {
+    const fixture = fixtureById("hm-original-major-stepwise-v0");
+    const constrained = {
+      ...fixture,
+      hardLeapSemitones: 0,
+      matchedActivitySchedule: {
+        ...fixture.matchedActivitySchedule,
+        slots: fixture.matchedActivitySchedule.slots.map((slot) => ({ ...slot, allowHarmony: true })),
+      },
+    };
+    const rested = await generateBaseline(constrained, "B1");
+    expect(rested.decisionTrace[0].candidates.find((candidate) => candidate.selected)?.family).toBe("NAIVE_DIATONIC_THIRD");
+    expect(rested.decisionTrace[1].candidates.find((candidate) => candidate.selected)?.family).toBe("REST");
+    const restForbidden = {
+      ...constrained,
+      matchedActivitySchedule: {
+        ...constrained.matchedActivitySchedule,
+        slots: constrained.matchedActivitySchedule.slots.map((slot) => ({ ...slot, allowRest: false })),
+      },
+    };
+    await expect(generateBaseline(restForbidden, "B1")).rejects.toThrow("NO_LEGAL_B1_CANDIDATE_AND_REST_FORBIDDEN");
+  });
+
+  it("makes MATCHED and E2E Activity schedules experimentally distinct on two original fixtures", async () => {
+    for (const id of ["hm-original-major-stepwise-v0", "hm-original-minor-phrase-v0"]) {
+      const fixture = fixtureById(id);
+      const matched = await generateBaseline(fixture, "B1.5-MATCHED");
+      const e2e = await generateBaseline(fixture, "B1.5-E2E");
+      expect(matched.scheduleDigest, id).not.toBe(e2e.scheduleDigest);
+      expect(matched.arrangement.harmony, id).toHaveLength(3);
+      expect(e2e.arrangement.harmony, id).toHaveLength(4);
+      expect(matched.arrangement.harmony[0].onsetQ).toEqual(fixture.lead[1].onsetQ);
+      expect(e2e.arrangement.harmony[0].onsetQ).toEqual(fixture.lead[0].onsetQ);
+    }
   });
 
   it("honors sus omissions and explicit extensions from the canonical Source chord", () => {

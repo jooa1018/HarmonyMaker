@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addFractions, fraction, type Fraction } from "../../domain/fraction";
+import { durationRate } from "../../domain/rates";
 import { generateBaseline } from "./arranger";
 import { RIGHTS_SAFE_FIXTURES } from "./fixtures";
 import { measureArrangement } from "./metrics";
@@ -19,6 +20,15 @@ describe("post-rc.7 required evidence summary", () => {
       let participationDurationQ = fraction(0);
       let unisonDurationQ = fraction(0);
       let divergenceDurationQ = fraction(0);
+      let intervalCoverageDenominatorQ = fraction(0);
+      let thirdClassDurationQ = fraction(0);
+      let sixthClassDurationQ = fraction(0);
+      let unisonClassDurationQ = fraction(0);
+      let otherIntervalDurationQ = fraction(0);
+      let comfortableRangeMissDurationQ = fraction(0);
+      let preferredTessituraMissDurationQ = fraction(0);
+      let oneAttackRunCount = 0;
+      let orphanAttackCount = 0;
       let hardRangeFailures = 0;
       let hardLeapFailures = 0;
       let playbackArtifactCount = 0;
@@ -39,6 +49,15 @@ describe("post-rc.7 required evidence summary", () => {
         participationDurationQ = add(participationDurationQ, metrics.harmonyParticipation.numerator);
         unisonDurationQ = add(unisonDurationQ, metrics.actualUnison.numerator);
         divergenceDurationQ = add(divergenceDurationQ, metrics.harmonicDivergence.numerator);
+        intervalCoverageDenominatorQ = add(intervalCoverageDenominatorQ, metrics.thirdClassCoverage.denominator);
+        thirdClassDurationQ = add(thirdClassDurationQ, metrics.thirdClassCoverage.numerator);
+        sixthClassDurationQ = add(sixthClassDurationQ, metrics.sixthClassCoverage.numerator);
+        unisonClassDurationQ = add(unisonClassDurationQ, metrics.unisonClassCoverage.numerator);
+        otherIntervalDurationQ = add(otherIntervalDurationQ, metrics.otherIntervalCoverage.numerator);
+        comfortableRangeMissDurationQ = add(comfortableRangeMissDurationQ, metrics.comfortableRangeMissCoverage.numerator);
+        preferredTessituraMissDurationQ = add(preferredTessituraMissDurationQ, metrics.preferredTessituraMissCoverage.numerator);
+        oneAttackRunCount += metrics.oneAttackRunCount;
+        orphanAttackCount += metrics.orphanAttackCount;
         hardRangeFailures += metrics.diagnostics.hardRangeFailures;
         hardLeapFailures += metrics.diagnostics.hardLeapFailures;
         for (const bucket of metrics.relationDurations) relationHistogram.set(bucket.relation, add(relationHistogram.get(bucket.relation) ?? fraction(0), bucket.durationQ));
@@ -52,6 +71,14 @@ describe("post-rc.7 required evidence summary", () => {
         participationDurationQ,
         unisonDurationQ,
         divergenceDurationQ,
+        oneAttackRunCount,
+        orphanAttackCount,
+        thirdClassCoverageBp: durationRate(thirdClassDurationQ, intervalCoverageDenominatorQ).valueBp,
+        sixthClassCoverageBp: durationRate(sixthClassDurationQ, intervalCoverageDenominatorQ).valueBp,
+        unisonClassCoverageBp: durationRate(unisonClassDurationQ, intervalCoverageDenominatorQ).valueBp,
+        otherIntervalCoverageBp: durationRate(otherIntervalDurationQ, intervalCoverageDenominatorQ).valueBp,
+        comfortableRangeMissCoverageBp: durationRate(comfortableRangeMissDurationQ, intervalCoverageDenominatorQ).valueBp,
+        preferredTessituraMissCoverageBp: durationRate(preferredTessituraMissDurationQ, intervalCoverageDenominatorQ).valueBp,
         relationHistogram: Object.fromEntries([...relationHistogram.entries()].sort(([left], [right]) => left.localeCompare(right))),
         hardRangeFailures,
         hardLeapFailures,

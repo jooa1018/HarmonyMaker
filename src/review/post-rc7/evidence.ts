@@ -19,6 +19,7 @@ const fixtureProjection = (fixture: ResearchFixture) => ({
   preferredLeapSemitones: fixture.preferredLeapSemitones,
   hardLeapSemitones: fixture.hardLeapSemitones,
   seedHarmonyPitch: fixture.seedHarmonyPitch ?? null,
+  tonalContext: fixture.tonalContext,
   matchedActivitySchedule: fixture.matchedActivitySchedule,
   lead: fixture.lead,
   chords: fixture.chords,

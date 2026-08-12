@@ -1,14 +1,14 @@
 import type { ChordToneSpec, ParsedChord } from "../../domain/chord/model";
 import { semanticDigest, semanticId, type SemanticDigest } from "../../domain/digest/canonical";
 import { addFractions, compareFractions, subtractFractions, type Fraction } from "../../domain/fraction";
-import { containsPitch, pitchMidiNumber, type Alter, type SpelledPitch, type SpelledPitchClass, type Step } from "../../domain/pitch";
+import { containsPitch, deriveFifths, pitchMidiNumber, type Alter, type SpelledPitch, type SpelledPitchClass, type Step } from "../../domain/pitch";
 import type { ResearchActivitySchedule, ResearchArrangement, ResearchBaselineId, ResearchChordSpan, ResearchFixture, ResearchNoteEvent } from "./types";
 
 const STEPS: readonly Step[] = ["C", "D", "E", "F", "G", "A", "B"];
 const NATURAL_PC: Readonly<Record<Step, number>> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const DEGREE_SEMITONES: Readonly<Record<number, number>> = { 1: 0, 2: 2, 3: 4, 4: 5, 5: 7, 6: 9, 7: 11, 9: 14, 11: 17, 13: 21 };
 
-export type CandidateFamily = "NAIVE_FIXED_THIRD" | "CHORD_AWARE_THIRD_SIXTH" | "LEGAL_CONTINUATION" | "LOW_MOTION_CHORD_TONE" | "CONTEXTUAL_CHORD_TONE" | "REST";
+export type CandidateFamily = "NAIVE_DIATONIC_THIRD" | "CHORD_AWARE_THIRD_SIXTH" | "LEGAL_CONTINUATION" | "LOW_MOTION_CHORD_TONE" | "CONTEXTUAL_CHORD_TONE" | "REST";
 export type CandidateRejection = "PLACEMENT" | "HARD_RANGE" | "HARD_LEAP";
 
 export interface CandidateTrace {
@@ -135,26 +135,33 @@ function isThirdOrSixth(relation: string): boolean {
   return mod(generic - 1, 7) + 1 === 3 || mod(generic - 1, 7) + 1 === 6;
 }
 
-function fixedThird(lead: SpelledPitch, placement: "upper" | "lower"): SpelledPitch {
-  const direction = placement === "upper" ? 1 : -1;
-  const targetMidi = pitchMidiNumber(lead) + direction * 4;
+function tonalAlterForStep(fixture: ResearchFixture, step: Step): Alter {
+  const fifths = deriveFifths(fixture.tonalContext);
+  const order = fifths >= 0
+    ? (["F", "C", "G", "D", "A", "E", "B"] as const)
+    : (["B", "E", "A", "D", "G", "C", "F"] as const);
+  return (order.slice(0, Math.abs(fifths)).includes(step as never) ? (fifths >= 0 ? 1 : -1) : 0) as Alter;
+}
+
+function diatonicThird(lead: SpelledPitch, fixture: ResearchFixture): SpelledPitch {
+  const direction = fixture.placement === "upper" ? 1 : -1;
   const sourceOrdinal = lead.octave * 7 + STEPS.indexOf(lead.step);
   const targetOrdinal = sourceOrdinal + direction * 2;
   const step = STEPS[mod(targetOrdinal, 7)];
-  const octave = Math.floor(targetOrdinal / 7);
-  const naturalMidi = (octave + 1) * 12 + NATURAL_PC[step];
-  const alter = targetMidi - naturalMidi;
-  if (alter < -2 || alter > 2) throw new Error("UNSPELLABLE_FIXED_THIRD");
-  return { step, alter: alter as Alter, octave };
+  return { step, alter: tonalAlterForStep(fixture, step), octave: Math.floor(targetOrdinal / 7) };
 }
 
-function hardLegalFixedThird(lead: SpelledPitch, fixture: ResearchFixture): SpelledPitch | undefined {
-  const raw = fixedThird(lead, fixture.placement);
+function hardLegalDiatonicThird(lead: SpelledPitch, fixture: ResearchFixture, previous: SpelledPitch | undefined): SpelledPitch | undefined {
+  const raw = diatonicThird(lead, fixture);
   const leadMidi = pitchMidiNumber(lead);
   return Array.from({ length: 7 }, (_, index) => ({ ...raw, octave: index + 1 }))
     .filter((pitch) => containsPitch(fixture.performer.hardRange, pitch))
     .filter((pitch) => fixture.placement === "upper" ? pitchMidiNumber(pitch) > leadMidi : pitchMidiNumber(pitch) < leadMidi)
-    .sort((left, right) => Math.abs(pitchMidiNumber(left) - pitchMidiNumber(raw)) - Math.abs(pitchMidiNumber(right) - pitchMidiNumber(raw)))[0];
+    .filter((pitch) => !previous || Math.abs(pitchMidiNumber(pitch) - pitchMidiNumber(previous)) <= fixture.hardLeapSemitones)
+    .sort((left, right) => {
+      const rawDistance = Math.abs(pitchMidiNumber(left) - pitchMidiNumber(raw)) - Math.abs(pitchMidiNumber(right) - pitchMidiNumber(raw));
+      return rawDistance || pitchMidiNumber(left) - pitchMidiNumber(right);
+    })[0];
 }
 
 function candidateFamily(lead: SpelledPitch, pitch: SpelledPitch, previous: SpelledPitch | undefined, leadChordTone: boolean): CandidateFamily {
@@ -233,7 +240,7 @@ export async function generateBaseline(fixture: ResearchFixture, baselineId: Res
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
       if (baselineId === "B1") {
-        const pitch = hardLegalFixedThird(segment.lead.pitch, fixture);
+        const pitch = hardLegalDiatonicThird(segment.lead.pitch, fixture, previous);
         if (!pitch) {
           if (!segment.allowRest) throw new Error("NO_LEGAL_B1_CANDIDATE_AND_REST_FORBIDDEN");
           const restId = await semanticId("post-rc7-candidate", { fixtureId: fixture.id, baselineId, index, rest: true });
@@ -255,7 +262,7 @@ export async function generateBaseline(fixture: ResearchFixture, baselineId: Res
           leadPitch: segment.lead.pitch, sourceChordSymbol: segment.chord.chord.canonicalSymbol,
           leadIsSourceChordTone: isChordTone(segment.lead.pitch, segment.chord.chord), trigger: segment.trigger,
           selectedCandidateId: candidateId,
-          candidates: [{ id: candidateId, pitch, family: "NAIVE_FIXED_THIRD", sourceChordTone: isChordTone(pitch, segment.chord.chord), chordClash: !isChordTone(pitch, segment.chord.chord), relation: directedRelation(segment.lead.pitch, pitch), rankTuple: [], rejectionReasons: [], selected: true }],
+          candidates: [{ id: candidateId, pitch, family: "NAIVE_DIATONIC_THIRD", sourceChordTone: isChordTone(pitch, segment.chord.chord), chordClash: !isChordTone(pitch, segment.chord.chord), relation: directedRelation(segment.lead.pitch, pitch), rankTuple: [], rejectionReasons: [], selected: true }],
         });
         previous = pitch;
         continue;

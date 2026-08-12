@@ -5,7 +5,7 @@ import type ABCJS from "abcjs";
 import type { BaselineResult, DecisionTrace } from "@/review/post-rc7/arranger";
 import type { ResearchMetrics } from "@/review/post-rc7/metrics";
 import { createPlaybackArtifact } from "@/review/post-rc7/playback";
-import type { PlaybackInvalidReason, PlaybackValidity } from "@/review/post-rc7/playback-validity";
+import { closePlaybackForContextChange, isListeningScoreEligible, type PlaybackAttempt, type PlaybackInvalidReason, type PlaybackValidity } from "@/review/post-rc7/playback-validity";
 import { RENDERER_TIERS } from "@/review/post-rc7/renderer";
 import type { PlaybackMix, RendererTier, ResearchArrangement, ResearchBaselineId } from "@/review/post-rc7/types";
 import styles from "./review.module.css";
@@ -62,6 +62,7 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
   const abcRef = useRef<typeof ABCJS | null>(null);
   const tuneRef = useRef<ABCJS.TuneObject | null>(null);
   const controllerRef = useRef<ABCJS.SynthObjectController | null>(null);
+  const activeAttemptRef = useRef<string | null>(null);
   const current = cases.find((candidate) => candidate.baselineId === baselineId) ?? cases[0];
   const artifact = useMemo(() => createPlaybackArtifact(current.arrangement, mix, tier), [current, mix, tier]);
   const ready = renderedAbc === artifact.abc;
@@ -75,6 +76,15 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
 
   useEffect(() => {
     let disposed = false;
+    const staleAttemptKey = activeAttemptRef.current;
+    if (staleAttemptKey && staleAttemptKey !== attemptKey) {
+      controllerRef.current?.pause();
+      setValidityByAttempt((previous) => previous[staleAttemptKey]?.status === "playing"
+        ? { ...previous, [staleAttemptKey]: closePlaybackForContextChange(previous[staleAttemptKey]) }
+        : previous);
+      setTransportCompleteByAttempt((previous) => ({ ...previous, [staleAttemptKey]: false }));
+      activeAttemptRef.current = null;
+    }
     controllerRef.current?.pause();
     controllerRef.current = null;
     audioRef.current?.replaceChildren();
@@ -90,11 +100,12 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
     };
     void render().catch(() => markValidity({ status: "invalid", reason: "INITIALIZATION_FAILURE" }));
     return () => { disposed = true; controllerRef.current?.pause(); };
-  }, [artifact.abc, markValidity]);
+  }, [artifact.abc, attemptKey, markValidity]);
 
   const play = async () => {
     if (!ready || !tuneRef.current || !abcRef.current || !audioRef.current || busy) return;
     setBusy(true);
+    activeAttemptRef.current = attemptKey;
     setTransportCompleteByAttempt((previous) => ({ ...previous, [attemptKey]: false }));
     markValidity({ status: "playing", startedAtIso: new Date().toISOString() });
     try {
@@ -108,6 +119,7 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
       controllerRef.current = controller;
       await controller.play();
     } catch (error) {
+      activeAttemptRef.current = null;
       markValidity({ status: "invalid", reason: error instanceof Error && error.message === "NO_AUDIO_OUTPUT" ? "NO_AUDIO_OUTPUT" : "PLAYBACK_START_FAILURE" });
     } finally {
       setBusy(false);
@@ -116,21 +128,49 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
 
   const stopEarly = () => {
     controllerRef.current?.pause();
+    activeAttemptRef.current = null;
     markValidity({ status: "invalid", reason: "STOPPED_EARLY" });
   };
 
   const confirmHeardComplete = () => {
     if (!transportComplete || validity.status !== "playing") return;
+    activeAttemptRef.current = null;
     markValidity({ status: "heard-complete", completedAtIso: new Date().toISOString() });
   };
 
   const manuallyInvalidate = (reason: PlaybackInvalidReason) => {
     controllerRef.current?.pause();
+    activeAttemptRef.current = null;
     markValidity({ status: "invalid", reason });
   };
 
-  const requiredKeys = MIXES.map((requiredMix) => `${fixture.id}:${baselineId}:${requiredMix}:COMPETENT_PLAIN`);
-  const eligible = requiredKeys.every((key) => validityByAttempt[key]?.status === "heard-complete");
+  const requiredKeys = useMemo(() => MIXES.map((requiredMix) => `${fixture.id}:${baselineId}:${requiredMix}:COMPETENT_PLAIN`), [baselineId, fixture.id]);
+  const playbackAttempts = useMemo(() => {
+    const required: PlaybackAttempt[] = MIXES.map((requiredMix, index) => ({
+      id: requiredKeys[index],
+      fixtureId: fixture.id,
+      baselineId,
+      mix: requiredMix,
+      rendererTier: "COMPETENT_PLAIN",
+      validity: validityByAttempt[requiredKeys[index]] ?? NOT_STARTED_VALIDITY,
+    }));
+    const prefix = `${fixture.id}:${baselineId}:`;
+    const extras: PlaybackAttempt[] = Object.entries(validityByAttempt)
+      .filter(([id]) => id.startsWith(prefix) && !requiredKeys.includes(id))
+      .map(([id, attemptValidity]) => {
+        const [, , attemptMix, attemptTier] = id.split(":");
+        return {
+          id,
+          fixtureId: fixture.id,
+          baselineId,
+          mix: attemptMix as PlaybackMix,
+          rendererTier: attemptTier as RendererTier,
+          validity: attemptValidity,
+        };
+      });
+    return [...required, ...extras];
+  }, [baselineId, fixture.id, requiredKeys, validityByAttempt]);
+  const eligible = isListeningScoreEligible(playbackAttempts, requiredKeys);
   const selectedTier = RENDERER_TIERS.find((entry) => entry.tier === tier)!;
   const evidenceJson = useMemo(() => JSON.stringify({
     fixture,
@@ -141,8 +181,14 @@ export function B15ReviewClient({ fixture, fixtureManifest, cases }: {
     arrangementDigest: current.arrangementDigest,
     metrics: current.metrics,
     humanReferenceCandidateSpaceHook: "AVAILABLE_NOT_POPULATED",
-    playback: { artifact, validity },
-  }, null, 2), [artifact, baselineId, current, fixture, validity]);
+    playbackAttempts: playbackAttempts.map((attempt) => ({
+      ...attempt,
+      artifact: createPlaybackArtifact(current.arrangement, attempt.mix, attempt.rendererTier),
+    })),
+    requiredAttemptIds: requiredKeys,
+    listeningScoreEligible: eligible,
+    selectedPlayback: { artifact, validity },
+  }, null, 2), [artifact, baselineId, current, eligible, fixture, playbackAttempts, requiredKeys, validity]);
 
   const downloadEvidence = () => {
     const url = URL.createObjectURL(new Blob([evidenceJson], { type: "application/json" }));
