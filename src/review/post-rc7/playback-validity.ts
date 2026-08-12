@@ -1,4 +1,4 @@
-import type { PlaybackMix } from "./types";
+import type { PlaybackMix, RendererTier } from "./types";
 
 export type PlaybackInvalidReason =
   | "INITIALIZATION_FAILURE"
@@ -7,6 +7,7 @@ export type PlaybackInvalidReason =
   | "PLAYBACK_START_FAILURE"
   | "STOPPED_EARLY"
   | "AUDIBLE_GLITCH"
+  | "CONTEXT_CHANGED"
   | "OTHER";
 
 export type PlaybackValidity =
@@ -20,6 +21,7 @@ export interface PlaybackAttempt {
   readonly fixtureId: string;
   readonly baselineId: string;
   readonly mix: PlaybackMix;
+  readonly rendererTier: RendererTier;
   readonly validity: PlaybackValidity;
 }
 
@@ -36,6 +38,10 @@ export function completePlayback(current: PlaybackValidity, completedAtIso: stri
 
 export function invalidatePlayback(reason: PlaybackInvalidReason, detail?: string): PlaybackValidity {
   return detail === undefined ? { status: "invalid", reason } : { status: "invalid", reason, detail };
+}
+
+export function closePlaybackForContextChange(current: PlaybackValidity): PlaybackValidity {
+  return current.status === "playing" ? invalidatePlayback("CONTEXT_CHANGED") : current;
 }
 
 export function isListeningScoreEligible(attempts: readonly PlaybackAttempt[], requiredAttemptIds: readonly string[]): boolean {

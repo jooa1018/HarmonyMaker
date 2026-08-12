@@ -1,10 +1,15 @@
 import type { ParsedChord } from "../../domain/chord/model";
 import type { Fraction } from "../../domain/fraction";
 import type { PerformerProfile, VocalPlacementRole } from "../../domain/performer";
-import type { SpelledPitch } from "../../domain/pitch";
+import type { KeySignature, SpelledPitch } from "../../domain/pitch";
 
 export type ResearchBaselineId = "B0" | "B1" | "B1.5-MATCHED" | "B1.5-E2E";
-export type PlaybackMix = "LEAD_ONLY" | "HARMONY_ONLY" | "LEAD_AND_HARMONY";
+export type PlaybackMix =
+  | "LEAD_ONLY"
+  | "HARMONY_ONLY"
+  | "LEAD_AND_HARMONY"
+  | "BAND_ONLY"
+  | "BAND_LEAD_AND_HARMONY";
 export type RendererTier = "POOR" | "COMPETENT_PLAIN" | "HIGH";
 
 export interface ResearchNoteEvent {
@@ -27,6 +32,21 @@ export interface ResearchChordSpan {
   readonly chord: ParsedChord;
 }
 
+export interface ResearchActivitySlot {
+  readonly id: string;
+  readonly onsetQ: Fraction;
+  readonly durationQ: Fraction;
+  readonly allowHarmony: boolean;
+  readonly allowRest: boolean;
+  readonly source: "EXPLICIT_MATCHED" | "FULL_PHRASE_LEAD_COUPLED_V0";
+}
+
+export interface ResearchActivitySchedule {
+  readonly id: string;
+  readonly policy: "EXPLICIT_MATCHED_V0" | "FULL_PHRASE_LEAD_COUPLED_V0";
+  readonly slots: readonly ResearchActivitySlot[];
+}
+
 export interface ResearchFixture {
   readonly id: string;
   readonly title: string;
@@ -38,6 +58,9 @@ export interface ResearchFixture {
   readonly preferredLeapSemitones: number;
   readonly hardLeapSemitones: number;
   readonly seedHarmonyPitch?: SpelledPitch;
+  /** Review-fixture-only tonal declaration for the intentionally naive B1 control. */
+  readonly tonalContext: KeySignature;
+  readonly matchedActivitySchedule: ResearchActivitySchedule;
   readonly lead: readonly ResearchNoteEvent[];
   readonly chords: readonly ResearchChordSpan[];
   readonly tags: readonly string[];

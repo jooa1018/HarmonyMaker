@@ -1,7 +1,7 @@
 import { parseChord } from "../../domain/chord/parser";
 import { fraction } from "../../domain/fraction";
-import { pitchRange, type SpelledPitch, type Step, type Alter } from "../../domain/pitch";
-import type { ResearchChordSpan, ResearchFixture, ResearchNoteEvent } from "./types";
+import { pitchRange, type KeySignature, type SpelledPitch, type Step, type Alter } from "../../domain/pitch";
+import type { ResearchActivitySchedule, ResearchChordSpan, ResearchFixture, ResearchNoteEvent } from "./types";
 
 type NoteSeed = readonly [step: Step, alter: Alter, octave: number, onsetQ: number, durationQ: number, syllable: string];
 type ChordSeed = readonly [sourceText: string, onsetQ: number, durationQ: number];
@@ -43,13 +43,37 @@ function fixture(
   notes: readonly NoteSeed[],
   chords: readonly ChordSeed[],
   tags: readonly string[],
-  options: { readonly seedHarmonyPitch?: SpelledPitch; readonly hardLow?: SpelledPitch; readonly hardHigh?: SpelledPitch } = {},
+  options: { readonly seedHarmonyPitch?: SpelledPitch; readonly hardLow?: SpelledPitch; readonly hardHigh?: SpelledPitch; readonly tonalContext?: KeySignature; readonly matchedHarmonyEntryQ?: number } = {},
 ): ResearchFixture {
   const upper = placement === "upper";
   const hardLow = options.hardLow ?? (upper ? p("C", 4) : p("G", 2));
   const hardHigh = options.hardHigh ?? (upper ? p("G", 5) : p("D", 4));
   const comfortableLow = upper ? p("E", 4) : p("B", 2);
   const comfortableHigh = upper ? p("E", 5) : p("B", 3);
+  const lead = leadEvents(id, notes);
+  const parsedChords = chordSpans(id, chords);
+  const rawBoundaries = [
+    ...notes.flatMap((note) => [note[3], note[3] + note[4]]),
+    ...chords.flatMap((chord) => [chord[1], chord[1] + chord[2]]),
+  ];
+  const boundaries = [...new Set(rawBoundaries)].sort((left, right) => left - right);
+  const matchedActivitySchedule: ResearchActivitySchedule = {
+    id: `${id}:activity:matched-v0`,
+    policy: "EXPLICIT_MATCHED_V0",
+    slots: boundaries.slice(0, -1).flatMap((onsetQ, index) => {
+      const endQ = boundaries[index + 1];
+      const leadPresent = notes.some((note) => note[3] <= onsetQ && onsetQ < note[3] + note[4]);
+      const chordPresent = chords.some((chord) => chord[1] <= onsetQ && onsetQ < chord[1] + chord[2]);
+      return leadPresent && chordPresent ? [{
+        id: `${id}:activity:slot:${index}`,
+        onsetQ: fraction(onsetQ),
+        durationQ: fraction(endQ - onsetQ),
+        allowHarmony: onsetQ >= (options.matchedHarmonyEntryQ ?? 0),
+        allowRest: true,
+        source: "EXPLICIT_MATCHED" as const,
+      }] : [];
+    }),
+  };
   return {
     id,
     title,
@@ -67,8 +91,10 @@ function fixture(
     preferredLeapSemitones: 5,
     hardLeapSemitones: 12,
     ...(options.seedHarmonyPitch ? { seedHarmonyPitch: options.seedHarmonyPitch } : {}),
-    lead: leadEvents(id, notes),
-    chords: chordSpans(id, chords),
+    tonalContext: options.tonalContext ?? { tonic: { step: "C", alter: 0 }, mode: "major" },
+    matchedActivitySchedule,
+    lead,
+    chords: parsedChords,
     tags,
   };
 }
@@ -78,8 +104,8 @@ const stepwise: readonly NoteSeed[] = [
 ];
 
 export const RIGHTS_SAFE_FIXTURES: readonly ResearchFixture[] = [
-  fixture("hm-original-major-stepwise-v0", "Lantern Steps", "upper", stepwise, [["C", 0, 2], ["F", 2, 2]], ["major", "stepwise"]),
-  fixture("hm-original-minor-phrase-v0", "Quiet Current", "lower", [["A",0,4,0,1,"so"],["C",0,5,1,1,"la"],["B",0,4,2,1,"ri"],["A",0,4,3,1,"um"]], [["Am",0,2],["Em7",2,2]], ["minor"]),
+  fixture("hm-original-major-stepwise-v0", "Lantern Steps", "upper", stepwise, [["C", 0, 2], ["F", 2, 2]], ["major", "stepwise"], { matchedHarmonyEntryQ: 1 }),
+  fixture("hm-original-minor-phrase-v0", "Quiet Current", "lower", [["A",0,4,0,1,"so"],["C",0,5,1,1,"la"],["B",0,4,2,1,"ri"],["A",0,4,3,1,"um"]], [["Am",0,2],["Em7",2,2]], ["minor"], { tonalContext: { tonic: { step: "A", alter: 0 }, mode: "minor" }, matchedHarmonyEntryQ: 1 }),
   fixture("hm-original-slash-chord-v0", "Bass Lantern", "upper", stepwise, [["C/E",0,2],["F/A",2,2]], ["slash-chord"]),
   fixture("hm-original-sus-omission-v0", "Open Rail", "lower", [["G",0,4,0,1,"o"],["A",0,4,1,1,"pen"],["D",0,5,2,2,"way"]], [["Csus2",0,2],["Gsus4",2,2]], ["sus", "omission"]),
   fixture("hm-original-add9-v0", "Ninth Window", "upper", stepwise, [["Cadd9",0,2],["Fadd9",2,2]], ["explicit-extension", "add9"]),
@@ -93,8 +119,8 @@ export const RIGHTS_SAFE_FIXTURES: readonly ResearchFixture[] = [
   fixture("hm-original-lead-only-negative-v0", "Single Line Control", "upper", stepwise, [["C",0,4]], ["negative-control", "lead-only"]),
 ] as const;
 
-export const RIGHTS_SAFE_FIXTURE_MANIFEST = RIGHTS_SAFE_FIXTURES.map(({ id, title, authorshipKind, rightsNote, acceptanceEligibility, tags }) => ({
-  id, title, authorshipKind, rightsNote, acceptanceEligibility, tags,
+export const RIGHTS_SAFE_FIXTURE_MANIFEST = RIGHTS_SAFE_FIXTURES.map(({ id, title, authorshipKind, rightsNote, acceptanceEligibility, placement, tags }) => ({
+  id, title, authorshipKind, rightsNote, acceptanceEligibility, placement, tags,
 }));
 
 export function fixtureById(id: string): ResearchFixture {
