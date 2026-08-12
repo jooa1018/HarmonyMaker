@@ -1,7 +1,7 @@
 import { parseChord } from "../../domain/chord/parser";
 import { fraction } from "../../domain/fraction";
 import { pitchRange, type SpelledPitch, type Step, type Alter } from "../../domain/pitch";
-import type { ResearchChordSpan, ResearchFixture, ResearchNoteEvent } from "./types";
+import type { ResearchActivitySchedule, ResearchChordSpan, ResearchFixture, ResearchNoteEvent } from "./types";
 
 type NoteSeed = readonly [step: Step, alter: Alter, octave: number, onsetQ: number, durationQ: number, syllable: string];
 type ChordSeed = readonly [sourceText: string, onsetQ: number, durationQ: number];
@@ -50,6 +50,30 @@ function fixture(
   const hardHigh = options.hardHigh ?? (upper ? p("G", 5) : p("D", 4));
   const comfortableLow = upper ? p("E", 4) : p("B", 2);
   const comfortableHigh = upper ? p("E", 5) : p("B", 3);
+  const lead = leadEvents(id, notes);
+  const parsedChords = chordSpans(id, chords);
+  const rawBoundaries = [
+    ...notes.flatMap((note) => [note[3], note[3] + note[4]]),
+    ...chords.flatMap((chord) => [chord[1], chord[1] + chord[2]]),
+  ];
+  const boundaries = [...new Set(rawBoundaries)].sort((left, right) => left - right);
+  const matchedActivitySchedule: ResearchActivitySchedule = {
+    id: `${id}:activity:matched-v0`,
+    policy: "EXPLICIT_MATCHED_V0",
+    slots: boundaries.slice(0, -1).flatMap((onsetQ, index) => {
+      const endQ = boundaries[index + 1];
+      const leadPresent = notes.some((note) => note[3] <= onsetQ && onsetQ < note[3] + note[4]);
+      const chordPresent = chords.some((chord) => chord[1] <= onsetQ && onsetQ < chord[1] + chord[2]);
+      return leadPresent && chordPresent ? [{
+        id: `${id}:activity:slot:${index}`,
+        onsetQ: fraction(onsetQ),
+        durationQ: fraction(endQ - onsetQ),
+        allowHarmony: true,
+        allowRest: true,
+        source: "EXPLICIT_MATCHED" as const,
+      }] : [];
+    }),
+  };
   return {
     id,
     title,
@@ -67,8 +91,9 @@ function fixture(
     preferredLeapSemitones: 5,
     hardLeapSemitones: 12,
     ...(options.seedHarmonyPitch ? { seedHarmonyPitch: options.seedHarmonyPitch } : {}),
-    lead: leadEvents(id, notes),
-    chords: chordSpans(id, chords),
+    matchedActivitySchedule,
+    lead,
+    chords: parsedChords,
     tags,
   };
 }
@@ -93,8 +118,8 @@ export const RIGHTS_SAFE_FIXTURES: readonly ResearchFixture[] = [
   fixture("hm-original-lead-only-negative-v0", "Single Line Control", "upper", stepwise, [["C",0,4]], ["negative-control", "lead-only"]),
 ] as const;
 
-export const RIGHTS_SAFE_FIXTURE_MANIFEST = RIGHTS_SAFE_FIXTURES.map(({ id, title, authorshipKind, rightsNote, acceptanceEligibility, tags }) => ({
-  id, title, authorshipKind, rightsNote, acceptanceEligibility, tags,
+export const RIGHTS_SAFE_FIXTURE_MANIFEST = RIGHTS_SAFE_FIXTURES.map(({ id, title, authorshipKind, rightsNote, acceptanceEligibility, placement, tags }) => ({
+  id, title, authorshipKind, rightsNote, acceptanceEligibility, placement, tags,
 }));
 
 export function fixtureById(id: string): ResearchFixture {

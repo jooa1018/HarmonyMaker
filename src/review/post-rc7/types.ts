@@ -27,6 +27,21 @@ export interface ResearchChordSpan {
   readonly chord: ParsedChord;
 }
 
+export interface ResearchActivitySlot {
+  readonly id: string;
+  readonly onsetQ: Fraction;
+  readonly durationQ: Fraction;
+  readonly allowHarmony: boolean;
+  readonly allowRest: boolean;
+  readonly source: "EXPLICIT_MATCHED" | "FULL_PHRASE_LEAD_COUPLED_V0";
+}
+
+export interface ResearchActivitySchedule {
+  readonly id: string;
+  readonly policy: "EXPLICIT_MATCHED_V0" | "FULL_PHRASE_LEAD_COUPLED_V0";
+  readonly slots: readonly ResearchActivitySlot[];
+}
+
 export interface ResearchFixture {
   readonly id: string;
   readonly title: string;
@@ -38,6 +53,7 @@ export interface ResearchFixture {
   readonly preferredLeapSemitones: number;
   readonly hardLeapSemitones: number;
   readonly seedHarmonyPitch?: SpelledPitch;
+  readonly matchedActivitySchedule: ResearchActivitySchedule;
   readonly lead: readonly ResearchNoteEvent[];
   readonly chords: readonly ResearchChordSpan[];
   readonly tags: readonly string[];
