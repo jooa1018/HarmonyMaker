@@ -110,4 +110,28 @@ describe("post-rc.7 isolated controls and serious B1.5 baseline", () => {
     expect(b1.decisionTrace.some((decision) => decision.candidates.some((candidate) => candidate.selected && candidate.chordClash))).toBe(true);
     expect(b15.decisionTrace.every((decision) => decision.candidates.some((candidate) => candidate.selected && candidate.sourceChordTone))).toBe(true);
   });
+
+  it("selects REST only for a hard impossibility when the explicit slot permits it", async () => {
+    const fixture = fixtureById("hm-original-major-stepwise-v0");
+    const impossibleRange = { low: fixture.lead[0].pitch, high: fixture.lead[0].pitch };
+    const impossible = {
+      ...fixture,
+      performer: {
+        ...fixture.performer,
+        hardRange: impossibleRange,
+        comfortableRange: impossibleRange,
+        preferredTessitura: impossibleRange,
+      },
+    };
+    const rested = await generateBaseline(impossible, "B1.5-MATCHED");
+    expect(rested.decisionTrace[0].candidates.find((candidate) => candidate.selected)?.family).toBe("REST");
+    const restForbidden = {
+      ...impossible,
+      matchedActivitySchedule: {
+        ...impossible.matchedActivitySchedule,
+        slots: impossible.matchedActivitySchedule.slots.map((slot) => ({ ...slot, allowRest: false })),
+      },
+    };
+    await expect(generateBaseline(restForbidden, "B1.5-MATCHED")).rejects.toThrow("NO_LEGAL_B15_CANDIDATE_AND_REST_FORBIDDEN");
+  });
 });

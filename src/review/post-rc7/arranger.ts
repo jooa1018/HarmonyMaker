@@ -50,6 +50,7 @@ interface DecisionSegment {
   readonly lead: ResearchNoteEvent;
   readonly chord: ResearchChordSpan;
   readonly trigger: "LEAD_ATTACK" | "CANONICAL_CHORD_BOUNDARY";
+  readonly allowRest: boolean;
 }
 
 const mod = (value: number, modulus: number): number => ((value % modulus) + modulus) % modulus;
@@ -82,6 +83,7 @@ function decisionSegments(fixture: ResearchFixture): readonly DecisionSegment[] 
       lead,
       chord,
       trigger: sameFraction(lead.onsetQ, onsetQ) ? "LEAD_ATTACK" : "CANONICAL_CHORD_BOUNDARY",
+      allowRest: true,
     });
   }
   return result;
@@ -221,7 +223,7 @@ export async function generateBaseline(fixture: ResearchFixture, baselineId: Res
   const segments = schedule.slots.filter((slot) => slot.allowHarmony).map((slot) => {
     const segment = allSegments.find((candidate) => sameFraction(candidate.onsetQ, slot.onsetQ) && sameFraction(candidate.durationQ, slot.durationQ));
     if (!segment) throw new Error("ACTIVITY_SLOT_DOES_NOT_MATCH_CANONICAL_DECISION_GRID");
-    return segment;
+    return { ...segment, allowRest: slot.allowRest };
   });
   const harmony: ResearchNoteEvent[] = [];
   const decisionTrace: DecisionTrace[] = [];
@@ -233,6 +235,7 @@ export async function generateBaseline(fixture: ResearchFixture, baselineId: Res
       if (baselineId === "B1") {
         const pitch = hardLegalFixedThird(segment.lead.pitch, fixture);
         if (!pitch) {
+          if (!segment.allowRest) throw new Error("NO_LEGAL_B1_CANDIDATE_AND_REST_FORBIDDEN");
           const restId = await semanticId("post-rc7-candidate", { fixtureId: fixture.id, baselineId, index, rest: true });
           decisionTrace.push({
             id: await semanticId("post-rc7-decision", { fixtureId: fixture.id, baselineId, index }),
@@ -260,6 +263,7 @@ export async function generateBaseline(fixture: ResearchFixture, baselineId: Res
 
       const raw = enumerateCandidates(segment, fixture, previous);
       const selectedIndex = raw.findIndex((candidate) => candidate.rejectionReasons.length === 0);
+      if (selectedIndex < 0 && !segment.allowRest) throw new Error("NO_LEGAL_B15_CANDIDATE_AND_REST_FORBIDDEN");
       const candidateIds = await Promise.all(raw.map((candidate) => semanticId("post-rc7-candidate", { fixtureId: fixture.id, baselineId, index, pitch: candidate.pitch })));
       const restId = await semanticId("post-rc7-candidate", { fixtureId: fixture.id, baselineId, index, rest: true });
       const candidates: CandidateTrace[] = raw.map((candidate, candidateIndex) => ({ ...candidate, id: candidateIds[candidateIndex], selected: candidateIndex === selectedIndex }));
