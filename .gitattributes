@@ -1,0 +1,7 @@
+# Frozen WAG v1.0.1 artifacts are byte authorities; never rewrite their line endings.
+README_APPLY.md -text
+docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md -text
+docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.freeze.json -text
+src/grammar/worship-arrangement-grammar-v1.0.1.canonical.json -text
+src/grammar/wag-v1-diagnostic-baseline.canonical.json -text
+src/grammar/wag-v1-diagnostic-extension.canonical.json -text
