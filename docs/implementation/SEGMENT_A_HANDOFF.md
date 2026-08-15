@@ -6,6 +6,11 @@
 - Branch: `codex/harmonymaker-v0-segment-a`
 - Segment-A final implementation commit SHA: `fd4a39b3d29c152f84a92a0e74e045e9f22fb04f`
 - Boundary commits: A1 `84cb8f7ad278fda4e499efb4d2cf3788a4db0c38`; A2 `8fa4d92b3a14d404331ef27e7ba60377c009e66d`; A3 `fd4a39b3d29c152f84a92a0e74e045e9f22fb04f`
+- Reproducible-install closure: `063247af07bfdd715df0be66c64b1a4325673a2e` (`npm ci`/typecheck/lint/test/build green on GitHub Actions run #52)
+- Post-freeze implementation-resolution commit: `ae15d018a49565eb8ffb9d336e9cad84ba915f4d`
+- Normative resolution: `docs/implementation/WAG_v1.0.1_IMPLEMENTATION_RESOLUTION_r1.md`
+
+Segment B must start from a branch HEAD that contains both the reproducible-install closure and the normative resolution above; do not start from an earlier Segment-A SHA.
 
 ## Frozen identities
 
@@ -18,6 +23,8 @@
 - Full 99-code registry digest: `0bdb9f5067cba55dad165d3679460a04f21e98b450a4624fa21eca1ffa3dcc77`
 
 All six installed frozen artifacts passed byte-level SHA-256 verification. Their Git blobs match the working bytes and `.gitattributes` marks them `-text`, preserving byte identity even with `core.autocrlf=true`. The WAG config, preset registry, baseline/extension diagnostics, merged registry, algorithm versions, and eight WAG-owned config bindings passed semantic verification through the production canonical codec.
+
+The post-freeze implementation resolution intentionally does **not** edit any frozen artifact, change any frozen semantic digest, add a diagnostic code, change a rank tuple, add lookahead, or authorize a grammar-version bump. It only resolves enumerated implementation ambiguities for Segment B and later stages.
 
 ## Frozen substrate decision
 
@@ -56,11 +63,39 @@ npm run build         PASS — Next.js 16.3.0 production build
 git diff --check      PASS
 ```
 
+Reproducible-install closure at `063247af07bfdd715df0be66c64b1a4325673a2e`:
+
+```text
+npm ci                PASS
+npm run typecheck     PASS
+npm run lint          PASS
+npm test              PASS — 36 files, 307 tests
+npm run build         PASS
+GitHub Actions #52    PASS
+```
+
 Runtime proof: configured route returned HTTP 200 with all four checks true; unconfigured route returned HTTP 503 with the exact six missing variables. Server dependency identifiers and secret-variable names were absent from client static chunks.
+
+## Post-freeze implementation resolutions for Segment B
+
+`WAG_v1.0.1_IMPLEMENTATION_RESOLUTION_r1.md` closes the following without changing frozen selector/config/registry semantics:
+
+- exact semantic-digest recomputation authority;
+- exact `registerSpreadRange` projection;
+- deterministic v0 `cadencePolicy` derivation;
+- one-singer placement-role ownership at Intent;
+- Lead-only sibling status when H1 is required;
+- inherited v3.1.5 primary-pulse definition;
+- duplicate local-candidate identity;
+- durable non-musical evidence for hard-impossibility rests;
+- independent Validator implementation boundary;
+- required production fixture materialization.
+
+Explicitly **not adopted**: rank-tuple reordering, repeated-relation reranking, one-step/future lookahead, reentry hard-leap caps, new diagnostic codes, B3/beam/K-best, generated NCT, and phrase-final refinement.
 
 ## Continuation state
 
-- Accepted P2 debt: none newly accepted; the frozen manifest records all audited P2 findings as closed.
+- No selector/music semantic version bump is authorized by the post-freeze review resolution.
 - External credentials: live PostgreSQL and S3 credentials were not available or required for Segment A. They are required for live Segment C integration.
-- Segment B starts from this verified checkpoint and implements only the canonical lifecycle/candidate integration defined by the v4 execution plan, reusing `loadFrozenWagAuthority` and `selectLocalHarmonyDecision` as the single authorities.
+- Segment B implements only the canonical lifecycle/candidate integration defined by the v4 execution plan plus the enumerated implementation resolutions, reusing `loadFrozenWagAuthority` and `selectLocalHarmonyDecision` as the single frozen authorities.
 - Segment A did not implement Intent/Activity/Anchor/Solver lifecycle integration, marginal/pair assembly, LASC/LASI, Product Core, OMR Core, B3, generated NCT, phrase-final refinement, or learned selection.
