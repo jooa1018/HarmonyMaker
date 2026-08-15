@@ -64,7 +64,9 @@ function BlindPlayer({
   const tuneRef = useRef<ABCJS.TuneObject | null>(null);
   const controllerRef = useRef<ABCJS.SynthObjectController | null>(null);
   const onInvalidRef = useRef(onInvalid);
-  onInvalidRef.current = onInvalid;
+  useEffect(() => {
+    onInvalidRef.current = onInvalid;
+  }, [onInvalid]);
   const [renderedAbc, setRenderedAbc] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [playing, setPlaying] = useState(false);
