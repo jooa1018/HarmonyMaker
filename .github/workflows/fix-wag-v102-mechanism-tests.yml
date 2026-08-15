@@ -1,0 +1,30 @@
+name: Fix WAG selector experiment mechanism assertions
+
+on:
+  push:
+    branches:
+      - codex/wag-v102-selector-experiment
+    paths:
+      - .github/workflows/fix-wag-v102-mechanism-tests.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/wag-v102-selector-experiment
+          fetch-depth: 0
+      - run: python .experiment-patch/fix-mechanism-tests.py
+      - name: Commit mechanism-level assertions
+        run: |
+          rm -rf .experiment-patch
+          rm -f .github/workflows/fix-wag-v102-mechanism-tests.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "test: assert WAG experiment mechanisms rather than tentative notes"
+          git push origin HEAD:codex/wag-v102-selector-experiment
