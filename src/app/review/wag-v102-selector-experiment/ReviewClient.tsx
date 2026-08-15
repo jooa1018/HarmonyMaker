@@ -63,19 +63,19 @@ function BlindPlayer({
   const abcRef = useRef<typeof ABCJS | null>(null);
   const tuneRef = useRef<ABCJS.TuneObject | null>(null);
   const controllerRef = useRef<ABCJS.SynthObjectController | null>(null);
-  const [ready, setReady] = useState(false);
+  const onInvalidRef = useRef(onInvalid);
+  onInvalidRef.current = onInvalid;
+  const [renderedAbc, setRenderedAbc] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [transportComplete, setTransportComplete] = useState(false);
+  const ready = renderedAbc === side.abc;
 
   useEffect(() => {
     let disposed = false;
     controllerRef.current?.pause();
     controllerRef.current = null;
     audioRef.current?.replaceChildren();
-    setReady(false);
-    setPlaying(false);
-    setTransportComplete(false);
     const render = async () => {
       const imported = await import("abcjs");
       if (disposed || !scoreRef.current) return;
@@ -85,14 +85,14 @@ function BlindPlayer({
         staffwidth: 720,
         responsive: "resize",
       })[0] ?? null;
-      setReady(Boolean(tuneRef.current));
+      setRenderedAbc(tuneRef.current ? side.abc : null);
     };
-    void render().catch(() => onInvalid("INITIALIZATION_FAILURE"));
+    void render().catch(() => onInvalidRef.current("INITIALIZATION_FAILURE"));
     return () => {
       disposed = true;
       controllerRef.current?.pause();
     };
-  }, [onInvalid, side.abc]);
+  }, [side.abc]);
 
   const play = async () => {
     if (!ready || !tuneRef.current || !abcRef.current || !audioRef.current || busy) return;
@@ -171,16 +171,23 @@ export function ExperimentReviewClient({
   const [note, setNote] = useState("");
 
   useEffect(() => {
-    let current = window.localStorage.getItem(SESSION_KEY);
-    if (!current) {
-      current = window.crypto.randomUUID();
-      window.localStorage.setItem(SESSION_KEY, current);
-    }
-    setSeed(current);
-    const stored = loadStoredResponses();
-    setResponses(stored);
-    const firstUnanswered = items.findIndex((item) => !stored[item.id]);
-    setIndex(firstUnanswered < 0 ? Math.max(0, items.length - 1) : firstUnanswered);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      let current = window.localStorage.getItem(SESSION_KEY);
+      if (!current) {
+        current = window.crypto.randomUUID();
+        window.localStorage.setItem(SESSION_KEY, current);
+      }
+      const stored = loadStoredResponses();
+      const firstUnanswered = items.findIndex((item) => !stored[item.id]);
+      setSeed(current);
+      setResponses(stored);
+      setIndex(firstUnanswered < 0 ? Math.max(0, items.length - 1) : firstUnanswered);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [items]);
 
   const item = items[index];
@@ -276,6 +283,7 @@ export function ExperimentReviewClient({
       </div>
       <div className={styles.playerGrid}>
         <BlindPlayer
+          key={`${item.id}:A:${sideA.variant}`}
           label="A"
           side={sideA}
           heard={itemPlayback.heardA}
@@ -283,6 +291,7 @@ export function ExperimentReviewClient({
           onInvalid={(reason) => updatePlayback({ heardA: false, invalidA: reason })}
         />
         <BlindPlayer
+          key={`${item.id}:B:${sideB.variant}`}
           label="B"
           side={sideB}
           heard={itemPlayback.heardB}
