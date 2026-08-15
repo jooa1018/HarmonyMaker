@@ -1,0 +1,557 @@
+{
+  "activityPolicy": {
+    "activityFeasibilityPreview": {
+      "downstreamAnchorOrSolverLockMayLegitimatelyChangeEligibility": true,
+      "executionOrder": "phrase-track-canonical-performance-order",
+      "materializesExactRestVersusIndependentNote": true,
+      "noteCarriesSelectedPreviewPitchForward": true,
+      "ordinaryPhraseBoundaryResetsState": true,
+      "persistsPitchOrTone": false,
+      "previousPitchStateSource": "previous-non-persistent-preview-decision",
+      "restClearsPreviousPitchAndMakesNextSoundingDecisionReentry": true,
+      "runsAfterActivityLocks": true,
+      "sameEffectiveInputParityRequiredAtAnchor": true,
+      "stateIsStageLocalAndNotPersisted": true,
+      "usesFrozenPureSelector": true
+    },
+    "automaticSectionSuppression": false,
+    "baselineEligibleWhen": [
+      "lead-pitch-present",
+      "effective-chord-status-ok",
+      "inside-phrase",
+      "intent-track-role-active"
+    ],
+    "canonicalBoundaryPitchTransitionCountsAsLyricAttack": false,
+    "leadAttackMirroring": true,
+    "localHardImpossibilityRestFallback": true,
+    "ordinaryAestheticRestSelection": false,
+    "phraseBoundaryResetsOrdinaryLeapContinuity": true,
+    "policyId": "full-phrase-lead-coupled-v0",
+    "restWhen": [
+      "lead-rest",
+      "effective-chord-no-chord",
+      "outside-phrase",
+      "activity-lock-rest",
+      "local-hard-impossibility-after-activity-locks"
+    ]
+  },
+  "authority": {
+    "deterministicSelectionRequired": true,
+    "effectiveChordTimelineRequired": true,
+    "exactFractionRequired": true,
+    "productSpec": "docs/HARMONYMAKER_SPEC_v3.1.5.md",
+    "productSpecBaselineCommit": "04bf71835daa712b077f245b4337a68e96f3d4ee",
+    "productionGenerativeAiAuthority": false,
+    "sourceLeadAtomizationRequired": true
+  },
+  "candidateFamilies": [
+    "LEGAL_CONTINUATION",
+    "LOW_MOTION_CHORD_TONE",
+    "CHORD_AWARE_THIRD_SIXTH",
+    "CONTEXTUAL_CHORD_TONE",
+    "REST"
+  ],
+  "candidateReasonCodes": [
+    "LOCAL_REST_HARD_IMPOSSIBILITY",
+    "OPTIONAL_MARGINAL_NOT_PERCEPTIBLE",
+    "OPTIONAL_MARGINAL_LASI_REJECTED",
+    "OPTIONAL_PAIR_LASI_REJECTED",
+    "OPTIONAL_PAIR_DEGRADED_TO_SINGLE",
+    "SOURCE_CHORD_TONE_SPELLING_UNREPRESENTABLE"
+  ],
+  "canonicalPathKeyPolicy": {
+    "activityTransitionOrdinal": {
+      "attack": 1,
+      "continuous": 2,
+      "reentry": 3,
+      "release": 4,
+      "rest": 0
+    },
+    "asciiOnly": true,
+    "candidateOrderingAuthority": false,
+    "decisionOrder": "canonical-local-decision-order-zero-based",
+    "fieldSeparator": ",",
+    "keyValueSeparator": "=",
+    "leadOnlyExactKey": "wag1-local-v1|tx=0",
+    "missingPitchAndDirectiveSentinels": {
+      "alter": 0,
+      "directiveOrdinal": -1,
+      "midi": -1,
+      "octave": -1,
+      "stepOrdinal": -1
+    },
+    "rawIdsAndDisplayLabelsExcluded": true,
+    "segmentFieldOrder": [
+      "decisionOrdinal",
+      "trackOrdinal",
+      "activityTransitionOrdinal",
+      "directiveOrdinal",
+      "midi",
+      "stepOrdinal",
+      "alter",
+      "octave"
+    ],
+    "segmentSeparator": "|",
+    "stepOrdinalZeroBased": {
+      "A": 5,
+      "B": 6,
+      "C": 0,
+      "D": 1,
+      "E": 2,
+      "F": 3,
+      "G": 4
+    },
+    "textureOrdinalZeroBased": {
+      "ACCENT_BLOCK": 3,
+      "SUSPENSION_RELEASE": 5,
+      "SUSTAINED_PAD": 4,
+      "TWO_PART_PARALLEL": 2,
+      "UNISON": 0,
+      "UNISON_TO_SPLIT": 1
+    },
+    "versionPrefix": "wag1-local-v1"
+  },
+  "configDigestBindingPolicy": {
+    "accompanimentConfigDigestOwnership": "preserve-existing-accepted-accompaniment-config-authority",
+    "diagnosticRegistryDigestOwnership": "computed-by-full-diagnostic-registry-projection-not-WAG-config-payload",
+    "ownedRegistryFields": [
+      "plannerConfigDigest",
+      "grammarConfigDigest",
+      "activityPlannerConfigDigest",
+      "anchorPlannerConfigDigest",
+      "solverConfigDigest",
+      "assemblerConfigDigest",
+      "validatorConfigDigest",
+      "metricConfigDigest"
+    ],
+    "reason": "single-frozen-WAG-v1-payload-conservatively-invalidates-all-WAG-owned-downstream-stages",
+    "sharedFrozenPayloadForOwnedFields": true
+  },
+  "decisionTriggerPolicy": {
+    "priorityWhenCoincident": [
+      "LEAD_ATTACK",
+      "CANONICAL_CHORD_BOUNDARY",
+      "CANONICAL_PHRASE_BOUNDARY",
+      "CANONICAL_SECTION_BOUNDARY",
+      "STAGE_LOCK_BOUNDARY"
+    ],
+    "traceOnlyNotMusicalAuthority": true,
+    "values": [
+      "LEAD_ATTACK",
+      "CANONICAL_CHORD_BOUNDARY",
+      "CANONICAL_PHRASE_BOUNDARY",
+      "CANONICAL_SECTION_BOUNDARY",
+      "STAGE_LOCK_BOUNDARY"
+    ]
+  },
+  "diagnosticExtension": {
+    "baselinePath": "src/grammar/wag-v1-diagnostic-baseline.canonical.json",
+    "baselineSemanticDigest": "96e396a1fdb97a9cc9eba2b21a20c709cd5a96285126bfba1a406cba2f42ef70",
+    "extensionPath": "src/grammar/wag-v1-diagnostic-extension.canonical.json",
+    "extensionSemanticDigest": "aee570a5fc6110107979c40708ebb0b48f645e23853a0e75084854c2cd6ce794",
+    "fullDefinitionCount": 99,
+    "fullRegistryDigest": "0bdb9f5067cba55dad165d3679460a04f21e98b450a4624fa21eca1ffa3dcc77",
+    "targetRegistryVersion": "diagnostic-registry-v3-wag1-v0"
+  },
+  "diagnosticResultStatePolicy": {
+    "blocksGenerationFalseCannotAloneProduceBlocked": true,
+    "candidateLocalHardRejectionDoesNotBlockRetainedLegalSibling": true,
+    "noValidResultRequiresCompanionBlockingDiagnosticAtSameResultScope": true,
+    "preferredCompanionForGrammarNoResult": "GRAMMAR_BLOCKED"
+  },
+  "downstreamLockDivergencePolicy": {
+    "activityIndependentNoteMayBecomeInfeasibleAfterAnchorOrSolverLock": true,
+    "anchorMayMaterializeRest": false,
+    "lockInducedEmptyCandidateResult": "block-owning-stage-with-STAGE_LOCK_SCOPE_INVALID",
+    "nonLockChangedInputEmptyCandidateResult": "GEN_NO_PITCH_CANDIDATE-plus-GRAMMAR_BLOCKED",
+    "parityMismatchUsedWhenInputsDifferByValidDownstreamLock": false,
+    "requiredStableReason": "LOCK_INDUCED_NO_LEGAL_CANDIDATE"
+  },
+  "failurePolicy": {
+    "blocked": "zero-candidates-and-at-least-one-blocksGeneration-diagnostic",
+    "complete": "at-least-one-hard-valid-complete-candidate-and-no-blocksComplete-diagnostic",
+    "fakeLeadOnlyRepairWhenH1Required": false,
+    "harmonyExpectation": {
+      "h2Default": "optional-unless-existing-stage-locks-collectively-require-both-tracks",
+      "noneWhen": [
+        "effective-max-harmony-tracks-zero",
+        "no-enabled-assigned-generated-track",
+        "no-eligible-sounding-decision",
+        "entire-eligible-phrase-below-perceptibility-floor-and-no-lock-requires-harmony"
+      ],
+      "otherwise": "h1-required"
+    },
+    "partial": "one-or-more-hard-valid-partial-candidates-and-no-complete-candidate"
+  },
+  "featureFlags": {
+    "automaticGestureBranches": false,
+    "b3WholePhrasePlanning": false,
+    "canonicalTriggeredHeldSyllableTransition": true,
+    "controlledGeneratedNct": false,
+    "expressiveRerank": false,
+    "lasiProjectionValidation": true,
+    "learnedRuntimeSelection": false,
+    "phraseFinalRefinement": false,
+    "stableColorExtension": false,
+    "standaloneFirstPairSecond": true,
+    "unconstrainedJointTrioSearch": false
+  },
+  "grammarId": "worship-arrangement-grammar-v1",
+  "grammarVersion": "grammar-v1.0.1",
+  "hardCandidateFilters": [
+    "EFFECTIVE_CHORD_STATUS_OK",
+    "EXACT_SOURCE_CHORD_TONE",
+    "STRICT_PLACEMENT",
+    "PERFORMER_HARD_RANGE",
+    "CONTINUOUS_HARD_LEAP",
+    "STAGE_LOCKS",
+    "CANONICAL_SPELLING",
+    "NO_DUPLICATE_SEMANTIC_CANDIDATE"
+  ],
+  "lasiPolicy": {
+    "candidateIdsAndContentDigestsMayDifferAcrossSiblings": true,
+    "dropoutProjectionMustBeByteSemanticEquivalent": true,
+    "fullMayRepairMarginal": false,
+    "generatedEventIdsComparedAcrossSiblings": false,
+    "marginalAdmissionBeforePair": true,
+    "marginalRealizedAnchorsContainOnlySurvivingTrackDirectives": true,
+    "pairCompositionMayMutateMarginal": false,
+    "pairRealizedAnchorsAreImmutableUnionOfMarginalAnchors": true,
+    "requiredProjections": [
+      "Lead",
+      "Lead+Upper",
+      "Lead+Lower",
+      "Lead+Upper+Lower"
+    ],
+    "subsetListeningAcceptanceIsRuntimeAuthority": false
+  },
+  "leadProximityOrdinals": {
+    "one-semitone": 2,
+    "three-or-more-semitones": 0,
+    "two-semitones": 1
+  },
+  "legacyTextureSemantics": {
+    "ACCENT_BLOCK": "deferred-not-automatically-selected",
+    "SUSPENSION_RELEASE": "deferred-not-automatically-selected",
+    "SUSTAINED_PAD": "deferred-not-automatically-selected",
+    "TWO_PART_PARALLEL": "compatibility-id-for-b1.5-lead-coupled-chord-aware-independent-harmony-per-lead-anchored-marginal",
+    "UNISON": "lead-only-sentinel-no-generated-unison-event",
+    "UNISON_TO_SPLIT": "deferred-not-automatically-selected"
+  },
+  "metricsPolicy": {
+    "actualDistinctPitchDensityRequired": true,
+    "metricsIncludedInCandidateMusicalContentDigest": false,
+    "plannedNctResolutionZeroDenominatorRequired": true,
+    "requiredMarginalMetrics": [
+      "independent-sounding-duration",
+      "participation-coverage",
+      "local-rest-fallback-duration-count",
+      "third-sixth-relation-duration",
+      "legal-continuation-duration-count",
+      "low-motion-duration-count",
+      "contextual-chord-tone-duration-count",
+      "hard-comfortable-preferred-range-duration",
+      "max-leap",
+      "preferred-leap-excess",
+      "lead-proximity-duration",
+      "longest-repeated-directed-relation-run",
+      "source-chord-respect",
+      "perceptibility",
+      "first-last-pitch-and-role"
+    ],
+    "requiredPairMetrics": [
+      "three-distinct-pitch-duration",
+      "exactly-two-pitch-coverage",
+      "exactly-three-pitch-coverage",
+      "upper-lower-spread-distribution",
+      "pair-overlap-duration",
+      "dropout-parity",
+      "worse-marginal-alongside-pair-total",
+      "full-incremental-distinct-pitch-duration"
+    ],
+    "sourceChordRespectRequiredBp": 10000,
+    "sourceChordRespectZeroDenominatorResult": "NO_EVALUABLE_ITEMS-is-valid-when-numerator-and-denominator-are-zero"
+  },
+  "mode": {
+    "harmonicContext": "band-supported",
+    "profileId": "worship-band-v1"
+  },
+  "pairPolicy": {
+    "dropoutEquivalenceRequired": true,
+    "marginalNonCompensation": true,
+    "minimumPairOverlapPrimaryPulses": 1,
+    "minimumThreeDistinctPitchDecisionCount": 2,
+    "optionalSecondVoice": true,
+    "policyId": "standalone-first-pair-second-v0",
+    "requiredRoleSet": [
+      "upper",
+      "lower"
+    ],
+    "unconstrainedJointRefinement": false
+  },
+  "perceptibility": {
+    "exactUserLockMayOverride": true,
+    "minimumSoundingDecisionCount": 2,
+    "orMinimumSingleSustainPrimaryPulses": 1,
+    "shorterAutomaticOrphanAllowed": false
+  },
+  "pitchLockMaterializationPolicy": {
+    "anchorToneRetoningAllowed": false,
+    "realizedPitchByAnchorLockIdUsesPostPitchLockFinalPitch": true,
+    "validateAgainstAnchorToneRangePlacementLeapBeforeMaterialization": true
+  },
+  "presetProfileCanonicalOrder": [
+    "simple",
+    "standard",
+    "full"
+  ],
+  "presetProfileDigest": "ae0fce2af71b10e7f387521b22fe737cb840f02881b95121761b2953154cd681",
+  "presetProfileProjectionSchema": "hm-preset-profile-registry-v1",
+  "presetProfileVersion": "preset-profile-v2-b15-v0",
+  "presetProfiles": {
+    "full": {
+      "allowColorTones": true,
+      "allowOctaveDouble": true,
+      "allowSuspension": false,
+      "hardMaxLeapSemitones": 12,
+      "maxActiveVoiceCount": 3,
+      "maxHarmonyAttackRatioBp": 20000,
+      "maxRoleChangesPerSection": 2,
+      "maxSustainPrimaryPulses": 8,
+      "preferredMaxLeapSemitones": 7,
+      "presetId": "full",
+      "rhythmicComplexity": 0
+    },
+    "simple": {
+      "allowColorTones": false,
+      "allowOctaveDouble": false,
+      "allowSuspension": false,
+      "hardMaxLeapSemitones": 7,
+      "maxActiveVoiceCount": 2,
+      "maxHarmonyAttackRatioBp": 10000,
+      "maxRoleChangesPerSection": 0,
+      "maxSustainPrimaryPulses": 2,
+      "preferredMaxLeapSemitones": 4,
+      "presetId": "simple",
+      "rhythmicComplexity": 0
+    },
+    "standard": {
+      "allowColorTones": true,
+      "allowOctaveDouble": false,
+      "allowSuspension": false,
+      "hardMaxLeapSemitones": 9,
+      "maxActiveVoiceCount": 3,
+      "maxHarmonyAttackRatioBp": 20000,
+      "maxRoleChangesPerSection": 1,
+      "maxSustainPrimaryPulses": 4,
+      "preferredMaxLeapSemitones": 5,
+      "presetId": "standard",
+      "rhythmicComplexity": 0
+    }
+  },
+  "projectionSchema": "hm-worship-arrangement-grammar-config-v1",
+  "rangeBandOrdinals": {
+    "inside-comfortable-outside-preferred": 1,
+    "inside-hard-outside-comfortable": 2,
+    "inside-preferred-tessitura": 0
+  },
+  "rankTupleLeadChordTone": [
+    "thirdOrSixthFamilyOrdinal",
+    "sourceColorPolicyOrdinal",
+    "rangeBandOrdinal",
+    "preferredLeapViolationOrdinal",
+    "preferredLeapExcessSemitones",
+    "leadProximityOrdinal",
+    "motionSemitones",
+    "chordToneCanonicalOrdinal",
+    "roleDirectedRegisterOrdinal",
+    "canonicalPitchTuple"
+  ],
+  "rankTupleLeadSourceNct": [
+    "legalContinuationOrdinal",
+    "lowMotionOrdinal",
+    "thirdOrSixthFamilyOrdinal",
+    "sourceColorPolicyOrdinal",
+    "rangeBandOrdinal",
+    "preferredLeapViolationOrdinal",
+    "preferredLeapExcessSemitones",
+    "leadProximityOrdinal",
+    "motionSemitones",
+    "chordToneCanonicalOrdinal",
+    "roleDirectedRegisterOrdinal",
+    "canonicalPitchTuple"
+  ],
+  "registryGrammarVersion": "grammar-v1.0.1",
+  "requiredAuditClosureTests": [
+    "diagnostic-baseline-94-plus-extension-5-exact-full-registry-digest",
+    "non-c-accidental-root-chord-tone-spelling",
+    "unrepresentable-source-chord-tone-spelling-exclusion-and-honest-failure",
+    "activity-sequential-preview-hard-leap-dead-end-rest",
+    "downstream-lock-induced-zero-candidate-stage-block",
+    "source-chord-respect-zero-denominator-no-evaluable-items",
+    "dropout-equivalence-excludes-derived-event-and-candidate-identities",
+    "canonical-path-key-exact-ascii-sentinel-encoding"
+  ],
+  "roleMappingPreviewKey": [
+    "blockingDecisionCount",
+    "localRestDurationBp",
+    "hardOnlyRangeDurationBp",
+    "preferredMissDurationBp",
+    "preferredLeapExcessSemitoneSum",
+    "totalMotionSemitones",
+    "roleChangeCount",
+    "canonicalTrackRoleTuple"
+  ],
+  "sectionIntensityTargetPolicy": {
+    "maxHarmonyAttackRatioBp": "effectiveConfig.maxHarmonyAttackRatioBp",
+    "nonzeroRange": "min-and-max-over-baseline-eligible-placement-and-hard-range-legal-local-candidate-combinations; ignore-continuity-and-locks; [0,0]-when-no-evaluable-combination",
+    "registerSpreadRangeUnit": "sounding-semitones",
+    "selectionAuthority": false,
+    "zeroHarmonyRange": [
+      0,
+      0
+    ]
+  },
+  "selectionDefaults": {
+    "full": [
+      "complete-pair",
+      "best-complete-one-harmony",
+      "lead-only-when-no-harmony-expected"
+    ],
+    "simple": [
+      "best-complete-one-harmony",
+      "lead-only-when-no-harmony-expected"
+    ],
+    "standard": [
+      "complete-pair",
+      "best-complete-one-harmony",
+      "lead-only-when-no-harmony-expected"
+    ]
+  },
+  "semanticVersion": "1.0.1",
+  "solverLimitsPolicy": {
+    "beamWidthActive": false,
+    "beamWidthOneIsDescriptiveSemanticEquivalentOnly": true,
+    "candidateEnumeration": "all-exact-ParsedChord-tones-times-all-hard-range-octaves-before-hard-filters",
+    "candidateTruncationAllowed": false,
+    "genericCorePhraseSolverLimitsAreNotActiveConfigAuthority": true,
+    "genericCorePhraseSolverLimitsDoNotEnterAnyHiddenWagOwnedDigest": true,
+    "genericPhraseSolverLimitsTypeMayRemainForSchemaHistoryCompatibility": true,
+    "genericV315CorePhraseSolverLimitsActive": false,
+    "kBestPerTextureActive": false,
+    "legacyBudgetDiagnosticsMustNotBeEmittedByAutomaticWagV1Path": [
+      "GEN_ANCHOR_LIMIT_EXCEEDED",
+      "GEN_SEARCH_BUDGET_EXHAUSTED"
+    ],
+    "maxPitchCandidatesPerAnchorPerTrackActive": false,
+    "maxSubphraseAnchorsActive": false,
+    "policyId": "exhaustive-finite-local-enumeration-v0"
+  },
+  "solverLockPolicy": {
+    "incompatibleLockResult": "blocked-stage-lock-scope-invalid",
+    "pitchLockMayChooseOctaveOnlyWhen": [
+      "pitch-realizes-anchor-selected-tone",
+      "pitch-is-strict-placement-legal",
+      "pitch-is-performer-hard-range-legal",
+      "pitch-is-continuous-hard-leap-legal",
+      "pitch-is-source-chord-legal"
+    ],
+    "pitchLockMayRetoneAnchor": false,
+    "silentDownstreamPathMutation": false
+  },
+  "stageOwnership": {
+    "activity": {
+      "mayPersistPitchOrTone": false,
+      "owns": [
+        "rest-versus-independent-note-spans",
+        "attack-release-reentry-events"
+      ],
+      "readsLocks": [
+        "ActivityLock"
+      ]
+    },
+    "anchor": {
+      "generatedNctPlanCount": 0,
+      "owns": [
+        "selected-source-chord-tone-per-independent-decision"
+      ],
+      "readsLocks": [
+        "AnchorLock"
+      ]
+    },
+    "intent": {
+      "mayPersistPitchOrTone": false,
+      "owns": [
+        "section-intensity-target",
+        "texture-id",
+        "track-role-mapping",
+        "lyric-policy",
+        "cadence-policy"
+      ],
+      "readsLocks": [
+        "IntentLock"
+      ]
+    },
+    "solver": {
+      "mayRetoneAnchor": false,
+      "owns": [
+        "exact-spelled-pitch-and-octave-materialization"
+      ],
+      "readsLocks": [
+        "SolverLock"
+      ],
+      "wholePhraseOptimization": false
+    }
+  },
+  "strategyId": "b1.5-style-lead-coupled-source-first-local-v0",
+  "toneSpellingPolicy": {
+    "enharmonicRespellingAllowed": false,
+    "majorScaleOffsetsBySimpleDegreeClass": [
+      0,
+      2,
+      4,
+      5,
+      7,
+      9,
+      11
+    ],
+    "naturalSemitoneByStep": {
+      "A": 9,
+      "B": 11,
+      "C": 0,
+      "D": 2,
+      "E": 4,
+      "F": 5,
+      "G": 7
+    },
+    "policyId": "source-root-major-scale-offset-v1",
+    "targetAlter": "unique-integer-in--2..2-matching-target-step-and-target-pitch-class",
+    "targetPitchClass": "mod12(semitone(root)+majorScaleOffset+ChordToneSpec.alteration)",
+    "targetStep": "advance-root-step-by-(degree-1)-mod-7",
+    "unrepresentableToneResult": "exclude-tone-with-stable-candidate-reason; rest-or-block-under-normal-local-failure-policy"
+  },
+  "versions": {
+    "accompanimentVersion": "accompaniment-v1",
+    "activityPlannerVersion": "activity-planner-v2-lead-coupled-v0-r1",
+    "anchorPlannerVersion": "anchor-planner-v2-b15-local-v0-r1",
+    "assemblerVersion": "assembler-v2-lasc-v0-r1",
+    "candidateProjectionVersion": "candidate-projection-v1",
+    "chordParserVersion": "chord-parser-v1",
+    "chordTimelineResolverVersion": "chord-timeline-v1",
+    "diagnosticRegistryVersion": "diagnostic-registry-v3-wag1-v0",
+    "digestCodecVersion": "canonical-json-v1",
+    "domainSchemaVersion": "9",
+    "editMaterializerVersion": "edit-materializer-v1",
+    "evidenceMappingVersion": "evidence-mapping-v1",
+    "grammarVersion": "grammar-v1.0.1",
+    "metricsVersion": "metrics-v2-lasi-v0-r1",
+    "omrNormalizerVersion": "omr-normalizer-v1",
+    "performanceExpanderVersion": "repeat-v1",
+    "plannerVersion": "planner-v2-wag1-v0-r1",
+    "practiceShareCodecVersion": "practice-share-v1",
+    "presetProfileVersion": "preset-profile-v2-b15-v0",
+    "solverVersion": "solver-v2-b15-local-v0-r1",
+    "sourceLeadAtomizerVersion": "source-lead-atomizer-v1",
+    "validatorVersion": "validator-v2-lasi-v0-r1"
+  }
+}

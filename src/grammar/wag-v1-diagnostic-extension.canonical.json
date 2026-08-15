@@ -1,0 +1,54 @@
+{
+  "definitions": [
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "WAG_V1_ACTIVITY_ANCHOR_FEASIBILITY_PARITY_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "anchor"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "WAG_V1_ANCHOR_SOLVER_SELECTION_PARITY_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "solver"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "WAG_V1_DROPOUT_PROJECTION_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": false,
+      "code": "WAG_V1_PARTIAL_REQUIRED_COVERAGE",
+      "defaultSeverity": "error",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "WAG_V1_ROLE_PREVIEW_PARITY_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    }
+  ],
+  "mergePolicy": {
+    "appendCodesExactlyOnce": true,
+    "baselineDefinitionCount": 94,
+    "baselineFileSha256": "0fa15cf0652e41b1509df0f8d140bfa165726a6799a83b19eed59b58dbbbab4c",
+    "baselinePath": "src/grammar/wag-v1-diagnostic-baseline.canonical.json",
+    "baselineProjectionSchema": "hm-diagnostic-registry-baseline-v1",
+    "baselineSemanticDigest": "96e396a1fdb97a9cc9eba2b21a20c709cd5a96285126bfba1a406cba2f42ef70",
+    "definitionAuthorityContract": "docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md@1.0.1",
+    "fullDigestFunction": "semanticDigest({registryVersion,entries})",
+    "rejectDuplicateCodes": true,
+    "requireExactFinalDefinitionCount": 99,
+    "sortFullEntriesByCodeBeforeDigest": true
+  },
+  "projectionSchema": "hm-diagnostic-registry-extension-v1",
+  "targetRegistryVersion": "diagnostic-registry-v3-wag1-v0"
+}

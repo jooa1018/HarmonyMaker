@@ -1,0 +1,680 @@
+{
+  "authority": {
+    "definitionAuthorityStatus": "new-frozen-production-authority-closing-missing-v3.1.5-table",
+    "definitionContract": "docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md@1.0.1",
+    "diagnosticCodeCount": 94,
+    "diagnosticCodeSetBaselineCommit": "04bf71835daa712b077f245b4337a68e96f3d4ee",
+    "diagnosticCodeSetProductSpec": "docs/HARMONYMAKER_SPEC_v3.1.5.md#15.2",
+    "supersedesNonexistentExistingDefinitionsAssumption": true
+  },
+  "definitions": [
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_INVALID_FRACTION",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_FRACTION_LIMIT_EXCEEDED",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_EVENT_OVERLAP",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_INVALID_TIE",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_LIMIT_EXCEEDED",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_KEY_SIGNATURE_INCONSISTENT",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "INPUT_BEAT_GROUPS_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "UNSUPPORTED_KEY_SIGNATURE",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "UNSUPPORTED_BEAT_GROUPING",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "UNSUPPORTED_METER",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "UNSUPPORTED_MODULATION",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "UNSUPPORTED_PERFORMANCE_FLOW",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PERFORMANCE_EXPANSION_FAILED",
+      "defaultSeverity": "blocking",
+      "scope": "performance"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PERFORMANCE_REPEAT_UNMATCHED",
+      "defaultSeverity": "blocking",
+      "scope": "performance"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PERFORMANCE_REPEAT_NESTED",
+      "defaultSeverity": "blocking",
+      "scope": "performance"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SECTION_COVERAGE_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "performance"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PHRASE_COVERAGE_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "performance"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_CHORD_PARSE_FAILED",
+      "defaultSeverity": "blocking",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_CHORD_UNCONFIRMED",
+      "defaultSeverity": "blocking",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_CHORD_GAP",
+      "defaultSeverity": "blocking",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_CHORD_CARRY_WITHOUT_PREVIOUS",
+      "defaultSeverity": "blocking",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "EFFECTIVE_CHORD_TIMELINE_STALE",
+      "defaultSeverity": "blocking",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "CHORD_RESOLVER_VERSION_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "SOURCE_NO_CHORD_REGION",
+      "defaultSeverity": "info",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "SOURCE_LEAD_UNCLASSIFIED_NCT",
+      "defaultSeverity": "warning",
+      "scope": "chord"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "TRACK_PLAN_MISSING",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "TRACK_ASSIGNMENT_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "TRACK_ROLE_CONFLICT",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "TRACK_ORDINAL_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PERFORMER_RANGE_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PERFORMER_DOUBLE_BOOKED",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "STALE_REFERENCE",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "STAGE_LOCK_SCOPE_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "ANCHOR_LOCK_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "anchor"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "CANONICAL_DIGEST_CODEC_FAILED",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": false,
+      "code": "SECTION_UNCONFIRMED",
+      "defaultSeverity": "error",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "PHRASE_SPLIT_APPLIED",
+      "defaultSeverity": "info",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": false,
+      "code": "NO_ELIGIBLE_TEXTURE",
+      "defaultSeverity": "error",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "SECTION_INTENSITY_INFEASIBLE",
+      "defaultSeverity": "warning",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GRAMMAR_NOT_ACCEPTED",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GRAMMAR_BLOCKED",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "ACTIVITY_SPAN_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "activity"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "HARMONY_ATTACK_RATIO_EXCEEDED",
+      "defaultSeverity": "blocking",
+      "scope": "activity"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "LYRIC_POLICY_VIOLATION",
+      "defaultSeverity": "blocking",
+      "scope": "activity"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "METRIC_NO_MELODY_DURATION",
+      "defaultSeverity": "warning",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GEN_ANCHOR_LIMIT_EXCEEDED",
+      "defaultSeverity": "blocking",
+      "scope": "solver"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GEN_NO_PITCH_CANDIDATE",
+      "defaultSeverity": "blocking",
+      "scope": "solver"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GEN_SEARCH_BUDGET_EXHAUSTED",
+      "defaultSeverity": "blocking",
+      "scope": "solver"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GEN_TIMEOUT",
+      "defaultSeverity": "blocking",
+      "scope": "solver"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GEN_CANCELLED",
+      "defaultSeverity": "blocking",
+      "scope": "solver"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATED_OUT_OF_RANGE",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATED_VOICE_CROSSING",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATED_ILLEGAL_NCT",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATED_UNRESOLVED_SUSPENSION",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATED_CHORD_ROLE_CONFLICT",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATED_NO_CHORD_POLICY_VIOLATION",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "IMPORT_CORRUPT_XML",
+      "defaultSeverity": "blocking",
+      "scope": "import"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "IMPORT_UNSUPPORTED_ELEMENT",
+      "defaultSeverity": "warning",
+      "scope": "import"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "IMPORT_ARCHIVE_UNSAFE",
+      "defaultSeverity": "blocking",
+      "scope": "import"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_INPUT_QUALITY_LOW",
+      "defaultSeverity": "warning",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_PROVIDER_CAPABILITY_MISSING",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_PROVIDER_FAILED",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_PROVIDER_NEEDS_INPUT",
+      "defaultSeverity": "info",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_EVIDENCE_GRANULARITY_LOW",
+      "defaultSeverity": "warning",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_MEASURE_DURATION_INVALID",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_TIE_INVALID",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_CHORD_UNPARSEABLE",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_REVIEW_REQUIRED",
+      "defaultSeverity": "info",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_DELETE_FAILED",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_QUOTA_EXCEEDED",
+      "defaultSeverity": "warning",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "RIGHTS_GENERATION_NOT_CONFIRMED",
+      "defaultSeverity": "blocking",
+      "scope": "rights"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "RIGHTS_PROVIDER_TRANSFER_NOT_CONFIRMED",
+      "defaultSeverity": "warning",
+      "scope": "rights"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "RIGHTS_SHARE_NOT_CONFIRMED",
+      "defaultSeverity": "warning",
+      "scope": "rights"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "RIGHTS_EVALUATION_NOT_CONFIRMED",
+      "defaultSeverity": "warning",
+      "scope": "rights"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "SHARE_PAYLOAD_TOO_LARGE",
+      "defaultSeverity": "warning",
+      "scope": "share"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "SHARE_PAYLOAD_INVALID",
+      "defaultSeverity": "error",
+      "scope": "share"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "EDIT_BASE_CANDIDATE_STALE",
+      "defaultSeverity": "error",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "EDIT_SNAPSHOT_INVALID",
+      "defaultSeverity": "error",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "EDIT_MATERIALIZATION_BLOCKED",
+      "defaultSeverity": "error",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "GENERATION_RESULT_STATE_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_EVIDENCE_TRANSFORM_MISSING",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_EVIDENCE_CODEC_FAILED",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_REVIEW_RESOLUTION_INVALID",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "OMR_EVIDENCE_TARGET_UNMAPPED",
+      "defaultSeverity": "error",
+      "scope": "omr"
+    },
+    {
+      "blocksComplete": false,
+      "blocksGeneration": false,
+      "code": "SHARE_STORE_REQUIRED",
+      "defaultSeverity": "warning",
+      "scope": "share"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_REVISION_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_REVISION_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_ID_REMAP_REQUIRED",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_ID_REMAP_FAILED",
+      "defaultSeverity": "blocking",
+      "scope": "input"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SOURCE_LEAD_ATOMIZATION_STALE",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "SECTION_INTENSITY_AUTHORITY_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "PRESET_PROFILE_VERSION_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "planner"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "ALGORITHM_CONFIG_MISMATCH",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    },
+    {
+      "blocksComplete": true,
+      "blocksGeneration": true,
+      "code": "CANDIDATE_PROJECTION_INVALID",
+      "defaultSeverity": "blocking",
+      "scope": "validation"
+    }
+  ],
+  "policy": {
+    "allCodesAreDefinedExactlyOnce": true,
+    "blockingOutcomeRequiresARegistryEntryWithBlocksGenerationTrue": true,
+    "blocksGenerationFalseCannotAloneProduceBlockedGenerationResult": true,
+    "candidateLocalRejectedDiagnosticsDoNotBlockRetainedSiblingCandidatesUnlessPromotedToResultScope": true,
+    "noResultRequiresCompanionBlockingCodeAtSameResultScope": true,
+    "operationLocalDiagnosticsAreNotAutomaticallyCopiedIntoGenerationResults": true,
+    "severityDoesNotImplyBlockFlags": true
+  },
+  "projectionSchema": "hm-diagnostic-registry-baseline-v1"
+}

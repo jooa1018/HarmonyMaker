@@ -39,6 +39,10 @@ export const DIAGNOSTIC_CODES = [
   "SOURCE_ID_REMAP_REQUIRED", "SOURCE_ID_REMAP_FAILED", "SOURCE_LEAD_ATOMIZATION_STALE",
   "SECTION_INTENSITY_AUTHORITY_INVALID", "PRESET_PROFILE_VERSION_MISMATCH",
   "ALGORITHM_CONFIG_MISMATCH", "CANDIDATE_PROJECTION_INVALID",
+  "WAG_V1_ACTIVITY_ANCHOR_FEASIBILITY_PARITY_MISMATCH",
+  "WAG_V1_ANCHOR_SOLVER_SELECTION_PARITY_MISMATCH",
+  "WAG_V1_DROPOUT_PROJECTION_MISMATCH", "WAG_V1_PARTIAL_REQUIRED_COVERAGE",
+  "WAG_V1_ROLE_PREVIEW_PARITY_MISMATCH",
 ] as const;
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[number];
@@ -75,6 +79,11 @@ export async function createDiagnosticRegistry(
   registryVersion: string,
   definitions: Readonly<Record<DiagnosticCode, DiagnosticDefinition>>,
 ): Promise<DiagnosticRegistry> {
+  const suppliedCodes = Object.keys(definitions);
+  if (suppliedCodes.length !== DIAGNOSTIC_CODES.length
+    || suppliedCodes.some((code) => !DIAGNOSTIC_CODES.includes(code as DiagnosticCode))) {
+    throw new RangeError("diagnostic definitions must contain exactly the accepted code set");
+  }
   for (const code of DIAGNOSTIC_CODES) {
     if (definitions[code]?.code !== code) throw new RangeError(`diagnostic definition missing: ${code}`);
   }

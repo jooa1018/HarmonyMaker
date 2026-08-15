@@ -1,0 +1,151 @@
+{
+  "algorithmConfigDigestBindings": {
+    "activityPlannerConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "anchorPlannerConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "assemblerConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "grammarConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "metricConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "plannerConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "solverConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+    "validatorConfigDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482"
+  },
+  "algorithmVersions": {
+    "accompanimentVersion": "accompaniment-v1",
+    "activityPlannerVersion": "activity-planner-v2-lead-coupled-v0-r1",
+    "anchorPlannerVersion": "anchor-planner-v2-b15-local-v0-r1",
+    "assemblerVersion": "assembler-v2-lasc-v0-r1",
+    "candidateProjectionVersion": "candidate-projection-v1",
+    "chordParserVersion": "chord-parser-v1",
+    "chordTimelineResolverVersion": "chord-timeline-v1",
+    "diagnosticRegistryVersion": "diagnostic-registry-v3-wag1-v0",
+    "digestCodecVersion": "canonical-json-v1",
+    "domainSchemaVersion": "9",
+    "editMaterializerVersion": "edit-materializer-v1",
+    "evidenceMappingVersion": "evidence-mapping-v1",
+    "grammarVersion": "grammar-v1.0.1",
+    "metricsVersion": "metrics-v2-lasi-v0-r1",
+    "omrNormalizerVersion": "omr-normalizer-v1",
+    "performanceExpanderVersion": "repeat-v1",
+    "plannerVersion": "planner-v2-wag1-v0-r1",
+    "practiceShareCodecVersion": "practice-share-v1",
+    "presetProfileVersion": "preset-profile-v2-b15-v0",
+    "solverVersion": "solver-v2-b15-local-v0-r1",
+    "sourceLeadAtomizerVersion": "source-lead-atomizer-v1",
+    "validatorVersion": "validator-v2-lasi-v0-r1"
+  },
+  "auditClosure": {
+    "closedFindingIds": [
+      "P0-01",
+      "P1-01",
+      "P1-02",
+      "P1-03",
+      "P1-04",
+      "P2-01",
+      "P2-02",
+      "P2-03",
+      "P2-04",
+      "P2-05",
+      "P2-06",
+      "P2-07",
+      "P2-08"
+    ],
+    "knownBlockingFindingsClosed": true,
+    "musicalStrategyChanged": false,
+    "postClosureHardening": [
+      "baseline-authority-honesty",
+      "extension-pins-baseline-bytes-and-semantic-digest",
+      "blocked-result-requires-blocking-diagnostic",
+      "required-regression-fixtures",
+      "canonicalPathKey-total-sentinel-encoding",
+      "solver-limit-schema-history-compatibility-clarification"
+    ],
+    "source": "Claude Code Opus independent pre-implementation contract audit"
+  },
+  "contractStatus": "FROZEN_FOR_IMPLEMENTATION_AFTER_INDEPENDENT_AUDIT_AND_CLOSURE_HARDENING",
+  "createdDate": "2026-08-13",
+  "deferred": [
+    "B3-N",
+    "B3-E",
+    "controlled-generated-NCT",
+    "stable-color",
+    "phrase-final-refinement",
+    "automatic-gesture-branches",
+    "generalized-joint-H2-search",
+    "learned-runtime-selection"
+  ],
+  "diagnosticRegistry": {
+    "baselineAuthorityStatus": "new-frozen-production-authority-closing-missing-v3.1.5-table",
+    "baselineDefinitionCount": 94,
+    "baselineFileSha256": "0fa15cf0652e41b1509df0f8d140bfa165726a6799a83b19eed59b58dbbbab4c",
+    "baselinePath": "src/grammar/wag-v1-diagnostic-baseline.canonical.json",
+    "baselineSemanticDigest": "96e396a1fdb97a9cc9eba2b21a20c709cd5a96285126bfba1a406cba2f42ef70",
+    "extensionDefinitionCount": 5,
+    "extensionFileSha256": "4be25a0ae3cc28812b85da585e1ef6f0aa2f0ce5fc560e34177aa49eee06379b",
+    "extensionPath": "src/grammar/wag-v1-diagnostic-extension.canonical.json",
+    "extensionSemanticDigest": "aee570a5fc6110107979c40708ebb0b48f645e23853a0e75084854c2cd6ce794",
+    "fullDefinitionCount": 99,
+    "fullRegistryDigest": "0bdb9f5067cba55dad165d3679460a04f21e98b450a4624fa21eca1ffa3dcc77",
+    "fullRegistryDigestPolicy": "semanticDigest({registryVersion,entries}) over exact baseline+extension definitions sorted by code",
+    "version": "diagnostic-registry-v3-wag1-v0"
+  },
+  "files": [
+    {
+      "path": "README_APPLY.md",
+      "sha256": "5c8c704fc0e5ab51adb628022aeaf7e97b33b287610b1fd5533a177b65fd4ede"
+    },
+    {
+      "path": "docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md",
+      "sha256": "ee09ded709273cc6468f1fd3f1df319d04458716f6ad911a878bffdb9b4498d5"
+    },
+    {
+      "path": "src/grammar/worship-arrangement-grammar-v1.0.1.canonical.json",
+      "semanticDigest": "5a71f18d5687c4884f8dad209c162f39b8152c1e3030fc4af4b429c7c41f4482",
+      "sha256": "676780f8ceacda6d88c5724156f84f95fb5b337b4d13d16342f5342cb617330d"
+    },
+    {
+      "path": "src/grammar/wag-v1-diagnostic-baseline.canonical.json",
+      "semanticDigest": "96e396a1fdb97a9cc9eba2b21a20c709cd5a96285126bfba1a406cba2f42ef70",
+      "sha256": "0fa15cf0652e41b1509df0f8d140bfa165726a6799a83b19eed59b58dbbbab4c"
+    },
+    {
+      "path": "src/grammar/wag-v1-diagnostic-extension.canonical.json",
+      "semanticDigest": "aee570a5fc6110107979c40708ebb0b48f645e23853a0e75084854c2cd6ce794",
+      "sha256": "4be25a0ae3cc28812b85da585e1ef6f0aa2f0ce5fc560e34177aa49eee06379b"
+    }
+  ],
+  "grammarId": "worship-arrangement-grammar-v1",
+  "implementationMayStartWhen": [
+    "repository-ref-and-dirty-state-verified",
+    "all-frozen-file-sha256-values-match",
+    "all-semantic-digests-match",
+    "full-diagnostic-registry-digest-matches",
+    "algorithm-version-registry-updated-to-frozen-values",
+    "WAG-owned-config-digest-bindings-updated",
+    "no-uncommitted-conflicting-grammar-work"
+  ],
+  "manifestSchema": "hm-wag-freeze-manifest-v5",
+  "presetProfile": {
+    "canonicalOrder": [
+      "simple",
+      "standard",
+      "full"
+    ],
+    "projectionSchema": "hm-preset-profile-registry-v1",
+    "semanticDigest": "ae0fce2af71b10e7f387521b22fe737cb840f02881b95121761b2953154cd681",
+    "version": "preset-profile-v2-b15-v0"
+  },
+  "productSpec": {
+    "baselineCommit": "04bf71835daa712b077f245b4337a68e96f3d4ee",
+    "path": "docs/HARMONYMAKER_SPEC_v3.1.5.md"
+  },
+  "registryGrammarVersion": "grammar-v1.0.1",
+  "researchEvidence": {
+    "b15ResearchHead": "79dec6efbb555d2dad074b0a29ada600c4051c1b",
+    "rc7FrozenHead": "f67a456a38a3071b0f7955a6764376cd6d6f9a37"
+  },
+  "semanticVersion": "1.0.1",
+  "separateDigestAuthorities": {
+    "accompanimentConfigDigest": "preserve-existing-accepted-accompaniment-config-authority",
+    "diagnosticRegistryDigest": "0bdb9f5067cba55dad165d3679460a04f21e98b450a4624fa21eca1ffa3dcc77"
+  }
+}

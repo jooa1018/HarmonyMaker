@@ -32,9 +32,9 @@ export interface EffectiveArrangementConfig extends PresetDifficultyProfile {
 }
 const PRESET_ORDER: readonly ArrangementPresetId[] = ["simple", "standard", "full"];
 const PROFILE_PAYLOADS: Readonly<Record<ArrangementPresetId, PresetDifficultyProfile>> = {
-  simple: { presetId: "simple", maxActiveVoiceCount: 2, maxHarmonyAttackRatioBp: extendedBasisPoints(3500), preferredMaxLeapSemitones: 4, hardMaxLeapSemitones: 7, allowSuspension: false, allowColorTones: false, allowOctaveDouble: false, rhythmicComplexity: 0, maxRoleChangesPerSection: 0, maxSustainPrimaryPulses: 2 },
-  standard: { presetId: "standard", maxActiveVoiceCount: 3, maxHarmonyAttackRatioBp: extendedBasisPoints(6000), preferredMaxLeapSemitones: 5, hardMaxLeapSemitones: 9, allowSuspension: true, allowColorTones: true, allowOctaveDouble: false, rhythmicComplexity: 1, maxRoleChangesPerSection: 1, maxSustainPrimaryPulses: 4 },
-  full: { presetId: "full", maxActiveVoiceCount: 3, maxHarmonyAttackRatioBp: extendedBasisPoints(9000), preferredMaxLeapSemitones: 7, hardMaxLeapSemitones: 12, allowSuspension: true, allowColorTones: true, allowOctaveDouble: true, rhythmicComplexity: 2, maxRoleChangesPerSection: 2, maxSustainPrimaryPulses: 8 },
+  simple: { presetId: "simple", maxActiveVoiceCount: 2, maxHarmonyAttackRatioBp: extendedBasisPoints(10000), preferredMaxLeapSemitones: 4, hardMaxLeapSemitones: 7, allowSuspension: false, allowColorTones: false, allowOctaveDouble: false, rhythmicComplexity: 0, maxRoleChangesPerSection: 0, maxSustainPrimaryPulses: 2 },
+  standard: { presetId: "standard", maxActiveVoiceCount: 3, maxHarmonyAttackRatioBp: extendedBasisPoints(20000), preferredMaxLeapSemitones: 5, hardMaxLeapSemitones: 9, allowSuspension: false, allowColorTones: true, allowOctaveDouble: false, rhythmicComplexity: 0, maxRoleChangesPerSection: 1, maxSustainPrimaryPulses: 4 },
+  full: { presetId: "full", maxActiveVoiceCount: 3, maxHarmonyAttackRatioBp: extendedBasisPoints(20000), preferredMaxLeapSemitones: 7, hardMaxLeapSemitones: 12, allowSuspension: false, allowColorTones: true, allowOctaveDouble: true, rhythmicComplexity: 0, maxRoleChangesPerSection: 2, maxSustainPrimaryPulses: 8 },
 };
 
 export function isCoreArrangementMode(value: unknown): value is CoreArrangementMode {
