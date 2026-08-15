@@ -71,6 +71,7 @@ jobs:
           parser = VisibleText()
           parser.feed(dom)
           visible = " ".join(" ".join(parser.parts).split())
+          normalized_visible = visible.replace(" 개", "개").replace(" 번째", "번째")
           required = [
               "WAG v1.0.2 블라인드 청취 평가",
               "0 / 18개 응답 확정",
@@ -81,7 +82,7 @@ jobs:
               "가장 중요한 판단 이유",
               "판단 확신도",
           ]
-          missing = [value for value in required if value not in visible]
+          missing = [value for value in required if value not in normalized_visible]
           if missing:
               raise SystemExit(f"missing hydrated Korean UI text: {missing}\nVISIBLE={visible[:2000]}")
           forbidden = [
