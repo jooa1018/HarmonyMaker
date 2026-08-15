@@ -1,0 +1,102 @@
+name: WAG v1.0.2 experiment browser smoke
+
+on:
+  push:
+    branches:
+      - codex/wag-v102-selector-experiment
+    paths:
+      - .github/workflows/wag-v102-browser-smoke.yml
+      - src/app/review/wag-v102-selector-experiment/**
+      - src/experiments/wag-v102/**
+
+permissions:
+  contents: read
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Start production server
+        shell: bash
+        run: |
+          GITHUB_SHA="$GITHUB_SHA" npx next start --hostname 127.0.0.1 --port 3000 > /tmp/wag-v102-server.log 2>&1 &
+          echo $! > /tmp/wag-v102-server.pid
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:3000/review/wag-v102-selector-experiment > /tmp/wag-v102-response.html; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat /tmp/wag-v102-server.log
+          exit 1
+      - name: Exercise hydrated page in headless Chrome
+        shell: bash
+        run: |
+          google-chrome \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --disable-dev-shm-usage \
+            --virtual-time-budget=8000 \
+            --dump-dom \
+            http://127.0.0.1:3000/review/wag-v102-selector-experiment \
+            > /tmp/wag-v102-dom.html
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+
+          class VisibleText(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.hidden_depth = 0
+                  self.parts = []
+              def handle_starttag(self, tag, attrs):
+                  if tag in {"script", "style", "template", "noscript"}:
+                      self.hidden_depth += 1
+              def handle_endtag(self, tag):
+                  if tag in {"script", "style", "template", "noscript"} and self.hidden_depth:
+                      self.hidden_depth -= 1
+              def handle_data(self, data):
+                  if self.hidden_depth == 0:
+                      self.parts.append(data)
+
+          dom = Path("/tmp/wag-v102-dom.html").read_text(encoding="utf-8")
+          parser = VisibleText()
+          parser.feed(dom)
+          visible = " ".join(" ".join(parser.parts).split())
+          required = [
+              "WAG v1.0.2 blind listening",
+              "0 / 18 responses locked",
+              "Comparison 1 of 18",
+              "Play from start",
+              "Confirm heard complete",
+          ]
+          missing = [value for value in required if value not in visible]
+          if missing:
+              raise SystemExit(f"missing hydrated UI text: {missing}\nVISIBLE={visible[:2000]}")
+          forbidden = [
+              "V0_FROZEN",
+              "V1_HARD_ONLY_TESSITURA",
+              "V2_NEXT_FEASIBILITY",
+              "V3_REENTRY_DISTANCE",
+              "V4_HARD_ONLY_PLUS_NEXT",
+              "V5_HARD_ONLY_PLUS_NEXT_PLUS_REENTRY",
+          ]
+          leaked = [value for value in forbidden if value in visible]
+          if leaked:
+              raise SystemExit(f"variant identity leaked into visible pre-vote UI: {leaked}")
+          print("BROWSER_SMOKE_VISIBLE_TEXT_PASS")
+          PY
+      - name: Verify route and server health
+        shell: bash
+        run: |
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/review/wag-v102-selector-experiment)" = "200"
+          ! grep -E "(Unhandled Runtime Error|Internal Server Error|TypeError:|ReferenceError:)" /tmp/wag-v102-server.log
+          kill "$(cat /tmp/wag-v102-server.pid)" || true
