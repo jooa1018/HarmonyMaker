@@ -72,15 +72,18 @@ jobs:
           parser.feed(dom)
           visible = " ".join(" ".join(parser.parts).split())
           required = [
-              "WAG v1.0.2 blind listening",
-              "0 / 18 responses locked",
-              "Comparison 1 of 18",
-              "Play from start",
-              "Confirm heard complete",
+              "WAG v1.0.2 블라인드 청취 평가",
+              "0 / 18개 응답 확정",
+              "18개 중 1번째 비교",
+              "처음부터 재생",
+              "끝까지 들었음 확인",
+              "어느 쪽이 더 좋은가요?",
+              "가장 중요한 판단 이유",
+              "판단 확신도",
           ]
           missing = [value for value in required if value not in visible]
           if missing:
-              raise SystemExit(f"missing hydrated UI text: {missing}\nVISIBLE={visible[:2000]}")
+              raise SystemExit(f"missing hydrated Korean UI text: {missing}\nVISIBLE={visible[:2000]}")
           forbidden = [
               "V0_FROZEN",
               "V1_HARD_ONLY_TESSITURA",
@@ -92,7 +95,7 @@ jobs:
           leaked = [value for value in forbidden if value in visible]
           if leaked:
               raise SystemExit(f"variant identity leaked into visible pre-vote UI: {leaked}")
-          print("BROWSER_SMOKE_VISIBLE_TEXT_PASS")
+          print("BROWSER_SMOKE_KOREAN_VISIBLE_TEXT_PASS")
           PY
       - name: Verify route and server health
         shell: bash
