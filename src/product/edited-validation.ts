@@ -2,7 +2,7 @@ import type { ChordToneSpec } from "../domain/chord/model";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
 import { addFractions, fraction, subtractFractions, type Fraction } from "../domain/fraction";
 import type { FullSongMetrics, GeneratedHarmonyTrack, GeneratedVoiceEvent, RealizedHarmonyAnchor, TextureDensityMetrics } from "../domain/generation/model";
-import type { ArrangementActivityPlan, ArrangementAnchorPlan, ArrangementIntentPlan, HarmonyAnchorDirective } from "../domain/plans";
+import type { ArrangementActivityPlan, ArrangementAnchorPlan, ArrangementIntentPlan } from "../domain/plans";
 import { containsPitch, pitchMidiNumber, type Alter, type SpelledPitch, type SpelledPitchClass, type Step } from "../domain/pitch";
 import { countRate, durationRate, extendedCountRate } from "../domain/rates";
 import { comparePositions, compareRanges, type MusicalPosition, type MusicalRange } from "../domain/time";
@@ -101,17 +101,14 @@ function densityMetrics(input: WagLifecycleInput, tracks: readonly GeneratedHarm
   return result;
 }
 
-function sourceChordRespect(input: WagLifecycleInput, anchors: readonly RealizedHarmonyAnchor[], tracks: readonly GeneratedHarmonyTrack[], directives: Readonly<Record<string, HarmonyAnchorDirective>>) {
+function sourceChordRespect(input: WagLifecycleInput, tracks: readonly GeneratedHarmonyTrack[]) {
   let numerator = 0;
   let denominator = 0;
-  for (const anchor of anchors) {
-    const directive = directives[anchor.directiveId];
-    if (!directive || directive.kind !== "chord-tone") continue;
-    const span = input.effectiveChordTimeline.spans.find((candidate) => candidate.id === directive.chordSpanId);
-    if (span?.parseResult.status !== "ok") continue;
+  for (const event of tracks.flatMap((track) => track.events)) {
+    if (event.kind !== "note") continue;
     denominator += 1;
-    const event = tracks.find((track) => track.trackPlanId === anchor.trackPlanId)?.events.find((candidate) => candidate.kind === "note" && candidate.originDirectiveId === anchor.directiveId && positionEqual(candidate.range.start, anchor.position));
-    if (event?.kind === "note" && pitchEqual(event.pitch, anchor.pitch) && chordContainsPitch(span.parseResult.chord.root, span.parseResult.chord.tones, event.pitch)) numerator += 1;
+    const span = chordFor(input, event.range);
+    if (span?.parseResult.status === "ok" && chordContainsPitch(span.parseResult.chord.root, span.parseResult.chord.tones, event.pitch)) numerator += 1;
   }
   return countRate(numerator, denominator);
 }
@@ -196,7 +193,7 @@ export async function validateEditedSnapshot(input: {
     maxLeapSemitonesByTrack,
     hardDiagnosticCount: diagnostics.filter((diagnostic) => diagnostic.severity === "blocking" || diagnostic.severity === "error").length,
     plannedNctResolution: plannedNctResolution(input.anchorPlan, input.tracks),
-    sourceChordRespect: sourceChordRespect(input.lifecycleInput, input.realizedAnchors, input.tracks, directives),
+    sourceChordRespect: sourceChordRespect(input.lifecycleInput, input.tracks),
   };
   return { valid: diagnostics.length === 0, diagnostics, metrics };
 }

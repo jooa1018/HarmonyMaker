@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { generateDeterministicAccompaniment } from "../accompaniment/deterministic";
 import { parseChord } from "../domain/chord/parser";
+import type { ParsedChord } from "../domain/chord/model";
 import type { ArrangementOutputEdit } from "../domain/edit/model";
 import { fraction } from "../domain/fraction";
 import type { ArrangementRenderDocument } from "../domain/generation/model";
@@ -28,6 +29,14 @@ import { practiceShareToRenderDocument } from "./shared-practice";
 import { generateProjectVariant, type ProductGenerationOutcome } from "./workspace";
 import { canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, type UiStageLock } from "./workspace-controls";
 import type { WagLifecycleInput } from "../grammar/lifecycle";
+
+function chordToneSet(chord: ParsedChord) {
+  return {
+    root: chord.root,
+    tones: chord.tones.map((tone) => ({ degree: tone.degree, alteration: tone.alteration })),
+    bass: chord.bass ?? null,
+  };
+}
 
 async function generatedProject(inputOverride?: WagLifecycleInput): Promise<{ readonly project: HarmonyProject; readonly generated: Extract<ProductGenerationOutcome, { readonly status: "complete" | "partial" }> }> {
   const input = inputOverride ?? await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 2 });
@@ -69,7 +78,7 @@ describe("Product Core workspace, render, playback, and state", () => {
     const { project } = await generatedProject();
     const materialized = materializeActiveArrangement(project, "standard");
     const abc = arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey });
-    expect(abc).toContain("%%score lead h1 h2");
+    expect(abc).toContain("%%score lead h2 h1");
     const accompaniment = await generateDeterministicAccompaniment(materialized.document.effectiveChordTimeline);
     const plan = buildPlaybackPlan(materialized.document, materialized.trackRoles, accompaniment);
     expect(plan.events.some((event) => event.kind === "voice")).toBe(true);
@@ -85,26 +94,40 @@ describe("Product Core workspace, render, playback, and state", () => {
     expect(audibleTrackIds(plan, { muted: new Set(), solo: "track:source-lead", bandEnabled: true })).toEqual(["track:source-lead"]);
   });
 
-  it("carries explicit H1/H2 and placement metadata without array-index inference", async () => {
-    const input = await createWagFixtureInput({
-      presetId: "standard",
-      maxHarmonyTracks: 2,
-      generatedRanges: [
-        { low: pitch("C", 2), high: pitch("B", 3) },
-        { low: pitch("D", 4), high: pitch("C", 6) },
-      ],
-    });
-    const { project } = await generatedProject(input);
+  it("derives operational H1/H2 from the frozen marginal selection key when canonical ordinal 2 is H1", async () => {
+    const baseInput = await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 2 });
+    const input = {
+      ...baseInput,
+      performers: baseInput.performers.map((performer, index) => index === 1 ? {
+        ...performer,
+        comfortableRange: { low: pitch("E", 4), high: pitch("E", 4) },
+        preferredTessitura: { low: pitch("E", 4), high: pitch("E", 4) },
+      } : performer),
+    };
+    const { project, generated } = await generatedProject(input);
     const materialized = materializeActiveArrangement(project, "standard");
-    expect(materialized.trackRoles.byTrackPlanId["track:h1"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
-    expect(materialized.trackRoles.byTrackPlanId["track:h2"]).toMatchObject({ harmonyRole: "H2", label: "Upper / H2" });
+    const variant = project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") throw new Error("missing generated variant");
+    expect(generated.execution.generation.marginals.map((marginal) => marginal.track.trackPlanId)).toEqual(["track:h2", "track:h1"]);
+    expect(variant.candidateHarmonyRoles).toEqual([
+      expect.objectContaining({ trackPlanId: "track:h2", harmonyRole: "H1" }),
+      expect.objectContaining({ trackPlanId: "track:h1", harmonyRole: "H2" }),
+    ]);
+    expect(materialized.trackRoles.byTrackPlanId["track:h1"]).toMatchObject({ harmonyRole: "H2", label: "Upper / H2" });
+    expect(materialized.trackRoles.byTrackPlanId["track:h2"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
     const abc = arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey });
-    expect(abc).toContain('V:h1 name="Lower / H1"');
     expect(abc).toContain('V:h2 name="Upper / H2"');
+    expect(abc).toContain('V:h1 name="Lower / H1"');
     const plan = buildPlaybackPlan(materialized.document, materialized.trackRoles);
-    expect(plan.trackLabels).toMatchObject({ "track:h1": "Lower / H1", "track:h2": "Upper / H2" });
+    expect(plan.trackLabels).toMatchObject({ "track:h1": "Upper / H2", "track:h2": "Lower / H1" });
     const payload = materializePracticeShare({ project: confirmShareRights(project), presetId: "standard", materialized });
-    expect(payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => track.label)).toEqual(["Lower / H1", "Upper / H2"]);
+    expect(payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => track.label)).toEqual(["Upper / H2", "Lower / H1"]);
+    const shared = (await import("./shared-practice")).materializeSharedPractice(payload);
+    expect(shared.trackRoles.byTrackPlanId["share:track:h1"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
+    expect(buildPlaybackPlan(shared.document, shared.trackRoles).trackLabels["share:track:h1"]).toBe("Lower / H1");
+    const musicXml = exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, key: project.source.defaultKey });
+    expect(musicXml).toContain('<score-part id="P-H1"><part-name>Lower / H1</part-name>');
+    expect(musicXml).toContain('<score-part id="P-H2"><part-name>Upper / H2</part-name>');
   });
 
   it("stales the exact downstream boundary for stage-owned locks and rejects wrong-stage scope", async () => {
@@ -287,6 +310,7 @@ describe("candidate-bound edits and EditedArrangementSnapshot", () => {
     expect(result.status).toBe("complete");
     if (result.status !== "complete") return;
     expect(result.snapshot.generatedHarmonyTracks.flatMap((track) => track.events).find((event) => event.id === rest.id)).toMatchObject({ kind: "note", source: "user-edit" });
+    expect(result.snapshot.metrics.sourceChordRespect.denominator).toBe(candidate.metrics.sourceChordRespect.denominator + 1);
     const sectionId = input.source.sectionOccurrences[0].id;
     expect(result.snapshot.metrics.densityBySectionOccurrence[sectionId].participationCoverage.valueBp)
       .toBeGreaterThan(candidate.metrics.densityBySectionOccurrence[sectionId].participationCoverage.valueBp ?? 0);
@@ -358,13 +382,52 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
     expect(encoded).toContain("<degree-type>subtract</degree-type>");
     expect(encoded).toMatch(/<type>quarter<\/type><dot\/>/u);
     expect(encoded).toContain("<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>");
-    const imported = await importMusicXml(new TextEncoder().encode(encoded), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
+    const withoutKindText = encoded.replace(/ text="[^"]*"/gu, "");
+    const imported = await importMusicXml(new TextEncoder().encode(withoutKindText), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
     expect(imported.status).toBe("review-required");
     if (imported.status === "review-required") {
       const reparsed = imported.draft.parts[0].measures[0].chords[0].parseResult;
       expect(reparsed.status).toBe("ok");
-      if (reparsed.status === "ok") expect(reparsed.chord.canonicalSymbol).toBe(chord.chord.canonicalSymbol);
+      if (reparsed.status === "ok") {
+        expect(chordToneSet(reparsed.chord)).toEqual(chordToneSet(chord.chord));
+        expect(reparsed.chord.omissions).toEqual(chord.chord.omissions);
+      }
     }
+  });
+
+  it.each([
+    ["mMaj9", "CmMaj9"],
+    ["augMaj7", "Cmaj7#5"],
+    ["m7b5", "Cm7b5"],
+    ["dim7", "Cdim7"],
+    ["addition", "Cadd9add13"],
+    ["omission", "Cno5"],
+    ["alterations", "C7b9#11"],
+    ["suspension", "Csus4"],
+    ["slash bass", "EbmMaj9add13#11no5/Gb"],
+  ])("reconstructs %s chord tones from structured MusicXML without kind text", async (_caseName, symbol) => {
+    const parsed = parseChord(symbol);
+    expect(parsed.status).toBe("ok");
+    if (parsed.status !== "ok") return;
+    const { project } = await generatedProject();
+    const base = materializeActiveArrangement(project, "standard");
+    const document: ArrangementRenderDocument = {
+      ...base.document,
+      effectiveChordTimeline: {
+        ...base.document.effectiveChordTimeline,
+        spans: base.document.effectiveChordTimeline.spans.map((span, index) => index === 0 ? { ...span, parseResult: parsed } : span),
+      },
+    };
+    const encoded = exportArrangementMusicXml(document, base.trackRoles, { title: `Structured ${_caseName}`, key: project.source.defaultKey })
+      .replace(/ text="[^"]*"/gu, "");
+    const imported = await importMusicXml(new TextEncoder().encode(encoded), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
+    expect(imported.status).toBe("review-required");
+    if (imported.status !== "review-required") return;
+    const reconstructed = imported.draft.parts[0].measures[0].chords[0].parseResult;
+    expect(reconstructed.status).toBe("ok");
+    if (reconstructed.status !== "ok") return;
+    expect(chordToneSet(reconstructed.chord)).toEqual(chordToneSet(parsed.chord));
+    expect(reconstructed.chord.omissions).toEqual(parsed.chord.omissions);
   });
 
   it("round-trips canonical project bytes through validation and local durable adapter", async () => {

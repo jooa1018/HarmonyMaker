@@ -19,10 +19,6 @@ export interface ProductTrackRoleRegistry {
   readonly byTrackPlanId: Readonly<Record<string, ProductTrackRoleMetadata>>;
 }
 
-function harmonyRoleForOrdinal(ordinal: 1 | 2): CandidateHarmonyRole {
-  return ordinal === 1 ? "H1" : "H2";
-}
-
 function placementLabel(placements: readonly ProductTrackRoleMetadata["placements"][number][]): string {
   const roles = [...new Set(placements.map((placement) => placement.placementRole))];
   return roles.length === 1 ? (roles[0] === "upper" ? "Upper" : "Lower") : "Upper/Lower";
@@ -45,7 +41,11 @@ export function productTrackRoles(
     if (includedTrackPlanIds.length === 0) return registry([]);
     throw new RangeError("TRACK_ROLE_METADATA_UNAVAILABLE");
   }
+  if (variant.lifecycle !== "generation-attempted" || !variant.candidateHarmonyRoles) {
+    throw new RangeError("TRACK_ROLE_METADATA_UNAVAILABLE");
+  }
   const included = new Set(includedTrackPlanIds);
+  const harmonyRoleByTrackPlanId = Object.fromEntries(variant.candidateHarmonyRoles.map((entry) => [entry.trackPlanId, entry.harmonyRole]));
   const tracks = project.trackPlans
     .filter((track): track is GeneratedHarmonyTrackPlan => track.kind === "generated-harmony" && included.has(track.id))
     .sort((left, right) => left.canonicalOrdinal - right.canonicalOrdinal)
@@ -55,7 +55,8 @@ export function productTrackRoles(
         return role ? [{ phraseId: phrase.phraseId, placementRole: role.placementRole }] : [];
       });
       if (placements.length === 0) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.id}`);
-      const harmonyRole = harmonyRoleForOrdinal(track.canonicalOrdinal);
+      const harmonyRole = harmonyRoleByTrackPlanId[track.id];
+      if (!harmonyRole) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.id}`);
       return { trackPlanId: track.id, harmonyRole, placements, label: `${placementLabel(placements)} / ${harmonyRole}` };
     });
   if (tracks.length !== included.size) throw new RangeError("TRACK_ROLE_METADATA_UNAVAILABLE");

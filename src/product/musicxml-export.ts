@@ -1,4 +1,5 @@
 import { addFractions, compareFractions, fraction, subtractFractions, type Fraction } from "../domain/fraction";
+import { parseChord } from "../domain/chord/parser";
 import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/generation/model";
 import type { ParsedChord, ChordDegree } from "../domain/chord/model";
 import type { KeySignature, SpelledPitch } from "../domain/pitch";
@@ -85,48 +86,77 @@ function chordSuffix(chord: ParsedChord): string {
   return chord.canonicalSymbol.slice(root.length, bass ? -bass.length : undefined);
 }
 
-function musicXmlKind(chord: ParsedChord): { readonly name: string; readonly represented: ReadonlySet<ChordDegree> } {
-  const tone = (degree: ChordDegree) => chord.tones.find((candidate) => candidate.degree === degree);
-  const suspended = chord.tones.find((candidate) => candidate.origin === "suspension");
-  if (suspended) return { name: suspended.degree === 2 ? "suspended-second" : "suspended-fourth", represented: new Set([1, suspended.degree]) };
-  const third = tone(3);
-  const fifth = tone(5);
-  const seventh = tone(7);
-  const ninth = tone(9);
-  const sixth = tone(6);
-  const quality = fifth?.origin === "quality" && fifth.alteration === -1 ? "diminished"
-    : fifth?.origin === "quality" && fifth.alteration === 1 ? "augmented"
-      : third?.origin === "quality" && third.alteration === -1 ? "minor" : "major";
-  if (ninth?.origin === "extension" && seventh?.origin === "extension") {
-    const name = seventh.alteration === 0 ? (quality === "minor" ? "major-ninth" : "major-ninth")
-      : quality === "minor" ? "minor-ninth" : "dominant-ninth";
-    return { name, represented: new Set([1, 3, 5, 7, 9]) };
-  }
-  if (seventh?.origin === "extension") {
-    const name = quality === "diminished" ? "diminished-seventh"
-      : quality === "augmented" ? "augmented-seventh"
-        : quality === "minor" && seventh.alteration === 0 ? "major-minor"
-          : quality === "minor" ? "minor-seventh"
-            : seventh.alteration === 0 ? "major-seventh" : "dominant";
-    return { name, represented: new Set([1, 3, 5, 7]) };
-  }
-  if (sixth?.origin === "extension") return { name: quality === "minor" ? "minor-sixth" : "major-sixth", represented: new Set([1, 3, 5, 6]) };
-  return { name: quality, represented: new Set([1, 3, 5]) };
-}
-
 function degreeXml(value: number, alter: number, type: "add" | "alter" | "subtract"): string {
   return `<degree><degree-value>${value}</degree-value><degree-alter>${alter}</degree-alter><degree-type>${type}</degree-type></degree>`;
 }
 
-function chordDegreesXml(chord: ParsedChord, represented: ReadonlySet<ChordDegree>): string {
-  const degrees = chord.tones.flatMap((tone) => {
-    if (tone.origin === "addition") return [degreeXml(tone.degree, tone.alteration, "add")];
-    if (tone.origin === "alteration") return [degreeXml(tone.degree, tone.alteration, "alter")];
-    if ((tone.origin === "extension" || tone.origin === "suspension") && !represented.has(tone.degree)) return [degreeXml(tone.degree, tone.alteration, "add")];
-    return [];
-  });
-  degrees.push(...chord.omissions.map((degree) => degreeXml(degree, 0, "subtract")));
-  return degrees.join("");
+interface StructuredDegree { readonly value: ChordDegree; readonly alter: number; readonly type: "add" | "alter" | "subtract" }
+interface StructuredKind { readonly name: string; readonly suffix: string }
+
+const STRUCTURED_KINDS: readonly StructuredKind[] = [
+  { name: "major", suffix: "" }, { name: "minor", suffix: "m" },
+  { name: "augmented", suffix: "aug" }, { name: "diminished", suffix: "dim" },
+  { name: "dominant", suffix: "7" }, { name: "major-seventh", suffix: "maj7" },
+  { name: "minor-seventh", suffix: "m7" }, { name: "diminished-seventh", suffix: "dim7" },
+  { name: "augmented-seventh", suffix: "aug7" }, { name: "half-diminished", suffix: "m7b5" },
+  { name: "major-minor", suffix: "mMaj7" }, { name: "major-sixth", suffix: "6" },
+  { name: "minor-sixth", suffix: "m6" }, { name: "dominant-ninth", suffix: "9" },
+  { name: "major-ninth", suffix: "maj9" }, { name: "minor-ninth", suffix: "m9" },
+  { name: "suspended-second", suffix: "sus2" }, { name: "suspended-fourth", suffix: "sus4" },
+  { name: "power", suffix: "no3" },
+];
+
+function toneCoordinates(chord: ParsedChord): string {
+  return chord.tones.map((tone) => `${tone.degree}:${tone.alteration}`).sort().join("|");
+}
+
+function degreeToken(degree: StructuredDegree): string {
+  if (degree.type === "subtract") return `no${degree.value}`;
+  if (degree.alter !== 0) return `${degree.alter < 0 ? "b" : "#"}${degree.value}`;
+  return `add${degree.value}`;
+}
+
+function structuredHarmony(chord: ParsedChord): { readonly kind: string; readonly degrees: readonly StructuredDegree[] } {
+  const targetByDegree = new Map(chord.tones.map((tone) => [tone.degree, tone]));
+  const candidates = STRUCTURED_KINDS.flatMap((kind, kindOrdinal) => {
+    const parsedBase = parseChord(`C${kind.suffix}`);
+    if (parsedBase.status !== "ok") return [];
+    const baseByDegree = new Map(parsedBase.chord.tones.map((tone) => [tone.degree, tone]));
+    const degrees: StructuredDegree[] = [];
+    let representable = true;
+    for (const tone of chord.tones) {
+      const base = baseByDegree.get(tone.degree);
+      if (base?.alteration === tone.alteration) continue;
+      if (base && [5, 9, 11, 13].includes(tone.degree) && Math.abs(tone.alteration) === 1) {
+        degrees.push({ value: tone.degree, alter: tone.alteration, type: "alter" });
+      } else if (!base && [2, 4, 6, 9, 11, 13].includes(tone.degree) && tone.alteration === 0) {
+        degrees.push({ value: tone.degree, alter: 0, type: "add" });
+      } else if (!base && [5, 9, 11, 13].includes(tone.degree) && Math.abs(tone.alteration) === 1) {
+        degrees.push({ value: tone.degree, alter: tone.alteration, type: "alter" });
+      } else representable = false;
+    }
+    for (const tone of parsedBase.chord.tones) {
+      if (targetByDegree.has(tone.degree)) continue;
+      if (tone.degree === 3 || tone.degree === 5) degrees.push({ value: tone.degree, alter: 0, type: "subtract" });
+      else representable = false;
+    }
+    for (const omission of chord.omissions) {
+      if (!degrees.some((degree) => degree.type === "subtract" && degree.value === omission)
+        && !parsedBase.chord.omissions.includes(omission)) degrees.push({ value: omission, alter: 0, type: "subtract" });
+    }
+    if (!representable) return [];
+    const typeRank = { add: 0, alter: 1, subtract: 2 } as const;
+    degrees.sort((left, right) => typeRank[left.type] - typeRank[right.type] || left.value - right.value || left.alter - right.alter);
+    const reconstructed = parseChord(`C${kind.suffix}${degrees.map(degreeToken).join("")}`);
+    if (reconstructed.status !== "ok" || toneCoordinates(reconstructed.chord) !== toneCoordinates(chord)
+      || chord.omissions.some((omission) => !reconstructed.chord.omissions.includes(omission))) return [];
+    const extraOmissions = reconstructed.chord.omissions.filter((omission) => !chord.omissions.includes(omission)).length;
+    const originMismatch = chord.tones.filter((tone) => reconstructed.chord.tones.find((candidate) => candidate.degree === tone.degree)?.origin !== tone.origin).length;
+    return [{ kind, degrees, extraOmissions, originMismatch, kindOrdinal }];
+  }).sort((left, right) => left.extraOmissions - right.extraOmissions || left.degrees.length - right.degrees.length || left.originMismatch - right.originMismatch || left.kindOrdinal - right.kindOrdinal);
+  const selected = candidates[0];
+  if (!selected) throw new RangeError(`MUSICXML_CHORD_UNREPRESENTABLE:${chord.canonicalSymbol}`);
+  return { kind: selected.kind.name, degrees: selected.degrees };
 }
 
 function harmonyXml(document: ArrangementRenderDocument, measureIndex: number, divisions: number): string {
@@ -134,8 +164,8 @@ function harmonyXml(document: ArrangementRenderDocument, measureIndex: number, d
     const offset = span.range.start.offset.n * divisions / span.range.start.offset.d;
     if (span.parseResult.status === "no-chord") return `<harmony><kind text="N.C.">none</kind>${offset ? `<offset>${offset}</offset>` : ""}</harmony>`;
     const chord = span.parseResult.chord;
-    const kind = musicXmlKind(chord);
-    return `<harmony><root><root-step>${chord.root.step}</root-step>${chord.root.alter === 0 ? "" : `<root-alter>${chord.root.alter}</root-alter>`}</root><kind text="${xml(chordSuffix(chord))}">${kind.name}</kind>${chordDegreesXml(chord, kind.represented)}${chord.bass ? `<bass><bass-step>${chord.bass.step}</bass-step>${chord.bass.alter === 0 ? "" : `<bass-alter>${chord.bass.alter}</bass-alter>`}</bass>` : ""}${offset ? `<offset>${offset}</offset>` : ""}</harmony>`;
+    const structured = structuredHarmony(chord);
+    return `<harmony><root><root-step>${chord.root.step}</root-step>${chord.root.alter === 0 ? "" : `<root-alter>${chord.root.alter}</root-alter>`}</root><kind text="${xml(chordSuffix(chord))}">${structured.kind}</kind>${structured.degrees.map((degree) => degreeXml(degree.value, degree.alter, degree.type)).join("")}${chord.bass ? `<bass><bass-step>${chord.bass.step}</bass-step>${chord.bass.alter === 0 ? "" : `<bass-alter>${chord.bass.alter}</bass-alter>`}</bass>` : ""}${offset ? `<offset>${offset}</offset>` : ""}</harmony>`;
   }).join("");
 }
 

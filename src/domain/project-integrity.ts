@@ -927,6 +927,17 @@ async function validateVariantIntegrity(
   if (variant.lifecycle === "anchor-ready") return;
   const generation = variant.generationResult;
   if (!isFresh(variant, "generation")) return;
+  if (variant.candidateHarmonyRoles !== undefined) {
+    requireIntegrity(variant.candidateHarmonyRoles.length <= 2, "Too many operational harmony roles", "CANDIDATE_PROJECTION_INVALID");
+    requireIntegrity(new Set(variant.candidateHarmonyRoles.map((entry) => entry.trackPlanId)).size === variant.candidateHarmonyRoles.length, "Duplicate operational harmony track", "CANDIDATE_PROJECTION_INVALID");
+    requireIntegrity(new Set(variant.candidateHarmonyRoles.map((entry) => entry.marginalCandidateId)).size === variant.candidateHarmonyRoles.length, "Duplicate operational marginal Candidate", "CANDIDATE_PROJECTION_INVALID");
+    requireIntegrity(variant.candidateHarmonyRoles.every((entry, index) => entry.harmonyRole === (index === 0 ? "H1" : "H2")), "Operational harmony role order is not canonical", "CANDIDATE_PROJECTION_INVALID");
+    for (const entry of variant.candidateHarmonyRoles) {
+      const marginal = generation.candidates.find((candidate) => candidate.id === entry.marginalCandidateId);
+      requireIntegrity(marginal !== undefined && Object.keys(marginal.generatedEventsByTrack).length === 1 && entry.trackPlanId in marginal.generatedEventsByTrack, "Operational harmony role does not reference its marginal Candidate", "CANDIDATE_PROJECTION_INVALID");
+      requiredOrdinal(ordinals.trackOrdinalById, entry.trackPlanId, "track");
+    }
+  }
   const registryKeys = generationRegistryKeys();
   assertExactRegistrySubset(generation.versions, expected.versions, registryKeys.versions, "version");
   assertExactRegistrySubset(generation.configDigests, expected.configDigests, registryKeys.configs, "config");

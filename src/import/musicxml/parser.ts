@@ -385,7 +385,7 @@ function parseHarmony(
     } else unsupportedToken = `degree:${type ?? "?"}:${value}:${alter}`;
   }
   const displaySuffix = kindText ?? suffix ?? kind;
-  const sourceText = `${rootSymbol ?? rootStep}${displaySuffix}${degreeTokens.join("")}${bassSymbol ? `/${bassSymbol}` : ""}`;
+  const sourceText = `${rootSymbol ?? rootStep}${displaySuffix}${bassSymbol ? `/${bassSymbol}` : ""}`;
   if (!rootSymbol || (bassStep && !bassSymbol) || suffix === undefined || unsupportedToken) {
     return {
       partOrdinal,
@@ -397,11 +397,7 @@ function parseHarmony(
       confirmation: "unconfirmed",
     };
   }
-  const canonicalText = kindText ? `${rootSymbol}${kindText}${bassSymbol ? `/${bassSymbol}` : ""}` : undefined;
-  const canonicalParsed = canonicalText ? parseChord(canonicalText) : undefined;
-  const parserText = canonicalParsed?.status === "ok"
-    ? canonicalText!
-    : `${rootSymbol}${suffix}${degreeTokens.join("")}${bassSymbol ? `/${bassSymbol}` : ""}`;
+  const parserText = `${rootSymbol}${suffix}${degreeTokens.join("")}${bassSymbol ? `/${bassSymbol}` : ""}`;
   return {
     partOrdinal,
     measureOrdinal,

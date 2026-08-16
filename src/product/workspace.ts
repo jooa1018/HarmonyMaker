@@ -139,10 +139,16 @@ export async function generateProjectVariant(project: HarmonyProject, presetId: 
     : previousActive?.kind === "edited-snapshot" && retainedSnapshots.some((snapshot) => snapshot.id === previousActive.snapshotId)
       ? previousActive
       : { kind: "candidate" as const, candidateId: selected.id };
+  const candidateHarmonyRoles = generation.marginals.flatMap((marginal, index) => marginal.candidate ? [{
+    marginalCandidateId: marginal.candidate.id,
+    trackPlanId: marginal.track.trackPlanId,
+    harmonyRole: index === 0 ? "H1" as const : "H2" as const,
+  }] : []);
   const variant: ArrangementVariant = {
     lifecycle: "generation-attempted", presetId,
     intentPlan, activityPlan, anchorPlan,
     generationResult: persistedGenerationResult,
+    candidateHarmonyRoles,
     outputEdits: retainedEdits,
     editedSnapshots: retainedSnapshots,
     activeArrangement,
