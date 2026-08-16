@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 
 import type { ArrangementCandidate, ArrangementGenerationResult, GeneratedVoiceEvent } from "../domain/generation/model";
 import { fraction } from "../domain/fraction";
@@ -49,6 +50,14 @@ function transformFirstNote(
 }
 
 describe("independent WAG v1.0.1 Validator", () => {
+  it("has no dependency on selector or generator admission/pair helpers", async () => {
+    const source = await readFile(new URL("./validator.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("selectLocalHarmonyDecision");
+    expect(source).not.toContain('from "./pipeline"');
+    expect(source).not.toContain('from "./solver"');
+    expect(source).not.toContain("validateGenerationResultState");
+  });
+
   it("accepts the unmodified canonical sibling set", async () => {
     const value = await fixture();
     const report = await validateWagAssembly(value.input, value.intent, value.activity, value.anchor, value.assembly.result);

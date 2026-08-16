@@ -1,4 +1,5 @@
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
+import { loadAccompanimentConfig } from "../accompaniment/deterministic";
 import { buildArrangementCandidate, validateGenerationResultState, type CandidateOrdinalRegistry } from "../domain/generation/candidate";
 import type {
   ArrangementCandidate,
@@ -465,6 +466,7 @@ export async function assembleWagGeneration(
   const preparedResult = await prepareWagLifecycle(input);
   if (preparedResult.status !== "complete") throw new RangeError("WAG_PREPARATION_BLOCKED");
   const prepared = preparedResult.value;
+  const accompanimentConfig = await loadAccompanimentConfig();
   const ordinals = candidateOrdinals(prepared, anchorPlan);
   const generationInputDigest = await digestGenerationInput({
     anchorPlanDigest: anchorPlan.anchorPlanDigest,
@@ -644,6 +646,7 @@ export async function assembleWagGeneration(
       assemblerConfigDigest: prepared.authority.wagOwnedConfigDigests.assemblerConfigDigest,
       validatorConfigDigest: prepared.authority.wagOwnedConfigDigests.validatorConfigDigest,
       metricConfigDigest: prepared.authority.wagOwnedConfigDigests.metricConfigDigest,
+      accompanimentConfigDigest: accompanimentConfig.configDigest,
       diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
     },
     versions: { ...APPLICATION_ALGORITHM_VERSION_REGISTRY },

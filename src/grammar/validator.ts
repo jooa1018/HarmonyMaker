@@ -2,7 +2,6 @@ import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version
 import type { ChordToneSpec } from "../domain/chord/model";
 import { compareCanonicalValues, semanticDigest } from "../domain/digest/canonical";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
-import { validateGenerationResultState } from "../domain/generation/candidate";
 import type {
   ArrangementCandidate,
   ArrangementGenerationResult,
@@ -133,6 +132,16 @@ function diagnosticWithoutId(diagnostic: Diagnostic): Omit<Diagnostic, "id"> {
   };
 }
 
+function independentResultStateValid(
+  result: ArrangementGenerationResult,
+  hasBlockingDiagnostic: boolean,
+): boolean {
+  if (result.status === "blocked") return result.candidates.length === 0 && hasBlockingDiagnostic;
+  if (result.candidates.length === 0 || hasBlockingDiagnostic) return false;
+  if (result.status === "complete") return result.candidates.some((candidate) => candidate.candidateStatus === "complete");
+  return result.candidates.every((candidate) => candidate.candidateStatus === "partial");
+}
+
 function chordAt(context: ValidatorContext, range: MusicalRange) {
   return context.input.effectiveChordTimeline.spans.find((span) => rangeContains(span.range, range));
 }
@@ -246,8 +255,8 @@ function checkTrack(
     if (!phraseAt(context, event.range) || !atomAt(context, event.range)) {
       diagnostics.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "EVENT_OUTSIDE_CANONICAL_PARTITION", trackPlanId }, event.range));
     }
-    if (previous && comparePositions(event.range.start, previous.range.end) !== 0) {
-      diagnostics.push(rawDiagnostic(comparePositions(event.range.start, previous.range.end) < 0 ? "INPUT_EVENT_OVERLAP" : "CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "TRACK_TIMING_NOT_CONTIGUOUS", trackPlanId }, event.range));
+    if (previous && comparePositions(event.range.start, previous.range.end) < 0) {
+      diagnostics.push(rawDiagnostic("INPUT_EVENT_OVERLAP", candidate.id, { reason: "TRACK_TIMING_OVERLAP", trackPlanId }, event.range));
     }
     const phrase = phraseAt(context, event.range);
     const activity = phrase ? activityAt(context, phrase.id, trackPlanId, event.range) : undefined;
@@ -300,11 +309,13 @@ function checkTrack(
       && anchor.trackPlanId === trackPlanId && positionEqual(anchor.position, event.range.start) && pitchEqual(anchor.pitch, event.pitch));
     if (!matchingAnchor) diagnostics.push(rawDiagnostic("WAG_V1_ANCHOR_SOLVER_SELECTION_PARITY_MISMATCH", candidate.id, { reason: "REALIZED_ANCHOR_MISSING", trackPlanId }, event.range));
   }
-  for (const phrase of context.input.source.phraseRegions) {
-    const phraseEvents = ordered.filter((event) => rangeContains(phrase.range, event.range));
-    if (phraseEvents.length === 0 || !positionEqual(phraseEvents[0].range.start, phrase.range.start)
-      || !positionEqual(phraseEvents[phraseEvents.length - 1].range.end, phrase.range.end)) {
-      diagnostics.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "PHRASE_TIMING_DIVERGENCE", trackPlanId }, phrase.range));
+  for (const atom of context.input.sourceLeadAtomization.atoms) {
+    const atomEvents = ordered.filter((event) => rangeContains(atom.range, event.range));
+    const contiguous = atomEvents.every((event, index) => index === 0
+      || positionEqual(event.range.start, atomEvents[index - 1].range.end));
+    if (atomEvents.length === 0 || !positionEqual(atomEvents[0].range.start, atom.range.start)
+      || !positionEqual(atomEvents[atomEvents.length - 1].range.end, atom.range.end) || !contiguous) {
+      diagnostics.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "ATOM_TIMING_DIVERGENCE", trackPlanId }, atom.range));
     }
   }
   const sounding = ordered.filter((event) => event.kind === "note");
@@ -383,6 +394,9 @@ export async function validateWagCandidate(
   const expectationRequired = intentPlan.phraseIntents.some((phrase) => phrase.harmonyExpectation === "H1-required");
   if (trackEntries.length === 0) {
     if (expectationRequired && candidate.candidateStatus !== "partial") raw.push(rawDiagnostic("WAG_V1_PARTIAL_REQUIRED_COVERAGE", candidate.id, { reason: "LEAD_ONLY_CANNOT_SATISFY_H1" }));
+    if (expectationRequired && !candidate.diagnostics.some((diagnostic) => diagnostic.code === "WAG_V1_PARTIAL_REQUIRED_COVERAGE")) {
+      raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "PARTIAL_DIAGNOSTIC_MISSING" }));
+    }
     if (!expectationRequired && candidate.candidateStatus !== "complete") raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "LEAD_ONLY_STATUS_MISMATCH" }));
   } else if (expectationRequired && candidate.candidateStatus === "complete") {
     for (const phrase of intentPlan.phraseIntents.filter((entry) => entry.harmonyExpectation === "H1-required")) {
@@ -448,7 +462,7 @@ export async function validateWagAssembly(
     }
   }
   const hasBlocking = result.diagnostics.some((diagnostic) => authority.diagnostics.definitions[diagnostic.code].blocksGeneration);
-  if (!validateGenerationResultState(result.status, result.candidates, hasBlocking)) {
+  if (!independentResultStateValid(result, hasBlocking)) {
     raw.push(rawDiagnostic("GENERATION_RESULT_STATE_INVALID", "result", { status: result.status }));
   }
   if (result.versions.validatorVersion !== APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion
