@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { chordSemanticProjection } from "../../domain/chord/parser";
 import { canonicalJson } from "../../domain/digest/canonical";
 import { digestMusicalSource } from "../../domain/digest/source";
 import { fraction } from "../../domain/fraction";
@@ -45,6 +46,11 @@ interface ScoreOptions {
   readonly twoStaffs?: boolean;
   readonly chordKind?: string;
   readonly chordKindText?: string;
+  readonly chordDegrees?: readonly {
+    readonly value: number;
+    readonly alter: number;
+    readonly type: "add" | "alter" | "subtract";
+  }[];
   readonly slashBass?: boolean;
   readonly noChord?: boolean;
   readonly section?: string;
@@ -68,7 +74,8 @@ function harmonyXml(options: ScoreOptions): string {
   if (options.noChord) return "<harmony><kind>none</kind></harmony>";
   const kind = options.chordKind ?? "major";
   const text = options.chordKindText ? ` text=\"${options.chordKindText}\"` : "";
-  return `<harmony><root><root-step>C</root-step></root><kind${text}>${kind}</kind>${options.slashBass ? "<bass><bass-step>G</bass-step></bass>" : ""}</harmony>`;
+  const degrees = (options.chordDegrees ?? []).map((degree) => `<degree><degree-value>${degree.value}</degree-value><degree-alter>${degree.alter}</degree-alter><degree-type>${degree.type}</degree-type></degree>`).join("");
+  return `<harmony><root><root-step>C</root-step></root><kind${text}>${kind}</kind>${degrees}${options.slashBass ? "<bass><bass-step>G</bass-step></bass>" : ""}</harmony>`;
 }
 
 function scoreXml(options: ScoreOptions = {}): string {
@@ -180,6 +187,35 @@ describe("MusicXML import and canonical review", () => {
     const m7 = await deriveQuickReview(finishReview(await imported(scoreXml({ chordKind: "major-seventh", chordKindText: "M7" }))));
     const delta = await deriveQuickReview(finishReview(await imported(scoreXml({ chordKind: "major-seventh", chordKindText: "Δ7" }))));
     expect(m7.source?.revisionDigest).toBe(delta.source?.revisionDigest);
+  });
+
+  it.each([
+    ["Cadd9", { chordKind: "major", chordDegrees: [{ value: 9, alter: 0, type: "add" }] }],
+    ["C7#11", { chordKind: "dominant", chordDegrees: [{ value: 11, alter: 1, type: "alter" }] }],
+    ["Cno5", { chordKind: "major", chordDegrees: [{ value: 5, alter: 0, type: "subtract" }] }],
+  ] as const)("preserves structured-only %s through save-and-confirm", async (symbol, options) => {
+    const draft = await imported(scoreXml(options));
+    const importedChord = draft.parts[0].measures[0].chords[0];
+    expect(importedChord.sourceText).toBe(symbol);
+    expect(importedChord.parseResult.status).toBe("ok");
+    const confirmed = confirmChord(replaceChord(draft, importedChord.key, importedChord.sourceText), importedChord.key);
+    const confirmedChord = confirmed.parts[0].measures[0].chords[0];
+    expect(confirmedChord.confirmation).toBe("confirmed");
+    expect(confirmedChord.parseResult.status).toBe("ok");
+    if (importedChord.parseResult.status !== "ok" || confirmedChord.parseResult.status !== "ok") return;
+    expect(canonicalJson(chordSemanticProjection(confirmedChord.parseResult.chord)))
+      .toBe(canonicalJson(chordSemanticProjection(importedChord.parseResult.chord)));
+  });
+
+  it("ignores semantic-unequal kind text in favor of structured degrees", async () => {
+    const draft = await imported(scoreXml({
+      chordKind: "major",
+      chordKindText: "7",
+      chordDegrees: [{ value: 9, alter: 0, type: "add" }],
+    }));
+    const chord = draft.parts[0].measures[0].chords[0];
+    expect(chord.sourceText).toBe("Cadd9");
+    expect(chord.parseResult.status === "ok" ? chord.parseResult.chord.canonicalSymbol : undefined).toBe("Cadd9");
   });
 
   it("preserves an unrepresentable MusicXML harmony string as failed review provenance", async () => {

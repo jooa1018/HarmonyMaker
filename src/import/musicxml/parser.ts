@@ -1,6 +1,6 @@
-import { parseChord } from "../../domain/chord/parser";
+import { chordSemanticProjection, parseChord } from "../../domain/chord/parser";
 import type { ChordParseResult } from "../../domain/chord/model";
-import { binaryDigest, compareCanonicalValues } from "../../domain/digest/canonical";
+import { binaryDigest, canonicalJson, compareCanonicalValues } from "../../domain/digest/canonical";
 import {
   addFractions,
   compareFractions,
@@ -385,25 +385,45 @@ function parseHarmony(
     } else unsupportedToken = `degree:${type ?? "?"}:${value}:${alter}`;
   }
   const displaySuffix = kindText ?? suffix ?? kind;
-  const sourceText = `${rootSymbol ?? rootStep}${displaySuffix}${bassSymbol ? `/${bassSymbol}` : ""}`;
+  const fallbackSourceText = `${rootSymbol ?? rootStep}${displaySuffix}${bassSymbol ? `/${bassSymbol}` : ""}`;
   if (!rootSymbol || (bassStep && !bassSymbol) || suffix === undefined || unsupportedToken) {
     return {
       partOrdinal,
       measureOrdinal,
       onset,
-      sourceText,
-      parseResult: failedChord(sourceText, unsupportedToken ?? `kind:${kind}`),
+      sourceText: fallbackSourceText,
+      parseResult: failedChord(fallbackSourceText, unsupportedToken ?? `kind:${kind}`),
       source: "musicxml",
       confirmation: "unconfirmed",
     };
   }
   const parserText = `${rootSymbol}${suffix}${degreeTokens.join("")}${bassSymbol ? `/${bassSymbol}` : ""}`;
+  const structuredResult = parseChord(parserText);
+  if (structuredResult.status !== "ok") {
+    return {
+      partOrdinal,
+      measureOrdinal,
+      onset,
+      sourceText: fallbackSourceText,
+      parseResult: structuredResult,
+      source: "musicxml",
+      confirmation: "unconfirmed",
+    };
+  }
+  let sourceText = structuredResult.chord.canonicalSymbol;
+  if (kindText) {
+    const textResult = parseChord(`${rootSymbol}${kindText}${bassSymbol ? `/${bassSymbol}` : ""}`);
+    if (textResult.status === "ok"
+      && canonicalJson(chordSemanticProjection(textResult.chord)) === canonicalJson(chordSemanticProjection(structuredResult.chord))) {
+      sourceText = textResult.chord.canonicalSymbol;
+    }
+  }
   return {
     partOrdinal,
     measureOrdinal,
     onset,
     sourceText,
-    parseResult: parseChord(parserText),
+    parseResult: structuredResult,
     source: "musicxml",
     confirmation: "unconfirmed",
   };
