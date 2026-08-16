@@ -4,6 +4,7 @@ import type { EditedArrangementSnapshot } from "../domain/edit/model";
 import type { ArrangementCandidate, ArrangementRenderDocument, GeneratedHarmonyTrack } from "../domain/generation/model";
 import { validateRenderDocumentAuthority } from "../domain/generation/render";
 import type { HarmonyProject } from "../domain/project";
+import { productTrackRoles, trackRoleHasPlacement, type ProductTrackRoleRegistry } from "./track-roles";
 
 export type ScoreProjection = "lead" | "upper" | "lower" | "full";
 export interface MaterializedArrangement {
@@ -11,6 +12,7 @@ export interface MaterializedArrangement {
   readonly artifactDigest: SemanticDigest;
   readonly artifactKind: "candidate" | "edited-snapshot";
   readonly validity: "valid" | "invalid";
+  readonly trackRoles: ProductTrackRoleRegistry;
 }
 
 function tracksForCandidate(candidate: ArrangementCandidate): readonly GeneratedHarmonyTrack[] {
@@ -43,20 +45,24 @@ export function materializeActiveArrangement(project: HarmonyProject, presetId: 
     lyricTokens: project.source.sourceMeasures.flatMap((measure) => measure.lyricTokens),
   };
   if (!validateRenderDocumentAuthority(document)) throw new RangeError("RENDER_DOCUMENT_INVALID");
-  return { document, artifactDigest: artifact.digest, artifactKind: artifact.kind, validity: artifact.validity };
-}
-
-function roleForTrack(project: HarmonyProject, presetId: ArrangementPresetId, trackPlanId: string): "upper" | "lower" | undefined {
-  const variant = project.variants[presetId];
-  if (!variant || variant.lifecycle === "empty") return undefined;
-  return variant.intentPlan.phraseIntents.flatMap((phrase) => phrase.trackRoles).find((role) => role.trackPlanId === trackPlanId)?.placementRole;
+  const trackRoles = productTrackRoles(project, presetId, document.generatedHarmonyTracks.map((track) => track.trackPlanId));
+  return { document, artifactDigest: artifact.digest, artifactKind: artifact.kind, validity: artifact.validity, trackRoles };
 }
 
 export function projectRenderDocument(project: HarmonyProject, presetId: ArrangementPresetId, projection: ScoreProjection): MaterializedArrangement {
   const materialized = materializeActiveArrangement(project, presetId);
   if (projection === "full") return materialized;
-  const generatedHarmonyTracks = projection === "lead" ? [] : materialized.document.generatedHarmonyTracks.filter((track) => roleForTrack(project, presetId, track.trackPlanId) === projection);
-  return { ...materialized, document: { ...materialized.document, generatedHarmonyTracks } };
+  const generatedHarmonyTracks = projection === "lead" ? [] : materialized.document.generatedHarmonyTracks.filter((track) => {
+    const metadata = materialized.trackRoles.byTrackPlanId[track.trackPlanId];
+    return metadata !== undefined && trackRoleHasPlacement(metadata, projection);
+  });
+  const included = new Set(generatedHarmonyTracks.map((track) => track.trackPlanId));
+  const generatedTracks = materialized.trackRoles.generatedTracks.filter((metadata) => included.has(metadata.trackPlanId));
+  return {
+    ...materialized,
+    document: { ...materialized.document, generatedHarmonyTracks },
+    trackRoles: { generatedTracks, byTrackPlanId: Object.fromEntries(generatedTracks.map((metadata) => [metadata.trackPlanId, metadata])) },
+  };
 }
 
 export function selectActiveCandidate(project: HarmonyProject, presetId: ArrangementPresetId, candidateId: string): HarmonyProject {

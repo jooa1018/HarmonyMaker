@@ -397,7 +397,11 @@ function parseHarmony(
       confirmation: "unconfirmed",
     };
   }
-  const parserText = `${rootSymbol}${suffix}${degreeTokens.join("")}${bassSymbol ? `/${bassSymbol}` : ""}`;
+  const canonicalText = kindText ? `${rootSymbol}${kindText}${bassSymbol ? `/${bassSymbol}` : ""}` : undefined;
+  const canonicalParsed = canonicalText ? parseChord(canonicalText) : undefined;
+  const parserText = canonicalParsed?.status === "ok"
+    ? canonicalText!
+    : `${rootSymbol}${suffix}${degreeTokens.join("")}${bassSymbol ? `/${bassSymbol}` : ""}`;
   return {
     partOrdinal,
     measureOrdinal,

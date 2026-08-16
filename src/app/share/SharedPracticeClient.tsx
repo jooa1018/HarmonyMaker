@@ -9,7 +9,7 @@ import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import { buildPlaybackPlan } from "../../product/playback-plan";
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { decodeProductUrlShare } from "../../product/share-url";
-import { practiceShareToRenderDocument } from "../../product/shared-practice";
+import { materializeSharedPractice } from "../../product/shared-practice";
 
 export function SharedPracticeClient() {
   const search = useSearchParams();
@@ -17,7 +17,8 @@ export function SharedPracticeClient() {
   const [payload, setPayload] = useState<PracticeSharePayload>();
   const [message, setMessage] = useState("공유 payload를 검증하는 중…");
   const [reported, setReported] = useState(false);
-  const document = useMemo(() => payload ? practiceShareToRenderDocument(payload) : undefined, [payload]);
+  const materialized = useMemo(() => payload ? materializeSharedPractice(payload) : undefined, [payload]);
+  const document = materialized?.document;
   const [accompanimentState, setAccompanimentState] = useState<{ readonly digest: string; readonly value: Awaited<ReturnType<typeof generateDeterministicAccompaniment>> }>();
 
   useEffect(() => {
@@ -50,8 +51,8 @@ export function SharedPracticeClient() {
   }, [document]);
   const accompaniment = document && accompanimentState?.digest === document.effectiveChordTimeline.digest ? accompanimentState.value : undefined;
 
-  const abc = useMemo(() => payload && document ? arrangementRenderDocumentToAbc(document, { title: payload.title, tempo: payload.tempo, key: payload.key }) : undefined, [document, payload]);
-  const plan = useMemo(() => document ? buildPlaybackPlan(document, accompaniment) : undefined, [accompaniment, document]);
+  const abc = useMemo(() => payload && materialized ? arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: payload.title, tempo: payload.tempo, key: payload.key }) : undefined, [materialized, payload]);
+  const plan = useMemo(() => materialized ? buildPlaybackPlan(materialized.document, materialized.trackRoles, accompaniment) : undefined, [accompaniment, materialized]);
 
   const report = async () => {
     if (!token) return;

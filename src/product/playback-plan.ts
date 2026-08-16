@@ -5,6 +5,7 @@ import { pitchMidiNumber } from "../domain/pitch";
 import type { TimelineAtom } from "../domain/source/atomization";
 import type { TempoSpec } from "../domain/source/model";
 import { canonicalRangeDuration } from "./timing";
+import type { ProductTrackRoleRegistry } from "./track-roles";
 
 export const PRACTICE_SPEEDS = [50, 75, 100, 125, 150] as const;
 export type PracticeSpeed = typeof PRACTICE_SPEEDS[number];
@@ -22,6 +23,7 @@ export interface PlaybackPlan {
   readonly trackIds: readonly string[];
   readonly totalQuarter: number;
   readonly effectiveChordTimelineDigest: string;
+  readonly trackLabels: Readonly<Record<string, string>>;
 }
 
 function value(value: Fraction): number { return value.n / value.d; }
@@ -41,7 +43,7 @@ function harmonyEvent(event: GeneratedVoiceEvent, trackId: string, starts: reado
   return { eventId: event.id, trackId, kind: "voice", startQuarter: absolute(starts, event.range.start.performanceMeasureIndex, event.range.start.offset), durationQuarter: value(canonicalRangeDuration(document.measures, event.range)), midi: pitchMidiNumber(event.pitch), lyricOnset: event.lyricTokenIds.length > 0 && !event.tieStop };
 }
 
-export function buildPlaybackPlan(document: ArrangementRenderDocument, accompaniment?: DeterministicAccompaniment): PlaybackPlan {
+export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, accompaniment?: DeterministicAccompaniment): PlaybackPlan {
   if (accompaniment && accompaniment.effectiveChordTimelineDigest !== document.effectiveChordTimeline.digest) throw new RangeError("ACCOMPANIMENT_AUTHORITY_MISMATCH");
   const starts = measureStarts(document);
   const voices = [
@@ -55,11 +57,21 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, accompani
     midi: pitchMidiNumber(pitch), lyricOnset: false,
   }))) ?? [];
   const events = [...voices, ...band].sort((left, right) => left.startQuarter - right.startQuarter || left.trackId.localeCompare(right.trackId) || left.eventId.localeCompare(right.eventId));
+  const trackLabels = {
+    "track:source-lead": "Lead",
+    ...Object.fromEntries(document.generatedHarmonyTracks.map((track) => {
+      const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
+      if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
+      return [track.trackPlanId, metadata.label];
+    })),
+    ...(band.length > 0 ? { "track:band": "Band" } : {}),
+  };
   return {
     events,
     trackIds: ["track:source-lead", ...document.generatedHarmonyTracks.map((track) => track.trackPlanId), ...(band.length > 0 ? ["track:band"] : [])],
     totalQuarter: document.measures.reduce((sum, measure) => sum + value(measure.duration), 0),
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,
+    trackLabels,
   };
 }
 

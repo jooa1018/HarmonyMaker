@@ -36,7 +36,11 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
   const localLyrics = lyricMap(document);
   const tracks: CompactTrack[] = [
     { kind: "source-lead", label: "Lead", events: document.sourceLeadTrack.atoms.map((atom) => atomEvent(atom, document, localLyrics.sourceToLocal)) },
-    ...document.generatedHarmonyTracks.map((track, index) => ({ kind: "generated-harmony" as const, label: index === 0 ? "Upper / Harmony 1" : "Lower / Harmony 2", events: track.events.map((event) => generatedEvent(event, document, localLyrics.sourceToLocal)) })),
+    ...document.generatedHarmonyTracks.map((track) => {
+      const metadata = input.materialized.trackRoles.byTrackPlanId[track.trackPlanId];
+      if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
+      return { kind: "generated-harmony" as const, label: metadata.label, events: track.events.map((event) => generatedEvent(event, document, localLyrics.sourceToLocal)) };
+    }),
   ];
   const chords: CompactChord[] = document.effectiveChordTimeline.spans.map((span) => {
     const common = {

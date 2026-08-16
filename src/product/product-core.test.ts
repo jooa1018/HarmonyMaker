@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { generateDeterministicAccompaniment } from "../accompaniment/deterministic";
+import { parseChord } from "../domain/chord/parser";
 import type { ArrangementOutputEdit } from "../domain/edit/model";
+import { fraction } from "../domain/fraction";
+import type { ArrangementRenderDocument } from "../domain/generation/model";
 import type { HarmonyProject } from "../domain/project";
 import { outputEditId } from "../domain/ids";
 import { validateHarmonyProject } from "../domain/project";
 import { normalizeSongSourceDocument } from "../domain/source/normalize";
 import { computeRevisionHistoryDigest } from "../domain/source/revision";
+import { musicalRange } from "../domain/time";
 import { createWagFixtureInput, pitch } from "../grammar/fixtures";
 import { importMusicXml } from "../import/musicxml/parser";
 import { replaceStageLocks } from "./locks";
@@ -22,9 +26,10 @@ import { arrangementRenderDocumentToAbc } from "./score-adapter";
 import { decodeProductUrlShare, encodeProductUrlShare } from "./share-url";
 import { practiceShareToRenderDocument } from "./shared-practice";
 import { generateProjectVariant, type ProductGenerationOutcome } from "./workspace";
+import type { WagLifecycleInput } from "../grammar/lifecycle";
 
-async function generatedProject(): Promise<{ readonly project: HarmonyProject; readonly generated: Extract<ProductGenerationOutcome, { readonly status: "complete" | "partial" }> }> {
-  const input = await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 2 });
+async function generatedProject(inputOverride?: WagLifecycleInput): Promise<{ readonly project: HarmonyProject; readonly generated: Extract<ProductGenerationOutcome, { readonly status: "complete" | "partial" }> }> {
+  const input = inputOverride ?? await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 2 });
   const source = normalizeSongSourceDocument({ ...input.source, revisionHistoryDigest: await computeRevisionHistoryDigest([]) });
   const project: HarmonyProject = {
     schemaVersion: 9, source,
@@ -62,10 +67,10 @@ describe("Product Core workspace, render, playback, and state", () => {
   it("builds score and playback from the same canonical events with exact transport/mixer semantics", async () => {
     const { project } = await generatedProject();
     const materialized = materializeActiveArrangement(project, "standard");
-    const abc = arrangementRenderDocumentToAbc(materialized.document, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey });
+    const abc = arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey });
     expect(abc).toContain("%%score lead h1 h2");
     const accompaniment = await generateDeterministicAccompaniment(materialized.document.effectiveChordTimeline);
-    const plan = buildPlaybackPlan(materialized.document, accompaniment);
+    const plan = buildPlaybackPlan(materialized.document, materialized.trackRoles, accompaniment);
     expect(plan.events.some((event) => event.kind === "voice")).toBe(true);
     expect(plan.effectiveChordTimelineDigest).toBe(accompaniment.effectiveChordTimelineDigest);
     expect(quarterSeconds(project.source.defaultTempo, 50)).toBeGreaterThan(quarterSeconds(project.source.defaultTempo, 150));
@@ -77,6 +82,28 @@ describe("Product Core workspace, render, playback, and state", () => {
     expect(reduceTransport(transport, { type: "reset" })).toEqual(INITIAL_TRANSPORT);
     expect(audibleTrackIds(plan, { muted: new Set(["track:source-lead"]), bandEnabled: false })).not.toContain("track:band");
     expect(audibleTrackIds(plan, { muted: new Set(), solo: "track:source-lead", bandEnabled: true })).toEqual(["track:source-lead"]);
+  });
+
+  it("carries explicit H1/H2 and placement metadata without array-index inference", async () => {
+    const input = await createWagFixtureInput({
+      presetId: "standard",
+      maxHarmonyTracks: 2,
+      generatedRanges: [
+        { low: pitch("C", 2), high: pitch("B", 3) },
+        { low: pitch("D", 4), high: pitch("C", 6) },
+      ],
+    });
+    const { project } = await generatedProject(input);
+    const materialized = materializeActiveArrangement(project, "standard");
+    expect(materialized.trackRoles.byTrackPlanId["track:h1"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
+    expect(materialized.trackRoles.byTrackPlanId["track:h2"]).toMatchObject({ harmonyRole: "H2", label: "Upper / H2" });
+    const abc = arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey });
+    expect(abc).toContain('V:h1 name="Lower / H1"');
+    expect(abc).toContain('V:h2 name="Upper / H2"');
+    const plan = buildPlaybackPlan(materialized.document, materialized.trackRoles);
+    expect(plan.trackLabels).toMatchObject({ "track:h1": "Lower / H1", "track:h2": "Upper / H2" });
+    const payload = materializePracticeShare({ project: confirmShareRights(project), presetId: "standard", materialized });
+    expect(payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => track.label)).toEqual(["Lower / H1", "Upper / H2"]);
   });
 
   it("stales the exact downstream boundary for stage-owned locks and rejects wrong-stage scope", async () => {
@@ -171,13 +198,58 @@ describe("candidate-bound edits and EditedArrangementSnapshot", () => {
 describe("deterministic export, local save, project transfer, and PracticeShare", () => {
   it("exports deterministic MusicXML that the accepted importer can parse", async () => {
     const { project } = await generatedProject();
-    const document = materializeActiveArrangement(project, "standard").document;
-    const first = exportArrangementMusicXml(document, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey });
-    const second = exportArrangementMusicXml(document, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey });
+    const materialized = materializeActiveArrangement(project, "standard");
+    const document = materialized.document;
+    const first = exportArrangementMusicXml(document, materialized.trackRoles, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey });
+    const second = exportArrangementMusicXml(document, materialized.trackRoles, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey });
     expect(first).toBe(second);
     expect(first).not.toMatch(/session|csrf|database|share-token|objects\//iu);
     const imported = await importMusicXml(new TextEncoder().encode(first), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
     expect(imported.status).toBe("review-required");
+  });
+
+  it("round-trips accidental, altered, omitted, extended slash chords and rhythmic notation", async () => {
+    const { project } = await generatedProject();
+    const base = materializeActiveArrangement(project, "standard");
+    const durations = [fraction(4)];
+    const chord = parseChord("EbmMaj9add13#11no5/Gb");
+    expect(chord.status).toBe("ok");
+    if (chord.status !== "ok") return;
+    const firstAtom = base.document.sourceLeadTrack.atoms[0];
+    const secondAtom = base.document.sourceLeadTrack.atoms[1] ?? firstAtom;
+    const document: ArrangementRenderDocument = {
+      ...base.document,
+      sourceLeadTrack: {
+        ...base.document.sourceLeadTrack,
+        atoms: [
+          { ...firstAtom, id: "ta:export:0", sourceEventId: "se:export:0", range: musicalRange({ performanceMeasureIndex: 0, offset: fraction(0) }, { performanceMeasureIndex: 0, offset: fraction(3, 2) }, durations), tiedFromPrevious: false, tiedToNext: false, lyricTokenIds: [] },
+          { ...secondAtom, id: "ta:export:1", sourceEventId: "se:export:1", range: musicalRange({ performanceMeasureIndex: 0, offset: fraction(3, 2) }, { performanceMeasureIndex: 0, offset: fraction(11, 6) }, durations), tiedFromPrevious: false, tiedToNext: false, lyricTokenIds: [] },
+        ],
+      },
+      generatedHarmonyTracks: [],
+      lyricTokens: [],
+      effectiveChordTimeline: {
+        ...base.document.effectiveChordTimeline,
+        spans: [{ ...base.document.effectiveChordTimeline.spans[0], id: "pcs:export:0", range: musicalRange({ performanceMeasureIndex: 0, offset: fraction(0) }, { performanceMeasureIndex: 1, offset: fraction(0) }, durations), parseResult: chord }],
+      },
+    };
+    const roles = { generatedTracks: [], byTrackPlanId: {} } as const;
+    const encoded = exportArrangementMusicXml(document, roles, { title: "Adversarial", key: { tonic: { step: "E", alter: -1 }, mode: "minor" } });
+    expect(encoded).toContain("<root-step>E</root-step><root-alter>-1</root-alter>");
+    expect(encoded).toContain(`<kind text="${chord.chord.canonicalSymbol.slice(2, -3)}">`);
+    expect(encoded).toContain("<bass-step>G</bass-step><bass-alter>-1</bass-alter>");
+    expect(encoded).toContain("<degree-type>add</degree-type>");
+    expect(encoded).toContain("<degree-type>alter</degree-type>");
+    expect(encoded).toContain("<degree-type>subtract</degree-type>");
+    expect(encoded).toMatch(/<type>quarter<\/type><dot\/>/u);
+    expect(encoded).toContain("<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>");
+    const imported = await importMusicXml(new TextEncoder().encode(encoded), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
+    expect(imported.status).toBe("review-required");
+    if (imported.status === "review-required") {
+      const reparsed = imported.draft.parts[0].measures[0].chords[0].parseResult;
+      expect(reparsed.status).toBe("ok");
+      if (reparsed.status === "ok") expect(reparsed.chord.canonicalSymbol).toBe(chord.chord.canonicalSymbol);
+    }
   });
 
   it("round-trips canonical project bytes through validation and local durable adapter", async () => {
@@ -210,8 +282,9 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
     const encoded = encodeProductUrlShare(payload);
     expect(decodeProductUrlShare(encoded)).toEqual(payload);
     const sharedDocument = practiceShareToRenderDocument(decodeProductUrlShare(encoded));
+    const sharedRoles = (await import("./shared-practice")).materializeSharedPractice(decodeProductUrlShare(encoded)).trackRoles;
     expect(sharedDocument.sourceLeadTrack.atoms).toHaveLength(payload.arrangement.tracks.find((track) => track.kind === "source-lead")?.events.length ?? 0);
-    expect(buildPlaybackPlan(sharedDocument, await generateDeterministicAccompaniment(sharedDocument.effectiveChordTimeline)).events.length).toBeGreaterThan(0);
+    expect(buildPlaybackPlan(sharedDocument, sharedRoles, await generateDeterministicAccompaniment(sharedDocument.effectiveChordTimeline)).events.length).toBeGreaterThan(0);
     expect(JSON.stringify(payload)).not.toMatch(/documentId|session|csrf|database|objectKey|lock/iu);
   });
 });

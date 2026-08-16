@@ -5,6 +5,7 @@ import type { TimelineAtom } from "../domain/source/atomization";
 import type { TempoSpec } from "../domain/source/model";
 import type { PerformanceMeasureOccurrence } from "../domain/performance/repeat";
 import { canonicalRangeDuration } from "./timing";
+import type { ProductTrackRoleRegistry } from "./track-roles";
 
 interface AdapterEvent {
   readonly kind: "note" | "rest";
@@ -66,13 +67,17 @@ function voiceMeasures(events: readonly AdapterEvent[], measureCount: number, du
   return measures.join(" ");
 }
 
-export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocument, input: { readonly title: string; readonly tempo: TempoSpec; readonly key: KeySignature }): string {
+export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly tempo: TempoSpec; readonly key: KeySignature }): string {
   const durations = document.measures.map((measure) => measure.duration);
   const chordAt = Object.fromEntries(document.effectiveChordTimeline.spans.map((span) => [`${span.range.start.performanceMeasureIndex}:${span.range.start.offset.n}/${span.range.start.offset.d}`, span.parseResult.status === "ok" ? span.parseResult.chord.canonicalSymbol : "N.C."]));
   const lead = document.sourceLeadTrack.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex }));
   const tracks = [
     { id: "lead", label: "Lead", events: lead },
-    ...document.generatedHarmonyTracks.map((track, index) => ({ id: `h${index + 1}`, label: index === 0 ? "Upper / H1" : "Lower / H2", events: track.events.map((event) => ({ ...eventFromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) })),
+    ...document.generatedHarmonyTracks.map((track) => {
+      const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
+      if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
+      return { id: metadata.harmonyRole.toLowerCase(), label: metadata.label, events: track.events.map((event) => ({ ...eventFromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
+    }),
   ];
   const voices = tracks.map((track, index) => `[V:${track.id}] ${voiceMeasures(track.events, document.measures.length, durations, chordAt, index === 0)}`).join("\n");
   const score = tracks.map((track) => track.id).join(" ");

@@ -128,7 +128,7 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
   };
 
   const changeMixer = (change: () => void) => { reset(); change(); };
-  const labels = Object.fromEntries(plan.trackIds.map((trackId, index) => [trackId, trackId === "track:source-lead" ? "Lead" : trackId === "track:band" ? "Band" : index === 1 ? "Upper / H1" : "Lower / H2"]));
+  const labels = plan.trackLabels;
 
   return <section className="panel practice-player" aria-label={readOnly ? "공유 연습 플레이어" : "프로젝트 연습 플레이어"}>
     <div ref={scoreRef} className="score-wrap" aria-label="정본 ArrangementRenderDocument 악보" />

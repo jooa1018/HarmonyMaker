@@ -86,8 +86,8 @@ export function WorkspaceClient() {
     return () => { active = false; };
   }, [materialized, projection]);
   const accompaniment = materialized && accompanimentState?.identity === `${materialized.artifactDigest}:${projection}` ? accompanimentState.value : undefined;
-  const abc = useMemo(() => materialized && project ? arrangementRenderDocumentToAbc(materialized.document, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey }) : undefined, [materialized, project]);
-  const playbackPlan = useMemo(() => materialized ? buildPlaybackPlan(materialized.document, accompaniment) : undefined, [accompaniment, materialized]);
+  const abc = useMemo(() => materialized && project ? arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey }) : undefined, [materialized, project]);
+  const playbackPlan = useMemo(() => materialized ? buildPlaybackPlan(materialized.document, materialized.trackRoles, accompaniment) : undefined, [accompaniment, materialized]);
 
   const choosePreset = async (nextPreset: ArrangementPresetId) => {
     if (!project) return;
@@ -142,7 +142,7 @@ export function WorkspaceClient() {
 
   const exportMusicXml = () => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
-    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey }), "application/vnd.recordare.musicxml+xml");
+    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey }), "application/vnd.recordare.musicxml+xml");
   };
   const exportProject = async () => { if (project) download(`${safeName(project.source.title)}.harmonymaker.json`, await exportHarmonyProject(project), "application/json"); };
   const importProject = async (event: ChangeEvent<HTMLInputElement>) => {

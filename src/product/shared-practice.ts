@@ -5,10 +5,13 @@ import type { PerformanceChordSpan } from "../domain/harmony/chord-timeline";
 import type { PracticeSharePayload } from "../domain/share";
 import type { TimelineAtom } from "../domain/source/atomization";
 import { musicalRange } from "../domain/time";
+import { practiceShareTrackRoles, type ProductTrackRoleRegistry } from "./track-roles";
 
 function compactFraction(value: readonly [number, number]) { return fraction(value[0], value[1]); }
 
-export function practiceShareToRenderDocument(payload: PracticeSharePayload): ArrangementRenderDocument {
+export interface SharedPracticeMaterialization { readonly document: ArrangementRenderDocument; readonly trackRoles: ProductTrackRoleRegistry }
+
+export function materializeSharedPractice(payload: PracticeSharePayload): SharedPracticeMaterialization {
   const durations = payload.arrangement.measures.map((measure) => compactFraction(measure.duration));
   const measures = payload.arrangement.measures.map((measure, index) => ({
     occurrenceId: `share:occ:${index}`,
@@ -38,16 +41,20 @@ export function practiceShareToRenderDocument(payload: PracticeSharePayload): Ar
     tiedToNext: event.kind === "note" && event.tieStart === true,
     lyricTokenIds: event.kind === "note" ? event.lyricTokenIds ?? [] : [],
   }));
-  const generatedHarmonyTracks = payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track, trackIndex) => ({
-    trackPlanId: `track:h${trackIndex + 1}`,
+  const trackRoles = practiceShareTrackRoles(payload.arrangement.tracks);
+  const generatedHarmonyTracks = payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => {
+    const metadata = trackRoles.generatedTracks.find((candidate) => candidate.label === track.label);
+    if (!metadata) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
+    return {
+    trackPlanId: metadata.trackPlanId,
     events: track.events.map((event, eventIndex): GeneratedVoiceEvent => event.kind === "rest" ? {
-      kind: "rest", id: `share:h${trackIndex + 1}:event:${eventIndex}`, range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
+      kind: "rest", id: `share:${metadata.harmonyRole.toLowerCase()}:event:${eventIndex}`, range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
     } : {
-      kind: "note", id: `share:h${trackIndex + 1}:event:${eventIndex}`, range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
+      kind: "note", id: `share:${metadata.harmonyRole.toLowerCase()}:event:${eventIndex}`, range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
       pitch: { step: event.pitch[0], alter: event.pitch[1], octave: event.pitch[2] },
       tieStart: event.tieStart === true, tieStop: event.tieStop === true, lyricTokenIds: event.lyricTokenIds ?? [], source: "connection",
     }),
-  }));
+  }});
   const spans: PerformanceChordSpan[] = (payload.chords ?? []).map((chord, index) => {
     const range = musicalRange(
       { performanceMeasureIndex: chord.startOccurrenceIndex, offset: compactFraction(chord.startOffset) },
@@ -59,7 +66,7 @@ export function practiceShareToRenderDocument(payload: PracticeSharePayload): Ar
     return { id: `share:chord:${index}`, range, parseResult, origin: { kind: "source-event" as const, sourceChordEventId: `share:chord-source:${index}` } };
   });
   const firstLeadId = atoms[0]?.sourceEventId ?? "share:source-event:0";
-  return {
+  const document: ArrangementRenderDocument = {
     measures,
     sourceLeadTrack: { trackPlanId: "track:source-lead", atomizationDigest: payload.arrangementArtifactDigest, atoms },
     generatedHarmonyTracks,
@@ -73,4 +80,9 @@ export function practiceShareToRenderDocument(payload: PracticeSharePayload): Ar
     },
     lyricTokens: payload.lyrics.map((token) => ({ ...token, leadEventId: firstLeadId, emphasis: "none" as const })),
   };
+  return { document, trackRoles };
+}
+
+export function practiceShareToRenderDocument(payload: PracticeSharePayload): ArrangementRenderDocument {
+  return materializeSharedPractice(payload).document;
 }
