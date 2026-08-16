@@ -12,7 +12,7 @@ export default function ImportPage() {
   return (
     <main className={styles.page}>
       <header className={styles.hero}>
-        <Link href="/" className={styles.backLink}>← S/A/T 데모</Link>
+        <Link href="/" className={styles.backLink}>← HarmonyMaker 시작</Link>
         <p className="eyebrow">STEP 3 · SOURCE FIRST</p>
         <h1>MusicXML 가져오기</h1>
         <p>악보를 안전하게 읽고, 멜로디·코드·구간·가수 음역·권리를 직접 확인합니다.</p>

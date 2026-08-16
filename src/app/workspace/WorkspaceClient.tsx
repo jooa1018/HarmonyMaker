@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "rea
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { ArrangementPresetId } from "../../domain/config";
 import type { ArrangementOutputEdit } from "../../domain/edit/model";
+import { outputEditId } from "../../domain/ids";
 import type { HarmonyProject } from "../../domain/project";
 import type { SpelledPitch } from "../../domain/pitch";
 import { materializeEditedArrangement } from "../../product/edited-arrangement";
@@ -35,7 +36,8 @@ function download(name: string, content: string, type: string) {
 function parsePitch(text: string): SpelledPitch | undefined {
   const match = /^([A-G])(bb|b|#|##)?(-?\d+)$/u.exec(text.trim());
   if (!match) return undefined;
-  const alter = ({ bb: -2, b: -1, "": 0, "#": 1, "##": 2 } as const)[match[2] as "bb" | "b" | "" | "#" | "##"];
+  const accidental = match[2] ?? "";
+  const alter = ({ bb: -2, b: -1, "": 0, "#": 1, "##": 2 } as const)[accidental as "bb" | "b" | "" | "#" | "##"];
   return { step: match[1] as SpelledPitch["step"], alter, octave: Number(match[3]) };
 }
 function short(value: string): string { return value.length > 20 ? `${value.slice(0, 9)}…${value.slice(-8)}` : value; }
@@ -126,7 +128,8 @@ export function WorkspaceClient() {
     const event = candidate && Object.values(candidate.generatedEventsByTrack).flat().find((item) => item.kind === "note");
     const pitch = parsePitch(pitchText);
     if (!candidate || !event || event.kind !== "note" || !pitch) { setMessage("편집 음정을 C4, Bb3처럼 입력해 주세요."); return; }
-    const edit: ArrangementOutputEdit = { id: `edit:${variant.outputEdits.length}`, kind: "replace-pitch", presetId, baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal: variant.outputEdits.length, eventId: event.id, pitch };
+    const editOrdinal = variant.outputEdits.filter((item) => item.baseCandidateId === candidate.id).length;
+    const edit: ArrangementOutputEdit = { id: outputEditId(presetId, candidate.contentDigest, editOrdinal), kind: "replace-pitch", presetId, baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal, eventId: event.id, pitch };
     setBusy(true);
     try {
       const result = await materializeEditedArrangement({ lifecycleInput: await wagInputFromProject(project, presetId), intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate, edits: [...variant.outputEdits.filter((item) => item.baseCandidateId === candidate.id), edit] });
@@ -199,7 +202,7 @@ export function WorkspaceClient() {
       {variant && variant.lifecycle !== "empty" ? <details><summary>Intent / Activity / Anchor plan 검사</summary><p><code>{short(variant.intentPlan.intentPlanDigest)}</code>{"activityPlan" in variant ? <> · <code>{short(variant.activityPlan.activityPlanDigest)}</code></> : null}{"anchorPlan" in variant ? <> · <code>{short(variant.anchorPlan.anchorPlanDigest)}</code></> : null}</p></details> : null}
     </section>
 
-    {candidates.length > 0 ? <section className="panel"><h2>2. 결과 선택 · 투영</h2><div className={styles.choiceRow}>{candidates.map((candidate) => <button type="button" aria-pressed={activeId === candidate.id} key={candidate.id} onClick={() => void chooseCandidate(candidate.id)}>Candidate {candidate.canonicalPathKey} · {candidate.candidateStatus}</button>)}</div>{snapshots.length ? <div className={styles.choiceRow}>{snapshots.map((snapshot) => <button type="button" aria-pressed={activeId === snapshot.id} key={snapshot.id} onClick={() => void chooseSnapshot(snapshot.id)}>Snapshot · {snapshot.status}</button>)}</div> : null}<div className={styles.choiceRow}>{PROJECTIONS.map((value) => <button type="button" key={value} aria-pressed={projection === value} onClick={() => setProjection(value)}>{value}</button>)}</div>{materialized ? <p>active {materialized.artifactKind} · <strong>{materialized.validity}</strong> · <code>{short(materialized.artifactDigest)}</code></p> : <p className="status error">active artifact가 stale이거나 없습니다.</p>}</section> : null}
+    {candidates.length > 0 ? <section className="panel"><h2>2. 결과 선택 · 투영</h2><div className={styles.choiceRow}>{candidates.map((candidate, index) => <button type="button" aria-pressed={activeId === candidate.id} key={candidate.id} onClick={() => void chooseCandidate(candidate.id)}>Candidate {index + 1} · {candidate.candidateStatus} · {short(candidate.contentDigest)}</button>)}</div>{snapshots.length ? <div className={styles.choiceRow}>{snapshots.map((snapshot) => <button type="button" aria-pressed={activeId === snapshot.id} key={snapshot.id} onClick={() => void chooseSnapshot(snapshot.id)}>Snapshot · {snapshot.status}</button>)}</div> : null}<div className={styles.choiceRow}>{PROJECTIONS.map((value) => <button type="button" key={value} aria-pressed={projection === value} onClick={() => setProjection(value)}>{value}</button>)}</div>{materialized ? <p>active {materialized.artifactKind} · <strong>{materialized.validity}</strong> · <code>{short(materialized.artifactDigest)}</code></p> : <p className="status error">active artifact가 stale이거나 없습니다.</p>}</section> : null}
 
     {abc && playbackPlan && materialized ? <><section className="panel"><h2>3. Score · practice</h2><p>Lead / Upper / Lower / full 투영과 deterministic band가 같은 ArrangementRenderDocument에서 생성됩니다.</p></section><ProductPracticePlayer key={`${materialized.artifactDigest}:${projection}`} abc={abc} plan={playbackPlan} tempo={project.source.defaultTempo} identity={`${materialized.artifactDigest}:${projection}`} /></> : null}
 

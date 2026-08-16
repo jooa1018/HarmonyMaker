@@ -37,9 +37,11 @@ export function replaceStageLocks(
     variant.lifecycle === "generation-attempted" ? variant.generationResult.digests.generationInputDigest : undefined,
   ].filter((value): value is NonNullable<typeof value> => value !== undefined);
   const stale = markVariantStale(variant, { staleFrom: staleFrom(stage), staleDiagnosticIds: [], previousArtifactDigests });
+  const { activeArrangement, ...staleWithoutActiveArrangement } = stale.lifecycle === "generation-attempted" ? stale : { ...stale, activeArrangement: undefined };
+  void activeArrangement;
   return {
     ...project,
     locksByPreset: { ...project.locksByPreset, [presetId]: nextLocks },
-    variants: { ...project.variants, [presetId]: { ...stale, activeArrangement: undefined } },
+    variants: { ...project.variants, [presetId]: staleWithoutActiveArrangement },
   };
 }

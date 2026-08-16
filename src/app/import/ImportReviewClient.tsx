@@ -436,7 +436,7 @@ export function ImportReviewClient() {
                   {occurrence.availableLyricVerses.length === 0 ? <span className={styles.meta}>가사 없음 · verse 1 authority</span> : (
                     <label className={styles.inlineField} htmlFor={`occurrence-verse-${occurrence.key}`}>
                       <span>production lyric verse</span>
-                      <select id={`occurrence-verse-${occurrence.key}`} value={occurrence.selectedLyricVerse ?? ""} onChange={(event) => updateDraft((current) => setSectionOccurrenceLyricVerse(current, occurrence.key, Number(event.target.value)))}>
+                      <select id={`occurrence-verse-${occurrence.key}`} value={occurrence.selectedLyricVerse ?? ""} onChange={(event) => { const verse = Number(event.target.value); updateDraft((current) => setSectionOccurrenceLyricVerse(current, occurrence.key, verse)); }}>
                         <option value="">verse 선택</option>
                         {occurrence.availableLyricVerses.map((verse) => <option key={verse} value={verse}>{verse}</option>)}
                       </select>
@@ -454,7 +454,7 @@ export function ImportReviewClient() {
 
           <section className={styles.panel} aria-labelledby="range-heading">
             <h2 id="range-heading">6. 가수 수와 음역</h2>
-            <label className={styles.field} htmlFor="singer-count"><span>총 보컬 수</span><select id="singer-count" value={draft.singerCount} onChange={(event) => updateDraft((current) => setSingerCount(current, Number(event.target.value) as 1 | 2 | 3))}><option value="1">1명 · track:source-lead</option><option value="2">2명 · + track:h1</option><option value="3">3명 · + track:h1/h2</option></select></label>
+            <label className={styles.field} htmlFor="singer-count"><span>총 보컬 수</span><select id="singer-count" value={draft.singerCount} onChange={(event) => { const singerCount = Number(event.target.value) as 1 | 2 | 3; updateDraft((current) => setSingerCount(current, singerCount)); }}><option value="1">1명 · track:source-lead</option><option value="2">2명 · + track:h1</option><option value="3">3명 · + track:h1/h2</option></select></label>
             {draft.performerSlots.map((slot, ordinal) => <PerformerEditor key={slot.id} ordinal={ordinal} slot={slot} onSave={(performerOrdinal, value) => updateDraft((current) => setPerformerRange(current, performerOrdinal, value))} />)}
           </section>
 
