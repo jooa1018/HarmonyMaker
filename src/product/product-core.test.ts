@@ -11,7 +11,7 @@ import { validateHarmonyProject } from "../domain/project";
 import { normalizeSongSourceDocument } from "../domain/source/normalize";
 import { computeRevisionHistoryDigest } from "../domain/source/revision";
 import { musicalRange } from "../domain/time";
-import { createWagFixtureInput, pitch } from "../grammar/fixtures";
+import { createWagFixtureInput, materializeSegmentBFixture, pitch } from "../grammar/fixtures";
 import { importMusicXml } from "../import/musicxml/parser";
 import { replaceStageLocks } from "./locks";
 import { materializeEditedArrangement } from "./edited-arrangement";
@@ -162,6 +162,7 @@ describe("candidate-bound edits and EditedArrangementSnapshot", () => {
     expect(valid.status).toBe("complete");
     if (valid.status !== "complete") return;
     expect(valid.snapshot.status).toBe("valid");
+    expect(valid.snapshot.generatedHarmonyTracks.flatMap((track) => track.events).find((item) => item.id === event.id)).toMatchObject({ source: "user-edit" });
     expect(JSON.stringify(candidate)).toBe(baseJson);
     const integrated: HarmonyProject = { ...project, variants: { standard: { ...variant, outputEdits: [samePitch], editedSnapshots: [valid.snapshot], activeArrangement: { kind: "edited-snapshot", snapshotId: valid.snapshot.id } } } };
     const integratedIntegrity = await validateHarmonyProject(integrated, await loadProductExecutionRegistry());
@@ -175,6 +176,92 @@ describe("candidate-bound edits and EditedArrangementSnapshot", () => {
     expect(stale.status).toBe("blocked");
     const duplicate = await materializeEditedArrangement({ lifecycleInput, intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate, edits: [samePitch, { ...samePitch, id: "edit:standard:2" }] });
     expect(duplicate.status).toBe("blocked");
+  });
+
+  it("blocks note-to-rest anchor destruction and an unpaired set-tie", async () => {
+    const { project } = await generatedProject();
+    const variant = project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") return;
+    const candidate = variant.generationResult.candidates.find((item) => Object.values(item.generatedEventsByTrack).flat().some((event) => event.kind === "note" && event.originDirectiveId))!;
+    const event = Object.values(candidate.generatedEventsByTrack).flat().find((item) => item.kind === "note" && item.originDirectiveId)!;
+    if (event.kind !== "note") return;
+    const lifecycleInput = await (await import("./workspace")).wagInputFromProject(project, "standard");
+    const noteToRest: ArrangementOutputEdit = {
+      id: outputEditId("standard", candidate.contentDigest, 10), kind: "replace-event", presetId: "standard",
+      baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal: 10,
+      oldEventId: event.id, replacement: { kind: "rest" },
+    };
+    const removed = await materializeEditedArrangement({ lifecycleInput, intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate, edits: [noteToRest] });
+    expect(removed.status).toBe("blocked");
+    if (removed.status === "blocked") expect(removed.diagnostics[0]?.details).toMatchObject({ reason: "required-anchor-provenance" });
+
+    const setTie: ArrangementOutputEdit = {
+      id: outputEditId("standard", candidate.contentDigest, 11), kind: "set-tie", presetId: "standard",
+      baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal: 11,
+      eventId: event.id, tieStart: true, tieStop: false,
+    };
+    const tied = await materializeEditedArrangement({ lifecycleInput, intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate, edits: [setTie] });
+    expect(tied.status).toBe("blocked");
+    if (tied.status === "blocked") expect(tied.diagnostics[0]?.details).toMatchObject({ reason: "tie-structure" });
+  });
+
+  it("validates illegal edited chord tones from actual pitches and recomputes all metrics", async () => {
+    const { project } = await generatedProject();
+    const variant = project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") return;
+    const candidate = variant.generationResult.candidates.find((item) => Object.values(item.generatedEventsByTrack).flat().some((event) => event.kind === "note" && event.originDirectiveId))!;
+    const event = Object.values(candidate.generatedEventsByTrack).flat().find((item) => item.kind === "note" && item.originDirectiveId)!;
+    if (event.kind !== "note") return;
+    const edit: ArrangementOutputEdit = {
+      id: outputEditId("standard", candidate.contentDigest, 20), kind: "replace-pitch", presetId: "standard",
+      baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal: 20,
+      eventId: event.id, pitch: pitch("C", 5, 1),
+    };
+    const result = await materializeEditedArrangement({
+      lifecycleInput: await (await import("./workspace")).wagInputFromProject(project, "standard"),
+      intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan,
+      candidate, edits: [edit],
+    });
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") return;
+    expect(result.snapshot.status).toBe("invalid");
+    expect(result.snapshot.validationDiagnostics.map((diagnostic) => diagnostic.code)).toContain("GENERATED_CHORD_ROLE_CONFLICT");
+    expect(result.snapshot.metrics.sourceChordRespect.denominator).toBeGreaterThan(0);
+    expect(result.snapshot.metrics.sourceChordRespect.numerator).toBeLessThan(result.snapshot.metrics.sourceChordRespect.denominator);
+    expect(Object.keys(result.snapshot.metrics.densityBySectionOccurrence)).toEqual(project.source.sectionOccurrences.map((section) => section.id));
+    expect(Object.keys(result.snapshot.metrics.maxLeapSemitonesByTrack).sort()).toEqual(Object.keys(candidate.generatedEventsByTrack).sort());
+    expect(result.snapshot.metrics.hardDiagnosticCount).toBeGreaterThan(0);
+  });
+
+  it("materializes rest-to-note edits and recomputes changed density from edited tracks", async () => {
+    const { input } = await materializeSegmentBFixture("hm-original-activity-hard-leap-dead-end-v0");
+    const { planWagActivity, planWagAnchor, planWagIntent } = await import("../grammar/lifecycle");
+    const intent = await planWagIntent(input);
+    if (intent.status === "blocked") throw new Error("intent blocked");
+    const activity = await planWagActivity(input, intent.value);
+    if (activity.status === "blocked") throw new Error("activity blocked");
+    const anchor = await planWagAnchor(input, intent.value, activity.value);
+    if (anchor.status === "blocked") throw new Error("anchor blocked");
+    const solver = await (await import("../grammar/solver")).solveWagLocally(input, intent.value, activity.value, anchor.value);
+    if (solver.status === "blocked") throw new Error("solver blocked");
+    const generation = await (await import("../grammar/pipeline")).assembleWagGeneration(input, intent.value, activity.value, anchor.value, solver.value);
+    const candidate = generation.result.candidates.find((item) => Object.values(item.generatedEventsByTrack).flat().some((event) => event.kind === "rest"))!;
+    const rest = Object.values(candidate.generatedEventsByTrack).flat().find((item) => item.kind === "rest")!;
+    const edit: ArrangementOutputEdit = {
+      id: outputEditId("simple", candidate.contentDigest, 30), kind: "replace-event", presetId: "simple",
+      baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal: 30,
+      oldEventId: rest.id, replacement: { kind: "note", pitch: pitch("G", 4), tieStart: false, tieStop: false },
+    };
+    const result = await materializeEditedArrangement({
+      lifecycleInput: input, intentPlan: intent.value, activityPlan: activity.value, anchorPlan: anchor.value,
+      candidate, edits: [edit],
+    });
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") return;
+    expect(result.snapshot.generatedHarmonyTracks.flatMap((track) => track.events).find((event) => event.id === rest.id)).toMatchObject({ kind: "note", source: "user-edit" });
+    const sectionId = input.source.sectionOccurrences[0].id;
+    expect(result.snapshot.metrics.densityBySectionOccurrence[sectionId].participationCoverage.valueBp)
+      .toBeGreaterThan(candidate.metrics.densityBySectionOccurrence[sectionId].participationCoverage.valueBp ?? 0);
   });
 
   it("selects invalid snapshots for inspection but disables default export/share", async () => {

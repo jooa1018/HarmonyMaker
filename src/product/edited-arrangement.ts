@@ -2,15 +2,13 @@ import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version
 import { semanticDigest } from "../domain/digest/canonical";
 import { createDiagnostics, type Diagnostic } from "../domain/diagnostics";
 import { digestAppliedOutputEditSet, isArrangementOutputEdit, validateOutputEdits, type ArrangementOutputEdit, type EditedArrangementSnapshot } from "../domain/edit/model";
-import { buildArrangementCandidate, type CandidateOrdinalRegistry } from "../domain/generation/candidate";
-import type { ArrangementCandidate, FullSongMetrics, GeneratedHarmonyTrack, GeneratedVoiceEvent, RealizedHarmonyAnchor } from "../domain/generation/model";
-import { pitchMidiNumber } from "../domain/pitch";
-import { countRate } from "../domain/rates";
-import { comparePositions } from "../domain/time";
+import type { CandidateOrdinalRegistry } from "../domain/generation/candidate";
+import type { ArrangementCandidate, GeneratedHarmonyTrack, GeneratedVoiceEvent, RealizedHarmonyAnchor } from "../domain/generation/model";
+import { comparePositions, type MusicalRange } from "../domain/time";
 import type { ArrangementActivityPlan, ArrangementAnchorPlan, ArrangementIntentPlan } from "../domain/plans";
 import { loadFrozenWagAuthority } from "../grammar/authority";
 import type { WagLifecycleInput } from "../grammar/lifecycle";
-import { validateWagCandidate } from "../grammar/validator";
+import { validateEditedSnapshot } from "./edited-validation";
 
 export type EditedArrangementMaterialization =
   | { readonly status: "complete"; readonly snapshot: EditedArrangementSnapshot; readonly diagnostics: readonly Diagnostic[] }
@@ -27,7 +25,11 @@ function ordinals(input: WagLifecycleInput, anchor: ArrangementAnchorPlan): Cand
   };
 }
 
-function applyEdit(event: GeneratedVoiceEvent, edit: ArrangementOutputEdit): GeneratedVoiceEvent {
+function rangeContains(outer: MusicalRange, inner: MusicalRange): boolean {
+  return comparePositions(outer.start, inner.start) <= 0 && comparePositions(inner.end, outer.end) <= 0;
+}
+
+function applyEdit(event: GeneratedVoiceEvent, edit: ArrangementOutputEdit, lifecycleInput: WagLifecycleInput): GeneratedVoiceEvent {
   if (edit.kind === "replace-pitch") {
     if (event.kind !== "note") throw new RangeError("EDIT_MATERIALIZATION_BLOCKED");
     return { ...event, pitch: edit.pitch, source: "user-edit" };
@@ -37,15 +39,19 @@ function applyEdit(event: GeneratedVoiceEvent, edit: ArrangementOutputEdit): Gen
     return { ...event, tieStart: edit.tieStart, tieStop: edit.tieStop, source: "user-edit" };
   }
   if (edit.replacement.kind === "rest") return { kind: "rest", id: event.id, range: event.range };
+  const atom = lifecycleInput.sourceLeadAtomization.atoms.find((candidate) => rangeContains(candidate.range, event.range));
+  const lyricTokenIds = event.kind === "note"
+    ? event.lyricTokenIds
+    : atom && comparePositions(atom.range.start, event.range.start) === 0 ? atom.lyricTokenIds : [];
   return {
     kind: "note", id: event.id, range: event.range, pitch: edit.replacement.pitch,
     tieStart: edit.replacement.tieStart, tieStop: edit.replacement.tieStop,
-    lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [], source: "user-edit",
+    lyricTokenIds, source: "user-edit",
     ...(event.kind === "note" && event.originDirectiveId ? { originDirectiveId: event.originDirectiveId } : {}),
   };
 }
 
-function materializedTracks(candidate: ArrangementCandidate, edits: readonly ArrangementOutputEdit[]): readonly GeneratedHarmonyTrack[] {
+function materializedTracks(candidate: ArrangementCandidate, edits: readonly ArrangementOutputEdit[], lifecycleInput: WagLifecycleInput): readonly GeneratedHarmonyTrack[] {
   const targetToEdit = new Map<string, ArrangementOutputEdit>();
   for (const edit of edits) {
     const target = edit.kind === "replace-event" ? edit.oldEventId : edit.eventId;
@@ -56,7 +62,7 @@ function materializedTracks(candidate: ArrangementCandidate, edits: readonly Arr
     trackPlanId,
     events: events.map((event) => {
       const edit = targetToEdit.get(event.id);
-      return edit ? applyEdit(event, edit) : event;
+      return edit ? applyEdit(event, edit, lifecycleInput) : event;
     }),
   }));
 }
@@ -66,20 +72,27 @@ function updateAnchors(anchors: readonly RealizedHarmonyAnchor[], tracks: readon
   return anchors.map((anchor) => byDirective.has(anchor.directiveId) ? { ...anchor, pitch: byDirective.get(anchor.directiveId)! } : anchor);
 }
 
-function metrics(base: FullSongMetrics, tracks: readonly GeneratedHarmonyTrack[], hardDiagnosticCount: number): FullSongMetrics {
-  const maxLeapSemitonesByTrack = Object.fromEntries(tracks.map((track) => {
-    let previous: number | undefined;
-    let max = 0;
-    for (const event of track.events) {
-      if (event.kind === "rest") { previous = undefined; continue; }
-      const midi = pitchMidiNumber(event.pitch);
-      if (previous !== undefined) max = Math.max(max, Math.abs(midi - previous));
-      previous = midi;
-    }
-    return [track.trackPlanId, max];
-  }));
-  const sounding = tracks.reduce((sum, track) => sum + track.events.filter((event) => event.kind === "note").length, 0);
-  return { ...base, maxLeapSemitonesByTrack, hardDiagnosticCount, sourceChordRespect: countRate(sounding, sounding) };
+function preservesRequiredAnchorProvenance(candidate: ArrangementCandidate, edits: readonly ArrangementOutputEdit[]): boolean {
+  const events = new Map(Object.values(candidate.generatedEventsByTrack).flat().map((event) => [event.id, event]));
+  return edits.every((edit) => {
+    if (edit.kind !== "replace-event" || edit.replacement.kind !== "rest") return true;
+    const original = events.get(edit.oldEventId);
+    return original?.kind !== "note" || original.originDirectiveId === undefined;
+  });
+}
+
+function tiesAreStructurallyValid(tracks: readonly GeneratedHarmonyTrack[]): boolean {
+  return tracks.every((track) => {
+    const events = track.events.slice().sort((left, right) => comparePositions(left.range.start, right.range.start));
+    return events.every((event, index) => {
+      if (event.kind !== "note") return true;
+      const previous = events[index - 1];
+      const next = events[index + 1];
+      const validStart = !event.tieStart || (next?.kind === "note" && comparePositions(event.range.end, next.range.start) === 0 && event.pitch.step === next.pitch.step && event.pitch.alter === next.pitch.alter && event.pitch.octave === next.pitch.octave && next.tieStop);
+      const validStop = !event.tieStop || (previous?.kind === "note" && comparePositions(previous.range.end, event.range.start) === 0 && previous.pitch.step === event.pitch.step && previous.pitch.alter === event.pitch.alter && previous.pitch.octave === event.pitch.octave && previous.tieStart);
+      return validStart && validStop;
+    });
+  });
 }
 
 async function blocked(code: "EDIT_BASE_CANDIDATE_STALE" | "EDIT_MATERIALIZATION_BLOCKED", reason: string): Promise<EditedArrangementMaterialization> {
@@ -105,26 +118,14 @@ export async function materializeEditedArrangement(input: {
   const eventIds = new Set(Object.values(candidate.generatedEventsByTrack).flat().map((event) => event.id));
   const structuralErrors = validateOutputEdits(candidate.id, candidate.contentDigest, eventIds, orderedEdits);
   if (structuralErrors.length > 0 || new Set(orderedEdits.map((edit) => edit.editOrdinal)).size !== orderedEdits.length) return blocked(structuralErrors.some((error) => error.startsWith("EDIT_BASE_CANDIDATE_STALE")) ? "EDIT_BASE_CANDIDATE_STALE" : "EDIT_MATERIALIZATION_BLOCKED", structuralErrors[0] ?? "duplicate-ordinal");
+  if (!preservesRequiredAnchorProvenance(candidate, orderedEdits)) return blocked("EDIT_MATERIALIZATION_BLOCKED", "required-anchor-provenance");
   let tracks: readonly GeneratedHarmonyTrack[];
-  try { tracks = materializedTracks(candidate, orderedEdits); } catch { return blocked("EDIT_MATERIALIZATION_BLOCKED", "target-provenance"); }
+  try { tracks = materializedTracks(candidate, orderedEdits, lifecycleInput); } catch { return blocked("EDIT_MATERIALIZATION_BLOCKED", "target-provenance"); }
+  if (!tiesAreStructurallyValid(tracks)) return blocked("EDIT_MATERIALIZATION_BLOCKED", "tie-structure");
   const realizedAnchors = updateAnchors(candidate.realizedAnchors, tracks);
   const registry = ordinals(lifecycleInput, anchorPlan);
-  const initialMetrics = metrics(candidate.metrics, tracks, 0);
-  const transient = await buildArrangementCandidate({
-    presetId: candidate.presetId, candidateStatus: candidate.candidateStatus,
-    anchorPlanDigest: candidate.anchorPlanDigest, effectiveConfigDigest: candidate.effectiveConfigDigest,
-    presetProfileDigest: candidate.presetProfileDigest, effectiveChordTimelineDigest: candidate.effectiveChordTimelineDigest,
-    sourceLeadAtomizationDigest: candidate.sourceLeadAtomizationDigest,
-    tracks: tracks.map((track) => ({ trackPlanId: track.trackPlanId, events: track.events.map((event) => {
-      const { id, ...payload } = event;
-      void id;
-      return payload.kind === "note" && payload.source === "user-edit" ? { ...payload, source: "anchor" as const } : payload;
-    }) })),
-    realizedAnchors, ordinals: registry, metrics: initialMetrics, diagnostics: candidate.diagnostics,
-    canonicalPathKey: candidate.canonicalPathKey,
-  });
-  const validation = await validateWagCandidate(lifecycleInput, intentPlan, activityPlan, anchorPlan, transient);
-  const finalMetrics = metrics(candidate.metrics, tracks, validation.diagnostics.filter((diagnostic) => diagnostic.severity === "blocking" || diagnostic.severity === "error").length);
+  const validation = await validateEditedSnapshot({ lifecycleInput, intentPlan, activityPlan, anchorPlan, tracks, realizedAnchors });
+  const finalMetrics = validation.metrics;
   const authority = await loadFrozenWagAuthority();
   const appliedEditSetDigest = await digestAppliedOutputEditSet(orderedEdits);
   const directiveOrdinal = registry.anchorDirectiveOrdinalById;
