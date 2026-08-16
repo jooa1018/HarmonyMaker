@@ -13,12 +13,13 @@ import type { MusicalPosition, MusicalRange } from "./time";
 export type TexturePatternId = "UNISON" | "UNISON_TO_SPLIT" | "TWO_PART_PARALLEL" | "ACCENT_BLOCK" | "SUSTAINED_PAD" | "SUSPENSION_RELEASE";
 export type LyricPolicy = "same-lyrics" | "hold-current-vowel" | "no-new-lyric";
 export type CadencePolicy = "open" | "closed" | "looping";
+export type HarmonyExpectation = "none" | "H1-required";
 export interface SectionIntensityTarget { readonly participationCoverageBp: BasisPoints; readonly harmonicDivergenceCoverageBp: BasisPoints; readonly exactlyTwoPitchCoverageBp: BasisPoints; readonly exactlyThreePitchCoverageBp: BasisPoints; readonly maxHarmonyAttackRatioBp: ExtendedBasisPoints; readonly registerSpreadRange: readonly [min: number, max: number]; readonly maxActiveVoiceCount: 1 | 2 | 3 }
 export interface GrammarCandidateTrace { readonly id: string; readonly phraseId: string; readonly presetId: ArrangementPresetId; readonly textureId: TexturePatternId; readonly eligible: boolean; readonly score: CostUnit; readonly reasonCodes: readonly string[] }
 export interface GrammarPlanningTraceRepository { readonly grammarVersion: string; readonly candidatesByPhraseId: Readonly<Record<string, readonly GrammarCandidateTrace[]>> }
 export interface SectionArrangementIntent { readonly id: string; readonly sectionOccurrenceId: string; readonly presetId: ArrangementPresetId; readonly intensityTarget: SectionIntensityTarget; readonly grammarRuleIds: readonly string[] }
 export interface TextureSplitDirective { readonly position: MusicalPosition; readonly reasonCode: "LATE_LONG_NOTE" | "LATE_CHORD_CHANGE" | "CONFIRMED_LYRIC_EMPHASIS" | "PHRASE_MIDPOINT" }
-export interface PhraseArrangementIntent { readonly id: string; readonly phraseId: string; readonly presetId: ArrangementPresetId; readonly sectionIntentId: string; readonly textureId: TexturePatternId; readonly trackRoles: readonly TrackRoleSegment[]; readonly lyricPolicy: LyricPolicy; readonly cadencePolicy: CadencePolicy; readonly splitDirective?: TextureSplitDirective; readonly grammarRuleIds: readonly string[] }
+export interface PhraseArrangementIntent { readonly id: string; readonly phraseId: string; readonly presetId: ArrangementPresetId; readonly sectionIntentId: string; readonly textureId: TexturePatternId; readonly harmonyExpectation: HarmonyExpectation; readonly trackRoles: readonly TrackRoleSegment[]; readonly lyricPolicy: LyricPolicy; readonly cadencePolicy: CadencePolicy; readonly splitDirective?: TextureSplitDirective; readonly grammarRuleIds: readonly string[] }
 export interface ArrangementIntentPlan {
   readonly stage: "intent"; readonly presetId: ArrangementPresetId; readonly intentInputDigest: SemanticDigest; readonly effectiveChordTimelineDigest: SemanticDigest; readonly sourceLeadAtomizationDigest: SemanticDigest; readonly effectiveConfigDigest: SemanticDigest; readonly presetProfileVersion: string; readonly presetProfileDigest: SemanticDigest; readonly grammarId: "worship-arrangement-grammar-v1"; readonly grammarVersion: string; readonly plannerVersion: string; readonly grammarConfigDigest: SemanticDigest; readonly plannerConfigDigest: SemanticDigest; readonly diagnosticRegistryVersion: string; readonly diagnosticRegistryDigest: SemanticDigest; readonly sectionIntents: readonly SectionArrangementIntent[]; readonly phraseIntents: readonly PhraseArrangementIntent[]; readonly grammarTrace?: GrammarPlanningTraceRepository; readonly intentPlanDigest: SemanticDigest;
 }
@@ -29,8 +30,17 @@ export type VoiceActivityDirective =
   | { readonly state: "sustain"; readonly behavior: "sustained-pad" | "independent-harmony" };
 export interface VoiceActivitySpan { readonly id: string; readonly trackPlanId: string; readonly range: MusicalRange; readonly activity: VoiceActivityDirective }
 export interface VoiceAttackEvent { readonly id: string; readonly trackPlanId: string; readonly position: MusicalPosition; readonly kind: "attack" | "release" | "reentry" }
+export interface LocalRestDecisionEvidence {
+  readonly range: MusicalRange;
+  readonly trackPlanId: string;
+  readonly placementRole: VocalPlacementRole;
+  readonly reason: "LOCAL_REST_HARD_IMPOSSIBILITY";
+  readonly continuityState: "continuous" | "reentry" | "initial";
+  readonly hardLegalCandidateCount: 0;
+  readonly sourceToneSpellingExclusionCount: number;
+}
 export interface ActivityDensityMetrics { readonly participationCoverage: DurationRateMetric; readonly harmonyAttackRatio: ExtendedCountRateMetric; readonly harmonyOverLeadRestCoverage: DurationRateMetric; readonly maxSimultaneousHarmonyTracks: 0 | 1 | 2 }
-export interface PhraseActivityPlan { readonly id: string; readonly phraseId: string; readonly intentId: string; readonly activitySpans: readonly VoiceActivitySpan[]; readonly attackEvents: readonly VoiceAttackEvent[]; readonly realizedMetrics: ActivityDensityMetrics }
+export interface PhraseActivityPlan { readonly id: string; readonly phraseId: string; readonly intentId: string; readonly activitySpans: readonly VoiceActivitySpan[]; readonly attackEvents: readonly VoiceAttackEvent[]; readonly realizedMetrics: ActivityDensityMetrics; readonly decisionEvidence: readonly LocalRestDecisionEvidence[] }
 export interface ArrangementActivityPlan { readonly stage: "activity-realized"; readonly presetId: ArrangementPresetId; readonly intentPlanDigest: SemanticDigest; readonly activityInputDigest: SemanticDigest; readonly activityPlannerVersion: string; readonly activityPlannerConfigDigest: SemanticDigest; readonly diagnosticRegistryVersion: string; readonly diagnosticRegistryDigest: SemanticDigest; readonly sourceLeadAtomizationDigest: SemanticDigest; readonly effectiveConfigDigest: SemanticDigest; readonly presetProfileDigest: SemanticDigest; readonly phraseActivityPlans: readonly PhraseActivityPlan[]; readonly activityPlanDigest: SemanticDigest }
 export type NonChordToneKind = "passing" | "neighbor" | "anticipation" | "suspension";
 interface NonChordTonePlanBase { readonly id: string; readonly trackPlanId: string; readonly position: MusicalPosition; readonly contextChordSpanId: string; readonly targetChordSpanId: string; readonly resolutionDirectiveId: string; readonly resolutionDeadline: MusicalPosition }

@@ -884,6 +884,7 @@ describe("persisted HarmonyProject integrity gate", () => {
         presetId: "simple",
         sectionIntentId: "si:simple:0",
         textureId: "UNISON",
+        harmonyExpectation: "none",
         trackRoles: [],
         lyricPolicy: "same-lyrics",
         cadencePolicy: "closed",

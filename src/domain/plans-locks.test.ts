@@ -26,7 +26,7 @@ describe("plan and lock authority", () => {
     const plan: ArrangementIntentPlan = {
       stage: "intent", presetId: "simple", intentInputDigest: digest, effectiveChordTimelineDigest: digest, sourceLeadAtomizationDigest: digest, effectiveConfigDigest: digest, presetProfileVersion: "v", presetProfileDigest: digest, grammarId: "worship-arrangement-grammar-v1", grammarVersion: "v", plannerVersion: "v", grammarConfigDigest: digest, plannerConfigDigest: digest, diagnosticRegistryVersion: "v", diagnosticRegistryDigest: digest,
       sectionIntents: [{ id: "si:0", sectionOccurrenceId: "so:0", presetId: "simple", intensityTarget: { participationCoverageBp: basisPoints(0), harmonicDivergenceCoverageBp: basisPoints(0), exactlyTwoPitchCoverageBp: basisPoints(0), exactlyThreePitchCoverageBp: basisPoints(0), maxHarmonyAttackRatioBp: extendedBasisPoints(0), registerSpreadRange: [0, 0], maxActiveVoiceCount: 1 }, grammarRuleIds: [] }],
-      phraseIntents: [{ id: "pi:0", phraseId: "ph:0", presetId: "simple", sectionIntentId: "si:0", textureId: "UNISON", trackRoles: [], lyricPolicy: "same-lyrics", cadencePolicy: "open", grammarRuleIds: [] }], intentPlanDigest: digest,
+      phraseIntents: [{ id: "pi:0", phraseId: "ph:0", presetId: "simple", sectionIntentId: "si:0", textureId: "UNISON", harmonyExpectation: "none", trackRoles: [], lyricPolicy: "same-lyrics", cadencePolicy: "open", grammarRuleIds: [] }], intentPlanDigest: digest,
     };
     expect(validateIntentAuthority(plan)).toBe(true);
     const ordinals = { sectionOccurrenceOrdinalById: { "so:0": 0 }, phraseOrdinalById: { "ph:0": 0 }, trackOrdinalById: {}, leadAtomOrdinalById: {}, chordSpanOrdinalById: {} };

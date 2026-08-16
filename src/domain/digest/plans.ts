@@ -63,6 +63,7 @@ export async function digestIntentPlan(
     phraseOrdinal: ordinal(ordinals.phraseOrdinalById, intent.phraseId),
     sectionIntentOrdinal: ordinal(sectionIntentOrdinalById, intent.sectionIntentId),
     textureId: intent.textureId,
+    harmonyExpectation: intent.harmonyExpectation,
     trackRoles: canonicalProjected(intent.trackRoles, (role) => ({
       trackOrdinal: ordinal(ordinals.trackOrdinalById, role.trackPlanId),
       placementRole: role.placementRole,
