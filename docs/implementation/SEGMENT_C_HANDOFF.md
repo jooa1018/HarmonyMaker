@@ -4,7 +4,7 @@
 
 - Exact Segment B handoff-inclusive base SHA: `d6ff14ae8f605662d9ab75716640ae2cf3224639`
 - Segment C branch: `codex/harmonymaker-v0-segment-c`
-- Final Segment C code checkpoint SHA: `b8615c2a2864c809da04d2d790ed067f6aa00e5d`
+- Final Segment C code checkpoint SHA: `0ef93a51063692512682c9d17636d8969606b43a`
 - Final handoff-inclusive remote HEAD: the documentation-only commit containing this file on `origin/codex/harmonymaker-v0-segment-c`; its exact immutable SHA is recorded in the Segment C completion report after the commit is created and its final CI passes. A Git commit cannot contain its own SHA.
 - Exact Segment D branch base: the same final handoff-inclusive remote HEAD above, not the code checkpoint.
 - Fixed musical decision: `KEEP_WAG_V1_0_1`
@@ -25,8 +25,10 @@ Segment D must branch from the exact final remote branch HEAD reported with `SEG
 - Frozen-key role, MusicXML, and edited-metric closure: `1b0c32a6768586e67815852a298680287e390e86`
 - Atomic secret-safe ShareStore idempotency closure: `c552d915473626e77d38fe17c928fb264e8241cb`
 - Frozen candidate-ordinal integrity alignment: `b8615c2a2864c809da04d2d790ed067f6aa00e5d`
+- Structured MusicXML Quick Review closure: `92f13ff98af6d889f5e3219e729b7c75a52c4b6f`
+- Schema-v9 candidate-role compatibility closure: `0ef93a51063692512682c9d17636d8969606b43a`
 
-The second verification closure commits are additive descendants of the accepted remote checkpoint `5f39d5027cce02266af51c4dc9fffe85fcc288a5`; the earlier closure remains an additive descendant of `30d5dc10b2fbfba7e5763ed6de662d2847682fdf`. No existing Segment C commit was amended, rebased, squashed, or replaced.
+The final narrow closure commits are additive descendants of the accepted remote checkpoint `4ae15b5c10bddee10b5cf5bebe5f43fa1dc6a165`; the second verification closure remains an additive descendant of `5f39d5027cce02266af51c4dc9fffe85fcc288a5`, and the earlier closure remains an additive descendant of `30d5dc10b2fbfba7e5763ed6de662d2847682fdf`. No existing Segment C commit was amended, rebased, squashed, or replaced.
 
 ## Frozen authority
 
@@ -124,6 +126,34 @@ Focused evidence:
 - Product-integrity regression: the ordinal-2-as-H1 project validates and exports after multi-measure generation; the integrity gate now reproduces the already-frozen candidate anchor-directive ordinal projection rather than defining a new projection.
 - Browser/playback: a four-measure MusicXML completed Quick Review, IndexedDB handoff, three-voice generation, and four-candidate assembly. The score and playback rendered ordinal 1 as `Upper / H2` and ordinal 2 as `Lower / H1`; play/pause/resume/reset, mute/solo, 150% speed, and an error/warning-free console all passed.
 - Frozen audit against `5f39d5027cce02266af51c4dc9fffe85fcc288a5`: six frozen artifact paths changed `0`; protected production musical-authority paths changed `0`; v1.0.2 paths changed `0`; WAG ZIP SHA-256 remains `9b27e30c10315622022c7d459fac3515ddd0fe2168321cd74870d941c9bc5b4b`.
+
+The GitHub Actions and Vercel results for the handoff-inclusive remote HEAD are recorded in the final `SEGMENT_C_COMPLETE` report after this documentation commit is pushed and both providers are green.
+
+## Final narrow verification closure
+
+This closure started exactly from remote HEAD `4ae15b5c10bddee10b5cf5bebe5f43fa1dc6a165` and ended at code checkpoint `0ef93a51063692512682c9d17636d8969606b43a`. It preserves `KEEP_WAG_V1_0_1`, all frozen WAG artifacts and digests, and the production selector, lifecycle, Solver, marginal/pair assembly, Validator, and musical selection.
+
+`parseHarmony()` now emits a parseable canonical `sourceText` whose semantics include the structured MusicXML root, bass, kind, and degrees. A `kind@text` spelling is retained only when its parsed semantic projection exactly equals the structured projection; otherwise the structured canonical symbol is authoritative. Structured-only `Cadd9`, `C7#11`, and `Cno5` fixtures each pass import, `replaceChord(sourceText)`, and `confirmChord` with an identical chord semantic projection. A semantic-unequal `kind@text` fixture proves that text cannot erase structured degrees.
+
+Schema-v9 generation-attempted variants now require `candidateHarmonyRoles` at the canonical project boundary. Project import explicitly migrates a legacy missing-role variant to generation staleness, clears an unusable active arrangement, and requires regeneration instead of permitting a later render failure. Regeneration uses the unchanged frozen §19.2 marginal order and restores the original operational mapping; the compatibility fixture specifically proves canonical track ordinal 2 remains H1.
+
+Corrected final local evidence:
+
+```text
+npm ci                    PASS — lockfile-exact 452 packages audited, 0 vulnerabilities
+npm run typecheck         PASS
+npm run lint              PASS
+npm test                  PASS — 50 files, 510 tests
+npm run build             PASS — Next.js 16.3.0 production build
+git diff --check          PASS
+```
+
+Focused evidence:
+
+- Segment B determinism: the dedicated 101-complete-execution test passed (`1` passed, `5` skipped).
+- MusicXML Quick Review and project compatibility: the combined import/Product Core rerun passed `2` files and `63` tests; the broader import/Product Core/project-integrity rerun passed `3` files and `75` tests.
+- Project import/export and Product Core browser smoke: the generated project reached complete with four candidates; score/playback rendered `Upper / H2` and ordinal-2 `Lower / H1`; play, pause, resume, and reset passed; the browser console had no errors or warnings. Canonical project transfer and deterministic export are covered by the focused and full suites.
+- Frozen audit against `4ae15b5c10bddee10b5cf5bebe5f43fa1dc6a165`: six frozen artifact paths changed `0`; protected production musical-authority paths changed `0`; v1.0.2 paths changed `0`; WAG ZIP SHA-256 remains `9b27e30c10315622022c7d459fac3515ddd0fe2168321cd74870d941c9bc5b4b`.
 
 The GitHub Actions and Vercel results for the handoff-inclusive remote HEAD are recorded in the final `SEGMENT_C_COMPLETE` report after this documentation commit is pushed and both providers are green.
 
