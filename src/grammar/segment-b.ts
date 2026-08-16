@@ -1,6 +1,7 @@
 import { generateDeterministicAccompaniment, type DeterministicAccompaniment } from "../accompaniment/deterministic";
 import type { Diagnostic } from "../domain/diagnostics";
-import type { ArrangementGenerationResult } from "../domain/generation/model";
+import type { ArrangementCandidate, ArrangementGenerationResult, ArrangementRenderDocument } from "../domain/generation/model";
+import { validateRenderDocumentAuthority } from "../domain/generation/render";
 import { planWagActivity, planWagAnchor, planWagIntent, type WagLifecycleInput } from "./lifecycle";
 import { assembleWagGeneration, type WagGenerationAssembly } from "./pipeline";
 import { solveWagLocally } from "./solver";
@@ -14,6 +15,7 @@ export type WagSegmentBExecution =
       readonly generation: WagGenerationAssembly;
       readonly validation: WagAssemblyValidationReport;
       readonly accompaniment: DeterministicAccompaniment;
+      readonly renderDocument: ArrangementRenderDocument;
     }
   | {
       readonly status: "blocked";
@@ -21,6 +23,32 @@ export type WagSegmentBExecution =
       readonly diagnostics: readonly Diagnostic[];
       readonly rejectedResult?: ArrangementGenerationResult;
     };
+
+export function buildWagRenderDocument(
+  input: WagLifecycleInput,
+  candidate: ArrangementCandidate,
+): ArrangementRenderDocument {
+  const trackOrdinalById = Object.fromEntries(input.trackPlans.map((track) => [
+    track.id,
+    track.kind === "source-lead" ? 0 : track.canonicalOrdinal,
+  ]));
+  const generatedHarmonyTracks = Object.entries(candidate.generatedEventsByTrack)
+    .sort(([left], [right]) => trackOrdinalById[left] - trackOrdinalById[right])
+    .map(([trackPlanId, events]) => ({ trackPlanId, events }));
+  const document: ArrangementRenderDocument = {
+    measures: input.source.performanceSequence.occurrences,
+    sourceLeadTrack: {
+      trackPlanId: "track:source-lead",
+      atomizationDigest: input.sourceLeadAtomization.digest,
+      atoms: input.sourceLeadAtomization.atoms,
+    },
+    generatedHarmonyTracks,
+    effectiveChordTimeline: input.effectiveChordTimeline,
+    lyricTokens: input.source.sourceMeasures.flatMap((measure) => measure.lyricTokens),
+  };
+  if (!validateRenderDocumentAuthority(document)) throw new RangeError("CANDIDATE_PROJECTION_INVALID");
+  return document;
+}
 
 /** Canonical Segment-B orchestration. No stage may skip, retone, or repair an earlier stage. */
 export async function executeWagSegmentB(input: WagLifecycleInput): Promise<WagSegmentBExecution> {
@@ -46,5 +74,8 @@ export async function executeWagSegmentB(input: WagLifecycleInput): Promise<WagS
     };
   }
   const accompaniment = await generateDeterministicAccompaniment(input.effectiveChordTimeline);
-  return { status: generation.result.status, generation, validation, accompaniment };
+  const selected = generation.result.candidates.find((candidate) => candidate.id === generation.defaultCandidateId);
+  if (!selected) throw new RangeError("GENERATION_RESULT_STATE_INVALID");
+  const renderDocument = buildWagRenderDocument(input, selected);
+  return { status: generation.result.status, generation, validation, accompaniment, renderDocument };
 }

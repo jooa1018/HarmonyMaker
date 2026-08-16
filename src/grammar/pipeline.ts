@@ -596,8 +596,11 @@ export async function assembleWagGeneration(
       pairMetrics = screen.metrics;
     } else {
       rejections.push({ scope: "pair", reason: "OPTIONAL_PAIR_LASI_REJECTED", trackPlanIds: [upper.track.trackPlanId, lower.track.trackPlanId] });
-      rejections.push({ scope: "pair", reason: "OPTIONAL_PAIR_DEGRADED_TO_SINGLE", trackPlanIds: [marginals[0].track.trackPlanId] });
     }
+  }
+  if (input.effectiveConfig.presetId !== "simple" && input.effectiveConfig.maxHarmonyTracks === 2 && !pairMetrics) {
+    const bestComplete = marginals.find((marginal) => marginal.candidateStatus === "complete");
+    if (bestComplete) rejections.push({ scope: "pair", reason: "OPTIONAL_PAIR_DEGRADED_TO_SINGLE", trackPlanIds: [bestComplete.track.trackPlanId] });
   }
   const rolesByTrackId = Object.fromEntries(marginals.map((marginal) => [marginal.track.trackPlanId, marginal.placementRole]));
   candidates.sort((left, right) => ordering(input.effectiveConfig.presetId, rolesByTrackId, left, right));

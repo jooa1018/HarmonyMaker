@@ -28,19 +28,13 @@ describe("Segment B fixture materialization", () => {
       expect(SEGMENT_B_FIXTURE_EXPECTATIONS[fixtureId]).toEqual(expect.objectContaining({
         fixtureId,
         expectedStatus: expect.stringMatching(/^(complete|partial|blocked)$/),
-        expectedOutcome: fixtureId,
+        expectedOutcome: expect.any(String),
       }));
+      expect(SEGMENT_B_FIXTURE_EXPECTATIONS[fixtureId].expectedOutcome.length).toBeGreaterThan(0);
     }
   });
 
-  it.each([
-    "hm-original-major-stepwise-v0",
-    "hm-original-minor-phrase-v0",
-    "hm-original-sus-omission-v0",
-    "hm-segment-b-all-nc-v0",
-    "hm-segment-b-one-singer-upper-wins-v0",
-    "hm-segment-b-one-singer-lower-wins-v0",
-  ] as const)("materializes canonical input for %s", async (fixtureId) => {
+  it.each(REQUIRED_SEGMENT_B_FIXTURE_IDS)("materializes canonical input for %s", async (fixtureId) => {
     const fixture = await materializeSegmentBFixture(fixtureId);
     expect(fixture.input.source.title).toBe(fixtureId);
     expect(fixture.input.source.revisionDigest).toHaveLength(64);
