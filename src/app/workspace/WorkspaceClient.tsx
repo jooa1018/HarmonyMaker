@@ -5,8 +5,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { ArrangementPresetId } from "../../domain/config";
+import type { ChordToneSpec } from "../../domain/chord/model";
 import type { ArrangementOutputEdit } from "../../domain/edit/model";
 import { outputEditId } from "../../domain/ids";
+import type { VariantStageLocks } from "../../domain/locks";
+import type { TexturePatternId, VoiceActivityDirective } from "../../domain/plans";
 import type { HarmonyProject } from "../../domain/project";
 import type { SpelledPitch } from "../../domain/pitch";
 import { materializeEditedArrangement } from "../../product/edited-arrangement";
@@ -20,11 +23,16 @@ import { canDefaultExportOrShare, projectRenderDocument, selectActiveCandidate, 
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
+import { canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, type UiStageLock } from "../../product/workspace-controls";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import styles from "./workspace.module.css";
 
 const PRESETS: readonly ArrangementPresetId[] = ["simple", "standard", "full"];
 const PROJECTIONS: readonly ScoreProjection[] = ["full", "lead", "upper", "lower"];
+const TEXTURES: readonly TexturePatternId[] = ["UNISON", "UNISON_TO_SPLIT", "TWO_PART_PARALLEL", "ACCENT_BLOCK", "SUSTAINED_PAD", "SUSPENSION_RELEASE"];
+const ACTIVITY_VALUES = ["rest", "lead-derived:unison-double", "lead-derived:octave-double", "independent-note:independent-harmony", "sustain:sustained-pad", "sustain:independent-harmony"] as const;
+type ActivityValue = typeof ACTIVITY_VALUES[number];
+type EditKind = "replace-pitch" | "replace-event-note" | "replace-event-rest" | "set-tie";
 
 function safeName(value: string): string { return value.replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 80) || "harmonymaker"; }
 function download(name: string, content: string, type: string) {
@@ -41,6 +49,20 @@ function parsePitch(text: string): SpelledPitch | undefined {
   return { step: match[1] as SpelledPitch["step"], alter, octave: Number(match[3]) };
 }
 function short(value: string): string { return value.length > 20 ? `${value.slice(0, 9)}…${value.slice(-8)}` : value; }
+function toneKey(tone: ChordToneSpec): string { return `${tone.degree}:${tone.alteration}`; }
+function activityValue(activity: VoiceActivityDirective): ActivityValue {
+  if (activity.state === "rest") return "rest";
+  if (activity.state === "lead-derived") return `lead-derived:${activity.behavior}`;
+  if (activity.state === "independent-note") return "independent-note:independent-harmony";
+  return `sustain:${activity.behavior}`;
+}
+function parseActivity(value: ActivityValue): VoiceActivityDirective {
+  if (value === "rest") return { state: "rest" };
+  const [state, behavior] = value.split(":");
+  if (state === "lead-derived") return { state, behavior: behavior as "unison-double" | "octave-double" };
+  if (state === "independent-note") return { state, behavior: "independent-harmony" };
+  return { state: "sustain", behavior: behavior as "sustained-pad" | "independent-harmony" };
+}
 
 export function WorkspaceClient() {
   const search = useSearchParams();
@@ -51,6 +73,16 @@ export function WorkspaceClient() {
   const [message, setMessage] = useState(() => projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요.");
   const [busy, setBusy] = useState(false);
   const [pitchText, setPitchText] = useState("C4");
+  const [lockTargetKey, setLockTargetKey] = useState("");
+  const [lockTexture, setLockTexture] = useState<TexturePatternId>("UNISON");
+  const [lockPlacement, setLockPlacement] = useState<"upper" | "lower">("upper");
+  const [lockActivity, setLockActivity] = useState<ActivityValue>("rest");
+  const [lockAnchorTone, setLockAnchorTone] = useState("");
+  const [lockAnchorRelation, setLockAnchorRelation] = useState<"unison" | "octave">("unison");
+  const [editTargetId, setEditTargetId] = useState("");
+  const [editKind, setEditKind] = useState<EditKind>("replace-pitch");
+  const [tieStart, setTieStart] = useState(false);
+  const [tieStop, setTieStop] = useState(false);
   const [shareUrl, setShareUrl] = useState<string>();
   const [storedShare, setStoredShare] = useState<{ token: string; ownerDeleteSecret: string; csrfToken: string }>();
 
@@ -73,6 +105,28 @@ export function WorkspaceClient() {
 
   const presetId = project?.selectedPresetId ?? "standard";
   const variant = project?.variants[presetId];
+  const activeCandidate = useMemo(() => {
+    if (!variant || variant.lifecycle !== "generation-attempted") return undefined;
+    const active = variant.activeArrangement;
+    const candidateId = active?.kind === "candidate"
+      ? active.candidateId
+      : active?.kind === "edited-snapshot"
+        ? variant.editedSnapshots.find((snapshot) => snapshot.id === active.snapshotId)?.baseCandidateId
+        : undefined;
+    return variant.generationResult.candidates.find((candidate) => candidate.id === candidateId) ?? variant.generationResult.candidates[0];
+  }, [variant]);
+  const lockTargets = useMemo(() => project && variant?.lifecycle === "generation-attempted"
+    ? canonicalLockTargets({ project, intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate: activeCandidate })
+    : [], [activeCandidate, project, variant]);
+  const selectedLockTarget = lockTargets.find((target) => target.key === lockTargetKey) ?? lockTargets[0];
+  const anchorToneOptions = useMemo(() => {
+    if (!project || project.chordTimelineState.status !== "resolved" || selectedLockTarget?.kind !== "anchor" || selectedLockTarget.directive.kind !== "chord-tone") return [];
+    const chordSpanId = selectedLockTarget.directive.chordSpanId;
+    const span = project.chordTimelineState.timeline.spans.find((candidate) => candidate.id === chordSpanId);
+    return span?.parseResult.status === "ok" ? span.parseResult.chord.tones : [];
+  }, [project, selectedLockTarget]);
+  const editTargets = useMemo(() => activeCandidate ? Object.entries(activeCandidate.generatedEventsByTrack).flatMap(([trackPlanId, events]) => events.map((event) => ({ trackPlanId, event, label: `${trackPlanId} · ${event.range.start.performanceMeasureIndex}:${event.range.start.offset.n}/${event.range.start.offset.d} · ${event.kind} · ${event.id}` }))) : [], [activeCandidate]);
+  const selectedEditTarget = editTargets.find((target) => target.event.id === editTargetId) ?? editTargets[0];
   const materialized = useMemo<MaterializedArrangement | undefined>(() => {
     if (!project) return undefined;
     try { return projectRenderDocument(project, presetId, projection); } catch { return undefined; }
@@ -110,31 +164,71 @@ export function WorkspaceClient() {
   const chooseCandidate = async (candidateId: string) => { if (project) await saveProject(selectActiveCandidate(project, presetId, candidateId), "active candidate를 변경했습니다."); };
   const chooseSnapshot = async (snapshotId: string) => { if (project) await saveProject(selectActiveSnapshot(project, presetId, snapshotId), "edited snapshot을 선택했습니다."); };
 
-  const addPitchLock = async () => {
-    if (!project || !variant || variant.lifecycle !== "generation-attempted") return;
-    const candidateId = variant.activeArrangement?.kind === "candidate" ? variant.activeArrangement.candidateId : variant.generationResult.candidates[0]?.id;
-    const candidate = variant.generationResult.candidates.find((item) => item.id === candidateId);
-    const eventEntry = candidate && Object.entries(candidate.generatedEventsByTrack).flatMap(([trackPlanId, events]) => events.flatMap((event) => event.kind === "note" ? [{ trackPlanId, event }] : []))[0];
-    const phraseId = variant.intentPlan.phraseIntents[0]?.phraseId;
-    if (!eventEntry || !phraseId) { setMessage("잠글 수 있는 생성 음표가 없습니다."); return; }
-    const locks = [...(project.locksByPreset[presetId]?.solver ?? []), { id: `lock:pitch:${(project.locksByPreset[presetId]?.solver.length ?? 0)}`, kind: "pitch" as const, presetId, phraseId, trackPlanId: eventEntry.trackPlanId, position: eventEntry.event.range.start, pitch: eventEntry.event.pitch }];
-    await saveProject(replaceStageLocks(project, presetId, "solver", locks), "PitchLock을 추가했습니다. 기존 결과는 generation부터 stale입니다.");
+  const chooseLockTarget = (key: string) => {
+    setLockTargetKey(key);
+    const target = lockTargets.find((candidate) => candidate.key === key);
+    if (!target) return;
+    if (target.kind === "texture") setLockTexture(target.defaultTexture);
+    if (target.kind === "placement-role") setLockPlacement(target.defaultPlacementRole);
+    if (target.kind === "activity") setLockActivity(activityValue(target.defaultActivity));
+    if (target.kind === "anchor" && target.directive.kind === "chord-tone") setLockAnchorTone(toneKey(target.directive.selectedTone));
+    if (target.kind === "anchor" && target.directive.kind === "lead-derived") setLockAnchorRelation(target.directive.relation);
+    if (target.kind === "pitch") setPitchText(`${target.defaultPitch.step}${target.defaultPitch.alter === -2 ? "bb" : target.defaultPitch.alter === -1 ? "b" : target.defaultPitch.alter === 1 ? "#" : target.defaultPitch.alter === 2 ? "##" : ""}${target.defaultPitch.octave}`);
   };
 
-  const applyPitchEdit = async () => {
-    if (!project || !variant || variant.lifecycle !== "generation-attempted" || variant.staleness) return;
-    const candidateId = variant.activeArrangement?.kind === "candidate" ? variant.activeArrangement.candidateId : variant.generationResult.candidates[0]?.id;
-    const candidate = variant.generationResult.candidates.find((item) => item.id === candidateId);
-    const event = candidate && Object.values(candidate.generatedEventsByTrack).flat().find((item) => item.kind === "note");
+  const applyLock = async () => {
+    if (!project || !selectedLockTarget) return;
+    const byStage = project.locksByPreset[presetId] ?? { intent: [], activity: [], anchor: [], solver: [] };
+    const allLocks = Object.values(byStage).flat() as UiStageLock[];
+    const usedOrdinals = new Set(allLocks.flatMap((lock) => /:(\d+)$/u.exec(lock.id)?.[1]).map(Number));
+    let ordinal = 0; while (usedOrdinals.has(ordinal)) ordinal += 1;
     const pitch = parsePitch(pitchText);
-    if (!candidate || !event || event.kind !== "note" || !pitch) { setMessage("편집 음정을 C4, Bb3처럼 입력해 주세요."); return; }
-    const editOrdinal = variant.outputEdits.filter((item) => item.baseCandidateId === candidate.id).length;
-    const edit: ArrangementOutputEdit = { id: outputEditId(presetId, candidate.contentDigest, editOrdinal), kind: "replace-pitch", presetId, baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal, eventId: event.id, pitch };
+    if (selectedLockTarget.kind === "pitch" && !pitch) { setMessage("Solver lock 음정을 C4, Bb3처럼 입력해 주세요."); return; }
+    const anchorTone = anchorToneOptions.find((tone) => toneKey(tone) === lockAnchorTone);
+    let lock = lockFromCanonicalTarget({
+      presetId, target: selectedLockTarget, ordinal, texture: lockTexture, placementRole: lockPlacement,
+      activity: parseActivity(lockActivity), ...(pitch ? { pitch } : {}), ...(anchorTone ? { anchorTone } : {}), anchorRelation: lockAnchorRelation,
+    });
+    const current = byStage[selectedLockTarget.stage] as readonly UiStageLock[];
+    const existing = current.find((candidate) => canonicalLockScopeKey(candidate) === canonicalLockScopeKey(lock));
+    if (existing) lock = { ...lock, id: existing.id } as UiStageLock;
+    const next = replaceStageLocks(project, presetId, selectedLockTarget.stage, upsertCanonicalStageLock(current, lock));
+    const boundary = next.variants[presetId]?.staleness?.staleFrom ?? (selectedLockTarget.stage === "solver" ? "generation" : selectedLockTarget.stage);
+    await saveProject(next, `${selectedLockTarget.stage} lock ${existing ? "교체" : "생성"} · ${staleBoundaryPresentation(boundary)}`);
+  };
+
+  const removeLock = async (stage: keyof VariantStageLocks, id: string) => {
+    if (!project) return;
+    const byStage = project.locksByPreset[presetId] ?? { intent: [], activity: [], anchor: [], solver: [] };
+    const next = replaceStageLocks(project, presetId, stage, byStage[stage].filter((lock) => lock.id !== id));
+    const boundary = next.variants[presetId]?.staleness?.staleFrom ?? (stage === "solver" ? "generation" : stage);
+    await saveProject(next, `${stage} lock 제거 · ${staleBoundaryPresentation(boundary)}`);
+  };
+
+  const applyOutputEdit = async () => {
+    if (!project || !variant || variant.lifecycle !== "generation-attempted" || variant.staleness || !activeCandidate || !selectedEditTarget) return;
+    const event = selectedEditTarget.event;
+    const pitch = parsePitch(pitchText);
+    if ((editKind === "replace-pitch" || editKind === "replace-event-note") && !pitch) { setMessage("편집 음정을 C4, Bb3처럼 입력해 주세요."); return; }
+    if ((editKind === "replace-pitch" || editKind === "set-tie") && event.kind !== "note") { setMessage("이 편집 종류는 note 이벤트만 대상으로 합니다."); return; }
+    const baseEdits = variant.outputEdits.filter((item) => item.baseCandidateId === activeCandidate.id);
+    const existing = baseEdits.find((item) => outputEditTargetId(item) === event.id);
+    const editOrdinal = existing?.editOrdinal ?? Math.max(-1, ...baseEdits.map((item) => item.editOrdinal)) + 1;
+    const common = { id: existing?.id ?? outputEditId(presetId, activeCandidate.contentDigest, editOrdinal), presetId, baseCandidateId: activeCandidate.id, baseCandidateDigest: activeCandidate.contentDigest, editOrdinal } as const;
+    const edit: ArrangementOutputEdit = editKind === "replace-pitch"
+      ? { ...common, kind: "replace-pitch", eventId: event.id, pitch: pitch! }
+      : editKind === "replace-event-note"
+        ? { ...common, kind: "replace-event", oldEventId: event.id, replacement: { kind: "note", pitch: pitch!, tieStart, tieStop } }
+        : editKind === "replace-event-rest"
+          ? { ...common, kind: "replace-event", oldEventId: event.id, replacement: { kind: "rest" } }
+          : { ...common, kind: "set-tie", eventId: event.id, tieStart, tieStop };
+    const nextBaseEdits = [...baseEdits.filter((item) => outputEditTargetId(item) !== event.id), edit].sort((left, right) => left.editOrdinal - right.editOrdinal);
     setBusy(true);
     try {
-      const result = await materializeEditedArrangement({ lifecycleInput: await wagInputFromProject(project, presetId), intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate, edits: [...variant.outputEdits.filter((item) => item.baseCandidateId === candidate.id), edit] });
+      const result = await materializeEditedArrangement({ lifecycleInput: await wagInputFromProject(project, presetId), intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate: activeCandidate, edits: nextBaseEdits });
       if (result.status === "blocked") { setMessage(`편집 blocked · ${result.diagnostics.map((item) => item.code).join(", ")}`); return; }
-      const nextVariant = { ...variant, outputEdits: [...variant.outputEdits, edit], editedSnapshots: [...variant.editedSnapshots, result.snapshot], activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
+      const outputEdits = [...variant.outputEdits.filter((item) => item.baseCandidateId !== activeCandidate.id || outputEditTargetId(item) !== event.id), edit];
+      const nextVariant = { ...variant, outputEdits, editedSnapshots: [...variant.editedSnapshots, result.snapshot], activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
       await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다."); }
     finally { setBusy(false); }
@@ -197,7 +291,7 @@ export function WorkspaceClient() {
     <section className="panel">
       <h2>1. Setup · generation</h2>
       <div className={styles.controls}><label>Preset <select value={presetId} onChange={(event) => void choosePreset(event.target.value as ArrangementPresetId)}>{PRESETS.map((value) => <option value={value} key={value}>{value}</option>)}</select></label><button className="primary" type="button" disabled={busy} onClick={() => void generate()}>{busy ? "실행 중…" : variant?.staleness ? `${variant.staleness.staleFrom}부터 재생성` : "정본 화음 생성"}</button></div>
-      <dl className={styles.grid}><div><dt>상태</dt><dd data-testid="generation-status">{status}</dd></div><div><dt>가수 / track</dt><dd>{project.performers.length} / {project.trackPlans.length}</dd></div><div><dt>candidate</dt><dd>{candidates.length}</dd></div><div><dt>stale boundary</dt><dd>{variant ? regenerationBoundary(variant) : "none"}</dd></div></dl>
+      <dl className={styles.grid}><div><dt>상태</dt><dd data-testid="generation-status">{status}</dd></div><div><dt>가수 / track</dt><dd>{project.performers.length} / {project.trackPlans.length}</dd></div><div><dt>candidate</dt><dd>{candidates.length}</dd></div><div><dt>stale boundary / regeneration</dt><dd data-testid="stale-boundary">{staleBoundaryPresentation(variant ? regenerationBoundary(variant) : "none")}</dd></div></dl>
       <ul>{project.assignments.map((assignment) => <li key={assignment.trackPlanId}>{assignment.trackPlanId} → {project.performers.find((item) => item.id === assignment.performerId)?.displayName}</li>)}</ul>
       {variant && variant.lifecycle !== "empty" ? <details><summary>Intent / Activity / Anchor plan 검사</summary><p><code>{short(variant.intentPlan.intentPlanDigest)}</code>{"activityPlan" in variant ? <> · <code>{short(variant.activityPlan.activityPlanDigest)}</code></> : null}{"anchorPlan" in variant ? <> · <code>{short(variant.anchorPlan.anchorPlanDigest)}</code></> : null}</p></details> : null}
     </section>
@@ -206,7 +300,32 @@ export function WorkspaceClient() {
 
     {abc && playbackPlan && materialized ? <><section className="panel"><h2>3. Score · practice</h2><p>Lead / Upper / Lower / full 투영과 deterministic band가 같은 ArrangementRenderDocument에서 생성됩니다.</p></section><ProductPracticePlayer key={`${materialized.artifactDigest}:${projection}`} abc={abc} plan={playbackPlan} tempo={project.source.defaultTempo} identity={`${materialized.artifactDigest}:${projection}`} /></> : null}
 
-    {variant?.lifecycle === "generation-attempted" ? <section className="panel"><h2>4. Locks · candidate-bound edit</h2><div className={styles.controls}><button type="button" disabled={Boolean(variant.staleness)} onClick={() => void addPitchLock()}>첫 생성 음표 PitchLock</button><label>첫 생성 음표 교체 <input value={pitchText} onChange={(event) => setPitchText(event.target.value)} aria-label="replacement pitch" /></label><button type="button" disabled={busy || Boolean(variant.staleness)} onClick={() => void applyPitchEdit()}>Snapshot materialize</button></div><p>Intent {project.locksByPreset[presetId]?.intent.length ?? 0} · Activity {project.locksByPreset[presetId]?.activity.length ?? 0} · Anchor {project.locksByPreset[presetId]?.anchor.length ?? 0} · Solver {project.locksByPreset[presetId]?.solver.length ?? 0}</p><p>편집은 candidate ID/digest에 묶이고, 독립 Validator와 metrics를 다시 실행합니다. invalid snapshot은 검사할 수 있지만 기본 export/share는 차단됩니다.</p></section> : null}
+    {variant?.lifecycle === "generation-attempted" ? <section className="panel"><h2>4. Locks · candidate-bound edit</h2>
+      <h3>Canonical stage locks</h3>
+      <div className={styles.controls}>
+        <label>Target <select data-testid="lock-target" value={selectedLockTarget?.key ?? ""} onChange={(event) => chooseLockTarget(event.target.value)}>{lockTargets.map((target) => <option key={target.key} value={target.key}>{target.stage} · {target.label}</option>)}</select></label>
+        {selectedLockTarget?.kind === "texture" ? <label>Texture <select value={lockTexture} onChange={(event) => setLockTexture(event.target.value as TexturePatternId)}>{TEXTURES.map((texture) => <option value={texture} key={texture}>{texture}</option>)}</select></label> : null}
+        {selectedLockTarget?.kind === "placement-role" ? <label>Placement <select value={lockPlacement} onChange={(event) => setLockPlacement(event.target.value as "upper" | "lower")}><option value="upper">upper</option><option value="lower">lower</option></select></label> : null}
+        {selectedLockTarget?.kind === "activity" ? <label>Activity <select value={lockActivity} onChange={(event) => setLockActivity(event.target.value as ActivityValue)}>{ACTIVITY_VALUES.map((value) => <option value={value} key={value}>{value}</option>)}</select></label> : null}
+        {selectedLockTarget?.kind === "anchor" && selectedLockTarget.directive.kind === "chord-tone" ? <label>Chord tone <select value={lockAnchorTone || toneKey(selectedLockTarget.directive.selectedTone)} onChange={(event) => setLockAnchorTone(event.target.value)}>{anchorToneOptions.map((tone) => <option value={toneKey(tone)} key={toneKey(tone)}>degree {tone.degree} · alter {tone.alteration}</option>)}</select></label> : null}
+        {selectedLockTarget?.kind === "anchor" && selectedLockTarget.directive.kind === "lead-derived" ? <label>Relation <select value={lockAnchorRelation} onChange={(event) => setLockAnchorRelation(event.target.value as "unison" | "octave")}><option value="unison">unison</option><option value="octave">octave</option></select></label> : null}
+        {selectedLockTarget?.kind === "anchor" && selectedLockTarget.directive.kind === "planned-nct" ? <span>canonical planned-nct endpoints / resolution</span> : null}
+        {selectedLockTarget?.kind === "pitch" ? <label>Pitch <input value={pitchText} onChange={(event) => setPitchText(event.target.value)} aria-label="solver lock pitch" /></label> : null}
+        <button type="button" disabled={!selectedLockTarget} onClick={() => void applyLock()}>Lock 생성 / 교체</button>
+      </div>
+      <ul data-testid="stage-locks">{(Object.entries(project.locksByPreset[presetId] ?? { intent: [], activity: [], anchor: [], solver: [] }) as Array<[keyof VariantStageLocks, readonly UiStageLock[]]>).flatMap(([stage, locks]) => locks.map((lock) => <li key={lock.id}>{stage} · {lock.kind} · {canonicalLockScopeKey(lock)} <button type="button" onClick={() => void removeLock(stage, lock.id)}>제거</button></li>))}</ul>
+      <p>Intent {project.locksByPreset[presetId]?.intent.length ?? 0} · Activity {project.locksByPreset[presetId]?.activity.length ?? 0} · Anchor {project.locksByPreset[presetId]?.anchor.length ?? 0} · Solver {project.locksByPreset[presetId]?.solver.length ?? 0}</p>
+      <h3>Canonical output edits</h3>
+      <div className={styles.controls}>
+        <label>Event <select data-testid="edit-target" value={selectedEditTarget?.event.id ?? ""} onChange={(event) => setEditTargetId(event.target.value)}>{editTargets.map((target) => <option key={target.event.id} value={target.event.id}>{target.label}</option>)}</select></label>
+        <label>Edit <select value={editKind} onChange={(event) => setEditKind(event.target.value as EditKind)}><option value="replace-pitch">replace-pitch</option><option value="replace-event-note">replace-event · note</option><option value="replace-event-rest">replace-event · rest</option><option value="set-tie">set-tie</option></select></label>
+        {editKind === "replace-pitch" || editKind === "replace-event-note" ? <label>Pitch <input value={pitchText} onChange={(event) => setPitchText(event.target.value)} aria-label="replacement pitch" /></label> : null}
+        {editKind === "replace-event-note" || editKind === "set-tie" ? <><label><input type="checkbox" checked={tieStart} onChange={(event) => setTieStart(event.target.checked)} /> tieStart</label><label><input type="checkbox" checked={tieStop} onChange={(event) => setTieStop(event.target.checked)} /> tieStop</label></> : null}
+        <button type="button" disabled={busy || Boolean(variant.staleness) || !selectedEditTarget} onClick={() => void applyOutputEdit()}>Snapshot materialize</button>
+      </div>
+      {variant.staleness ? <p className="status error">편집 차단 · {staleBoundaryPresentation(variant.staleness.staleFrom)} 완료 후 candidate-bound 편집을 다시 선택하세요.</p> : null}
+      <p>편집은 canonical event ID와 candidate ID/digest에 묶이며 replace-pitch, replace-event(note/rest), set-tie를 지원합니다. 독립 Validator와 전체 metrics를 다시 실행하고 invalid snapshot의 기본 export/share를 차단합니다.</p>
+    </section> : null}
 
     <section className="panel"><h2>5. Export · local save · project transfer</h2><div className={styles.controls}><button type="button" disabled={!materialized || !canDefaultExportOrShare(materialized)} onClick={exportMusicXml}>MusicXML 다운로드</button><button type="button" onClick={() => void saveProject(project)}>로컬 저장</button><button type="button" onClick={() => void exportProject()}>프로젝트 내보내기</button><label className={styles.fileButton}>프로젝트 가져오기<input hidden type="file" accept="application/json,.json" onChange={(event) => void importProject(event)} /></label><button type="button" onClick={() => void deleteLocal()}>로컬 삭제</button></div></section>
 

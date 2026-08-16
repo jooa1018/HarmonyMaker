@@ -26,6 +26,7 @@ import { arrangementRenderDocumentToAbc } from "./score-adapter";
 import { decodeProductUrlShare, encodeProductUrlShare } from "./share-url";
 import { practiceShareToRenderDocument } from "./shared-practice";
 import { generateProjectVariant, type ProductGenerationOutcome } from "./workspace";
+import { canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, type UiStageLock } from "./workspace-controls";
 import type { WagLifecycleInput } from "../grammar/lifecycle";
 
 async function generatedProject(inputOverride?: WagLifecycleInput): Promise<{ readonly project: HarmonyProject; readonly generated: Extract<ProductGenerationOutcome, { readonly status: "complete" | "partial" }> }> {
@@ -145,6 +146,32 @@ describe("Product Core workspace, render, playback, and state", () => {
     expect(blocked.project.variants.standard?.lastBlockedAttempt?.stage).toBe("generation");
     expect(blocked.project.variants.standard?.staleness?.staleFrom).toBe("generation");
   });
+
+  it("exposes canonical targets for every lock stage and preserves the earliest stale boundary", async () => {
+    const { project } = await generatedProject();
+    const variant = project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") return;
+    const candidate = variant.generationResult.candidates.find((item) => Object.keys(item.generatedEventsByTrack).length > 0)!;
+    const targets = canonicalLockTargets({ project, intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate });
+    expect(new Set(targets.map((target) => target.stage))).toEqual(new Set(["intent", "activity", "anchor", "solver"]));
+    expect(targets.map((target) => target.key)).toEqual([...new Set(targets.map((target) => target.key))]);
+    const locks = Object.fromEntries(["intent", "activity", "anchor", "solver"].map((stage) => {
+      const target = targets.find((candidateTarget) => candidateTarget.stage === stage)!;
+      return [stage, lockFromCanonicalTarget({ presetId: "standard", target, ordinal: targets.indexOf(target) })];
+    })) as Record<"intent" | "activity" | "anchor" | "solver", UiStageLock>;
+    for (const [stage, lock] of Object.entries(locks)) expect(lock.kind === "pitch" ? "solver" : lock.kind === "activity" ? "activity" : lock.kind.startsWith("anchor-") ? "anchor" : "intent").toBe(stage);
+    const replaced = { ...locks.solver, id: "lk:standard:ui:solver:99" } as UiStageLock;
+    expect(upsertCanonicalStageLock([locks.solver], replaced)).toHaveLength(1);
+    expect(canonicalLockScopeKey(replaced)).toBe(canonicalLockScopeKey(locks.solver));
+
+    const solverStale = replaceStageLocks(project, "standard", "solver", [locks.solver]);
+    expect(solverStale.variants.standard?.staleness?.staleFrom).toBe("generation");
+    const intentStale = replaceStageLocks(solverStale, "standard", "intent", [locks.intent]);
+    expect(intentStale.variants.standard?.staleness?.staleFrom).toBe("intent");
+    const stillIntent = replaceStageLocks(intentStale, "standard", "solver", [locks.solver]);
+    expect(stillIntent.variants.standard?.staleness?.staleFrom).toBe("intent");
+    expect(staleBoundaryPresentation("intent")).toBe("staleFrom=intent · regenerate Intent → Activity → Anchor → Solver → assembly → Validator");
+  });
 });
 
 describe("candidate-bound edits and EditedArrangementSnapshot", () => {
@@ -157,6 +184,7 @@ describe("candidate-bound edits and EditedArrangementSnapshot", () => {
     if (event.kind !== "note") return;
     const baseJson = JSON.stringify(candidate);
     const samePitch: ArrangementOutputEdit = { id: outputEditId("standard", candidate.contentDigest, 0), kind: "replace-pitch", presetId: "standard", baseCandidateId: candidate.id, baseCandidateDigest: candidate.contentDigest, editOrdinal: 0, eventId: event.id, pitch: event.pitch };
+    expect(outputEditTargetId(samePitch)).toBe(event.id);
     const lifecycleInput = await (await import("./workspace")).wagInputFromProject(project, "standard");
     const valid = await materializeEditedArrangement({ lifecycleInput, intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate, edits: [samePitch] });
     expect(valid.status).toBe("complete");

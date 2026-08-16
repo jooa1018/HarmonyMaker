@@ -18,6 +18,11 @@ function staleFrom(stage: LockStage): VariantStaleness["staleFrom"] {
   return stage === "solver" ? "generation" : stage;
 }
 
+function earliestStaleBoundary(left: VariantStaleness["staleFrom"] | undefined, right: VariantStaleness["staleFrom"]): VariantStaleness["staleFrom"] {
+  const order: readonly VariantStaleness["staleFrom"][] = ["intent", "activity", "anchor", "generation"];
+  return left && order.indexOf(left) < order.indexOf(right) ? left : right;
+}
+
 export function replaceStageLocks(
   project: HarmonyProject,
   presetId: ArrangementPresetId,
@@ -36,7 +41,7 @@ export function replaceStageLocks(
     "anchorPlan" in variant ? variant.anchorPlan.anchorPlanDigest : undefined,
     variant.lifecycle === "generation-attempted" ? variant.generationResult.digests.generationInputDigest : undefined,
   ].filter((value): value is NonNullable<typeof value> => value !== undefined);
-  const stale = markVariantStale(variant, { staleFrom: staleFrom(stage), staleDiagnosticIds: [], previousArtifactDigests });
+  const stale = markVariantStale(variant, { staleFrom: earliestStaleBoundary(variant.staleness?.staleFrom, staleFrom(stage)), staleDiagnosticIds: [], previousArtifactDigests });
   const { activeArrangement, ...staleWithoutActiveArrangement } = stale.lifecycle === "generation-attempted" ? stale : { ...stale, activeArrangement: undefined };
   void activeArrangement;
   return {
