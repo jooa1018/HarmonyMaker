@@ -1,5 +1,5 @@
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
-import type { EffectiveArrangementConfig, UserArrangementCaps } from "../domain/config";
+import { resolveEffectiveArrangementConfig, type EffectiveArrangementConfig, type UserArrangementCaps } from "../domain/config";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
 import {
   digestAnchorInput,
@@ -10,7 +10,8 @@ import {
   type CanonicalTrackProjection,
 } from "../domain/digest/stages";
 import { digestActivityPlan, digestAnchorPlan, digestIntentPlan, type PlanOrdinalRegistry } from "../domain/digest/plans";
-import type { SemanticDigest } from "../domain/digest/canonical";
+import { compareCanonicalValues, type SemanticDigest } from "../domain/digest/canonical";
+import { digestMusicalSource } from "../domain/digest/source";
 import {
   addFractions,
   compareFractions,
@@ -18,7 +19,13 @@ import {
   subtractFractions,
   type Fraction,
 } from "../domain/fraction";
-import type { EffectiveChordTimeline, PerformanceChordSpan } from "../domain/harmony/chord-timeline";
+import {
+  digestPerformanceSequence,
+  digestSourceChordProjection,
+  resolveEffectiveChordTimeline,
+  type EffectiveChordTimeline,
+  type PerformanceChordSpan,
+} from "../domain/harmony/chord-timeline";
 import {
   phraseActivityPlanId,
   phraseAnchorPlanId,
@@ -29,7 +36,7 @@ import {
   voiceActivitySpanId,
   voiceAttackEventId,
 } from "../domain/ids";
-import type { ActivityLock, AnchorLock, PlacementRoleLock, TextureLock, VariantStageLocks } from "../domain/locks";
+import { validateLockScope, type ActivityLock, type AnchorLock, type PlacementRoleLock, type TextureLock, type VariantStageLocks } from "../domain/locks";
 import type {
   ArrangementActivityPlan,
   ArrangementAnchorPlan,
@@ -58,7 +65,7 @@ import {
 } from "../domain/performer";
 import { containsPitch, pitchMidiNumber, type SpelledPitch } from "../domain/pitch";
 import { basisPoints, durationRate, extendedCountRate } from "../domain/rates";
-import type { SourceLeadAtomization, TimelineAtom } from "../domain/source/atomization";
+import { atomizeSourceLead, type SourceLeadAtomization, type TimelineAtom } from "../domain/source/atomization";
 import type {
   PhraseRegion,
   SectionDefinition,
@@ -276,6 +283,48 @@ function structuralDiagnostics(input: WagLifecycleInput): Array<Omit<Diagnostic,
   return diagnostics;
 }
 
+function lockScopeDiagnostics(
+  input: WagLifecycleInput,
+  phrases: readonly PhraseRegion[],
+  assignedTracks: readonly PreparedAssignedTrack[],
+): Array<Omit<Diagnostic, "id">> {
+  const diagnostics: Array<Omit<Diagnostic, "id">> = [];
+  const locks = input.locks ?? EMPTY_LOCKS;
+  const allLocks = [...locks.intent, ...locks.activity, ...locks.anchor, ...locks.solver];
+  const assignedTrackIds = new Set(assignedTracks.map((assigned) => assigned.trackPlan.id));
+  const seenIds = new Set<string>();
+  for (const lock of allLocks) {
+    const phrase = phrases.find((candidate) => candidate.id === lock.phraseId);
+    const trackPlanId = "trackPlanId" in lock ? lock.trackPlanId : undefined;
+    let valid = validateLockScope(lock, input.effectiveConfig.presetId)
+      && phrase !== undefined
+      && !seenIds.has(lock.id)
+      && (trackPlanId === undefined || assignedTrackIds.has(trackPlanId));
+    seenIds.add(lock.id);
+    if (valid && phrase && lock.kind === "activity") valid = rangeContains(phrase.range, lock.range);
+    if (valid && phrase && (lock.kind === "anchor-chord-tone" || lock.kind === "anchor-lead-derived"
+      || lock.kind === "anchor-planned-nct" || lock.kind === "pitch")) {
+      valid = comparePositions(phrase.range.start, lock.position) <= 0 && comparePositions(lock.position, phrase.range.end) < 0;
+    }
+    if (valid && lock.kind === "anchor-chord-tone") {
+      const span = input.effectiveChordTimeline.spans.find((candidate) => candidate.id === lock.chordSpanId);
+      valid = span?.parseResult.status === "ok" && positionWithin(span.range, lock.position)
+        && span.parseResult.chord.tones.some((tone) => toneEqual(tone, lock.selectedTone));
+    }
+    if (!valid) diagnostics.push(diagnosticInput("STAGE_LOCK_SCOPE_INVALID", lock.phraseId, {
+      stage: lock.kind === "texture" || lock.kind === "placement-role" ? "intent"
+        : lock.kind === "activity" ? "activity" : lock.kind.startsWith("anchor-") ? "anchor" : "solver",
+      lockId: lock.id,
+      reason: "LOCK_SCOPE_INVALID",
+    }));
+  }
+  return diagnostics;
+}
+
+function positionWithin(range: MusicalRange, position: MusicalPosition): boolean {
+  return comparePositions(range.start, position) <= 0 && comparePositions(position, range.end) < 0;
+}
+
 export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
   { readonly status: "complete"; readonly value: PreparedWagLifecycle }
   | { readonly status: "blocked"; readonly diagnostics: readonly Diagnostic[] }
@@ -286,6 +335,57 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
     || input.effectiveConfig.presetProfileDigest !== authority.presetProfiles.presetProfileDigest
     || input.effectiveConfig.digest.length !== 64) {
     rawDiagnostics.push({ code: "PRESET_PROFILE_VERSION_MISMATCH", severity: "blocking", messageKo: "PRESET_PROFILE_VERSION_MISMATCH" });
+  }
+  if (rawDiagnostics.length === 0) {
+    try {
+      const assignedEnabledHarmonyTrackCount = input.trackPlans.filter((track) => track.kind === "generated-harmony" && track.enabled).length;
+      const [musicalSourceDigest, sourceChordProjectionDigest, performanceSequenceDigest, effectiveConfig] = await Promise.all([
+        digestMusicalSource(input.source),
+        digestSourceChordProjection(input.source.sourceMeasures),
+        digestPerformanceSequence(input.source.performanceSequence, input.source.sourceMeasures),
+        resolveEffectiveArrangementConfig({
+          registry: authority.presetProfiles,
+          expectedPresetProfileVersion: authority.presetProfiles.presetProfileVersion,
+          mode: input.effectiveConfig.mode,
+          presetId: input.effectiveConfig.presetId,
+          userCaps: input.userCaps,
+          assignedEnabledHarmonyTrackCount,
+        }),
+      ]);
+      if (musicalSourceDigest !== input.source.revisionDigest) {
+        rawDiagnostics.push({ code: "SOURCE_REVISION_MISMATCH", severity: "blocking", messageKo: "SOURCE_REVISION_MISMATCH" });
+      }
+      if (compareCanonicalValues(effectiveConfig, input.effectiveConfig) !== 0) {
+        rawDiagnostics.push({ code: "ALGORITHM_CONFIG_MISMATCH", severity: "blocking", messageKo: "ALGORITHM_CONFIG_MISMATCH", details: { stage: "preparation", reason: "EFFECTIVE_CONFIG_MISMATCH" } });
+      }
+      const timelineState = await resolveEffectiveChordTimeline({
+        sourceMeasures: input.source.sourceMeasures,
+        performanceSequence: input.source.performanceSequence,
+        sourceChordProjectionDigest,
+        performanceSequenceDigest,
+        policy: input.effectiveChordTimeline.resolutionPolicy,
+        resolverVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.chordTimelineResolverVersion,
+        expectedResolverVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.chordTimelineResolverVersion,
+      });
+      if (timelineState.status !== "resolved" || timelineState.timeline.digest !== input.effectiveChordTimeline.digest) {
+        rawDiagnostics.push({ code: "EFFECTIVE_CHORD_TIMELINE_STALE", severity: "blocking", messageKo: "EFFECTIVE_CHORD_TIMELINE_STALE" });
+      } else {
+        const atomization = await atomizeSourceLead({
+          sourceMeasures: input.source.sourceMeasures,
+          performanceSequence: input.source.performanceSequence,
+          sectionOccurrences: input.source.sectionOccurrences,
+          phraseRegions: input.source.phraseRegions,
+          chordTimeline: timelineState.timeline,
+          musicalSourceDigest,
+          atomizerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.sourceLeadAtomizerVersion,
+        });
+        if (atomization.digest !== input.sourceLeadAtomization.digest) {
+          rawDiagnostics.push({ code: "SOURCE_LEAD_ATOMIZATION_STALE", severity: "blocking", messageKo: "SOURCE_LEAD_ATOMIZATION_STALE" });
+        }
+      }
+    } catch {
+      rawDiagnostics.push({ code: "ALGORITHM_CONFIG_MISMATCH", severity: "blocking", messageKo: "ALGORITHM_CONFIG_MISMATCH", details: { stage: "preparation", reason: "AUTHORITY_RECOMPUTATION_FAILED" } });
+    }
   }
   if (rawDiagnostics.length > 0) {
     return { status: "blocked", diagnostics: await createDiagnostics(rawDiagnostics, authority.diagnostics) };
@@ -303,6 +403,8 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
   }
   const sections = canonicalSections(input.source);
   const phrases = canonicalPhrases(input.source);
+  const lockDiagnostics = lockScopeDiagnostics(input, phrases, assignedTracks);
+  if (lockDiagnostics.length > 0) return { status: "blocked", diagnostics: await createDiagnostics(lockDiagnostics, authority.diagnostics) };
   const sectionByPhraseId: Record<string, SectionOccurrence> = {};
   for (const phrase of phrases) {
     const section = sections.find((candidate) => candidate.id === phrase.sectionOccurrenceId);
@@ -658,17 +760,14 @@ function diagnosticInput(code: DiagnosticCode, phraseId?: string, details?: Read
   return { code, severity: "blocking", messageKo: code, ...(phraseId ? { location: { phraseId } } : {}), ...(details ? { details } : {}) };
 }
 
-export async function planWagIntent(input: WagLifecycleInput): Promise<StageExecutionResult<ArrangementIntentPlan>> {
-  const preparedResult = await prepareWagLifecycle(input);
-  if (preparedResult.status === "blocked") return preparedResult;
-  const prepared = preparedResult.value;
-  const projections = canonicalInputProjections(prepared);
-  const intentInputDigest = await digestIntentInput({
+async function expectedIntentInputDigest(prepared: PreparedWagLifecycle): Promise<SemanticDigest> {
+  const input = prepared.input;
+  return digestIntentInput({
     musicalSourceDigest: input.source.revisionDigest,
     effectiveChordTimelineDigest: input.effectiveChordTimeline.digest,
     sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
     atomizerVersion: input.sourceLeadAtomization.atomizerVersion,
-    ...projections,
+    ...canonicalInputProjections(prepared),
     mode: input.effectiveConfig.mode,
     userCaps: input.userCaps,
     presetId: input.effectiveConfig.presetId,
@@ -683,6 +782,124 @@ export async function planWagIntent(input: WagLifecycleInput): Promise<StageExec
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
   }, prepared.ordinals);
+}
+
+async function expectedActivityInputDigest(prepared: PreparedWagLifecycle, intentPlanDigest: SemanticDigest): Promise<SemanticDigest> {
+  const input = prepared.input;
+  return digestActivityInput({
+    intentPlanDigest,
+    sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
+    atomizerVersion: input.sourceLeadAtomization.atomizerVersion,
+    effectiveConfigDigest: input.effectiveConfig.digest,
+    presetProfileVersion: input.effectiveConfig.presetProfileVersion,
+    presetProfileDigest: input.effectiveConfig.presetProfileDigest,
+    locks: prepared.locks.activity,
+    activityPlannerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.activityPlannerVersion,
+    activityPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.activityPlannerConfigDigest,
+    diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
+    diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
+  }, prepared.ordinals);
+}
+
+async function expectedAnchorInputDigest(prepared: PreparedWagLifecycle, activityPlanDigest: SemanticDigest): Promise<SemanticDigest> {
+  const input = prepared.input;
+  return digestAnchorInput({
+    activityPlanDigest,
+    sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
+    atomizerVersion: input.sourceLeadAtomization.atomizerVersion,
+    effectiveConfigDigest: input.effectiveConfig.digest,
+    presetProfileVersion: input.effectiveConfig.presetProfileVersion,
+    presetProfileDigest: input.effectiveConfig.presetProfileDigest,
+    locks: prepared.locks.anchor,
+    anchorPlannerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.anchorPlannerVersion,
+    anchorPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.anchorPlannerConfigDigest,
+    diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
+    diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
+  }, prepared.ordinals);
+}
+
+export async function wagIntentAuthorityMatches(
+  prepared: PreparedWagLifecycle,
+  intentPlan: ArrangementIntentPlan,
+): Promise<boolean> {
+  try {
+    return intentPlan.stage === "intent"
+      && intentPlan.grammarId === "worship-arrangement-grammar-v1"
+      && intentPlan.intentPlanDigest === await digestIntentPlan(intentPlan, prepared.ordinals)
+      && intentPlan.intentInputDigest === await expectedIntentInputDigest(prepared)
+      && intentPlan.presetId === prepared.input.effectiveConfig.presetId
+      && intentPlan.effectiveChordTimelineDigest === prepared.input.effectiveChordTimeline.digest
+      && intentPlan.sourceLeadAtomizationDigest === prepared.input.sourceLeadAtomization.digest
+      && intentPlan.effectiveConfigDigest === prepared.input.effectiveConfig.digest
+      && intentPlan.presetProfileVersion === prepared.input.effectiveConfig.presetProfileVersion
+      && intentPlan.presetProfileDigest === prepared.input.effectiveConfig.presetProfileDigest
+      && intentPlan.grammarVersion === APPLICATION_ALGORITHM_VERSION_REGISTRY.grammarVersion
+      && intentPlan.plannerVersion === APPLICATION_ALGORITHM_VERSION_REGISTRY.plannerVersion
+      && intentPlan.grammarConfigDigest === prepared.authority.wagOwnedConfigDigests.grammarConfigDigest
+      && intentPlan.plannerConfigDigest === prepared.authority.wagOwnedConfigDigests.plannerConfigDigest
+      && intentPlan.diagnosticRegistryVersion === prepared.authority.diagnostics.registryVersion
+      && intentPlan.diagnosticRegistryDigest === prepared.authority.diagnostics.registryDigest
+      && (!intentPlan.grammarTrace
+        || intentPlan.grammarTrace.grammarVersion === APPLICATION_ALGORITHM_VERSION_REGISTRY.grammarVersion);
+  } catch {
+    return false;
+  }
+}
+
+export async function wagActivityAuthorityMatches(
+  prepared: PreparedWagLifecycle,
+  intentPlan: ArrangementIntentPlan,
+  activityPlan: ArrangementActivityPlan,
+): Promise<boolean> {
+  try {
+    return await wagIntentAuthorityMatches(prepared, intentPlan)
+      && activityPlan.stage === "activity-realized"
+      && activityPlan.activityPlanDigest === await digestActivityPlan(activityPlan, prepared.ordinals)
+      && activityPlan.intentPlanDigest === intentPlan.intentPlanDigest
+      && activityPlan.activityInputDigest === await expectedActivityInputDigest(prepared, intentPlan.intentPlanDigest)
+      && activityPlan.presetId === prepared.input.effectiveConfig.presetId
+      && activityPlan.sourceLeadAtomizationDigest === prepared.input.sourceLeadAtomization.digest
+      && activityPlan.effectiveConfigDigest === prepared.input.effectiveConfig.digest
+      && activityPlan.presetProfileDigest === prepared.input.effectiveConfig.presetProfileDigest
+      && activityPlan.activityPlannerVersion === APPLICATION_ALGORITHM_VERSION_REGISTRY.activityPlannerVersion
+      && activityPlan.activityPlannerConfigDigest === prepared.authority.wagOwnedConfigDigests.activityPlannerConfigDigest
+      && activityPlan.diagnosticRegistryVersion === prepared.authority.diagnostics.registryVersion
+      && activityPlan.diagnosticRegistryDigest === prepared.authority.diagnostics.registryDigest;
+  } catch {
+    return false;
+  }
+}
+
+export async function wagAnchorAuthorityMatches(
+  prepared: PreparedWagLifecycle,
+  intentPlan: ArrangementIntentPlan,
+  activityPlan: ArrangementActivityPlan,
+  anchorPlan: ArrangementAnchorPlan,
+): Promise<boolean> {
+  try {
+    return await wagActivityAuthorityMatches(prepared, intentPlan, activityPlan)
+      && anchorPlan.stage === "anchor-realized"
+      && anchorPlan.anchorPlanDigest === await digestAnchorPlan(anchorPlan, prepared.ordinals)
+      && anchorPlan.activityPlanDigest === activityPlan.activityPlanDigest
+      && anchorPlan.anchorInputDigest === await expectedAnchorInputDigest(prepared, activityPlan.activityPlanDigest)
+      && anchorPlan.presetId === prepared.input.effectiveConfig.presetId
+      && anchorPlan.sourceLeadAtomizationDigest === prepared.input.sourceLeadAtomization.digest
+      && anchorPlan.effectiveConfigDigest === prepared.input.effectiveConfig.digest
+      && anchorPlan.presetProfileDigest === prepared.input.effectiveConfig.presetProfileDigest
+      && anchorPlan.anchorPlannerVersion === APPLICATION_ALGORITHM_VERSION_REGISTRY.anchorPlannerVersion
+      && anchorPlan.anchorPlannerConfigDigest === prepared.authority.wagOwnedConfigDigests.anchorPlannerConfigDigest
+      && anchorPlan.diagnosticRegistryVersion === prepared.authority.diagnostics.registryVersion
+      && anchorPlan.diagnosticRegistryDigest === prepared.authority.diagnostics.registryDigest;
+  } catch {
+    return false;
+  }
+}
+
+export async function planWagIntent(input: WagLifecycleInput): Promise<StageExecutionResult<ArrangementIntentPlan>> {
+  const preparedResult = await prepareWagLifecycle(input);
+  if (preparedResult.status === "blocked") return preparedResult;
+  const prepared = preparedResult.value;
+  const intentInputDigest = await expectedIntentInputDigest(prepared);
 
   const sectionIntents: SectionArrangementIntent[] = prepared.sections.map((section, sectionOrdinal) => {
     const target = intensityBase(input.effectiveConfig.maxHarmonyTracks);
@@ -877,27 +1094,15 @@ export async function planWagActivity(
   const preparedResult = await prepareWagLifecycle(input);
   if (preparedResult.status === "blocked") return preparedResult;
   const prepared = preparedResult.value;
-  if (intentPlan.intentPlanDigest !== await digestIntentPlan(intentPlan, prepared.ordinals)
-    || intentPlan.presetId !== input.effectiveConfig.presetId) {
+  if (!await wagIntentAuthorityMatches(prepared, intentPlan)) {
     return { status: "blocked", diagnostics: await createDiagnostics([
       diagnosticInput("ALGORITHM_CONFIG_MISMATCH", undefined, { stage: "activity", reason: "INTENT_PLAN_DIGEST_MISMATCH" }),
     ], prepared.authority.diagnostics) };
   }
-  const activityInputDigest = await digestActivityInput({
-    intentPlanDigest: intentPlan.intentPlanDigest,
-    sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
-    atomizerVersion: input.sourceLeadAtomization.atomizerVersion,
-    effectiveConfigDigest: input.effectiveConfig.digest,
-    presetProfileVersion: input.effectiveConfig.presetProfileVersion,
-    presetProfileDigest: input.effectiveConfig.presetProfileDigest,
-    locks: prepared.locks.activity,
-    activityPlannerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.activityPlannerVersion,
-    activityPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.activityPlannerConfigDigest,
-    diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
-    diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
-  }, prepared.ordinals);
+  const activityInputDigest = await expectedActivityInputDigest(prepared, intentPlan.intentPlanDigest);
   const phraseActivityPlans: PhraseActivityPlan[] = [];
   const rawDiagnostics: Omit<Diagnostic, "id">[] = [];
+  const consumedActivityLockIds = new Set<string>();
   for (const phrase of prepared.phrases) {
     const phraseOrdinal = prepared.ordinals.phraseOrdinalById[phrase.id];
     const intent = intentPlan.phraseIntents.find((candidate) => candidate.phraseId === phrase.id);
@@ -920,6 +1125,7 @@ export async function planWagActivity(
       let previousState: VoiceActivityDirective["state"] = "rest";
       for (const decision of decisions) {
         const lock = activityLockFor(prepared.locks.activity, phrase.id, assigned.trackPlan.id, decision.range);
+        if (lock) consumedActivityLockIds.add(lock.id);
         let activity: VoiceActivityDirective = { state: "rest" };
         let selection: LocalSelectionResult | undefined;
         if (lock && lock.activity.state !== "rest" && lock.activity.state !== "independent-note") {
@@ -1011,6 +1217,11 @@ export async function planWagActivity(
         || prepared.ordinals.trackOrdinalById[left.trackPlanId] - prepared.ordinals.trackOrdinalById[right.trackPlanId]),
     });
   }
+  for (const lock of prepared.locks.activity) {
+    if (!consumedActivityLockIds.has(lock.id)) rawDiagnostics.push(diagnosticInput("STAGE_LOCK_SCOPE_INVALID", lock.phraseId, {
+      stage: "activity", lockId: lock.id, reason: "LOCK_TARGET_NOT_MATERIALIZED",
+    }));
+  }
   if (rawDiagnostics.length > 0) {
     return { status: "blocked", diagnostics: await createDiagnostics(rawDiagnostics, prepared.authority.diagnostics) };
   }
@@ -1062,28 +1273,15 @@ export async function planWagAnchor(
   const preparedResult = await prepareWagLifecycle(input);
   if (preparedResult.status === "blocked") return preparedResult;
   const prepared = preparedResult.value;
-  if (activityPlan.activityPlanDigest !== await digestActivityPlan(activityPlan, prepared.ordinals)
-    || activityPlan.intentPlanDigest !== intentPlan.intentPlanDigest
-    || activityPlan.presetId !== input.effectiveConfig.presetId) {
+  if (!await wagActivityAuthorityMatches(prepared, intentPlan, activityPlan)) {
     return { status: "blocked", diagnostics: await createDiagnostics([
       diagnosticInput("ALGORITHM_CONFIG_MISMATCH", undefined, { stage: "anchor", reason: "ACTIVITY_PLAN_DIGEST_MISMATCH" }),
     ], prepared.authority.diagnostics) };
   }
-  const anchorInputDigest = await digestAnchorInput({
-    activityPlanDigest: activityPlan.activityPlanDigest,
-    sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
-    atomizerVersion: input.sourceLeadAtomization.atomizerVersion,
-    effectiveConfigDigest: input.effectiveConfig.digest,
-    presetProfileVersion: input.effectiveConfig.presetProfileVersion,
-    presetProfileDigest: input.effectiveConfig.presetProfileDigest,
-    locks: prepared.locks.anchor,
-    anchorPlannerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.anchorPlannerVersion,
-    anchorPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.anchorPlannerConfigDigest,
-    diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
-    diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
-  }, prepared.ordinals);
+  const anchorInputDigest = await expectedAnchorInputDigest(prepared, activityPlan.activityPlanDigest);
   const phraseAnchorPlans: PhraseAnchorPlan[] = [];
   const rawDiagnostics: Omit<Diagnostic, "id">[] = [];
+  const consumedAnchorLockIds = new Set<string>();
   let directiveOrdinal = 0;
   for (const phrase of prepared.phrases) {
     const phraseOrdinal = prepared.ordinals.phraseOrdinalById[phrase.id];
@@ -1106,6 +1304,7 @@ export async function planWagAnchor(
       for (const decision of decisions) {
         const activity = activityAt(activityPlan, phrase.id, assigned.trackPlan.id, decision.range);
         const locks = anchorLocksAt(prepared.locks.anchor, phrase.id, assigned.trackPlan.id, decision.range.start);
+        locks.forEach((lock) => consumedAnchorLockIds.add(lock.id));
         if (locks.length > 1) {
           rawDiagnostics.push(diagnosticInput("STAGE_LOCK_SCOPE_INVALID", phrase.id, { stage: "anchor", reason: "MULTIPLE_ANCHOR_LOCKS", trackPlanId: assigned.trackPlan.id }));
           continue;
@@ -1172,6 +1371,11 @@ export async function planWagAnchor(
       anchorDirectives: directives,
       nctPlans: [],
     });
+  }
+  for (const lock of prepared.locks.anchor) {
+    if (!consumedAnchorLockIds.has(lock.id)) rawDiagnostics.push(diagnosticInput("STAGE_LOCK_SCOPE_INVALID", lock.phraseId, {
+      stage: "anchor", lockId: lock.id, reason: "LOCK_TARGET_NOT_MATERIALIZED",
+    }));
   }
   if (rawDiagnostics.length > 0) {
     return { status: "blocked", diagnostics: await createDiagnostics(rawDiagnostics, prepared.authority.diagnostics) };

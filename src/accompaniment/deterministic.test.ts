@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { fraction } from "../domain/fraction";
 import { createWagFixtureInput } from "../grammar/fixtures";
-import { generateDeterministicAccompaniment, loadAccompanimentConfig } from "./deterministic";
+import { ACCOMPANIMENT_CONFIG_DIGEST, generateDeterministicAccompaniment, loadAccompanimentConfig } from "./deterministic";
 
 describe("deterministic accompaniment-v1", () => {
   it("uses the exact same EffectiveChordTimeline digest and is byte deterministic", async () => {
@@ -62,6 +62,6 @@ describe("deterministic accompaniment-v1", () => {
       soundAssetVersion: "hm-band-pad-bass-v1",
       normalizationVersion: "fixed-velocity-normalization-v1",
     });
-    expect(config.configDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(config.configDigest).toBe(ACCOMPANIMENT_CONFIG_DIGEST);
   });
 });

@@ -78,15 +78,26 @@ describe("canonical Segment-B execution", () => {
       trackPlans: [...input.trackPlans].reverse().map((track) => ({ ...track, displayLabel: `Display ${"canonicalOrdinal" in track ? track.canonicalOrdinal : 0}` })),
       assignments: [...input.assignments].reverse(),
     };
-    const [left, right] = await Promise.all([executeWagSegmentB(input), executeWagSegmentB(renamed)]);
+    const serialized = JSON.parse(JSON.stringify(input)) as typeof input;
+    const governanceRenamed = { ...input, source: { ...input.source, documentId: "fixture:governance-renamed", title: "Non-musical display title" } };
+    const [left, right, reloaded, governance] = await Promise.all([
+      executeWagSegmentB(input),
+      executeWagSegmentB(renamed),
+      executeWagSegmentB(serialized),
+      executeWagSegmentB(governanceRenamed),
+    ]);
     expect(left.status).not.toBe("blocked");
     expect(right.status).not.toBe("blocked");
-    if (left.status === "blocked" || right.status === "blocked") return;
+    expect(reloaded.status).not.toBe("blocked");
+    expect(governance.status).not.toBe("blocked");
+    if (left.status === "blocked" || right.status === "blocked" || reloaded.status === "blocked" || governance.status === "blocked") return;
     expect(right.generation.result.digests).toEqual(left.generation.result.digests);
     expect(right.generation.result.candidates.map((candidate) => candidate.id)).toEqual(left.generation.result.candidates.map((candidate) => candidate.id));
     expect(right.generation.defaultCandidateId).toBe(left.generation.defaultCandidateId);
     expect(right.renderDocument.generatedHarmonyTracks).toEqual(left.renderDocument.generatedHarmonyTracks);
     expect(right.accompaniment).toEqual(left.accompaniment);
+    expect(reloaded.generation.result).toEqual(left.generation.result);
+    expect(governance.generation.result).toEqual(left.generation.result);
   });
 
   it("keeps held-syllable chord-boundary pitch changes lyric-empty", async () => {

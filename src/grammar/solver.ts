@@ -1,6 +1,5 @@
 import type { ChordToneSpec } from "../domain/chord/model";
 import { createDiagnostics, type Diagnostic } from "../domain/diagnostics";
-import { digestAnchorPlan } from "../domain/digest/plans";
 import { compareFractions } from "../domain/fraction";
 import type { AnchorLock, PitchLock } from "../domain/locks";
 import { findPitchAnchorConflicts } from "../domain/locks";
@@ -28,6 +27,7 @@ import {
   prepareWagLifecycle,
   primaryPulseAt,
   rangeDuration,
+  wagAnchorAuthorityMatches,
   type WagLifecycleInput,
   type WagLocalDecision,
 } from "./lifecycle";
@@ -167,9 +167,7 @@ export async function solveWagLocally(
   const preparedResult = await prepareWagLifecycle(input);
   if (preparedResult.status === "blocked") return preparedResult;
   const prepared = preparedResult.value;
-  if (anchorPlan.anchorPlanDigest !== await digestAnchorPlan(anchorPlan, prepared.ordinals)
-    || anchorPlan.activityPlanDigest !== activityPlan.activityPlanDigest
-    || anchorPlan.presetId !== input.effectiveConfig.presetId
+  if (!await wagAnchorAuthorityMatches(prepared, intentPlan, activityPlan, anchorPlan)
     || anchorPlan.phraseAnchorPlans.some((phrase) => phrase.nctPlans.length !== 0
       || phrase.anchorDirectives.some((directive) => directive.kind !== "chord-tone"))) {
     return {
@@ -181,6 +179,7 @@ export async function solveWagLocally(
   }
   const tracks: SolvedWagTrack[] = [];
   const rawDiagnostics: Omit<Diagnostic, "id">[] = [];
+  const consumedPitchLockIds = new Set<string>();
   for (const assigned of prepared.assignedTracks) {
     const solvedDecisions: SolvedWagDecision[] = [];
     const eventPayloads: GeneratedVoiceEventPayload[] = [];
@@ -234,6 +233,7 @@ export async function solveWagLocally(
           continue;
         }
         const pitchLocks = pitchLocksAt(prepared.locks.solver, phrase.id, assigned.trackPlan.id, decision);
+        pitchLocks.forEach((lock) => consumedPitchLockIds.add(lock.id));
         if (pitchLocks.length > 1) {
           rawDiagnostics.push(diagnostic("STAGE_LOCK_SCOPE_INVALID", phrase.id, { stage: "solver", reason: "MULTIPLE_PITCH_LOCKS", trackPlanId: assigned.trackPlan.id }));
           continue;
@@ -326,6 +326,11 @@ export async function solveWagLocally(
       fullRequiredCoverage,
       realizedPitchByAnchorLockId,
     });
+  }
+  for (const lock of prepared.locks.solver) {
+    if (!consumedPitchLockIds.has(lock.id)) rawDiagnostics.push(diagnostic("STAGE_LOCK_SCOPE_INVALID", lock.phraseId, {
+      stage: "solver", lockId: lock.id, reason: "LOCK_TARGET_NOT_MATERIALIZED",
+    }));
   }
   if (rawDiagnostics.length > 0) {
     return { status: "blocked", diagnostics: await createDiagnostics(rawDiagnostics, prepared.authority.diagnostics) };

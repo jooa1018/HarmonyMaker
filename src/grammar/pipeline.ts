@@ -449,20 +449,30 @@ function lockRequiresHarmony(prepared: PreparedWagLifecycle): boolean {
 
 function ordering(
   presetId: WagLifecycleInput["effectiveConfig"]["presetId"],
-  rolesByTrackId: Readonly<Record<string, VocalPlacementRole>>,
+  roleTupleByCandidateId: Readonly<Record<string, readonly number[]>>,
+  trackOrdinalById: Readonly<Record<string, number>>,
+  preferredCandidateId: string | undefined,
   left: ArrangementCandidate,
   right: ArrangementCandidate,
 ): number {
   const status = (left.candidateStatus === "complete" ? 0 : 1) - (right.candidateStatus === "complete" ? 0 : 1);
   if (status !== 0) return status;
-  const leftTracks = Object.keys(left.generatedEventsByTrack).sort();
-  const rightTracks = Object.keys(right.generatedEventsByTrack).sort();
-  const preference = (tracks: readonly string[]) => tracks.length === 2 && presetId !== "simple" ? 0 : tracks.length === 1 ? 1 : 2;
-  const preferred = preference(leftTracks) - preference(rightTracks);
+  const leftTracks = Object.keys(left.generatedEventsByTrack).sort((a, b) => trackOrdinalById[a] - trackOrdinalById[b]);
+  const rightTracks = Object.keys(right.generatedEventsByTrack).sort((a, b) => trackOrdinalById[a] - trackOrdinalById[b]);
+  const preference = (candidate: ArrangementCandidate, tracks: readonly string[]) => candidate.id === preferredCandidateId
+    ? 0
+    : tracks.length === 2 && presetId !== "simple"
+      ? 1
+      : tracks.length === 1 ? 2 : 3;
+  const preferred = preference(left, leftTracks) - preference(right, rightTracks);
   if (preferred !== 0) return preferred;
   if (leftTracks.length !== rightTracks.length) return leftTracks.length - rightTracks.length;
-  const leftRoles = leftTracks.map((track) => ROLE_ORDINAL[rolesByTrackId[track] ?? "upper"]);
-  const rightRoles = rightTracks.map((track) => ROLE_ORDINAL[rolesByTrackId[track] ?? "upper"]);
+  for (let index = 0; index < Math.max(leftTracks.length, rightTracks.length); index += 1) {
+    const ordinalDifference = (trackOrdinalById[leftTracks[index]] ?? -1) - (trackOrdinalById[rightTracks[index]] ?? -1);
+    if (ordinalDifference !== 0) return ordinalDifference;
+  }
+  const leftRoles = roleTupleByCandidateId[left.id] ?? [];
+  const rightRoles = roleTupleByCandidateId[right.id] ?? [];
   for (let index = 0; index < Math.max(leftRoles.length, rightRoles.length); index += 1) {
     if ((leftRoles[index] ?? -1) !== (rightRoles[index] ?? -1)) return (leftRoles[index] ?? -1) - (rightRoles[index] ?? -1);
   }
@@ -582,6 +592,7 @@ export async function assembleWagGeneration(
   const upper = marginals.find((marginal) => marginal.placementRole === "upper" && marginal.candidateStatus === "complete");
   const lower = marginals.find((marginal) => marginal.placementRole === "lower" && marginal.candidateStatus === "complete");
   let pairMetrics: WagPairMetrics | undefined;
+  let pairCandidate: ArrangementCandidate | undefined;
   if (input.effectiveConfig.presetId !== "simple" && upper && lower) {
     const screen = pairScreen(prepared, upper, lower);
     if (screen.accepted) {
@@ -606,6 +617,7 @@ export async function assembleWagGeneration(
         throw new RangeError("WAG_V1_DROPOUT_PROJECTION_MISMATCH");
       }
       candidates.push(pair);
+      pairCandidate = pair;
       pairMetrics = screen.metrics;
     } else {
       rejections.push({ scope: "pair", reason: "OPTIONAL_PAIR_LASI_REJECTED", trackPlanIds: [upper.track.trackPlanId, lower.track.trackPlanId] });
@@ -615,8 +627,25 @@ export async function assembleWagGeneration(
     const bestComplete = marginals.find((marginal) => marginal.candidateStatus === "complete");
     if (bestComplete) rejections.push({ scope: "pair", reason: "OPTIONAL_PAIR_DEGRADED_TO_SINGLE", trackPlanIds: [bestComplete.track.trackPlanId] });
   }
-  const rolesByTrackId = Object.fromEntries(marginals.map((marginal) => [marginal.track.trackPlanId, marginal.placementRole]));
-  candidates.sort((left, right) => ordering(input.effectiveConfig.presetId, rolesByTrackId, left, right));
+  const bestMarginal = marginals.find((marginal) => marginal.candidate !== undefined)?.candidate;
+  const preferredCandidateId = pairCandidate?.id ?? bestMarginal?.id ?? (!expectationRequired ? leadOnly.id : undefined);
+  const roleTupleByCandidateId = Object.fromEntries(candidates.map((candidate) => {
+    const includedTracks = new Set(Object.keys(candidate.generatedEventsByTrack));
+    const tuple = intentPlan.phraseIntents.flatMap((phrase) => phrase.trackRoles
+      .filter((role) => includedTracks.has(role.trackPlanId))
+      .slice()
+      .sort((left, right) => prepared.ordinals.trackOrdinalById[left.trackPlanId] - prepared.ordinals.trackOrdinalById[right.trackPlanId])
+      .map((role) => ROLE_ORDINAL[role.placementRole]));
+    return [candidate.id, tuple];
+  }));
+  candidates.sort((left, right) => ordering(
+    input.effectiveConfig.presetId,
+    roleTupleByCandidateId,
+    prepared.ordinals.trackOrdinalById,
+    preferredCandidateId,
+    left,
+    right,
+  ));
   const completeCandidates = candidates.filter((candidate) => candidate.candidateStatus === "complete");
   let status: ArrangementGenerationResult["status"] = completeCandidates.length > 0 ? "complete" : "partial";
   let resultCandidates: readonly ArrangementCandidate[] = candidates;

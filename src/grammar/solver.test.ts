@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { digestAnchorPlan } from "../domain/digest/plans";
 import { fraction } from "../domain/fraction";
 import type { PitchLock, VariantStageLocks } from "../domain/locks";
 import { createWagFixtureInput, pitch } from "./fixtures";
-import { planWagActivity, planWagAnchor, planWagIntent } from "./lifecycle";
+import { planWagActivity, planWagAnchor, planWagIntent, prepareWagLifecycle } from "./lifecycle";
 import { solveWagLocally } from "./solver";
 
 const noLocks: VariantStageLocks = { intent: [], activity: [], anchor: [], solver: [] };
@@ -103,6 +104,23 @@ describe("WAG v1.0.1 Anchor and local Solver", () => {
     if (solved.status === "complete") {
       expect(solved.value.tracks[0].eventPayloads.every((event) => event.kind === "rest")).toBe(true);
       expect(solved.value.tracks[0].realizedAnchors).toEqual([]);
+    }
+  });
+
+  it("rejects a self-consistent Anchor plan with stale frozen authority", async () => {
+    const input = await createWagFixtureInput({ generatedRanges: [{ low: pitch("D", 4), high: pitch("C", 6) }], maxHarmonyTracks: 1 });
+    const plan = await plans(input);
+    const prepared = await prepareWagLifecycle(input);
+    if (prepared.status !== "complete") throw new Error("fixture preparation failed");
+    const staleWithoutDigest = { ...plan.anchor, anchorPlannerVersion: "anchor-planner-tampered" };
+    const stale = {
+      ...staleWithoutDigest,
+      anchorPlanDigest: await digestAnchorPlan(staleWithoutDigest, prepared.value.ordinals),
+    };
+    const solved = await solveWagLocally(input, plan.intent, plan.activity, stale);
+    expect(solved.status).toBe("blocked");
+    if (solved.status === "blocked") {
+      expect(solved.diagnostics).toEqual([expect.objectContaining({ code: "ALGORITHM_CONFIG_MISMATCH" })]);
     }
   });
 });

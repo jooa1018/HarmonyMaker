@@ -115,6 +115,51 @@ describe("independent WAG v1.0.1 Validator", () => {
     };
     const resultReport = await validateWagAssembly(value.input, value.intent, value.activity, value.anchor, corruptResult);
     expect(resultReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("ALGORITHM_CONFIG_MISMATCH");
+
+    const reordered: ArrangementGenerationResult = { ...value.assembly.result, candidates: [...value.assembly.result.candidates].reverse() };
+    const orderReport = await validateWagAssembly(value.input, value.intent, value.activity, value.anchor, reordered);
+    expect(orderReport.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "CANDIDATE_PROJECTION_INVALID", details: expect.objectContaining({ reason: "CANDIDATE_ORDER_MISMATCH" }) }),
+    ]));
+  });
+
+  it("rejects hard-leap, invented-lyric, peer-anchor, and result-status corruption", async () => {
+    const value = await fixture();
+    const marginal = value.assembly.result.candidates.find((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 1)!;
+    const trackId = Object.keys(marginal.generatedEventsByTrack)[0];
+    const notes = marginal.generatedEventsByTrack[trackId].filter((event) => event.kind === "note");
+    let noteIndex = 0;
+    const hardLeap: ArrangementCandidate = {
+      ...marginal,
+      generatedEventsByTrack: {
+        ...marginal.generatedEventsByTrack,
+        [trackId]: marginal.generatedEventsByTrack[trackId].map((event) => {
+          if (event.kind !== "note") return event;
+          const current = noteIndex;
+          noteIndex += 1;
+          return current === 1 ? { ...event, pitch: { ...event.pitch, octave: event.pitch.octave + 1 } } : event;
+        }),
+      },
+    };
+    expect(notes.length).toBeGreaterThan(1);
+    const inventedLyric = transformFirstNote(marginal, (event) => ({ ...event, lyricTokenIds: ["ly:invented"] }));
+    const pair = value.assembly.result.candidates.find((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 2)!;
+    const peerAnchor = pair.realizedAnchors.find((anchor) => anchor.trackPlanId !== trackId)!;
+    const leakedAnchor: ArrangementCandidate = { ...marginal, realizedAnchors: [...marginal.realizedAnchors, peerAnchor] };
+    const [leapReport, lyricReport, anchorReport] = await Promise.all([
+      validateWagCandidate(value.input, value.intent, value.activity, value.anchor, hardLeap),
+      validateWagCandidate(value.input, value.intent, value.activity, value.anchor, inventedLyric),
+      validateWagCandidate(value.input, value.intent, value.activity, value.anchor, leakedAnchor),
+    ]);
+    expect(leapReport.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "GRAMMAR_BLOCKED", details: expect.objectContaining({ reason: "CONTINUOUS_HARD_LEAP" }) }),
+    ]));
+    expect(lyricReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("LYRIC_POLICY_VIOLATION");
+    expect(anchorReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("WAG_V1_DROPOUT_PROJECTION_MISMATCH");
+
+    const invalidStatus: ArrangementGenerationResult = { ...value.assembly.result, status: "partial" };
+    const statusReport = await validateWagAssembly(value.input, value.intent, value.activity, value.anchor, invalidStatus);
+    expect(statusReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("GENERATION_RESULT_STATE_INVALID");
   });
 
   it("rejects pair dropout mismatch", async () => {

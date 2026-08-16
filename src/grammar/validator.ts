@@ -14,6 +14,7 @@ import type {
 import { addFractions, compareFractions, fraction, subtractFractions, type Fraction } from "../domain/fraction";
 import type { ArrangementActivityPlan, ArrangementAnchorPlan, ArrangementIntentPlan, HarmonyAnchorDirective } from "../domain/plans";
 import { containsPitch, pitchMidiNumber, type Alter, type SpelledPitch, type SpelledPitchClass, type Step } from "../domain/pitch";
+import { durationRate } from "../domain/rates";
 import { comparePositions, compareRanges, type MusicalPosition, type MusicalRange } from "../domain/time";
 import { loadFrozenWagAuthority } from "./authority";
 import type { WagLifecycleInput } from "./lifecycle";
@@ -357,6 +358,119 @@ function planOrdinals(input: WagLifecycleInput): PlanOrdinalRegistry {
   };
 }
 
+function addDuration(left: Fraction, right: Fraction): Fraction {
+  return addFractions(left, right);
+}
+
+function independentStandaloneKey(candidate: ArrangementCandidate, context: ValidatorContext): readonly (number | string)[] {
+  const trackPlanId = Object.keys(candidate.generatedEventsByTrack)[0];
+  if (!trackPlanId) return [candidate.candidateStatus === "complete" ? 0 : 1, candidate.contentDigest];
+  const performer = context.performerByTrackId[trackPlanId];
+  const events = [...candidate.generatedEventsByTrack[trackPlanId]].sort((left, right) => compareRanges(left.range, right.range));
+  let denominator = fraction(0);
+  let localRest = fraction(0);
+  let hardOnly = fraction(0);
+  let preferredMiss = fraction(0);
+  let leadProximity = fraction(0);
+  let preferredLeapExcess = 0;
+  let totalMotion = 0;
+  let previous: Extract<GeneratedVoiceEvent, { readonly kind: "note" }> | undefined;
+  for (const event of events) {
+    const atom = atomAt(context, event.range);
+    const span = chordAt(context, event.range);
+    const evaluable = atom?.pitch && span?.parseResult.status === "ok";
+    if (!evaluable) {
+      previous = undefined;
+      continue;
+    }
+    const duration = rangeDuration(event.range, context.measureDurations);
+    denominator = addDuration(denominator, duration);
+    if (event.kind === "rest") {
+      localRest = addDuration(localRest, duration);
+      previous = undefined;
+      continue;
+    }
+    if (performer && !containsPitch(performer.comfortableRange, event.pitch)) hardOnly = addDuration(hardOnly, duration);
+    const preferred = performer?.preferredTessitura ?? performer?.comfortableRange;
+    if (preferred && !containsPitch(preferred, event.pitch)) preferredMiss = addDuration(preferredMiss, duration);
+    if (Math.abs(pitchMidiNumber(event.pitch) - pitchMidiNumber(atom.pitch)) < 3) leadProximity = addDuration(leadProximity, duration);
+    if (previous && phraseAt(context, previous.range)?.id === phraseAt(context, event.range)?.id) {
+      const motion = Math.abs(pitchMidiNumber(event.pitch) - pitchMidiNumber(previous.pitch));
+      totalMotion += motion;
+      preferredLeapExcess += Math.max(0, motion - context.input.effectiveConfig.preferredMaxLeapSemitones);
+    }
+    previous = event;
+  }
+  const bp = (value: Fraction): number => durationRate(value, denominator).valueBp ?? 0;
+  const role = context.intentPlan.phraseIntents.flatMap((phrase) => phrase.trackRoles)
+    .find((candidateRole) => candidateRole.trackPlanId === trackPlanId)?.placementRole;
+  return [
+    candidate.candidateStatus === "complete" ? 0 : 1,
+    0,
+    bp(localRest),
+    bp(hardOnly),
+    bp(preferredMiss),
+    preferredLeapExcess,
+    totalMotion,
+    bp(leadProximity),
+    context.trackOrdinalById[trackPlanId] ?? -1,
+    role === "upper" ? 0 : 1,
+    candidate.contentDigest,
+  ];
+}
+
+function compareMixedTuple(left: readonly (number | string)[], right: readonly (number | string)[]): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const leftValue = left[index] ?? 0;
+    const rightValue = right[index] ?? 0;
+    const difference = typeof leftValue === "number" && typeof rightValue === "number"
+      ? leftValue - rightValue
+      : String(leftValue).localeCompare(String(rightValue));
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function independentCandidateOrder(result: ArrangementGenerationResult, context: ValidatorContext): readonly ArrangementCandidate[] {
+  const standalone = result.candidates.filter((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 1)
+    .slice()
+    .sort((left, right) => compareMixedTuple(independentStandaloneKey(left, context), independentStandaloneKey(right, context)));
+  const pair = result.presetId === "simple" ? undefined : result.candidates.find((candidate) =>
+    candidate.candidateStatus === "complete" && Object.keys(candidate.generatedEventsByTrack).length === 2);
+  const leadOnly = result.candidates.find((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 0);
+  const preferredCandidateId = pair?.id ?? standalone[0]?.id ?? (leadOnly?.candidateStatus === "complete" ? leadOnly.id : undefined);
+  const roleTupleByCandidateId = Object.fromEntries(result.candidates.map((candidate) => {
+    const tracks = new Set(Object.keys(candidate.generatedEventsByTrack));
+    return [candidate.id, context.intentPlan.phraseIntents.flatMap((phrase) => phrase.trackRoles
+      .filter((role) => tracks.has(role.trackPlanId))
+      .slice()
+      .sort((left, right) => context.trackOrdinalById[left.trackPlanId] - context.trackOrdinalById[right.trackPlanId])
+      .map((role) => role.placementRole === "upper" ? 0 : 1))];
+  }));
+  return result.candidates.slice().sort((left, right) => {
+    const status = (left.candidateStatus === "complete" ? 0 : 1) - (right.candidateStatus === "complete" ? 0 : 1);
+    if (status !== 0) return status;
+    const leftTracks = Object.keys(left.generatedEventsByTrack).sort((a, b) => context.trackOrdinalById[a] - context.trackOrdinalById[b]);
+    const rightTracks = Object.keys(right.generatedEventsByTrack).sort((a, b) => context.trackOrdinalById[a] - context.trackOrdinalById[b]);
+    const preference = (candidate: ArrangementCandidate, tracks: readonly string[]) => candidate.id === preferredCandidateId
+      ? 0
+      : tracks.length === 2 && result.presetId !== "simple" ? 1 : tracks.length === 1 ? 2 : 3;
+    const preferenceDifference = preference(left, leftTracks) - preference(right, rightTracks);
+    if (preferenceDifference !== 0) return preferenceDifference;
+    if (leftTracks.length !== rightTracks.length) return leftTracks.length - rightTracks.length;
+    for (let index = 0; index < Math.max(leftTracks.length, rightTracks.length); index += 1) {
+      const ordinalDifference = (context.trackOrdinalById[leftTracks[index]] ?? -1) - (context.trackOrdinalById[rightTracks[index]] ?? -1);
+      if (ordinalDifference !== 0) return ordinalDifference;
+    }
+    const leftRoles = roleTupleByCandidateId[left.id] ?? [];
+    const rightRoles = roleTupleByCandidateId[right.id] ?? [];
+    for (let index = 0; index < Math.max(leftRoles.length, rightRoles.length); index += 1) {
+      if ((leftRoles[index] ?? -1) !== (rightRoles[index] ?? -1)) return (leftRoles[index] ?? -1) - (rightRoles[index] ?? -1);
+    }
+    return left.contentDigest.localeCompare(right.contentDigest);
+  });
+}
+
 async function contextFor(
   input: WagLifecycleInput,
   intentPlan: ArrangementIntentPlan,
@@ -498,6 +612,11 @@ export async function validateWagAssembly(
   const candidateReports = await Promise.all(result.candidates.map((candidate) =>
     validateWagCandidate(input, intentPlan, activityPlan, anchorPlan, candidate)));
   const raw = candidateReports.flatMap((report) => report.diagnostics.map(diagnosticWithoutId));
+  const expectedOrder = independentCandidateOrder(result, context).map((candidate) => candidate.id);
+  if (new Set(result.candidates.map((candidate) => candidate.id)).size !== result.candidates.length
+    || JSON.stringify(result.candidates.map((candidate) => candidate.id)) !== JSON.stringify(expectedOrder)) {
+    raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", "result", { reason: "CANDIDATE_ORDER_MISMATCH" }));
+  }
   for (const pair of result.candidates.filter((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 2)) {
     for (const trackPlanId of Object.keys(pair.generatedEventsByTrack)) {
       const marginal = result.candidates.find((candidate) => {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { digestActivityPlan } from "../domain/digest/plans";
+import { digestActivityPlan, digestIntentPlan } from "../domain/digest/plans";
 import { fraction } from "../domain/fraction";
-import type { ActivityLock, VariantStageLocks } from "../domain/locks";
+import type { ActivityLock, PitchLock, VariantStageLocks } from "../domain/locks";
 import { COMMON_TIME, COMPOUND_DUPLE } from "../domain/meter";
 import { musicalRange } from "../domain/time";
 import {
@@ -14,6 +14,7 @@ import {
 } from "./fixtures";
 import {
   planWagActivity,
+  planWagAnchor,
   planWagIntent,
   prepareWagLifecycle,
   primaryPulseAt,
@@ -45,6 +46,44 @@ describe("Segment B fixture materialization", () => {
 });
 
 describe("WAG v1.0.1 Intent lifecycle", () => {
+  it("blocks stale Source/config semantics and invalid stage-lock scope before planning", async () => {
+    const base = await createWagFixtureInput({ generatedRanges: [{ low: pitch("D", 4), high: pitch("C", 6) }], maxHarmonyTracks: 1 });
+    const staleSource = {
+      ...base,
+      source: {
+        ...base.source,
+        sourceMeasures: base.source.sourceMeasures.map((measure, measureIndex) => measureIndex === 0 ? {
+          ...measure,
+          leadEvents: measure.leadEvents.map((event, eventIndex) => eventIndex === 0 && event.kind === "note"
+            ? { ...event, pitch: pitch("D", 4) }
+            : event),
+        } : measure),
+      },
+    };
+    const staleConfig = { ...base, effectiveConfig: { ...base.effectiveConfig, maxHarmonyTracks: 0 as const } };
+    const outsideLock: PitchLock = {
+      id: "lk:simple:outside:0",
+      kind: "pitch",
+      presetId: "simple",
+      phraseId: base.source.phraseRegions[0].id,
+      trackPlanId: "track:h1",
+      position: { performanceMeasureIndex: 1, offset: fraction(0) },
+      pitch: pitch("E", 4),
+    };
+    const invalidLock = { ...base, locks: { ...noLocks, solver: [outsideLock] } };
+    const [sourceResult, configResult, lockResult] = await Promise.all([
+      planWagIntent(staleSource),
+      planWagIntent(staleConfig),
+      planWagIntent(invalidLock),
+    ]);
+    expect(sourceResult.status).toBe("blocked");
+    expect(configResult.status).toBe("blocked");
+    expect(lockResult.status).toBe("blocked");
+    if (sourceResult.status === "blocked") expect(sourceResult.diagnostics.map((diagnostic) => diagnostic.code)).toContain("SOURCE_REVISION_MISMATCH");
+    if (configResult.status === "blocked") expect(configResult.diagnostics.map((diagnostic) => diagnostic.code)).toContain("ALGORITHM_CONFIG_MISMATCH");
+    if (lockResult.status === "blocked") expect(lockResult.diagnostics.map((diagnostic) => diagnostic.code)).toContain("STAGE_LOCK_SCOPE_INVALID");
+  });
+
   it("persists the sole one-singer Upper role selected by the frozen preview", async () => {
     const input = await createWagFixtureInput({
       fixtureId: "hm-segment-b-one-singer-upper-wins-v0",
@@ -265,6 +304,36 @@ describe("WAG v1.0.1 Activity lifecycle", () => {
         expect.objectContaining({ range: lockRange, activity: { state: "rest" } }),
       ]));
       expect(base.sourceLeadAtomization.atoms.some((atom) => atom.range.start.offset.n === 1 && atom.range.start.offset.d === 2)).toBe(false);
+    }
+  });
+
+  it("rejects self-consistent plans whose frozen upstream authority was changed", async () => {
+    const input = await createWagFixtureInput({ generatedRanges: [{ low: pitch("D", 4), high: pitch("C", 6) }], maxHarmonyTracks: 1 });
+    const prepared = await prepareWagLifecycle(input);
+    const intent = await planWagIntent(input);
+    if (prepared.status !== "complete" || intent.status !== "complete") throw new Error("intent fixture failed");
+    const staleIntentWithoutDigest = { ...intent.value, plannerVersion: "planner-tampered" };
+    const staleIntent = {
+      ...staleIntentWithoutDigest,
+      intentPlanDigest: await digestIntentPlan(staleIntentWithoutDigest, prepared.value.ordinals),
+    };
+    const rejectedActivity = await planWagActivity(input, staleIntent);
+    expect(rejectedActivity.status).toBe("blocked");
+    if (rejectedActivity.status === "blocked") {
+      expect(rejectedActivity.diagnostics).toEqual([expect.objectContaining({ code: "ALGORITHM_CONFIG_MISMATCH" })]);
+    }
+
+    const activity = await planWagActivity(input, intent.value);
+    if (activity.status !== "complete") throw new Error("activity fixture failed");
+    const staleActivityWithoutDigest = { ...activity.value, activityPlannerVersion: "activity-planner-tampered" };
+    const staleActivity = {
+      ...staleActivityWithoutDigest,
+      activityPlanDigest: await digestActivityPlan(staleActivityWithoutDigest, prepared.value.ordinals),
+    };
+    const rejectedAnchor = await planWagAnchor(input, intent.value, staleActivity);
+    expect(rejectedAnchor.status).toBe("blocked");
+    if (rejectedAnchor.status === "blocked") {
+      expect(rejectedAnchor.diagnostics).toEqual([expect.objectContaining({ code: "ALGORITHM_CONFIG_MISMATCH" })]);
     }
   });
 });

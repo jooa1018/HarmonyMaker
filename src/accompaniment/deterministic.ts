@@ -49,6 +49,7 @@ const CONFIG_PAYLOAD = Object.freeze({
   soundAssetVersion: "hm-band-pad-bass-v1" as const,
   normalizationVersion: "fixed-velocity-normalization-v1" as const,
 });
+export const ACCOMPANIMENT_CONFIG_DIGEST = "e15cdb1f539cae882d1238e3a57fe22422b484148a86b52dd8b78ae3ca24f21e" as SemanticDigest;
 
 function mod12(value: number): number {
   return ((value % 12) + 12) % 12;
@@ -87,6 +88,7 @@ export async function loadAccompanimentConfig(): Promise<AccompanimentConfig> {
     throw new RangeError("ALGORITHM_CONFIG_MISMATCH");
   }
   const configDigest = await semanticDigest(CONFIG_PAYLOAD);
+  if (configDigest !== ACCOMPANIMENT_CONFIG_DIGEST) throw new RangeError("ALGORITHM_CONFIG_MISMATCH");
   return { ...CONFIG_PAYLOAD, version: "accompaniment-v1", configDigest };
 }
 
