@@ -97,6 +97,26 @@ describe("independent WAG v1.0.1 Validator", () => {
     expect(report.diagnostics.map((diagnostic) => diagnostic.code)).toContain("CANDIDATE_PROJECTION_INVALID");
   });
 
+  it("rejects deterministic event-ID, tie, and result-authority corruption", async () => {
+    const value = await fixture();
+    const marginal = value.assembly.result.candidates.find((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 1)!;
+    const badEventId = transformFirstNote(marginal, (event) => ({ ...event, id: "gen:corrupt:1:0:0/1:0" }));
+    const badTie = transformFirstNote(marginal, (event) => ({ ...event, tieStart: true }));
+    const [idReport, tieReport] = await Promise.all([
+      validateWagCandidate(value.input, value.intent, value.activity, value.anchor, badEventId),
+      validateWagCandidate(value.input, value.intent, value.activity, value.anchor, badTie),
+    ]);
+    expect(idReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("CANDIDATE_PROJECTION_INVALID");
+    expect(tieReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("INPUT_INVALID_TIE");
+
+    const corruptResult: ArrangementGenerationResult = {
+      ...value.assembly.result,
+      versions: { ...value.assembly.result.versions, validatorVersion: "validator-corrupt" },
+    };
+    const resultReport = await validateWagAssembly(value.input, value.intent, value.activity, value.anchor, corruptResult);
+    expect(resultReport.diagnostics.map((diagnostic) => diagnostic.code)).toContain("ALGORITHM_CONFIG_MISMATCH");
+  });
+
   it("rejects pair dropout mismatch", async () => {
     const value = await fixture();
     const pair = value.assembly.result.candidates.find((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 2)!;

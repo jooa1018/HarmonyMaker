@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { fraction } from "../domain/fraction";
+import type { ActivityLock, VariantStageLocks } from "../domain/locks";
+import { musicalRange } from "../domain/time";
 import { createWagFixtureInput, pitch } from "./fixtures";
 import { planWagActivity, planWagAnchor, planWagIntent } from "./lifecycle";
 import { assembleWagGeneration } from "./pipeline";
 import { solveWagLocally } from "./solver";
+
+const noLocks: VariantStageLocks = { intent: [], activity: [], anchor: [], solver: [] };
 
 function musicalPayloads(events: readonly import("../domain/generation/model").GeneratedVoiceEvent[]) {
   return events.map((event) => event.kind === "rest" ? { kind: event.kind, range: event.range } : {
@@ -103,5 +107,30 @@ describe("WAG v1.0.1 standalone-first candidate assembly", () => {
     const input = await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 2 });
     const [left, right] = await Promise.all([run(input), run(input)]);
     expect(JSON.stringify(right)).toBe(JSON.stringify(left));
+  });
+
+  it("computes exact split-grid and zero-denominator metrics", async () => {
+    const base = await createWagFixtureInput({ presetId: "simple", generatedRanges: [{ low: pitch("D", 4), high: pitch("C", 6) }], maxHarmonyTracks: 1 });
+    const restRange = musicalRange(
+      { performanceMeasureIndex: 0, offset: fraction(1, 2) },
+      { performanceMeasureIndex: 0, offset: fraction(1) },
+    );
+    const lock: ActivityLock = {
+      id: "lk:simple:metrics:activity:0",
+      kind: "activity",
+      presetId: "simple",
+      phraseId: base.source.phraseRegions[0].id,
+      trackPlanId: "track:h1",
+      range: restRange,
+      activity: { state: "rest" },
+    };
+    const assembly = await run({ ...base, locks: { ...noLocks, activity: [lock] } });
+    const marginal = assembly.marginals[0];
+    expect(marginal.metrics.localRestDurationBp).toBe(1250);
+    expect(marginal.candidate?.metrics.densityBySectionOccurrence[base.source.sectionOccurrences[0].id].participationCoverage.valueBp).toBe(8750);
+    expect(marginal.candidate?.metrics.plannedNctResolution).toEqual({ numerator: 0, denominator: 0, valueBp: null, unavailableReason: "NO_EVALUABLE_ITEMS" });
+
+    const noChord = await run(await createWagFixtureInput({ chords: [{ onset: fraction(0), symbol: "N.C." }], maxHarmonyTracks: 0 }));
+    expect(noChord.result.candidates[0].metrics.sourceChordRespect).toEqual({ numerator: 0, denominator: 0, valueBp: null, unavailableReason: "NO_EVALUABLE_ITEMS" });
   });
 });

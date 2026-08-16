@@ -141,7 +141,9 @@ function marginalMetrics(
 ): WagMarginalMetrics {
   const performer = prepared.performerByTrackId[track.trackPlanId];
   if (!performer) throw new RangeError(`TRACK_ASSIGNMENT_INVALID:${track.trackPlanId}`);
-  const evaluable = track.decisions.filter((decision) => decision.leadPitch !== null && decision.chordSpanId !== undefined);
+  const chordIsOk = (decision: SolvedWagDecision): boolean => decision.chordSpanId !== undefined
+    && prepared.input.effectiveChordTimeline.spans.find((span) => span.id === decision.chordSpanId)?.parseResult.status === "ok";
+  const evaluable = track.decisions.filter((decision) => decision.leadPitch !== null && chordIsOk(decision));
   const sounding = track.decisions.filter((decision) => decision.selectedPitch !== undefined);
   const denominator = sumDurations(prepared, evaluable, () => true);
   const independentSoundingDuration = sumDurations(prepared, sounding, () => true);
@@ -285,16 +287,26 @@ function sectionDensity(
       atom.range.start.performanceMeasureIndex >= section.startPerformanceMeasureIndex
       && atom.range.start.performanceMeasureIndex < section.endPerformanceMeasureIndexExclusive
       && atom.pitch !== null);
-    const denominator = sectionAtoms.reduce((sum, atom) => addFractions(sum, rangeDuration(atom.range, prepared.measureDurations)), ZERO);
+    const decisionRanges = tracks.length === 0
+      ? sectionAtoms.map((atom) => atom.range)
+      : tracks.flatMap((track) => track.decisions
+        .filter((decision) => decision.sectionOccurrenceId === section.id && decision.leadPitch !== null)
+        .map((decision) => decision.range))
+        .sort(compareRanges)
+        .filter((range, index, ranges) => index === 0 || !equalRange(range, ranges[index - 1]));
+    const denominator = decisionRanges.reduce((sum, range) => addFractions(sum, rangeDuration(range, prepared.measureDurations)), ZERO);
     let participation = ZERO;
     let divergence = ZERO;
     let exactlyTwo = ZERO;
     let exactlyThree = ZERO;
     const spreads: number[] = [];
     let maxSimultaneous = 0;
-    for (const atom of sectionAtoms) {
-      const notes = tracks.flatMap((track) => track.decisions.filter((decision) => equalRange(decision.range, atom.range) && decision.selectedPitch).map((decision) => decision.selectedPitch!));
-      const duration = rangeDuration(atom.range, prepared.measureDurations);
+    for (const range of decisionRanges) {
+      const atom = sectionAtoms.find((candidate) => comparePositions(candidate.range.start, range.start) <= 0
+        && comparePositions(range.end, candidate.range.end) <= 0);
+      if (!atom?.pitch) continue;
+      const notes = tracks.flatMap((track) => track.decisions.filter((decision) => equalRange(decision.range, range) && decision.selectedPitch).map((decision) => decision.selectedPitch!));
+      const duration = rangeDuration(range, prepared.measureDurations);
       if (notes.length > 0) participation = addFractions(participation, duration);
       if (notes.some((note) => !pitchEqual(note, atom.pitch!))) divergence = addFractions(divergence, duration);
       const distinct = new Set([pitchMidiNumber(atom.pitch!), ...notes.map(pitchMidiNumber)]).size;
@@ -306,10 +318,11 @@ function sectionDensity(
         spreads.push(Math.max(...midis) - Math.min(...midis));
       }
     }
-    const leadAttackCount = sectionAtoms.filter((atom) => atom.lyricTokenIds.length > 0).length;
-    const harmonyAttackCount = tracks.reduce((count, track) => count + track.decisions.filter((decision, index, decisions) =>
-      decision.sectionOccurrenceId === section.id && decision.selectedPitch
-        && (index === 0 || !decisions[index - 1].selectedPitch)).length, 0);
+    const leadAttackCount = new Set(sectionAtoms.map((atom) => atom.sourceEventId)).size;
+    const harmonyAttackCount = tracks.reduce((count, track) => count + track.eventPayloads.filter((event) =>
+      event.kind === "note" && !event.tieStop
+      && event.range.start.performanceMeasureIndex >= section.startPerformanceMeasureIndex
+      && event.range.start.performanceMeasureIndex < section.endPerformanceMeasureIndexExclusive).length, 0);
     const orderedSpreads = spreads.sort((left, right) => left - right);
     result[section.id] = {
       participationCoverage: durationRate(participation, denominator),

@@ -1,6 +1,9 @@
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
+import { loadAccompanimentConfig } from "../accompaniment/deterministic";
 import type { ChordToneSpec } from "../domain/chord/model";
 import { compareCanonicalValues, semanticDigest } from "../domain/digest/canonical";
+import { digestGenerationInput } from "../domain/digest/stages";
+import type { PlanOrdinalRegistry } from "../domain/digest/plans";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
 import type {
   ArrangementCandidate,
@@ -246,9 +249,20 @@ function checkTrack(
   if (!performer) return [rawDiagnostic("TRACK_ASSIGNMENT_INVALID", candidate.id, { trackPlanId })];
   const ordered = [...events].sort((left, right) => compareRanges(left.range, right.range));
   const boundaries = expectedBoundaries(context);
+  const eventGroups = new Map<string, number>();
+  const trackOrdinal = context.trackOrdinalById[trackPlanId];
+  if (!Number.isSafeInteger(trackOrdinal)) return [rawDiagnostic("TRACK_ORDINAL_INVALID", candidate.id, { trackPlanId })];
+  if (new Set(events.map((event) => event.id)).size !== events.length) {
+    diagnostics.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "DUPLICATE_EVENT_ID", trackPlanId }));
+  }
   for (let index = 0; index < ordered.length; index += 1) {
     const event = ordered[index];
     const previous = ordered[index - 1];
+    const groupKey = `${positionKey(event.range.start)}:${event.kind}`;
+    const eventOrdinal = eventGroups.get(groupKey) ?? 0;
+    eventGroups.set(groupKey, eventOrdinal + 1);
+    const expectedEventId = `gen:${candidate.contentDigest}:${trackOrdinal}:${positionKey(event.range.start)}:${eventOrdinal}`;
+    if (event.id !== expectedEventId) diagnostics.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "EVENT_ID_MISMATCH", trackPlanId }, event.range));
     if (!boundaries.has(positionKey(event.range.start)) || !boundaries.has(positionKey(event.range.end))) {
       diagnostics.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "TIMING_DIVERGENCE", trackPlanId }, event.range));
     }
@@ -295,7 +309,8 @@ function checkTrack(
     }
     if (previous?.kind === "note") {
       const same = pitchEqual(previous.pitch, event.pitch);
-      if (event.tieStop !== (previous.tieStart && same) || (event.tieStop && event.lyricTokenIds.length > 0)) {
+      const expectedTie = positionEqual(previous.range.end, event.range.start) && same && event.lyricTokenIds.length === 0;
+      if (previous.tieStart !== expectedTie || event.tieStop !== expectedTie) {
         diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { trackPlanId }, event.range));
       }
       if (phraseAt(context, previous.range)?.id === phrase?.id) {
@@ -309,6 +324,8 @@ function checkTrack(
       && anchor.trackPlanId === trackPlanId && positionEqual(anchor.position, event.range.start) && pitchEqual(anchor.pitch, event.pitch));
     if (!matchingAnchor) diagnostics.push(rawDiagnostic("WAG_V1_ANCHOR_SOLVER_SELECTION_PARITY_MISMATCH", candidate.id, { reason: "REALIZED_ANCHOR_MISSING", trackPlanId }, event.range));
   }
+  const finalEvent = ordered.at(-1);
+  if (finalEvent?.kind === "note" && finalEvent.tieStart) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { reason: "UNTERMINATED_TIE", trackPlanId }, finalEvent.range));
   for (const atom of context.input.sourceLeadAtomization.atoms) {
     const atomEvents = ordered.filter((event) => rangeContains(atom.range, event.range));
     const contiguous = atomEvents.every((event, index) => index === 0
@@ -328,6 +345,16 @@ function checkTrack(
     if (!event || !pitchEqual(event.pitch, lock.pitch)) diagnostics.push(rawDiagnostic("STAGE_LOCK_SCOPE_INVALID", candidate.id, { reason: "PITCH_LOCK_MISMATCH", lockId: lock.id, trackPlanId }));
   }
   return diagnostics;
+}
+
+function planOrdinals(input: WagLifecycleInput): PlanOrdinalRegistry {
+  return {
+    sectionOccurrenceOrdinalById: Object.fromEntries(input.source.sectionOccurrences.map((section, ordinal) => [section.id, ordinal])),
+    phraseOrdinalById: Object.fromEntries(input.source.phraseRegions.map((phrase, ordinal) => [phrase.id, ordinal])),
+    trackOrdinalById: Object.fromEntries(input.trackPlans.map((track) => [track.id, track.kind === "source-lead" ? 0 : track.canonicalOrdinal])),
+    leadAtomOrdinalById: Object.fromEntries(input.sourceLeadAtomization.atoms.map((atom, ordinal) => [atom.id, ordinal])),
+    chordSpanOrdinalById: Object.fromEntries(input.effectiveChordTimeline.spans.map((span, ordinal) => [span.id, ordinal])),
+  };
 }
 
 async function contextFor(
@@ -385,11 +412,31 @@ export async function validateWagCandidate(
     raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "CONTENT_DIGEST_MISMATCH" }));
   }
   const trackEntries = Object.entries(candidate.generatedEventsByTrack);
+  const pathIsAscii = /^[\x20-\x7E]+$/.test(candidate.canonicalPathKey);
+  if (!pathIsAscii || (trackEntries.length === 0
+    ? candidate.canonicalPathKey !== "wag1-local-v1|tx=0"
+    : !/^wag1-local-v1\|tx=2(?:\|d=\d+,tr=[12],a=[0-4],dir=-?\d+,m=-?\d+,s=-?\d+,x=-?\d+,o=-?\d+)+$/.test(candidate.canonicalPathKey))) {
+    raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "CANONICAL_PATH_KEY_INVALID" }));
+  }
   if (trackEntries.length > input.effectiveConfig.maxHarmonyTracks) raw.push(rawDiagnostic("TRACK_ROLE_CONFLICT", candidate.id, { reason: "MAX_HARMONY_TRACKS_EXCEEDED" }));
   for (const [trackPlanId, events] of trackEntries) raw.push(...checkTrack(candidate, trackPlanId, events, context));
   const trackIds = new Set(trackEntries.map(([trackPlanId]) => trackPlanId));
   for (const anchor of candidate.realizedAnchors) {
     if (!trackIds.has(anchor.trackPlanId)) raw.push(rawDiagnostic("WAG_V1_DROPOUT_PROJECTION_MISMATCH", candidate.id, { reason: "PEER_ANCHOR_IN_MARGINAL", trackPlanId: anchor.trackPlanId }));
+    const event = candidate.generatedEventsByTrack[anchor.trackPlanId]?.find((candidateEvent) => candidateEvent.kind === "note"
+      && candidateEvent.originDirectiveId === anchor.directiveId
+      && positionEqual(candidateEvent.range.start, anchor.position)
+      && pitchEqual(candidateEvent.pitch, anchor.pitch));
+    if (!event) raw.push(rawDiagnostic("WAG_V1_ANCHOR_SOLVER_SELECTION_PARITY_MISMATCH", candidate.id, { reason: "EXTRA_REALIZED_ANCHOR", trackPlanId: anchor.trackPlanId }));
+  }
+  if (new Set(candidate.realizedAnchors.map((anchor) => anchor.directiveId)).size !== candidate.realizedAnchors.length) {
+    raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "DUPLICATE_REALIZED_ANCHOR" }));
+  }
+  const candidateBlocksGeneration = candidate.diagnostics.some((diagnostic) => authority.diagnostics.definitions[diagnostic.code].blocksGeneration);
+  const candidateBlocksComplete = candidate.diagnostics.some((diagnostic) => authority.diagnostics.definitions[diagnostic.code].blocksComplete);
+  if (candidateBlocksGeneration || (candidate.candidateStatus === "complete" && candidateBlocksComplete)
+    || (candidate.candidateStatus === "partial" && !candidateBlocksComplete)) {
+    raw.push(rawDiagnostic("CANDIDATE_PROJECTION_INVALID", candidate.id, { reason: "CANDIDATE_STATUS_DIAGNOSTIC_MISMATCH" }));
   }
   const expectationRequired = intentPlan.phraseIntents.some((phrase) => phrase.harmonyExpectation === "H1-required");
   if (trackEntries.length === 0) {
@@ -446,6 +493,7 @@ export async function validateWagAssembly(
   result: ArrangementGenerationResult,
 ): Promise<WagAssemblyValidationReport> {
   const authority = await loadFrozenWagAuthority();
+  const accompanimentConfig = await loadAccompanimentConfig();
   const context = await contextFor(input, intentPlan, activityPlan, anchorPlan);
   const candidateReports = await Promise.all(result.candidates.map((candidate) =>
     validateWagCandidate(input, intentPlan, activityPlan, anchorPlan, candidate)));
@@ -465,9 +513,52 @@ export async function validateWagAssembly(
   if (!independentResultStateValid(result, hasBlocking)) {
     raw.push(rawDiagnostic("GENERATION_RESULT_STATE_INVALID", "result", { status: result.status }));
   }
-  if (result.versions.validatorVersion !== APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion
-    || result.configDigests.validatorConfigDigest !== authority.wagOwnedConfigDigests.validatorConfigDigest) {
-    raw.push(rawDiagnostic("ALGORITHM_CONFIG_MISMATCH", "result", { stage: "validation", reason: "VALIDATOR_AUTHORITY_MISMATCH" }));
+  const expectedGenerationInputDigest = await digestGenerationInput({
+    anchorPlanDigest: anchorPlan.anchorPlanDigest,
+    effectiveConfigDigest: input.effectiveConfig.digest,
+    presetProfileVersion: input.effectiveConfig.presetProfileVersion,
+    presetProfileDigest: input.effectiveConfig.presetProfileDigest,
+    locks: input.locks?.solver ?? [],
+    solverVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.solverVersion,
+    assemblerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.assemblerVersion,
+    validatorVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion,
+    metricsVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.metricsVersion,
+    candidateProjectionVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.candidateProjectionVersion,
+    solverConfigDigest: authority.wagOwnedConfigDigests.solverConfigDigest,
+    assemblerConfigDigest: authority.wagOwnedConfigDigests.assemblerConfigDigest,
+    validatorConfigDigest: authority.wagOwnedConfigDigests.validatorConfigDigest,
+    metricConfigDigest: authority.wagOwnedConfigDigests.metricConfigDigest,
+    diagnosticRegistryVersion: authority.diagnostics.registryVersion,
+    diagnosticRegistryDigest: authority.diagnostics.registryDigest,
+  }, planOrdinals(input));
+  const expectedDigests: Readonly<Record<string, string>> = {
+    musicalSourceDigest: input.source.revisionDigest,
+    effectiveChordTimelineDigest: input.effectiveChordTimeline.digest,
+    sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
+    presetProfileDigest: input.effectiveConfig.presetProfileDigest,
+    effectiveConfigDigest: input.effectiveConfig.digest,
+    intentInputDigest: intentPlan.intentInputDigest,
+    activityInputDigest: activityPlan.activityInputDigest,
+    anchorInputDigest: anchorPlan.anchorInputDigest,
+    generationInputDigest: expectedGenerationInputDigest,
+    intentPlanDigest: intentPlan.intentPlanDigest,
+    activityPlanDigest: activityPlan.activityPlanDigest,
+    anchorPlanDigest: anchorPlan.anchorPlanDigest,
+  };
+  const expectedConfigs: Readonly<Record<string, string>> = {
+    ...authority.wagOwnedConfigDigests,
+    accompanimentConfigDigest: accompanimentConfig.configDigest,
+    diagnosticRegistryDigest: authority.diagnostics.registryDigest,
+  };
+  const digestMismatch = result.presetId !== input.effectiveConfig.presetId
+    || Object.entries(expectedDigests).some(([key, value]) => result.digests[key as keyof typeof result.digests] !== value)
+    || Object.entries(expectedConfigs).some(([key, value]) => result.configDigests[key] !== value)
+    || Object.entries(APPLICATION_ALGORITHM_VERSION_REGISTRY).some(([key, value]) => result.versions[key] !== value);
+  if (digestMismatch) {
+    raw.push(rawDiagnostic("ALGORITHM_CONFIG_MISMATCH", "result", { stage: "validation", reason: "RESULT_AUTHORITY_MISMATCH" }));
+  }
+  if (result.status !== "blocked" && result.diagnostics.some((diagnostic) => authority.diagnostics.definitions[diagnostic.code].blocksComplete)) {
+    raw.push(rawDiagnostic("GENERATION_RESULT_STATE_INVALID", "result", { status: result.status, reason: "RESULT_SCOPE_BLOCKS_COMPLETE" }));
   }
   const diagnostics = await createDiagnostics(raw, authority.diagnostics);
   return { valid: diagnostics.length === 0, candidates: candidateReports, diagnostics };
