@@ -116,7 +116,8 @@ export async function materializeEditedArrangement(input: {
     presetProfileDigest: candidate.presetProfileDigest, effectiveChordTimelineDigest: candidate.effectiveChordTimelineDigest,
     sourceLeadAtomizationDigest: candidate.sourceLeadAtomizationDigest,
     tracks: tracks.map((track) => ({ trackPlanId: track.trackPlanId, events: track.events.map((event) => {
-      const { id: _id, ...payload } = event;
+      const { id, ...payload } = event;
+      void id;
       return payload.kind === "note" && payload.source === "user-edit" ? { ...payload, source: "anchor" as const } : payload;
     }) })),
     realizedAnchors, ordinals: registry, metrics: initialMetrics, diagnostics: candidate.diagnostics,

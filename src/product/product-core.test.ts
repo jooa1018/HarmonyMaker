@@ -19,6 +19,7 @@ import { loadProductExecutionRegistry } from "./registry";
 import { canDefaultExportOrShare, materializeActiveArrangement, projectRenderDocument, selectActiveCandidate, selectActiveSnapshot } from "./render";
 import { arrangementRenderDocumentToAbc } from "./score-adapter";
 import { decodeProductUrlShare, encodeProductUrlShare } from "./share-url";
+import { practiceShareToRenderDocument } from "./shared-practice";
 import { generateProjectVariant, type ProductGenerationOutcome } from "./workspace";
 
 async function generatedProject(): Promise<{ readonly project: HarmonyProject; readonly generated: Extract<ProductGenerationOutcome, { readonly status: "complete" | "partial" }> }> {
@@ -89,6 +90,31 @@ describe("Product Core workspace, render, playback, and state", () => {
     expect(stale.variants.standard && "activeArrangement" in stale.variants.standard ? stale.variants.standard.activeArrangement : undefined).toBeUndefined();
     expect(() => replaceStageLocks(project, "standard", "intent", [lock])).toThrow("STAGE_LOCK_SCOPE_INVALID");
     expect(() => materializeActiveArrangement(stale, "standard")).toThrow("ACTIVE_ARRANGEMENT_UNAVAILABLE");
+  });
+
+  it("regenerates from the exact stale boundary and preserves a blocked attempt without replacing artifacts", async () => {
+    const { project } = await generatedProject();
+    const variant = project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") return;
+    const candidate = variant.generationResult.candidates.find((item) => Object.keys(item.generatedEventsByTrack).length > 0)!;
+    const [trackPlanId, event] = Object.entries(candidate.generatedEventsByTrack).flatMap(([track, events]) => events.flatMap((item) => item.kind === "note" ? [[track, item] as const] : []))[0];
+    const common = { id: "lk:regeneration:0", kind: "pitch" as const, presetId: "standard" as const, phraseId: project.source.phraseRegions[0].id, trackPlanId, position: event.range.start };
+    const stale = replaceStageLocks(project, "standard", "solver", [{ ...common, pitch: event.pitch }]);
+    const regenerated = await generateProjectVariant(stale, "standard");
+    expect(regenerated.status).not.toBe("blocked");
+    if (regenerated.status === "blocked") return;
+    const next = regenerated.project.variants.standard;
+    expect(next?.staleness).toBeUndefined();
+    if (!next || next.lifecycle !== "generation-attempted") return;
+    expect(next.intentPlan.intentPlanDigest).toBe(variant.intentPlan.intentPlanDigest);
+    expect(next.activityPlan.activityPlanDigest).toBe(variant.activityPlan.activityPlanDigest);
+    expect(next.anchorPlan.anchorPlanDigest).toBe(variant.anchorPlan.anchorPlanDigest);
+
+    const impossible = replaceStageLocks(project, "standard", "solver", [{ ...common, id: "lk:regeneration:1", pitch: { step: "C", alter: 0, octave: 9 } }]);
+    const blocked = await generateProjectVariant(impossible, "standard");
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.project.variants.standard?.lastBlockedAttempt?.stage).toBe("generation");
+    expect(blocked.project.variants.standard?.staleness?.staleFrom).toBe("generation");
   });
 });
 
@@ -177,6 +203,9 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
     expect(payload.lyrics.every((token) => /^ly:\d+$/u.test(token.id))).toBe(true);
     const encoded = encodeProductUrlShare(payload);
     expect(decodeProductUrlShare(encoded)).toEqual(payload);
+    const sharedDocument = practiceShareToRenderDocument(decodeProductUrlShare(encoded));
+    expect(sharedDocument.sourceLeadTrack.atoms).toHaveLength(payload.arrangement.tracks.find((track) => track.kind === "source-lead")?.events.length ?? 0);
+    expect(buildPlaybackPlan(sharedDocument, await generateDeterministicAccompaniment(sharedDocument.effectiveChordTimeline)).events.length).toBeGreaterThan(0);
     expect(JSON.stringify(payload)).not.toMatch(/documentId|session|csrf|database|objectKey|lock/iu);
   });
 });

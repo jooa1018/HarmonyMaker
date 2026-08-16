@@ -1,5 +1,7 @@
 import { resolveEffectiveArrangementConfig, type ArrangementPresetId } from "../domain/config";
+import { generateDeterministicAccompaniment } from "../accompaniment/deterministic";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
+import { semanticDigest, type SemanticDigest } from "../domain/digest/canonical";
 import type { Diagnostic } from "../domain/diagnostics";
 import { SOURCE_LEAD_TRACK, type GeneratedHarmonyTrackPlan } from "../domain/performer";
 import type { ArrangementVariant, HarmonyProject } from "../domain/project";
@@ -7,7 +9,10 @@ import type { MusicXmlImportDraft } from "../import/musicxml/types";
 import type { QuickReviewAnalysis } from "../import/review/quick-review";
 import { loadFrozenWagAuthority } from "../grammar/authority";
 import { planWagActivity, planWagAnchor, planWagIntent, type WagLifecycleInput } from "../grammar/lifecycle";
-import { executeWagSegmentB, type WagSegmentBExecution } from "../grammar/segment-b";
+import { assembleWagGeneration } from "../grammar/pipeline";
+import { buildWagRenderDocument, type WagSegmentBExecution, type WagSegmentBStage } from "../grammar/segment-b";
+import { solveWagLocally } from "../grammar/solver";
+import { validateWagAssembly } from "../grammar/validator";
 
 const PRESETS: readonly ArrangementPresetId[] = ["simple", "standard", "full"];
 const noLocks = () => ({ intent: [], activity: [], anchor: [], solver: [] } as const);
@@ -69,17 +74,56 @@ export async function wagInputFromProject(project: HarmonyProject, presetId: Arr
 
 export async function generateProjectVariant(project: HarmonyProject, presetId: ArrangementPresetId): Promise<ProductGenerationOutcome> {
   const input = await wagInputFromProject(project, presetId);
-  const execution = await executeWagSegmentB(input);
-  if (execution.status === "blocked") return { status: "blocked", project, stage: execution.stage, diagnostics: execution.diagnostics };
-  const intent = await planWagIntent(input);
-  if (intent.status === "blocked") throw new RangeError("GENERATION_REPLAY_MISMATCH");
-  const activity = await planWagActivity(input, intent.value);
-  if (activity.status === "blocked") throw new RangeError("GENERATION_REPLAY_MISMATCH");
-  const anchor = await planWagAnchor(input, intent.value, activity.value);
-  if (anchor.status === "blocked") throw new RangeError("GENERATION_REPLAY_MISMATCH");
-  if (intent.value.intentPlanDigest !== execution.generation.result.digests.intentPlanDigest
-    || activity.value.activityPlanDigest !== execution.generation.result.digests.activityPlanDigest
-    || anchor.value.anchorPlanDigest !== execution.generation.result.digests.anchorPlanDigest) throw new RangeError("GENERATION_REPLAY_MISMATCH");
+  const previous = project.variants[presetId] ?? { lifecycle: "empty" as const, presetId, diagnostics: [] };
+  const boundary = previous.staleness?.staleFrom ?? "intent";
+  const fallbackDigest = async (stage: "intent" | "activity" | "anchor" | "generation"): Promise<SemanticDigest> => semanticDigest({
+    projectionSchema: "hm-blocked-product-attempt-input-v1", stage,
+    musicalSourceDigest: input.source.revisionDigest,
+    effectiveChordTimelineDigest: input.effectiveChordTimeline.digest,
+    sourceLeadAtomizationDigest: input.sourceLeadAtomization.digest,
+    effectiveConfigDigest: input.effectiveConfig.digest,
+  });
+  const blockedProject = async (stage: WagSegmentBStage, diagnostics: readonly Diagnostic[], knownDigest?: SemanticDigest): Promise<ProductGenerationOutcome> => {
+    const projectStage = stage === "intent" || stage === "activity" || stage === "anchor" ? stage : "generation";
+    const inputDigest = knownDigest ?? await fallbackDigest(projectStage);
+    const nextVariant = { ...previous, lastBlockedAttempt: { stage: projectStage, inputDigest, diagnostics }, diagnostics: [...previous.diagnostics, ...diagnostics] } as ArrangementVariant;
+    const next = { ...project, variants: { ...project.variants, [presetId]: nextVariant } };
+    return { status: "blocked", project: next, stage, diagnostics };
+  };
+
+  let intentPlan = previous.lifecycle !== "empty" && boundary !== "intent" ? previous.intentPlan : undefined;
+  if (!intentPlan) {
+    const result = await planWagIntent(input);
+    if (result.status === "blocked") return blockedProject("intent", result.diagnostics, previous.lifecycle !== "empty" ? previous.intentPlan.intentInputDigest : undefined);
+    intentPlan = result.value;
+  }
+  let activityPlan = previous.lifecycle !== "empty" && previous.lifecycle !== "intent-ready" && boundary !== "intent" && boundary !== "activity" ? previous.activityPlan : undefined;
+  if (!activityPlan) {
+    const result = await planWagActivity(input, intentPlan);
+    if (result.status === "blocked") return blockedProject("activity", result.diagnostics, previous.lifecycle !== "empty" && previous.lifecycle !== "intent-ready" ? previous.activityPlan.activityInputDigest : undefined);
+    activityPlan = result.value;
+  }
+  let anchorPlan = previous.lifecycle === "anchor-ready" || previous.lifecycle === "generation-attempted"
+    ? boundary === "anchor" || boundary === "activity" || boundary === "intent" ? undefined : previous.anchorPlan
+    : undefined;
+  if (!anchorPlan) {
+    const result = await planWagAnchor(input, intentPlan, activityPlan);
+    if (result.status === "blocked") return blockedProject("anchor", result.diagnostics, previous.lifecycle === "anchor-ready" || previous.lifecycle === "generation-attempted" ? previous.anchorPlan.anchorInputDigest : undefined);
+    anchorPlan = result.value;
+  }
+  const solver = await solveWagLocally(input, intentPlan, activityPlan, anchorPlan);
+  if (solver.status === "blocked") return blockedProject("solver", solver.diagnostics, previous.lifecycle === "generation-attempted" ? previous.generationResult.digests.generationInputDigest : undefined);
+  const generation = await assembleWagGeneration(input, intentPlan, activityPlan, anchorPlan, solver.value);
+  if (generation.result.status === "blocked") return blockedProject("assembly", generation.result.diagnostics, generation.result.digests.generationInputDigest);
+  const validation = await validateWagAssembly(input, intentPlan, activityPlan, anchorPlan, generation.result);
+  if (!validation.valid) return blockedProject("validation", validation.diagnostics, generation.result.digests.generationInputDigest);
+  const accompaniment = await generateDeterministicAccompaniment(input.effectiveChordTimeline);
+  const selected = generation.result.candidates.find((candidate) => candidate.id === generation.defaultCandidateId);
+  if (!selected) throw new RangeError("GENERATION_RESULT_STATE_INVALID");
+  const execution: Exclude<WagSegmentBExecution, { readonly status: "blocked" }> = {
+    status: generation.result.status, generation, validation, accompaniment,
+    renderDocument: buildWagRenderDocument(input, selected),
+  };
   const persistedVersionKeys = ["domainSchemaVersion", "digestCodecVersion", "chordParserVersion", "chordTimelineResolverVersion", "performanceExpanderVersion", "sourceLeadAtomizerVersion", "presetProfileVersion", "candidateProjectionVersion", "plannerVersion", "grammarVersion", "activityPlannerVersion", "anchorPlannerVersion", "solverVersion", "assemblerVersion", "validatorVersion", "metricsVersion", "diagnosticRegistryVersion"] as const;
   const persistedConfigKeys = ["solverConfigDigest", "assemblerConfigDigest", "validatorConfigDigest", "metricConfigDigest", "diagnosticRegistryDigest"] as const;
   const persistedGenerationResult = {
@@ -87,11 +131,21 @@ export async function generateProjectVariant(project: HarmonyProject, presetId: 
     versions: Object.fromEntries(persistedVersionKeys.map((key) => [key, execution.generation.result.versions[key]])),
     configDigests: Object.fromEntries(persistedConfigKeys.map((key) => [key, execution.generation.result.configDigests[key]])),
   };
+  const retainedEdits = previous.lifecycle === "generation-attempted" ? previous.outputEdits.filter((edit) => generation.result.candidates.some((candidate) => candidate.id === edit.baseCandidateId && candidate.contentDigest === edit.baseCandidateDigest)) : [];
+  const retainedSnapshots = previous.lifecycle === "generation-attempted" ? previous.editedSnapshots.filter((snapshot) => generation.result.candidates.some((candidate) => candidate.id === snapshot.baseCandidateId && candidate.contentDigest === snapshot.baseCandidateDigest)) : [];
+  const previousActive = previous.lifecycle === "generation-attempted" ? previous.activeArrangement : undefined;
+  const activeArrangement = previousActive?.kind === "candidate" && generation.result.candidates.some((candidate) => candidate.id === previousActive.candidateId)
+    ? previousActive
+    : previousActive?.kind === "edited-snapshot" && retainedSnapshots.some((snapshot) => snapshot.id === previousActive.snapshotId)
+      ? previousActive
+      : { kind: "candidate" as const, candidateId: selected.id };
   const variant: ArrangementVariant = {
     lifecycle: "generation-attempted", presetId,
-    intentPlan: intent.value, activityPlan: activity.value, anchorPlan: anchor.value,
-    generationResult: persistedGenerationResult, outputEdits: [], editedSnapshots: [],
-    ...(execution.generation.defaultCandidateId ? { activeArrangement: { kind: "candidate", candidateId: execution.generation.defaultCandidateId } as const } : {}),
+    intentPlan, activityPlan, anchorPlan,
+    generationResult: persistedGenerationResult,
+    outputEdits: retainedEdits,
+    editedSnapshots: retainedSnapshots,
+    activeArrangement,
     diagnostics: execution.generation.result.diagnostics,
   };
   const next = { ...project, selectedPresetId: presetId, variants: { ...project.variants, [presetId]: variant } };

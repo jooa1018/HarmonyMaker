@@ -10,6 +10,7 @@ import {
   type DragEvent,
   type FormEvent,
 } from "react";
+import { useRouter } from "next/navigation";
 import type { Diagnostic } from "../../domain/diagnostics";
 import type { PitchRange, SpelledPitch } from "../../domain/pitch";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
@@ -36,6 +37,8 @@ import {
   setSingerCount,
 } from "../../import/review/commands";
 import { deriveQuickReview, type QuickReviewAnalysis } from "../../import/review/quick-review";
+import { IndexedDbProjectStore } from "../../product/local-project-store";
+import { createProjectFromQuickReview } from "../../product/workspace";
 import styles from "./import.module.css";
 
 type DraftUpdater = (draft: MusicXmlImportDraft) => MusicXmlImportDraft;
@@ -272,6 +275,7 @@ function DiagnosticSummary({ diagnostics }: { readonly diagnostics: readonly Dia
 }
 
 export function ImportReviewClient() {
+  const router = useRouter();
   const [draft, setDraft] = useState<MusicXmlImportDraft>();
   const [analysis, setAnalysis] = useState<QuickReviewAnalysis>();
   const [diagnostics, setDiagnostics] = useState<readonly Diagnostic[]>([]);
@@ -280,6 +284,7 @@ export function ImportReviewClient() {
   const [reviewing, setReviewing] = useState(false);
   const [tempoText, setTempoText] = useState("");
   const [keyText, setKeyText] = useState("");
+  const [handoffBusy, setHandoffBusy] = useState(false);
 
   const updateDraft = useCallback((updater: DraftUpdater) => {
     setReviewing(true);
@@ -355,6 +360,21 @@ export function ImportReviewClient() {
     const match = /^(\d+)\/([1-9]\d*)$/u.exec(onsetText.trim());
     if (!match) return;
     updateDraft((current) => addChord(current, partOrdinal, measureOrdinal, { n: Number(match[1]), d: Number(match[2]) }, chordText));
+  };
+
+  const openWorkspace = async () => {
+    if (!draft || !analysis?.state.readyForPlanning) return;
+    setHandoffBusy(true);
+    setFileStatus("정본 프로젝트를 만들고 이 브라우저에 저장하는 중…");
+    try {
+      const project = await createProjectFromQuickReview(draft, analysis, "standard");
+      const projectId = crypto.randomUUID();
+      await new IndexedDbProjectStore().save({ projectId, updatedAt: new Date().toISOString(), project });
+      router.push(`/workspace?project=${encodeURIComponent(projectId)}`);
+    } catch (error) {
+      setFileStatus(error instanceof Error ? error.message : "프로젝트를 만들지 못했습니다.");
+      setHandoffBusy(false);
+    }
   };
 
   return (
@@ -459,7 +479,8 @@ export function ImportReviewClient() {
               </ul>
             ) : null}
             <DiagnosticSummary diagnostics={diagnostics} />
-            <p className={styles.help}>이 화면은 Source 입력 준비만 확인합니다. Step 4와 화음 생성은 아직 시작하지 않습니다.</p>
+            {analysis?.state.readyForPlanning ? <button className="primary" type="button" disabled={handoffBusy} onClick={() => void openWorkspace()}>{handoffBusy ? "워크스페이스 준비 중…" : "프로젝트 워크스페이스 열기 →"}</button> : null}
+            <p className={styles.help}>여기서 확정한 Source, 코드, 구간, 가수 음역과 권리 정보가 그대로 프로젝트 authority가 됩니다.</p>
           </section>
         </>
       ) : null}

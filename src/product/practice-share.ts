@@ -38,12 +38,15 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
     { kind: "source-lead", label: "Lead", events: document.sourceLeadTrack.atoms.map((atom) => atomEvent(atom, document, localLyrics.sourceToLocal)) },
     ...document.generatedHarmonyTracks.map((track, index) => ({ kind: "generated-harmony" as const, label: index === 0 ? "Upper / Harmony 1" : "Lower / Harmony 2", events: track.events.map((event) => generatedEvent(event, document, localLyrics.sourceToLocal)) })),
   ];
-  const chords: CompactChord[] = document.effectiveChordTimeline.spans.map((span) => ({
-    kind: span.parseResult.status === "ok" ? "chord" as const : "no-chord" as const,
-    startOccurrenceIndex: span.range.start.performanceMeasureIndex, startOffset: compact(span.range.start.offset),
-    endOccurrenceIndex: span.range.end.performanceMeasureIndex, endOffset: compact(span.range.end.offset),
-    ...(span.parseResult.status === "ok" ? { symbol: span.parseResult.chord.canonicalSymbol } : {}),
-  }));
+  const chords: CompactChord[] = document.effectiveChordTimeline.spans.map((span) => {
+    const common = {
+      startOccurrenceIndex: span.range.start.performanceMeasureIndex, startOffset: compact(span.range.start.offset),
+      endOccurrenceIndex: span.range.end.performanceMeasureIndex, endOffset: compact(span.range.end.offset),
+    };
+    return span.parseResult.status === "ok"
+      ? { ...common, kind: "chord", symbol: span.parseResult.chord.canonicalSymbol }
+      : { ...common, kind: "no-chord" };
+  });
   const payload: PracticeSharePayload = {
     schemaVersion: 3, title: input.project.source.title, tempo: input.project.source.defaultTempo,
     key: input.project.source.defaultKey, presetId: input.presetId,
