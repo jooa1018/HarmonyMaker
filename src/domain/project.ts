@@ -146,10 +146,11 @@ function isSectionIntent(value: unknown): boolean {
 
 function isPhraseIntent(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["id", "phraseId", "presetId", "sectionIntentId", "textureId", "trackRoles", "lyricPolicy", "cadencePolicy", "grammarRuleIds"], ["splitDirective"])
+    || !hasExactKeys(value, ["id", "phraseId", "presetId", "sectionIntentId", "textureId", "harmonyExpectation", "trackRoles", "lyricPolicy", "cadencePolicy", "grammarRuleIds"], ["splitDirective"])
     || ![value.id, value.phraseId, value.sectionIntentId].every(isCanonicalId)
     || !isPresetId(value.presetId)
     || !textureIds.includes(value.textureId as typeof textureIds[number])
+    || !["none", "H1-required"].includes(String(value.harmonyExpectation))
     || !["same-lyrics", "hold-current-vowel", "no-new-lyric"].includes(String(value.lyricPolicy))
     || !["open", "closed", "looping"].includes(String(value.cadencePolicy))
     || !isCanonicalIdArray(value.grammarRuleIds)
@@ -166,7 +167,7 @@ function isPhraseIntent(value: unknown): boolean {
 
 function isPhraseActivityPlan(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["id", "phraseId", "intentId", "activitySpans", "attackEvents", "realizedMetrics"])
+    || !hasExactKeys(value, ["id", "phraseId", "intentId", "activitySpans", "attackEvents", "realizedMetrics", "decisionEvidence"])
     || ![value.id, value.phraseId, value.intentId].every(isCanonicalId)
     || !Array.isArray(value.activitySpans)
     || !value.activitySpans.every((span) => isPlainRecord(span)
@@ -179,6 +180,17 @@ function isPhraseActivityPlan(value: unknown): boolean {
       && isCanonicalId(event.id) && isCanonicalId(event.trackPlanId)
       && isMusicalPosition(event.position)
       && ["attack", "release", "reentry"].includes(String(event.kind)))
+    || !Array.isArray(value.decisionEvidence)
+    || !value.decisionEvidence.every((evidence) => isPlainRecord(evidence)
+      && hasExactKeys(evidence, ["range", "trackPlanId", "placementRole", "reason", "continuityState", "hardLegalCandidateCount", "sourceToneSpellingExclusionCount"])
+      && isMusicalRange(evidence.range)
+      && isCanonicalId(evidence.trackPlanId)
+      && ["upper", "lower"].includes(String(evidence.placementRole))
+      && evidence.reason === "LOCAL_REST_HARD_IMPOSSIBILITY"
+      && ["continuous", "reentry", "initial"].includes(String(evidence.continuityState))
+      && evidence.hardLegalCandidateCount === 0
+      && Number.isSafeInteger(evidence.sourceToneSpellingExclusionCount)
+      && (evidence.sourceToneSpellingExclusionCount as number) >= 0)
     || !isPlainRecord(value.realizedMetrics)
     || !hasExactKeys(value.realizedMetrics, ["participationCoverage", "harmonyAttackRatio", "harmonyOverLeadRestCoverage", "maxSimultaneousHarmonyTracks"])) return false;
   return isRateMetric(value.realizedMetrics.participationCoverage, true, false)
