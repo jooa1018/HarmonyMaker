@@ -4,7 +4,7 @@
 
 - Exact Segment B handoff-inclusive base SHA: `d6ff14ae8f605662d9ab75716640ae2cf3224639`
 - Segment C branch: `codex/harmonymaker-v0-segment-c`
-- Final Segment C code checkpoint SHA: `844f44290929c45c60b57205b86a3f0a56c9bbff`
+- Final Segment C code checkpoint SHA: `aafbabe63918c063fd4c2c3bf8bde12f48681998`
 - Final handoff-inclusive remote HEAD: the documentation-only commit containing this file on `origin/codex/harmonymaker-v0-segment-c`; its exact immutable SHA is recorded in the Segment C completion report after the commit is created and its final CI passes. A Git commit cannot contain its own SHA.
 - Exact Segment D branch base: the same final handoff-inclusive remote HEAD above, not the code checkpoint.
 - Fixed musical decision: `KEEP_WAG_V1_0_1`
@@ -18,6 +18,12 @@ Segment D must branch from the exact final remote branch HEAD reported with `SEG
 - Canonical Product Core services: `5265729d1f69726bb4e26f1a304b6c46cca0c53c`
 - Connected workspace and practice sharing: `55958afefe025b307765d245ab7c507c5fe22e0b`
 - Browser integration closure: `844f44290929c45c60b57205b86a3f0a56c9bbff`
+- Explicit track-role and MusicXML semantic closure: `0e63de6a8fd2d8adfc65ec2b6b277bc3a40a1548`
+- Independent edited-snapshot validation closure: `64d87c5fef7a0025952fcc089873517aec076d33`
+- Retention and share-governance closure: `dfb6d9e842525a49cd81dcf0ce29a51c3e9427c2`
+- Canonical lock/edit control closure: `aafbabe63918c063fd4c2c3bf8bde12f48681998`
+
+The closure commits are additive descendants of the accepted remote checkpoint `30d5dc10b2fbfba7e5763ed6de662d2847682fdf`. No existing Segment C commit was amended, rebased, squashed, or replaced.
 
 ## Frozen authority
 
@@ -33,14 +39,14 @@ All six frozen artifacts are byte-identical to the accepted base. The production
 
 ## Runtime and persistence substrate
 
-- Schema version `1`; ordered migration `001_segment_c_foundation.sql` / `segment_c_foundation` creates the schema-version ledger plus anonymous session, quota window/lease, idempotency, ShareStore, abuse/audit, object-reference, and Segment-D-reusable OMR metadata tables. Application is transactional, advisory-locked, checksum-verified, repeat-safe, and rejects gaps/reordering/drift.
-- `PostgresPersistenceStore` is the direct `pg` boundary. Ownership-sensitive queries receive trusted server session identity; raw SQL errors and private row IDs do not cross the API boundary.
+- Ordered migrations `001_segment_c_foundation.sql` / `segment_c_foundation` and additive `002_idempotency_recovery.sql` / `idempotency_recovery` create the foundation and add a bounded pending-claim lease without changing migration 001. Application is transactional, advisory-locked, checksum-verified, repeat-safe, and rejects gaps/reordering/drift.
+- `PostgresGovernanceStore` is the direct `pg` boundary. Ownership-sensitive queries receive trusted server session identity; raw SQL errors and private row IDs do not cross the API boundary.
 - Anonymous sessions use an opaque CSPRNG token, stored HMAC-derived hash, independent session-bound CSRF derivation, `HttpOnly; SameSite=Lax; Path=/`, production `Secure`, and a bounded 30-day expiry. Mutation authorization requires a verified session, exact same-origin Origin/Host, and `x-csrf-token`.
-- Quota/idempotency uses transactional durable claims, normalized-IP HMACs, bounded records, per-session isolation, and the fixed reusable OMR limits of one concurrent job and three jobs per session-hour. No OMR workflow behavior is implemented.
+- Quota/idempotency uses transactional durable claims, normalized-IP HMACs, bounded records, per-session isolation, and the fixed reusable OMR limits of one concurrent job and three jobs per session-hour. Completed share-create replays are resolved before new quota consumption; failed pre-effect claims are released; abandoned pending claims are reclaimable after the five-minute lease; ShareStore reads consume an IP-HMAC hourly quota. No OMR workflow behavior is implemented.
 - Authenticated encryption is envelope v1, AES-256-GCM, a fresh 12-byte nonce, and a dedicated exact 32-byte key. Session, share-token, owner-delete, quota/IP, CSRF, and internal-operation HMAC keys are independent. Raw public/delete tokens are never persisted.
 - ShareStore validates and canonicalizes PracticeShare v3 plaintext, digests plaintext rather than ciphertext, encrypts at rest, stores only token/delete verifiers, defaults to exactly 180 days, supports read, owner delete, abuse report, takedown/disabled/expired handling, and uses non-enumerating public errors.
 - `S3OwnedObjectStore` uses opaque object keys and private metadata references, verifies digest/size/content type on reads, enforces server-side ownership, and implements repeat-safe delete. Production has no memory/filesystem fallback; memory adapters are test-only.
-- Cleanup is bounded and repeat-safe for expired sessions, shares, objects, idempotency records, and quota windows.
+- Cleanup is bounded, idempotent, and failure-isolated. Expired active object references move to `delete-pending`; both new and previously pending records are passed to S3 `DeleteObject`; successful deletion moves to `deleted` and records an audit; a failed S3 deletion remains pending and retryable without blocking sibling records.
 
 Required deployment variables are documented in `.env.example`: `DATABASE_URL`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `SESSION_TOKEN_HMAC_KEY`, `CSRF_HMAC_KEY`, `SHARE_ENCRYPTION_KEY`, `SHARE_TOKEN_HMAC_KEY`, `OWNER_DELETE_HMAC_KEY`, `QUOTA_IP_HMAC_KEY`, and `INTERNAL_OPERATIONS_KEY`. Production services validate all values and fail closed; public local-only Product Core paths remain usable without them.
 
@@ -59,37 +65,37 @@ Connected routes:
 Core module boundaries:
 
 - `workspace.ts` consumes the accepted Segment B executor, resumes regeneration at the exact stale boundary, retains prior valid artifacts on blocked attempts, and never reimplements or retunes the selector.
-- `render.ts` and `score-adapter.ts` materialize candidate or snapshot `ArrangementRenderDocument` projections for Lead/Upper/Lower/full score display.
-- `playback-plan.ts`, `timing.ts`, and `ProductPracticePlayer.tsx` schedule canonical events/accompaniment with N.C. silence, lyrics/held syllables/ties, actual-event cursor, play/pause/resume/reset, mute/solo, speed, and part-practice projections.
-- `locks.ts` implements stage-scoped locks, staleness propagation, exact regeneration boundaries, impossible-lock blocking, and PitchLock octave semantics.
-- `edited-arrangement.ts` implements candidate-bound ID-free pitch/event/tie edits and complete valid/invalid snapshot materialization with independent metrics/Validator reruns. Invalid/stale snapshots remain inspectable but cannot be active export/share artifacts.
-- `musicxml-export.ts`, `local-project-store.ts`, and `project-transfer.ts` provide deterministic MusicXML, IndexedDB lifecycle, canonical project file transfer, integrity validation, and active-artifact persistence.
-- `practice-share.ts`, `share-url.ts`, and `shared-practice.ts` provide PracticeShare schema-v3 materialization, canonical round trips, the `<=6000` byte URL decision, ShareStore fallback, rights gate, read-only loading, and part practice. OMR binaries/evidence and governance identifiers are excluded.
+- `track-roles.ts`, `render.ts`, and `score-adapter.ts` carry explicit `trackPlanId → placementRole` and independent H1/H2 metadata. Score, playback, PracticeShare, shared-practice, and MusicXML no longer infer placement or harmony role from generated-track array position; H1 may be Lower and H2 may be Upper.
+- `playback-plan.ts`, `timing.ts`, and `ProductPracticePlayer.tsx` schedule canonical events/accompaniment with explicit role labels, N.C. silence, lyrics/held syllables/ties, actual-event cursor, play/pause/resume/reset, mute/solo, speed, and part-practice projections.
+- `locks.ts`, `workspace-controls.ts`, and the connected workspace implement canonical Intent texture/placement, Activity, Anchor, and Solver targets; lock creation/replacement/removal; earliest-boundary staleness; and exact regeneration presentation.
+- `edited-arrangement.ts` and `edited-validation.ts` implement candidate-bound replace-pitch, replace-event note/rest, and set-tie edits without rewriting `source="user-edit"`. Independent snapshot validation consumes actual edited events, protects required anchor provenance, recomputes every `FullSongMetrics` field, and derives source-chord respect from actual edited pitches and Source chord tones. Invalid snapshots remain inspectable but cannot be default export/share artifacts.
+- `musicxml-export.ts`, `local-project-store.ts`, and `project-transfer.ts` provide deterministic MusicXML, IndexedDB lifecycle, canonical project file transfer, integrity validation, and active-artifact persistence. MusicXML now preserves accidental roots/bass, canonical quality/extensions/alterations/omissions/additions/sus/dim/aug/slash semantics, plus duration-appropriate type/dot/tuplet notation; adversarial export/re-import fixtures preserve the canonical chord.
+- `practice-share.ts`, `share-url.ts`, `shared-practice.ts`, and the share-governance coordinators provide PracticeShare schema-v3 materialization, canonical round trips, the `<=6000` byte URL decision, ShareStore fallback, rights gate, read-only loading/quota, idempotent create replay, and part practice. OMR binaries/evidence and governance identifiers are excluded.
 
 ## Verification
 
-Clean final local verification at `844f44290929c45c60b57205b86a3f0a56c9bbff`:
+Clean final local verification at `aafbabe63918c063fd4c2c3bf8bde12f48681998`:
 
 ```text
-npm ci                    PASS — 452 packages audited, 0 vulnerabilities
+npm ci                    PASS — lockfile-exact 452 packages audited, 0 vulnerabilities; the local Windows runner blocked npm's default cmd.exe postinstall spawn, so the exact graph was installed with scripts suppressed and its sole required postinstall was executed directly. Remote CI ran unmodified `npm ci` successfully.
 npm run typecheck         PASS
 npm run lint              PASS
-npm test                  PASS — 50 files, 482 tests
+npm test                  PASS — 50 files, 493 tests
 npm run build             PASS — Next.js 16.3.0 production build
 git diff --check          PASS
 ```
 
-The full test run includes all accepted 43 files/435 tests, the 101-complete-execution Segment B determinism gate, and 7 files/47 Segment C tests covering governance isolation, migrations, security, direct-store semantics, ShareStore/object storage, generation/render/playback/lock/edit/export/save/transfer/share round trips, and deterministic repeats. Frozen authority audit: six artifact changes `0`; protected musical-authority changes `0`; grammar-v1.0.2 paths `0`.
+The full test run includes the 101-complete-execution Segment B determinism gate. The focused closure rerun passed 6 files/44 tests for Segment B execution, Product Core/export/edit/playback, ShareStore/idempotency/read quota, cleanup, and S3 deletion retry. The frozen authority/selector rerun passed 2 files/37 tests. Frozen audit: six artifact changes `0`; protected musical-authority changes `0`; grammar-v1.0.2 paths `0`; WAG ZIP SHA-256 remains `9b27e30c10315622022c7d459fac3515ddd0fe2168321cd74870d941c9bc5b4b`.
 
-Browser/playback automation was available and passed on the production build path: home hydration; four-measure MusicXML import; Quick Review and IndexedDB handoff; two-range setup; canonical complete generation with two independently validated candidates; projection/score switching; actual-event Web Audio cursor; pause/resume/reset; mute/solo; 150% speed; stage lock, stale boundary, and regeneration; invalid snapshot inspection/export-share rejection; valid artifact recovery; URL PracticeShare creation and read-only playback; IndexedDB save/reload; 390x844 responsive overflow/touch-target checks; clean final workspace/share console scans; and a safe `503 PERSISTENCE_UNAVAILABLE` response when ShareStore credentials were absent. Deterministic MusicXML/project downloads are covered by unit tests; browser automation did not receive a download event from its download observer.
+Closure browser/playback automation passed on the local Next runtime: four-measure MusicXML import; Quick Review and IndexedDB handoff; three vocal ranges; canonical complete generation with four candidates; explicit `Upper / H1` and `Lower / H2` score/playback labels; Upper-only projection excluding H2; actual-event Web Audio cursor; pause/resume/reset; mute/solo; 150% speed; canonical lock target presentation; Activity lock creation/replacement, Solver lock creation, earliest Activity stale boundary preservation, blocked Solver attempt retention, lock removal, and exact-boundary recovery; invalid edited-snapshot inspection/export-share rejection; valid candidate recovery; URL PracticeShare creation with both explicit roles and read-only playback; and clean workspace/share console scans.
 
-First push-triggered remote verification for the code checkpoint:
+Push-triggered remote verification for the closure code checkpoint:
 
-- GitHub Actions workflow `CI`, run `31938270952`, quality job `95143522142`
-- Commit `844f44290929c45c60b57205b86a3f0a56c9bbff`
+- GitHub Actions workflow `CI`, run `31941421313`, quality job `95151078090`
+- Commit `aafbabe63918c063fd4c2c3bf8bde12f48681998`
 - Conclusion: `success`
-- Run: `https://github.com/jooa1018/HarmonyMaker/actions/runs/31938270952`
-- Vercel status: `success`; Vercel Preview Comments check: `success`
+- Run: `https://github.com/jooa1018/HarmonyMaker/actions/runs/31941421313`
+- Vercel status: `success`, deployment `FGY2LwFstDcFnWcvnptDYcGJzFrA`; Vercel Preview Comments check: `success`
 
 The final handoff-commit CI run and its conclusion are recorded in the Segment C completion report because they occur after this file is committed.
 
