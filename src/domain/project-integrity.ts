@@ -47,7 +47,7 @@ import {
 import { resolveProductionLyricEmphasis } from "./source/lyrics";
 import type { LeadEvent, SongSourceDocument } from "./source/model";
 import { validateSongSourceDocumentIntegrity } from "./source/validation";
-import { compareRanges } from "./time";
+import { comparePositions, compareRanges, type MusicalPosition } from "./time";
 import type { StageExecutionResult } from "./plans";
 
 export type HarmonyProjectIntegrityResult = StageExecutionResult<HarmonyProject>;
@@ -540,7 +540,12 @@ function anchorDirectiveOrdinalRegistry(
   anchor: ArrangementAnchorPlan,
   ordinals: ProjectOrdinals,
 ): Readonly<Record<string, number>> {
-  const entries: Array<{ readonly id: string; readonly projection: object }> = [];
+  const entries: Array<{
+    readonly id: string;
+    readonly projection: object;
+    readonly position: MusicalPosition;
+    readonly trackOrdinal: number;
+  }> = [];
   for (const phrase of anchor.phraseAnchorPlans) {
     const phraseOrdinal = requiredOrdinal(ordinals.phraseOrdinalById, phrase.phraseId, "phrase");
     const endpointProjectionById: Record<string, object> = {};
@@ -555,7 +560,7 @@ function anchorDirectiveOrdinalRegistry(
         ? { ...common, chordSpanOrdinal: requiredOrdinal(ordinals.chordSpanOrdinalById, directive.chordSpanId, "chord span"), selectedTone: directive.selectedTone }
         : { ...common, leadAtomOrdinal: requiredOrdinal(ordinals.leadAtomOrdinalById, directive.leadAtom.leadAtomId, "lead atom"), sourceLeadAtomizationDigest: directive.leadAtom.sourceLeadAtomizationDigest, relation: directive.relation };
       endpointProjectionById[directive.id] = projection;
-      entries.push({ id: directive.id, projection });
+      entries.push({ id: directive.id, projection, position: directive.position, trackOrdinal: common.trackOrdinal });
     }
     const nctProjectionById = Object.fromEntries(phrase.nctPlans.map((nct) => [
       nct.id,
@@ -571,11 +576,12 @@ function anchorDirectiveOrdinalRegistry(
         nct: nctProjectionById[directive.nctPlanId],
       };
       requireIntegrity(projection.nct !== undefined, "planned NCT directive target is missing", "STALE_REFERENCE");
-      entries.push({ id: directive.id, projection });
+      entries.push({ id: directive.id, projection, position: directive.position, trackOrdinal: projection.trackOrdinal });
     }
   }
-  entries.sort((left, right) => compareCanonicalValues(left.projection, right.projection));
   requireIntegrity(new Set(entries.map((entry) => canonicalJson(entry.projection))).size === entries.length, "duplicate semantic anchor directive");
+  entries.sort((left, right) => comparePositions(left.position, right.position)
+    || left.trackOrdinal - right.trackOrdinal);
   return Object.fromEntries(entries.map((entry, ordinal) => [entry.id, ordinal]));
 }
 

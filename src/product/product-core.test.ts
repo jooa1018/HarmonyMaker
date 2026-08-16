@@ -113,6 +113,8 @@ describe("Product Core workspace, render, playback, and state", () => {
       expect.objectContaining({ trackPlanId: "track:h2", harmonyRole: "H1" }),
       expect.objectContaining({ trackPlanId: "track:h1", harmonyRole: "H2" }),
     ]);
+    expect((await validateHarmonyProject(project, await loadProductExecutionRegistry())).status).toBe("complete");
+    await expect(exportHarmonyProject(project)).resolves.toContain('"harmonyRole":"H1"');
     expect(materialized.trackRoles.byTrackPlanId["track:h1"]).toMatchObject({ harmonyRole: "H2", label: "Upper / H2" });
     expect(materialized.trackRoles.byTrackPlanId["track:h2"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
     const abc = arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: project.source.title, tempo: project.source.defaultTempo, key: project.source.defaultKey });
