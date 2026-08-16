@@ -45,7 +45,7 @@ export type ArrangementVariant =
   | (ArrangementVariantBase & { readonly lifecycle: "intent-ready"; readonly intentPlan: ArrangementIntentPlan; readonly staleness?: VariantStalenessAt<"intent"> })
   | (ArrangementVariantBase & { readonly lifecycle: "activity-ready"; readonly intentPlan: ArrangementIntentPlan; readonly activityPlan: ArrangementActivityPlan; readonly staleness?: VariantStalenessAt<"intent" | "activity"> })
   | (ArrangementVariantBase & { readonly lifecycle: "anchor-ready"; readonly intentPlan: ArrangementIntentPlan; readonly activityPlan: ArrangementActivityPlan; readonly anchorPlan: ArrangementAnchorPlan; readonly staleness?: VariantStalenessAt<"intent" | "activity" | "anchor"> })
-  | (ArrangementVariantBase & { readonly lifecycle: "generation-attempted"; readonly intentPlan: ArrangementIntentPlan; readonly activityPlan: ArrangementActivityPlan; readonly anchorPlan: ArrangementAnchorPlan; readonly generationResult: ArrangementGenerationResult; readonly candidateHarmonyRoles?: readonly CandidateHarmonyRoleMetadata[]; readonly outputEdits: readonly ArrangementOutputEdit[]; readonly editedSnapshots: readonly EditedArrangementSnapshot[]; readonly activeArrangement?: ActiveArrangementRef; readonly staleness?: VariantStaleness });
+  | (ArrangementVariantBase & { readonly lifecycle: "generation-attempted"; readonly intentPlan: ArrangementIntentPlan; readonly activityPlan: ArrangementActivityPlan; readonly anchorPlan: ArrangementAnchorPlan; readonly generationResult: ArrangementGenerationResult; readonly candidateHarmonyRoles: readonly CandidateHarmonyRoleMetadata[]; readonly outputEdits: readonly ArrangementOutputEdit[]; readonly editedSnapshots: readonly EditedArrangementSnapshot[]; readonly activeArrangement?: ActiveArrangementRef; readonly staleness?: VariantStaleness });
 export interface HarmonyProject { readonly schemaVersion: 9; readonly source: SongSourceDocument; readonly chordTimelineState: EffectiveChordTimelineState; readonly sourceLeadAtomizationState: SourceLeadAtomizationState; readonly presetProfiles: PresetProfileRegistry; readonly performers: readonly PerformerProfile[]; readonly trackPlans: readonly VocalTrackPlan[]; readonly assignments: readonly PerformerTrackAssignment[]; readonly settings: ArrangementSettings; readonly locksByPreset: Readonly<Partial<Record<ArrangementPresetId, VariantStageLocks>>>; readonly variants: Readonly<Partial<Record<ArrangementPresetId, ArrangementVariant>>>; readonly selectedPresetId?: ArrangementPresetId }
 
 const stages = ["intent", "activity", "anchor", "generation"] as const;
@@ -457,8 +457,8 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
   if (!["empty", "intent-ready", "activity-ready", "anchor-ready", "generation-attempted"].includes(String(variant.lifecycle))) return false;
   const max = lifecycleMax[variant.lifecycle as ArrangementVariant["lifecycle"]];
   const requiredKeys = ["lifecycle", "presetId", "diagnostics", ...["intentPlan", "activityPlan", "anchorPlan", "generationResult"].slice(0, max + 1)];
-  if (variant.lifecycle === "generation-attempted") requiredKeys.push("outputEdits", "editedSnapshots");
-  if (!hasExactKeys(variant, requiredKeys, ["staleness", "lastBlockedAttempt", "activeArrangement", "candidateHarmonyRoles"])) return false;
+  if (variant.lifecycle === "generation-attempted") requiredKeys.push("candidateHarmonyRoles", "outputEdits", "editedSnapshots");
+  if (!hasExactKeys(variant, requiredKeys, ["staleness", "lastBlockedAttempt", "activeArrangement"])) return false;
   if (!isPresetId(variant.presetId) || !isDiagnosticArray(variant.diagnostics)) return false;
   const required = ["intentPlan", "activityPlan", "anchorPlan", "generationResult"].slice(0, max + 1);
   if (required.some((field) => !(field in variant))) return false;
@@ -466,12 +466,12 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
   if (forbidden.some((field) => field in variant)) return false;
   if (variant.lifecycle === "generation-attempted" && (!Array.isArray(variant.outputEdits)
     || !Array.isArray(variant.editedSnapshots)
-    || (variant.candidateHarmonyRoles !== undefined && (!Array.isArray(variant.candidateHarmonyRoles)
+    || !Array.isArray(variant.candidateHarmonyRoles)
       || !variant.candidateHarmonyRoles.every((entry) => isPlainRecord(entry)
         && hasExactKeys(entry, ["marginalCandidateId", "trackPlanId", "harmonyRole"])
         && isCanonicalId(entry.marginalCandidateId)
         && isCanonicalId(entry.trackPlanId)
-        && ["H1", "H2"].includes(String(entry.harmonyRole))))))) return false;
+        && ["H1", "H2"].includes(String(entry.harmonyRole))))) return false;
   if (max >= 0 && !isIntentPlan(variant.intentPlan)) return false;
   if (max >= 1 && !isActivityPlan(variant.activityPlan)) return false;
   if (max >= 2 && !isAnchorPlan(variant.anchorPlan)) return false;

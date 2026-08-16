@@ -450,6 +450,43 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
     await expect(importHarmonyProject(encoded.replace(project.source.revisionDigest, "0".repeat(64)))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
   });
 
+  it("migrates a schema-v9 project without candidate roles to explicit generation staleness", async () => {
+    const baseInput = await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 2 });
+    const input = {
+      ...baseInput,
+      performers: baseInput.performers.map((performer, index) => index === 1 ? {
+        ...performer,
+        comfortableRange: { low: pitch("E", 4), high: pitch("E", 4) },
+        preferredTessitura: { low: pitch("E", 4), high: pitch("E", 4) },
+      } : performer),
+    };
+    const { project } = await generatedProject(input);
+    const original = project.variants.standard;
+    if (!original || original.lifecycle !== "generation-attempted") throw new Error("missing generated variant");
+    expect(original.candidateHarmonyRoles[0]).toMatchObject({ trackPlanId: "track:h2", harmonyRole: "H1" });
+    const legacy = JSON.parse(await exportHarmonyProject(project)) as { variants: { standard: Record<string, unknown> } };
+    delete legacy.variants.standard.candidateHarmonyRoles;
+    expect((await validateHarmonyProject(legacy, await loadProductExecutionRegistry())).status).toBe("blocked");
+
+    const migrated = await importHarmonyProject(JSON.stringify(legacy));
+    const stale = migrated.variants.standard;
+    if (!stale || stale.lifecycle !== "generation-attempted") throw new Error("missing migrated variant");
+    expect(stale.candidateHarmonyRoles).toEqual([]);
+    expect(stale.staleness?.staleFrom).toBe("generation");
+    expect(stale.activeArrangement).toBeUndefined();
+    expect(() => materializeActiveArrangement(migrated, "standard")).toThrow("ACTIVE_ARRANGEMENT_UNAVAILABLE");
+    await expect(exportHarmonyProject(migrated)).resolves.toContain('"staleFrom":"generation"');
+
+    const regenerated = await generateProjectVariant(migrated, "standard");
+    expect(regenerated.status).not.toBe("blocked");
+    if (regenerated.status === "blocked") return;
+    const regeneratedVariant = regenerated.project.variants.standard;
+    if (!regeneratedVariant || regeneratedVariant.lifecycle !== "generation-attempted") throw new Error("missing regenerated variant");
+    expect(regeneratedVariant.staleness).toBeUndefined();
+    expect(regeneratedVariant.candidateHarmonyRoles).toEqual(original.candidateHarmonyRoles);
+    expect(regeneratedVariant.candidateHarmonyRoles[0]).toMatchObject({ trackPlanId: "track:h2", harmonyRole: "H1" });
+  });
+
   it("materializes a compact rights-gated PracticeShare with local identities and URL round-trip", async () => {
     const { project } = await generatedProject();
     const materialized = materializeActiveArrangement(project, "standard");

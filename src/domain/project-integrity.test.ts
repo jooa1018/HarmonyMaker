@@ -502,6 +502,7 @@ async function generationProject(
       activityPlan,
       anchorPlan,
       generationResult,
+      candidateHarmonyRoles: [{ marginalCandidateId: candidate.id, trackPlanId: "track:h1", harmonyRole: "H1" }],
       outputEdits: [],
       editedSnapshots: [],
     } },
