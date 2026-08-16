@@ -69,6 +69,7 @@ export interface CleanupResult {
   readonly expiredSessionIds: readonly PrivateRowId[];
   readonly expiredShareIds: readonly PrivateRowId[];
   readonly expiredObjectIds: readonly PrivateRowId[];
+  readonly pendingObjectReferences: readonly ObjectReferenceRecord[];
   readonly removedIdempotencyCount: number;
   readonly removedQuotaCount: number;
 }
@@ -84,6 +85,7 @@ export interface GovernanceStore {
     readonly keyHash: string;
     readonly requestDigest: string;
     readonly createdAt: string;
+    readonly claimExpiresAt: string;
     readonly expiresAt: string;
   }): Promise<IdempotencyClaim>;
   completeIdempotency(input: {
@@ -91,6 +93,11 @@ export interface GovernanceStore {
     readonly operation: string;
     readonly keyHash: string;
     readonly response: unknown;
+  }): Promise<void>;
+  releaseIdempotency(input: {
+    readonly sessionId: PrivateRowId;
+    readonly operation: string;
+    readonly keyHash: string;
   }): Promise<void>;
   createShare(input: Omit<DurableShareRecord, "id">): Promise<DurableShareRecord>;
   findShareByTokenHash(tokenHash: string): Promise<DurableShareRecord | undefined>;

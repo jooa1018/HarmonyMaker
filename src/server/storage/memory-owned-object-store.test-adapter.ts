@@ -36,7 +36,9 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
   async delete(referenceId: PrivateRowId, ownerSessionId: PrivateRowId, now = new Date()): Promise<void> {
     const record = await this.records.findObjectReference(referenceId, ownerSessionId);
     if (!record || record.lifecycle === "deleted") return;
+    await this.records.transitionObjectReference({ id: record.id, ownerSessionId, lifecycle: "delete-pending", at: now.toISOString() });
     this.buffers.delete(record.objectKey);
     await this.records.transitionObjectReference({ id: record.id, ownerSessionId, lifecycle: "deleted", at: now.toISOString() });
+    await this.records.createAudit({ eventKind: "object-delete", objectReferenceId: record.id, outcome: "accepted", createdAt: now.toISOString() });
   }
 }

@@ -34,12 +34,13 @@ export function getProductionServices(): Promise<ProductionServices> {
       credentials: { accessKeyId: config.objectStore.accessKeyId, secretAccessKey: config.objectStore.secretAccessKey },
       forcePathStyle: true,
     });
+    const objects = new S3OwnedObjectStore(s3, config.objectStore.bucket, store);
     return {
       sessions: new AnonymousSessionService(store, config.secrets.sessionTokenHmacKey, config.secrets.csrfHmacKey, process.env.NODE_ENV === "production"),
       quota: new QuotaAndIdempotencyService(store, config.secrets.quotaIpHmacKey),
       shares: new ShareStoreService(store, config.secrets.shareEncryptionKey, config.secrets.shareTokenHmacKey, config.secrets.ownerDeleteHmacKey, config.secrets.internalOperationsKey),
-      objects: new S3OwnedObjectStore(s3, config.objectStore.bucket, store),
-      cleanup: new CleanupService(store),
+      objects,
+      cleanup: new CleanupService(store, objects),
     };
   })().catch((error) => { servicesPromise = undefined; throw error; });
   return servicesPromise;

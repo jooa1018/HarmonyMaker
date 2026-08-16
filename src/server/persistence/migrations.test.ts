@@ -22,15 +22,17 @@ class MigrationClientFake {
 describe("versioned PostgreSQL migrations", () => {
   it("has a monotonic inventory with durable constraints and Segment-D-only foundation", () => {
     expect(() => validateMigrationInventory(MIGRATIONS)).not.toThrow();
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1]);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2]);
     const sql = MIGRATIONS[0].sql;
     for (const required of ["anonymous_sessions", "quota_windows", "idempotency_records", "share_records", "object_references", "omr_jobs", "omr_pages", "omr_evidence", "omr_review_metadata", "REFERENCES", "UNIQUE", "expires_at"]) expect(sql).toContain(required);
     expect(sql).not.toContain("vendor_name");
+    expect(MIGRATIONS[1].sql).toContain("claim_expires_at");
+    expect(MIGRATIONS[1].sql).toContain("state = 'pending'");
   });
 
   it("applies transactionally once and safely re-applies", async () => {
     const client = new MigrationClientFake();
-    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1]);
+    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2]);
     await expect(applyMigrationsWithClient(client)).resolves.toEqual([]);
     expect(client.calls.filter((call) => call === "COMMIT")).toHaveLength(2);
   });

@@ -61,6 +61,20 @@ describe("anonymous session, origin, CSRF, quota, and idempotency", () => {
     await expect(quota.claimIdempotency({ sessionId: session.record.id, operation: "create-share", key: "request-key-0001", requestDigest: digestA, now })).resolves.toMatchObject({ status: "replay", response: { ok: true } });
     await expect(quota.claimIdempotency({ sessionId: session.record.id, operation: "create-share", key: "request-key-0001", requestDigest: digestB, now })).resolves.toMatchObject({ status: "conflict" });
   });
+
+  it("recovers failed claims immediately and abandoned pending claims after their lease", async () => {
+    const store = new MemoryGovernanceStore();
+    const sessions = new AnonymousSessionService(store, key(1), key(2), false);
+    const quota = new QuotaAndIdempotencyService(store, key(3));
+    const session = await sessions.issue(now);
+    const requestDigest = await semanticDigest({ value: "recoverable" });
+    const first = await quota.claimIdempotency({ sessionId: session.record.id, operation: "create-share", key: "request-key-recovery", requestDigest, now, pendingLeaseSeconds: 5 });
+    expect(first.status).toBe("claimed");
+    await expect(quota.claimIdempotency({ sessionId: session.record.id, operation: "create-share", key: "request-key-recovery", requestDigest, now: new Date(now.getTime() + 4_000), pendingLeaseSeconds: 5 })).resolves.toMatchObject({ status: "pending" });
+    await expect(quota.claimIdempotency({ sessionId: session.record.id, operation: "create-share", key: "request-key-recovery", requestDigest, now: new Date(now.getTime() + 5_000), pendingLeaseSeconds: 5 })).resolves.toMatchObject({ status: "claimed" });
+    await quota.releaseIdempotency({ sessionId: session.record.id, operation: "create-share", keyHash: first.keyHash });
+    await expect(quota.claimIdempotency({ sessionId: session.record.id, operation: "create-share", key: "request-key-recovery", requestDigest, now: new Date(now.getTime() + 5_001), pendingLeaseSeconds: 5 })).resolves.toMatchObject({ status: "claimed" });
+  });
 });
 
 describe("versioned authenticated encryption", () => {

@@ -6,6 +6,7 @@ import type {
 interface IdempotencyState {
   readonly requestDigest: string;
   readonly expiresAt: string;
+  readonly claimExpiresAt: string;
   response?: unknown;
 }
 
@@ -52,15 +53,19 @@ export class MemoryGovernanceStore implements GovernanceStore {
 
   async claimIdempotency(input: {
     readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string;
-    readonly requestDigest: string; readonly createdAt: string; readonly expiresAt: string;
+    readonly requestDigest: string; readonly createdAt: string; readonly claimExpiresAt: string; readonly expiresAt: string;
   }): Promise<IdempotencyClaim> {
     const key = `${input.sessionId}:${input.operation}:${input.keyHash}`;
     const found = this.idempotency.get(key);
     if (found) {
       if (found.requestDigest !== input.requestDigest) return { status: "conflict" };
+      if (found.response === undefined && found.claimExpiresAt <= input.createdAt) {
+        this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt });
+        return { status: "claimed" };
+      }
       return found.response === undefined ? { status: "pending" } : { status: "replay", response: found.response };
     }
-    this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt });
+    this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt });
     return { status: "claimed" };
   }
 
@@ -69,6 +74,12 @@ export class MemoryGovernanceStore implements GovernanceStore {
     const found = this.idempotency.get(key);
     if (!found) throw new Error("IDEMPOTENCY_NOT_CLAIMED");
     found.response = structuredClone(input.response);
+  }
+
+  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string }): Promise<void> {
+    const key = `${input.sessionId}:${input.operation}:${input.keyHash}`;
+    const found = this.idempotency.get(key);
+    if (found?.response === undefined) this.idempotency.delete(key);
   }
 
   async createShare(input: Omit<DurableShareRecord, "id">): Promise<DurableShareRecord> {
@@ -114,16 +125,21 @@ export class MemoryGovernanceStore implements GovernanceStore {
   async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
     const expiredSessionIds = [...this.sessions.values()].filter((record) => record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
     const expiredShareIds = [...this.shares.values()].filter((record) => record.lifecycle === "active" && record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
-    const expiredObjectIds = [...this.objects.values()].filter((record) => record.lifecycle === "active" && record.expiresAt !== undefined && record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
+    const pendingObjectReferences = [...this.objects.values()].filter((record) => record.lifecycle === "delete-pending" || (record.lifecycle === "active" && record.expiresAt !== undefined && record.expiresAt <= input.now)).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize);
+    const expiredObjectIds = pendingObjectReferences.map((record) => record.id);
     const expiredIdempotency = [...this.idempotency.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
     const expiredQuota = [...this.quota.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
     if (!input.dryRun) {
       expiredSessionIds.forEach((id) => this.sessions.delete(id));
       expiredShareIds.forEach((id) => { const record = this.shares.get(id); if (record) this.shares.set(id, { ...record, lifecycle: "expired", deletedAt: input.now }); });
-      expiredObjectIds.forEach((id) => { const record = this.objects.get(id); if (record) this.objects.set(id, { ...record, lifecycle: "expired" }); });
+      expiredObjectIds.forEach((id) => { const record = this.objects.get(id); if (record?.lifecycle === "active") this.objects.set(id, { ...record, lifecycle: "delete-pending" }); });
       expiredIdempotency.forEach(([key]) => this.idempotency.delete(key));
       expiredQuota.forEach(([key]) => this.quota.delete(key));
     }
-    return { expiredSessionIds, expiredShareIds, expiredObjectIds, removedIdempotencyCount: expiredIdempotency.length, removedQuotaCount: expiredQuota.length };
+    return {
+      expiredSessionIds, expiredShareIds, expiredObjectIds,
+      pendingObjectReferences: pendingObjectReferences.map((record) => ({ ...record, lifecycle: input.dryRun ? record.lifecycle : "delete-pending" })),
+      removedIdempotencyCount: expiredIdempotency.length, removedQuotaCount: expiredQuota.length,
+    };
   }
 }

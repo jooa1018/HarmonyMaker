@@ -4,7 +4,9 @@ import { keyedTokenHash } from "./crypto-core";
 
 export const OMR_QUOTA_POLICY = Object.freeze({ maxConcurrentJobsPerSession: 1, maxJobsPerSessionPerHour: 3 });
 export const SHARE_CREATE_PER_HOUR = 12;
+export const SHARE_READ_PER_HOUR = 120;
 export const ABUSE_REPORT_PER_HOUR = 6;
+export const IDEMPOTENCY_PENDING_LEASE_SECONDS = 300;
 
 export function normalizeIpAddress(value: string): string {
   const normalized = value.trim().toLowerCase();
@@ -33,12 +35,13 @@ export class QuotaAndIdempotencyService {
     });
   }
 
-  async claimIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly key: string; readonly requestDigest: SemanticDigest; readonly now: Date; readonly retentionSeconds?: number }): Promise<IdempotencyClaim & { readonly keyHash: string }> {
+  async claimIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly key: string; readonly requestDigest: SemanticDigest; readonly now: Date; readonly retentionSeconds?: number; readonly pendingLeaseSeconds?: number }): Promise<IdempotencyClaim & { readonly keyHash: string }> {
     if (!/^[A-Za-z0-9._:-]{8,128}$/u.test(input.key)) throw new RangeError("IDEMPOTENCY_KEY_INVALID");
     const keyHash = keyedTokenHash(input.key, this.hmacKey, "idempotency-v1");
     const result = await this.store.claimIdempotency({
       sessionId: input.sessionId, operation: input.operation, keyHash,
       requestDigest: input.requestDigest, createdAt: input.now.toISOString(),
+      claimExpiresAt: new Date(input.now.getTime() + (input.pendingLeaseSeconds ?? IDEMPOTENCY_PENDING_LEASE_SECONDS) * 1_000).toISOString(),
       expiresAt: new Date(input.now.getTime() + (input.retentionSeconds ?? 86_400) * 1_000).toISOString(),
     });
     return { ...result, keyHash };
@@ -46,5 +49,9 @@ export class QuotaAndIdempotencyService {
 
   async completeIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly response: unknown }): Promise<void> {
     await this.store.completeIdempotency(input);
+  }
+
+  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string }): Promise<void> {
+    await this.store.releaseIdempotency(input);
   }
 }

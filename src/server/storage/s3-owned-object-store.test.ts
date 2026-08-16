@@ -33,4 +33,27 @@ describe("production S3-compatible request construction", () => {
     expect(put.Key).toMatch(/^objects\/[A-Za-z0-9_-]+$/u);
     expect(put).toMatchObject({ Bucket: "private-bucket", ContentType: "application/octet-stream" });
   });
+
+  it("leaves a failed S3 deletion pending and completes it idempotently on retry", async () => {
+    let deleteAttempts = 0;
+    const fake = { send: async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "DeleteObjectCommand") {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error("S3_DELETE_FAILED");
+      }
+      return {};
+    } } as unknown as S3Client;
+    const records = new MemoryGovernanceStore();
+    const store = new S3OwnedObjectStore(fake, "private-bucket", records);
+    const owner = "private-owner" as PrivateRowId;
+    const created = await store.put({ ownerSessionId: owner, bytes: Uint8Array.of(1), contentType: "application/octet-stream" });
+    await expect(store.delete(created.id, owner, new Date("2026-01-01T00:00:00.000Z"))).rejects.toThrow("S3_DELETE_FAILED");
+    expect(records.objects.get(created.id)?.lifecycle).toBe("delete-pending");
+    await expect(store.delete(created.id, owner, new Date("2026-01-01T00:00:01.000Z"))).resolves.toBeUndefined();
+    expect(records.objects.get(created.id)?.lifecycle).toBe("deleted");
+    expect(records.audits).toEqual([expect.objectContaining({ eventKind: "object-delete", objectReferenceId: created.id, outcome: "accepted" })]);
+    await store.delete(created.id, owner, new Date("2026-01-01T00:00:02.000Z"));
+    expect(deleteAttempts).toBe(2);
+    expect(records.audits).toHaveLength(1);
+  });
 });

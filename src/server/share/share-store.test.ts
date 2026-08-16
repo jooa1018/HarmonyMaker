@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { SemanticDigest } from "../../domain/digest/canonical";
+vi.mock("server-only", () => ({}));
+
+import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
 import type { PracticeSharePayload } from "../../domain/share";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
+import { QuotaAndIdempotencyService, SHARE_CREATE_PER_HOUR } from "../security/quota-core";
+import { createShareIdempotently } from "./idempotent-create";
+import { readShareWithIpQuota } from "./quota-read";
 import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS } from "./share-store-core";
 
 const digest = "0".repeat(64) as SemanticDigest;
@@ -80,6 +85,33 @@ describe("ShareStore and URL share", () => {
     await service.takedown({ token: created.token, authorization, now });
     await service.takedown({ token: created.token, authorization, now });
     await expect(service.read(created.token, now)).rejects.toThrow("SHARE_UNAVAILABLE");
+  });
+
+  it("replays a completed create without consuming a new quota unit", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const requestDigest = await semanticDigest({ payload: payload(), rightsBasis: "self-authored" });
+    const common = { quota, shares, sessionId: owner, sessionQuotaOwner: "session-owner-hash", payload: payload(), rightsBasis: "self-authored" as const, idempotencyKey: "request-key-share-replay", requestDigest, now };
+    await expect(createShareIdempotently(common)).resolves.toMatchObject({ status: 201, body: { ok: true } });
+    for (let count = 1; count < SHARE_CREATE_PER_HOUR; count += 1) {
+      await expect(quota.consumeHourly({ ownerKind: "session", owner: common.sessionQuotaOwner, policyKey: "share-create-v1", limit: SHARE_CREATE_PER_HOUR, now })).resolves.toBe(true);
+    }
+    await expect(quota.consumeHourly({ ownerKind: "session", owner: common.sessionQuotaOwner, policyKey: "share-create-v1", limit: SHARE_CREATE_PER_HOUR, now })).resolves.toBe(false);
+    await expect(createShareIdempotently(common)).resolves.toMatchObject({ status: 200, body: { ok: true } });
+  });
+
+  it("applies the ShareStore read limit to an IP-HMAC owner without retaining the raw IP", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const created = await shares.create({ ownerSessionId: owner, payload: payload(64), rightsBasis: "self-authored", now, forceStore: true });
+    if (created.kind !== "store") return;
+    for (let count = 0; count < 120; count += 1) {
+      await expect(readShareWithIpQuota({ quota, shares, token: created.token, ipAddress: "192.0.2.44", now })).resolves.toMatchObject({ status: "ok" });
+    }
+    await expect(readShareWithIpQuota({ quota, shares, token: created.token, ipAddress: "192.0.2.44", now })).resolves.toEqual({ status: "quota-exceeded" });
+    expect(JSON.stringify(store)).not.toContain("192.0.2.44");
   });
 });
 

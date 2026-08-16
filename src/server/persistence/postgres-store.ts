@@ -72,11 +72,17 @@ export class PostgresGovernanceStore implements GovernanceStore {
     );
     return result.rowCount === 1;
   }
-  async claimIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly createdAt: string; readonly expiresAt: string }): Promise<IdempotencyClaim> {
+  async claimIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly createdAt: string; readonly claimExpiresAt: string; readonly expiresAt: string }): Promise<IdempotencyClaim> {
     const inserted = await this.database.query(
-      `INSERT INTO idempotency_records (session_id,operation,key_hash,request_digest,state,created_at,expires_at)
-       VALUES ($1,$2,$3,$4,'pending',$5,$6) ON CONFLICT DO NOTHING RETURNING id`,
-      [input.sessionId, input.operation, input.keyHash, input.requestDigest, input.createdAt, input.expiresAt],
+      `INSERT INTO idempotency_records (session_id,operation,key_hash,request_digest,state,created_at,claim_expires_at,expires_at)
+       VALUES ($1,$2,$3,$4,'pending',$5,$6,$7)
+       ON CONFLICT (session_id,operation,key_hash) DO UPDATE
+       SET created_at=EXCLUDED.created_at,claim_expires_at=EXCLUDED.claim_expires_at,expires_at=EXCLUDED.expires_at
+       WHERE idempotency_records.state='pending'
+         AND idempotency_records.request_digest=EXCLUDED.request_digest
+         AND idempotency_records.claim_expires_at <= EXCLUDED.created_at
+       RETURNING id`,
+      [input.sessionId, input.operation, input.keyHash, input.requestDigest, input.createdAt, input.claimExpiresAt, input.expiresAt],
     );
     if (inserted.rowCount === 1) return { status: "claimed" };
     const existing = await this.database.query(
@@ -93,6 +99,12 @@ export class PostgresGovernanceStore implements GovernanceStore {
       [input.sessionId, input.operation, input.keyHash, JSON.stringify(input.response)],
     );
     if (result.rowCount !== 1) throw new Error("IDEMPOTENCY_NOT_CLAIMED");
+  }
+  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string }): Promise<void> {
+    await this.database.query(
+      "DELETE FROM idempotency_records WHERE session_id=$1 AND operation=$2 AND key_hash=$3 AND state='pending'",
+      [input.sessionId, input.operation, input.keyHash],
+    );
   }
   async createShare(input: Omit<DurableShareRecord, "id">): Promise<DurableShareRecord> {
     const result = await this.database.query(
@@ -140,11 +152,22 @@ export class PostgresGovernanceStore implements GovernanceStore {
       await client.query("BEGIN");
       const sessions = await this.cleanupIds(client, "anonymous_sessions", "expires_at <= $1 AND revoked_at IS NULL", input, "revoked_at=$1");
       const shares = await this.cleanupIds(client, "share_records", "expires_at <= $1 AND lifecycle='active'", input, "lifecycle='expired',deleted_at=$1");
-      const objects = await this.cleanupIds(client, "object_references", "expires_at <= $1 AND lifecycle='active'", input, "lifecycle='expired'");
+      const pendingObjects = await client.query(
+        "SELECT * FROM object_references WHERE lifecycle='delete-pending' OR (lifecycle='active' AND expires_at <= $1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED",
+        [input.now, input.batchSize],
+      );
+      const objects = pendingObjects.rows.map(objectRow);
+      if (!input.dryRun && objects.length > 0) {
+        await client.query("UPDATE object_references SET lifecycle='delete-pending' WHERE id = ANY($1::bigint[]) AND lifecycle='active'", [objects.map((record) => record.id)]);
+      }
       const idempotency = await this.deleteExpired(client, "idempotency_records", input);
       const quota = await this.deleteExpired(client, "quota_windows", input);
       if (input.dryRun) await client.query("ROLLBACK"); else await client.query("COMMIT");
-      return { expiredSessionIds: sessions, expiredShareIds: shares, expiredObjectIds: objects, removedIdempotencyCount: idempotency, removedQuotaCount: quota };
+      return {
+        expiredSessionIds: sessions, expiredShareIds: shares, expiredObjectIds: objects.map((record) => record.id),
+        pendingObjectReferences: objects.map((record) => ({ ...record, lifecycle: input.dryRun ? record.lifecycle : "delete-pending" })),
+        removedIdempotencyCount: idempotency, removedQuotaCount: quota,
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

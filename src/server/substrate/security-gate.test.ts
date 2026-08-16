@@ -9,6 +9,8 @@ import { POST as bootstrapSession } from "../../app/api/session/route";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import type { PrivateRowId } from "../persistence/store";
 import { CleanupService } from "../cleanup/cleanup-service";
+import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
+import type { OwnedObjectStore } from "../storage/owned-object-store";
 
 describe("C2 production boundary security gate", () => {
   it("fails closed at request time when production credentials are unavailable", async () => {
@@ -53,14 +55,43 @@ describe("C2 production boundary security gate", () => {
     const store = new MemoryGovernanceStore();
     await store.createSession({ tokenHash: "expired", csrfNonce: "nonce", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });
     await store.createObjectReference({ ownerSessionId: "1" as PrivateRowId, objectKey: "objects/opaque", contentType: "application/octet-stream", byteSize: 0, binaryDigest: "0".repeat(64), lifecycle: "active", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });
-    const cleanup = new CleanupService(store);
+    const cleanup = new CleanupService(store, new MemoryOwnedObjectStore(store));
     const dry = await cleanup.run({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: 10, dryRun: true });
     expect(dry.expiredSessionIds).toHaveLength(1);
     expect(dry.expiredObjectIds).toHaveLength(1);
     const applied = await cleanup.run({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: 10 });
     expect(applied.expiredSessionIds).toEqual(dry.expiredSessionIds);
+    expect(store.objects.get("2" as PrivateRowId)?.lifecycle).toBe("deleted");
+    expect(store.audits).toContainEqual(expect.objectContaining({ eventKind: "object-delete", objectReferenceId: "2", outcome: "accepted" }));
     const repeated = await cleanup.run({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: 10 });
     expect(repeated.expiredSessionIds).toEqual([]);
     expect(repeated.expiredObjectIds).toEqual([]);
+  });
+
+  it("isolates object deletion failures and retries pending records within the bound", async () => {
+    const store = new MemoryGovernanceStore();
+    const owner = "owner" as PrivateRowId;
+    const backing = new MemoryOwnedObjectStore(store);
+    const expiresAt = "2025-02-01T00:00:00.000Z";
+    const records = await Promise.all([1, 2, 3].map((value) => backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(value), contentType: "application/octet-stream", expiresAt })));
+    let failFirst = true;
+    const failing: OwnedObjectStore = {
+      put: (input) => backing.put(input), get: (id, sessionId) => backing.get(id, sessionId), head: (id, sessionId) => backing.head(id, sessionId),
+      delete: async (id, sessionId, at) => {
+        if (id === records[0].id && failFirst) { failFirst = false; throw new Error("S3_DELETE_FAILED"); }
+        await backing.delete(id, sessionId, at);
+      },
+    };
+    const cleanup = new CleanupService(store, failing);
+    const first = await cleanup.run({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: 2 });
+    expect(first.expiredObjectIds).toEqual([records[0].id, records[1].id]);
+    expect(first.failures).toEqual([{ scope: `object:${records[0].id}`, message: "S3_DELETE_FAILED" }]);
+    expect(store.objects.get(records[0].id)?.lifecycle).toBe("delete-pending");
+    expect(store.objects.get(records[1].id)?.lifecycle).toBe("deleted");
+    const retry = await cleanup.run({ now: new Date("2026-01-01T00:00:01.000Z"), batchSize: 2 });
+    expect(retry.expiredObjectIds).toEqual([records[0].id, records[2].id]);
+    expect(retry.failures).toEqual([]);
+    expect(records.map((record) => store.objects.get(record.id)?.lifecycle)).toEqual(["deleted", "deleted", "deleted"]);
+    await expect(cleanup.run({ now: new Date("2026-01-01T00:00:02.000Z"), batchSize: 2 })).resolves.toMatchObject({ expiredObjectIds: [], failures: [] });
   });
 });

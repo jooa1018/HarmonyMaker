@@ -36,8 +36,16 @@ CREATE TABLE IF NOT EXISTS omr_evidence (id bigint GENERATED ALWAYS AS IDENTITY 
 CREATE TABLE IF NOT EXISTS omr_review_metadata (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, job_id bigint NOT NULL REFERENCES omr_jobs(id) ON DELETE CASCADE, revision_ordinal integer NOT NULL CHECK (revision_ordinal >= 0), metadata jsonb NOT NULL, created_at timestamptz NOT NULL, UNIQUE (job_id, revision_ordinal));
 `;
 
+export const IDEMPOTENCY_RECOVERY_SQL = String.raw`
+ALTER TABLE idempotency_records ADD COLUMN IF NOT EXISTS claim_expires_at timestamptz;
+UPDATE idempotency_records SET claim_expires_at = created_at + interval '5 minutes' WHERE claim_expires_at IS NULL;
+ALTER TABLE idempotency_records ALTER COLUMN claim_expires_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idempotency_pending_recovery_idx ON idempotency_records (claim_expires_at, id) WHERE state = 'pending';
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
+  { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {
