@@ -84,7 +84,7 @@ export class PostgresGovernanceStore implements GovernanceStore {
        RETURNING id`,
       [input.sessionId, input.operation, input.keyHash, input.requestDigest, input.createdAt, input.claimExpiresAt, input.expiresAt],
     );
-    if (inserted.rowCount === 1) return { status: "claimed" };
+    if (inserted.rowCount === 1) return { status: "claimed", claimCreatedAt: input.createdAt };
     const existing = await this.database.query(
       "SELECT request_digest,state,response_json FROM idempotency_records WHERE session_id=$1 AND operation=$2 AND key_hash=$3",
       [input.sessionId, input.operation, input.keyHash],
@@ -100,10 +100,40 @@ export class PostgresGovernanceStore implements GovernanceStore {
     );
     if (result.rowCount !== 1) throw new Error("IDEMPOTENCY_NOT_CLAIMED");
   }
-  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string }): Promise<void> {
+  async completeIdempotentShareCreation(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly claimCreatedAt: string; readonly replayEnvelope: DurableShareRecord["encryptedPayload"]; readonly share?: Omit<DurableShareRecord, "id"> }): Promise<void> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const claimed = await client.query(
+        "SELECT request_digest,state,created_at FROM idempotency_records WHERE session_id=$1 AND operation=$2 AND key_hash=$3 FOR UPDATE",
+        [input.sessionId, input.operation, input.keyHash],
+      );
+      const row = claimed.rows[0];
+      if (!row || row.request_digest !== input.requestDigest || row.state !== "pending" || iso(row.created_at as Date) !== input.claimCreatedAt) throw new Error("IDEMPOTENCY_NOT_CLAIMED");
+      if (input.share) {
+        await client.query(
+          `INSERT INTO share_records (owner_session_id,token_hash,delete_secret_verifier,payload_digest,encrypted_payload,plaintext_size,rights_basis,lifecycle,created_at,expires_at,disabled_at,deleted_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [input.share.ownerSessionId, input.share.tokenHash, input.share.deleteSecretVerifier, input.share.payloadDigest, JSON.stringify(input.share.encryptedPayload), input.share.plaintextSize, input.share.rightsBasis, input.share.lifecycle, input.share.createdAt, input.share.expiresAt, input.share.disabledAt ?? null, input.share.deletedAt ?? null],
+        );
+      }
+      const completed = await client.query(
+        "UPDATE idempotency_records SET state='complete',response_json=$5 WHERE session_id=$1 AND operation=$2 AND key_hash=$3 AND request_digest=$4 AND state='pending'",
+        [input.sessionId, input.operation, input.keyHash, input.requestDigest, JSON.stringify(input.replayEnvelope)],
+      );
+      if (completed.rowCount !== 1) throw new Error("IDEMPOTENCY_NOT_CLAIMED");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly claimCreatedAt?: string }): Promise<void> {
     await this.database.query(
-      "DELETE FROM idempotency_records WHERE session_id=$1 AND operation=$2 AND key_hash=$3 AND state='pending'",
-      [input.sessionId, input.operation, input.keyHash],
+      "DELETE FROM idempotency_records WHERE session_id=$1 AND operation=$2 AND key_hash=$3 AND state='pending' AND ($4::timestamptz IS NULL OR created_at=$4)",
+      [input.sessionId, input.operation, input.keyHash, input.claimCreatedAt ?? null],
     );
   }
   async createShare(input: Omit<DurableShareRecord, "id">): Promise<DurableShareRecord> {

@@ -23,25 +23,31 @@ export async function createShareIdempotently(input: {
   readonly idempotencyKey: string;
   readonly requestDigest: SemanticDigest;
   readonly now: Date;
+  readonly forceStore?: boolean;
 }): Promise<ShareCreateCoordinationResult> {
   const operation = "share-create-v1";
   const claim = await input.quota.claimIdempotency({ sessionId: input.sessionId, operation, key: input.idempotencyKey, requestDigest: input.requestDigest, now: input.now });
-  if (claim.status === "replay") return { status: 200, body: claim.response };
+  if (claim.status === "replay") return { status: 200, body: input.shares.replayIdempotentCreate(claim.response) };
   if (claim.status !== "claimed") return { status: 409, body: { ok: false, error: { code: "IDEMPOTENCY_CONFLICT", messageKo: "같은 요청 키를 처리 중이거나 내용이 다릅니다." } } };
-  const release = () => input.quota.releaseIdempotency({ sessionId: input.sessionId, operation, keyHash: claim.keyHash });
+  const release = () => input.quota.releaseIdempotency({ sessionId: input.sessionId, operation, keyHash: claim.keyHash, claimCreatedAt: claim.claimCreatedAt });
   const allowed = await input.quota.consumeHourly({ ownerKind: "session", owner: input.sessionQuotaOwner, policyKey: operation, limit: SHARE_CREATE_PER_HOUR, now: input.now });
   if (!allowed) {
     await release();
     return { status: 429, body: { ok: false, error: { code: "QUOTA_EXCEEDED", messageKo: "공유 생성 한도를 초과했습니다." } } };
   }
-  let result: ShareCreationChoice;
+  let response: { readonly ok: true; readonly share: ShareCreationChoice };
   try {
-    result = await input.shares.create({ ownerSessionId: input.sessionId, payload: input.payload, rightsBasis: input.rightsBasis });
+    response = await input.shares.createAndCompleteIdempotency({
+      ownerSessionId: input.sessionId,
+      payload: input.payload,
+      rightsBasis: input.rightsBasis,
+      now: input.now,
+      ...(input.forceStore === undefined ? {} : { forceStore: input.forceStore }),
+      idempotency: { operation, keyHash: claim.keyHash, requestDigest: input.requestDigest, claimCreatedAt: claim.claimCreatedAt },
+    });
   } catch (error) {
     await release().catch(() => undefined);
     throw error;
   }
-  const response = { ok: true, share: result };
-  await input.quota.completeIdempotency({ sessionId: input.sessionId, operation, keyHash: claim.keyHash, response });
   return { status: 201, body: response };
 }

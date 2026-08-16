@@ -51,7 +51,7 @@ export class QuotaAndIdempotencyService {
     await this.store.completeIdempotency(input);
   }
 
-  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string }): Promise<void> {
+  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly claimCreatedAt?: string }): Promise<void> {
     await this.store.releaseIdempotency(input);
   }
 }

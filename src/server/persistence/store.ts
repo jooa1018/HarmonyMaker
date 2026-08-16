@@ -38,7 +38,7 @@ export interface QuotaConsumption {
 }
 
 export type IdempotencyClaim =
-  | { readonly status: "claimed" }
+  | { readonly status: "claimed"; readonly claimCreatedAt: string }
   | { readonly status: "replay"; readonly response: unknown }
   | { readonly status: "pending" }
   | { readonly status: "conflict" };
@@ -94,10 +94,20 @@ export interface GovernanceStore {
     readonly keyHash: string;
     readonly response: unknown;
   }): Promise<void>;
+  completeIdempotentShareCreation(input: {
+    readonly sessionId: PrivateRowId;
+    readonly operation: string;
+    readonly keyHash: string;
+    readonly requestDigest: string;
+    readonly claimCreatedAt: string;
+    readonly replayEnvelope: AeadEnvelopeV1;
+    readonly share?: Omit<DurableShareRecord, "id">;
+  }): Promise<void>;
   releaseIdempotency(input: {
     readonly sessionId: PrivateRowId;
     readonly operation: string;
     readonly keyHash: string;
+    readonly claimCreatedAt?: string;
   }): Promise<void>;
   createShare(input: Omit<DurableShareRecord, "id">): Promise<DurableShareRecord>;
   findShareByTokenHash(tokenHash: string): Promise<DurableShareRecord | undefined>;

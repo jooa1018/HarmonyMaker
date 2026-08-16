@@ -3,7 +3,7 @@ import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
 import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
 import { decodePracticeShare, encodePracticeShare, isPracticeSharePayload, type PracticeSharePayload } from "../../domain/share";
 import type { RightsBasis } from "../../domain/source/model";
-import type { GovernanceStore, PrivateRowId } from "../persistence/store";
+import type { DurableShareRecord, GovernanceStore, PrivateRowId } from "../persistence/store";
 import { decryptAeadV1, encryptAeadV1, generateOpaqueToken, keyedTokenHash, timingSafeHashEquals } from "../security/crypto-core";
 
 export const SHARE_DEFAULT_TTL_DAYS = 180;
@@ -14,6 +14,8 @@ const SHARE_UNAVAILABLE = "SHARE_UNAVAILABLE";
 export type ShareCreationChoice =
   | { readonly kind: "url"; readonly fragment: string; readonly payloadDigest: SemanticDigest }
   | { readonly kind: "store"; readonly token: string; readonly ownerDeleteSecret: string; readonly payloadDigest: SemanticDigest; readonly expiresAt: string };
+export interface ShareCreateResponse { readonly ok: true; readonly share: ShareCreationChoice }
+interface PreparedShareCreation { readonly choice: ShareCreationChoice; readonly durableRecord?: Omit<DurableShareRecord, "id"> }
 
 function payloadBytes(payload: PracticeSharePayload): Uint8Array { return strToU8(encodePracticeShare(payload)); }
 
@@ -39,14 +41,14 @@ export class ShareStoreService {
   private tokenHash(token: string): string { return keyedTokenHash(token, this.tokenHashKey, "share-token-v1"); }
   private deleteVerifier(secret: string): string { return keyedTokenHash(secret, this.deleteHashKey, "share-owner-delete-v1"); }
 
-  async create(input: { readonly ownerSessionId: PrivateRowId; readonly payload: PracticeSharePayload; readonly rightsBasis: RightsBasis; readonly now?: Date; readonly forceStore?: boolean }): Promise<ShareCreationChoice> {
+  private async prepare(input: { readonly ownerSessionId: PrivateRowId; readonly payload: PracticeSharePayload; readonly rightsBasis: RightsBasis; readonly now?: Date; readonly forceStore?: boolean }): Promise<PreparedShareCreation> {
     if (!isPracticeSharePayload(input.payload) || input.payload.rightsShareConfirmed !== true) throw new RangeError("SHARE_RIGHTS_REQUIRED");
     const encodedUrl = encodeUrlShare(input.payload);
     const decoded = decodeUrlShare(encodedUrl);
     if (encodePracticeShare(decoded) !== encodePracticeShare(input.payload)) throw new RangeError("SHARE_ROUNDTRIP_FAILED");
     const payloadDigest = await semanticDigest(input.payload);
     if (!input.forceStore && Buffer.byteLength(encodedUrl, "utf8") <= URL_SHARE_MAX_ENCODED_BYTES) {
-      return { kind: "url", fragment: encodedUrl, payloadDigest };
+      return { choice: { kind: "url", fragment: encodedUrl, payloadDigest } };
     }
     const plaintext = payloadBytes(input.payload);
     if (plaintext.byteLength > SHARE_MAX_PLAINTEXT_BYTES) throw new RangeError("SHARE_PAYLOAD_TOO_LARGE");
@@ -54,7 +56,7 @@ export class ShareStoreService {
     const ownerDeleteSecret = generateOpaqueToken();
     const now = input.now ?? new Date();
     const expiresAt = new Date(now.getTime() + SHARE_DEFAULT_TTL_DAYS * 86_400_000).toISOString();
-    await this.store.createShare({
+    const durableRecord = {
       ownerSessionId: input.ownerSessionId,
       tokenHash: this.tokenHash(token),
       deleteSecretVerifier: this.deleteVerifier(ownerDeleteSecret),
@@ -65,8 +67,52 @@ export class ShareStoreService {
       lifecycle: "active",
       createdAt: now.toISOString(),
       expiresAt,
+    } as const;
+    return { choice: { kind: "store", token, ownerDeleteSecret, payloadDigest, expiresAt }, durableRecord };
+  }
+
+  async create(input: { readonly ownerSessionId: PrivateRowId; readonly payload: PracticeSharePayload; readonly rightsBasis: RightsBasis; readonly now?: Date; readonly forceStore?: boolean }): Promise<ShareCreationChoice> {
+    const prepared = await this.prepare(input);
+    if (prepared.durableRecord) await this.store.createShare(prepared.durableRecord);
+    return prepared.choice;
+  }
+
+  async createAndCompleteIdempotency(input: {
+    readonly ownerSessionId: PrivateRowId;
+    readonly payload: PracticeSharePayload;
+    readonly rightsBasis: RightsBasis;
+    readonly now?: Date;
+    readonly forceStore?: boolean;
+    readonly idempotency: { readonly operation: string; readonly keyHash: string; readonly requestDigest: SemanticDigest; readonly claimCreatedAt: string };
+  }): Promise<ShareCreateResponse> {
+    const prepared = await this.prepare(input);
+    const response: ShareCreateResponse = { ok: true, share: prepared.choice };
+    const replayEnvelope = encryptAeadV1(strToU8(JSON.stringify(response)), this.encryptionKey, { associatedDataVersion: "share-create-replay-v1" });
+    await this.store.completeIdempotentShareCreation({
+      sessionId: input.ownerSessionId,
+      operation: input.idempotency.operation,
+      keyHash: input.idempotency.keyHash,
+      requestDigest: input.idempotency.requestDigest,
+      claimCreatedAt: input.idempotency.claimCreatedAt,
+      replayEnvelope,
+      ...(prepared.durableRecord ? { share: prepared.durableRecord } : {}),
     });
-    return { kind: "store", token, ownerDeleteSecret, payloadDigest, expiresAt };
+    return response;
+  }
+
+  replayIdempotentCreate(envelope: unknown): ShareCreateResponse {
+    try {
+      const candidate = envelope as Parameters<typeof decryptAeadV1>[0];
+      if (candidate.associatedDataVersion !== "share-create-replay-v1") throw new Error("associated-data");
+      const parsed = JSON.parse(strFromU8(decryptAeadV1(candidate, this.encryptionKey))) as ShareCreateResponse;
+      const share = parsed?.share;
+      const digestValid = typeof share?.payloadDigest === "string" && /^[0-9a-f]{64}$/u.test(share.payloadDigest);
+      const valid = parsed?.ok === true && digestValid && (share.kind === "url"
+        ? /^[A-Za-z0-9_-]+$/u.test(share.fragment)
+        : share.kind === "store" && /^[A-Za-z0-9_-]+$/u.test(share.token) && /^[A-Za-z0-9_-]+$/u.test(share.ownerDeleteSecret) && !Number.isNaN(Date.parse(share.expiresAt)));
+      if (!valid) throw new Error("shape");
+      return parsed;
+    } catch { throw new RangeError("IDEMPOTENCY_REPLAY_UNAVAILABLE"); }
   }
 
   async read(token: string, now = new Date()): Promise<PracticeSharePayload> {

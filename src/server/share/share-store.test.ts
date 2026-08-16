@@ -92,13 +92,73 @@ describe("ShareStore and URL share", () => {
     const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
     const quota = new QuotaAndIdempotencyService(store, key(5));
     const requestDigest = await semanticDigest({ payload: payload(), rightsBasis: "self-authored" });
-    const common = { quota, shares, sessionId: owner, sessionQuotaOwner: "session-owner-hash", payload: payload(), rightsBasis: "self-authored" as const, idempotencyKey: "request-key-share-replay", requestDigest, now };
-    await expect(createShareIdempotently(common)).resolves.toMatchObject({ status: 201, body: { ok: true } });
+    const common = { quota, shares, sessionId: owner, sessionQuotaOwner: "session-owner-hash", payload: payload(), rightsBasis: "self-authored" as const, idempotencyKey: "request-key-share-replay", requestDigest, now, forceStore: true };
+    const created = await createShareIdempotently(common);
+    expect(created).toMatchObject({ status: 201, body: { ok: true } });
     for (let count = 1; count < SHARE_CREATE_PER_HOUR; count += 1) {
       await expect(quota.consumeHourly({ ownerKind: "session", owner: common.sessionQuotaOwner, policyKey: "share-create-v1", limit: SHARE_CREATE_PER_HOUR, now })).resolves.toBe(true);
     }
     await expect(quota.consumeHourly({ ownerKind: "session", owner: common.sessionQuotaOwner, policyKey: "share-create-v1", limit: SHARE_CREATE_PER_HOUR, now })).resolves.toBe(false);
-    await expect(createShareIdempotently(common)).resolves.toMatchObject({ status: 200, body: { ok: true } });
+    await expect(createShareIdempotently(common)).resolves.toEqual({ ...created, status: 200 });
+    const choice = (created.body as { share: { token: string; ownerDeleteSecret: string } }).share;
+    const persistedReplay = JSON.stringify(store.idempotencyResponses());
+    expect(persistedReplay).toContain("ciphertext");
+    expect(persistedReplay).not.toContain(choice.token);
+    expect(persistedReplay).not.toContain(choice.ownerDeleteSecret);
+  });
+
+  it("creates one durable effect under concurrent idempotent requests and replays the same secrets", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const requestDigest = await semanticDigest({ payload: payload(64), rightsBasis: "self-authored" });
+    const common = { quota, shares, sessionId: owner, sessionQuotaOwner: "session-concurrent", payload: payload(64), rightsBasis: "self-authored" as const, idempotencyKey: "request-key-concurrent", requestDigest, now, forceStore: true };
+    const results = await Promise.all(Array.from({ length: 10 }, () => createShareIdempotently(common)));
+    expect(results.filter((result) => result.status === 201)).toHaveLength(1);
+    expect(results.filter((result) => result.status === 409)).toHaveLength(9);
+    expect(store.shares.size).toBe(1);
+    const created = results.find((result) => result.status === 201)!;
+    const replay = await createShareIdempotently(common);
+    expect(replay).toEqual({ ...created, status: 200 });
+    expect(store.shares.size).toBe(1);
+  });
+
+  it("rolls back a staged durable effect when completion crashes and recovers without duplication", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const requestDigest = await semanticDigest({ payload: payload(64), rightsBasis: "self-authored" });
+    const common = { quota, shares, sessionId: owner, sessionQuotaOwner: "session-crash", payload: payload(64), rightsBasis: "self-authored" as const, idempotencyKey: "request-key-crash-recovery", requestDigest, now, forceStore: true };
+    store.failNextIdempotentShareCommit = true;
+    await expect(createShareIdempotently(common)).rejects.toThrow("SIMULATED_CRASH_AFTER_EFFECT_BEFORE_COMMIT");
+    expect(store.shares.size).toBe(0);
+    expect(store.idempotencyResponses()).toEqual([]);
+    const recovered = await createShareIdempotently(common);
+    expect(recovered).toMatchObject({ status: 201, body: { ok: true, share: { kind: "store" } } });
+    expect(store.shares.size).toBe(1);
+    await expect(createShareIdempotently(common)).resolves.toEqual({ ...recovered, status: 200 });
+    expect(store.shares.size).toBe(1);
+  });
+
+  it("fences an expired worker after a pending claim is recovered", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const requestDigest = await semanticDigest({ payload: payload(64), rightsBasis: "self-authored" });
+    const claimInput = { sessionId: owner, operation: "share-create-v1", key: "request-key-stale-worker", requestDigest, pendingLeaseSeconds: 5 } as const;
+    const stale = await quota.claimIdempotency({ ...claimInput, now });
+    const recovered = await quota.claimIdempotency({ ...claimInput, now: new Date(now.getTime() + 5_000) });
+    expect(stale.status).toBe("claimed");
+    expect(recovered.status).toBe("claimed");
+    if (stale.status !== "claimed" || recovered.status !== "claimed") return;
+    const create = (claim: typeof stale) => shares.createAndCompleteIdempotency({
+      ownerSessionId: owner, payload: payload(64), rightsBasis: "self-authored", now, forceStore: true,
+      idempotency: { operation: claimInput.operation, keyHash: claim.keyHash, requestDigest, claimCreatedAt: claim.claimCreatedAt },
+    });
+    await expect(create(stale)).rejects.toThrow("IDEMPOTENCY_NOT_CLAIMED");
+    expect(store.shares.size).toBe(0);
+    await expect(create(recovered)).resolves.toMatchObject({ ok: true, share: { kind: "store" } });
+    expect(store.shares.size).toBe(1);
   });
 
   it("applies the ShareStore read limit to an IP-HMAC owner without retaining the raw IP", async () => {

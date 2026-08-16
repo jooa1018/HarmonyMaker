@@ -5,6 +5,7 @@ import type {
 
 interface IdempotencyState {
   readonly requestDigest: string;
+  readonly claimCreatedAt: string;
   readonly expiresAt: string;
   readonly claimExpiresAt: string;
   response?: unknown;
@@ -20,6 +21,9 @@ export class MemoryGovernanceStore implements GovernanceStore {
   readonly objects = new Map<PrivateRowId, ObjectReferenceRecord>();
   private readonly quota = new Map<string, { used: number; expiresAt: string }>();
   private readonly idempotency = new Map<string, IdempotencyState>();
+  failNextIdempotentShareCommit = false;
+
+  idempotencyResponses(): readonly unknown[] { return [...this.idempotency.values()].flatMap((record) => record.response === undefined ? [] : [structuredClone(record.response)]); }
 
   private id(): PrivateRowId {
     this.sequence += 1;
@@ -60,13 +64,13 @@ export class MemoryGovernanceStore implements GovernanceStore {
     if (found) {
       if (found.requestDigest !== input.requestDigest) return { status: "conflict" };
       if (found.response === undefined && found.claimExpiresAt <= input.createdAt) {
-        this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt });
-        return { status: "claimed" };
+        this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt, claimCreatedAt: input.createdAt });
+        return { status: "claimed", claimCreatedAt: input.createdAt };
       }
       return found.response === undefined ? { status: "pending" } : { status: "replay", response: found.response };
     }
-    this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt });
-    return { status: "claimed" };
+    this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt, claimCreatedAt: input.createdAt });
+    return { status: "claimed", claimCreatedAt: input.createdAt };
   }
 
   async completeIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly response: unknown }): Promise<void> {
@@ -76,10 +80,24 @@ export class MemoryGovernanceStore implements GovernanceStore {
     found.response = structuredClone(input.response);
   }
 
-  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string }): Promise<void> {
+  async completeIdempotentShareCreation(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly claimCreatedAt: string; readonly replayEnvelope: DurableShareRecord["encryptedPayload"]; readonly share?: Omit<DurableShareRecord, "id"> }): Promise<void> {
     const key = `${input.sessionId}:${input.operation}:${input.keyHash}`;
     const found = this.idempotency.get(key);
-    if (found?.response === undefined) this.idempotency.delete(key);
+    if (!found || found.requestDigest !== input.requestDigest || found.response !== undefined || found.claimCreatedAt !== input.claimCreatedAt) throw new Error("IDEMPOTENCY_NOT_CLAIMED");
+    if (input.share && [...this.shares.values()].some((record) => record.tokenHash === input.share!.tokenHash)) throw new Error("PERSISTENCE_CONFLICT");
+    const stagedShare = input.share ? { ...structuredClone(input.share), id: this.id() } as DurableShareRecord : undefined;
+    if (this.failNextIdempotentShareCommit) {
+      this.failNextIdempotentShareCommit = false;
+      throw new Error("SIMULATED_CRASH_AFTER_EFFECT_BEFORE_COMMIT");
+    }
+    if (stagedShare) this.shares.set(stagedShare.id, stagedShare);
+    found.response = structuredClone(input.replayEnvelope);
+  }
+
+  async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly claimCreatedAt?: string }): Promise<void> {
+    const key = `${input.sessionId}:${input.operation}:${input.keyHash}`;
+    const found = this.idempotency.get(key);
+    if (found && found.response === undefined && (input.claimCreatedAt === undefined || found.claimCreatedAt === input.claimCreatedAt)) this.idempotency.delete(key);
   }
 
   async createShare(input: Omit<DurableShareRecord, "id">): Promise<DurableShareRecord> {
