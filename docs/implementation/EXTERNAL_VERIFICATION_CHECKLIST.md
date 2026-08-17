@@ -111,4 +111,3 @@ Test the exact deployed SHA on at least one supported physical iPhone in Safari 
 6. capture OS/browser/app versions, viewport, console/network evidence where available, screenshots, and result.
 
 Expected: no horizontal overflow, picker failure, lost page/order, duplicate submission, memory crash, stale handle, blocked audio, or failed user-initiated download. Until completed: `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.
-

@@ -60,4 +60,3 @@ PostgreSQL store/migration and private S3-compatible object-store code are imple
 Status: **not available**.
 
 Responsive browser automation passed at `390×844` without horizontal overflow. No physical iPhone Safari or Kakao in-app browser was available, so camera-picker, memory pressure, background/resume, download, audio unlock, and in-app-browser behavior are not claimed. Classification: `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.
-
