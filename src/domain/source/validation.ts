@@ -13,7 +13,7 @@ import { comparePositions } from "../time";
 import {
   validateOmrEvidenceArchive, validateOmrReviewRecord, validateSourceEvidenceIndex,
 } from "../omr/foundation";
-import { validateOmrCorrectionHistory } from "../omr/review";
+import { validatePersistedOmrContext } from "../omr/persisted-context";
 import {
   hasExactKeys, hasUniqueStrings, isCanonicalFraction, isCanonicalId,
   isCanonicalKeySignature, isCanonicalSpelledPitch, isCanonicalTimeSignature,
@@ -404,8 +404,7 @@ export async function validateSongSourceDocumentIntegrity(
   expectation: string | Pick<AlgorithmExecutionRegistry, "versions">,
 ): Promise<boolean> {
   if (!isSongSourceDocument(value)) return false;
-  const omrReviewRecord = value.importInfo?.omrReviewRecord;
-  if (omrReviewRecord && (await validateOmrCorrectionHistory(value, omrReviewRecord)).length > 0) return false;
+  if ((await validatePersistedOmrContext(value)).length > 0) return false;
   const expectedExpanderVersion = typeof expectation === "string"
     ? expectation
     : expectation.versions.performanceExpanderVersion;

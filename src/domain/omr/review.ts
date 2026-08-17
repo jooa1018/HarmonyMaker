@@ -19,6 +19,7 @@ import {
   type SourceEvidenceIndex,
 } from "./foundation";
 import type { DiagnosticCode } from "../diagnostics";
+import { isPlainRecord } from "../validation";
 
 function currentRevision(source: SongSourceDocument): SourceRevisionRef {
   return { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
@@ -59,6 +60,19 @@ function applyVoicePatch(event: LeadEvent, patch: OmrCorrectionPatch): LeadEvent
   if (patch.kind === "accidental" && event.kind === "note") return { ...event, pitch: { ...event.pitch, alter: patch.alter } };
   if (patch.kind === "tie" && event.kind === "note") return { ...event, tieStart: patch.tieStart, tieStop: patch.tieStop };
   if (patch.kind === "duration") return { ...event, duration: patch.duration };
+  throw new RangeError("OMR_CORRECTION_TARGET_INCOMPATIBLE");
+}
+
+function applyPatchToProjection(target: RevisionScopedTarget["target"], before: unknown, patch: OmrCorrectionPatch): unknown {
+  if (!isPlainRecord(before)) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
+  if (target.kind === "voice-event") return applyVoicePatch(before as unknown as LeadEvent, patch);
+  if (target.kind === "chord-event" && patch.kind === "chord") {
+    const sourceText = patch.parseResult.status === "ok" ? patch.parseResult.chord.canonicalSymbol : patch.parseResult.sourceText;
+    return { ...before, sourceText, parseResult: patch.parseResult, source: "manual", confirmation: "confirmed" };
+  }
+  if (target.kind === "measure-start" && patch.kind === "time-signature") return { ...before, time: patch.value };
+  if (target.kind === "measure-start" && patch.kind === "key-signature") return { ...before, key: patch.value };
+  if (target.kind === "section-text" && patch.kind === "replace-source-text") return { ...before, text: patch.text.normalize("NFC") };
   throw new RangeError("OMR_CORRECTION_TARGET_INCOMPATIBLE");
 }
 
@@ -200,22 +214,70 @@ export async function validateOmrCorrectionHistory(source: SongSourceDocument, r
     }
     return revisionRefsEqual(resolved.sourceRevision, targetRevision) ? resolved : undefined;
   };
+  const revisionProjection = (value: string): { readonly target: unknown; readonly value: unknown } | undefined => {
+    try {
+      const parsed = JSON.parse(value) as { readonly value?: { readonly target?: unknown; readonly value?: unknown } };
+      return parsed.value && "target" in parsed.value && "value" in parsed.value
+        ? { target: parsed.value.target, value: parsed.value.value }
+        : undefined;
+    } catch { return undefined; }
+  };
   for (const [index, correction] of record.corrections.entries()) {
     const revisionRecord = history[index];
     if (!revisionRecord || !revisionRefsEqual(correction.target.sourceRevision, revisionRecord.fromRevision)) {
       errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:revision-order`); continue;
     }
-    try {
-      const projection = JSON.parse(revisionRecord.beforeProjection) as { readonly value?: { readonly target?: unknown; readonly value?: unknown } };
-      if (canonicalJson(projection.value?.target) !== canonicalJson(correction.target.target)
-        || canonicalJson(projection.value?.value) !== correction.beforeProjection) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:before-projection`);
-    } catch { errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:before-projection`); }
+    const before = revisionProjection(revisionRecord.beforeProjection);
+    const after = revisionProjection(revisionRecord.afterProjection);
+    if (!before || canonicalJson(before.target) !== canonicalJson(correction.target.target)
+      || canonicalJson(before.value) !== correction.beforeProjection) {
+      errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:before-projection`);
+    }
+    if (!after || canonicalJson(after.target) !== canonicalJson(correction.target.target)) {
+      errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:after-projection`);
+    } else {
+      try {
+        if (canonicalJson(applyPatchToProjection(correction.target.target, before?.value, correction.patch)) !== canonicalJson(after.value)) {
+          errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:patch-projection`);
+        }
+      } catch { errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:patch-projection`); }
+    }
     const digest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v2", target: correction.target, beforeProjection: correction.beforeProjection, patch: correction.patch, correctionSource: correction.source, reviewItemId: correction.reviewItemId ?? null, autoRepairProposalId: correction.autoRepairProposalId ?? null });
     if (correction.id !== `omr-correction:${digest.slice(0, 32)}`) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:id`);
     if (correction.reviewItemTarget) {
       const linked = resolveThroughHistory(correction.reviewItemTarget, correction.target.sourceRevision);
       if (!linked || canonicalJson(linked) !== canonicalJson(correction.target)) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:remap-link`);
     }
+    for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+      const previous = record.corrections[previousIndex];
+      const remapped = resolveThroughHistory(previous.target, correction.target.sourceRevision);
+      if (!remapped || canonicalJson(remapped.target) !== canonicalJson(correction.target.target)) continue;
+      const previousAfter = revisionProjection(history[previousIndex]?.afterProjection ?? "");
+      if (!previousAfter || canonicalJson(previousAfter.value) !== correction.beforeProjection) {
+        errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:target-chain`);
+      }
+      break;
+    }
+  }
+  const referenceCounts = new Map(record.corrections.map((correction) => [correction.id, 0]));
+  const addReference = (correctionId: string) => referenceCounts.set(correctionId, (referenceCounts.get(correctionId) ?? 0) + 1);
+  for (const item of record.reviewItems) {
+    if (item.resolution.status === "accepted" || item.resolution.status === "manually-corrected") addReference(item.resolution.correctionRecordId);
+  }
+  const correctionById = new Map(record.corrections.map((correction) => [correction.id, correction]));
+  for (const proposal of record.autoRepairs) {
+    if (proposal.resolution.status !== "accepted") continue;
+    addReference(proposal.resolution.correctionRecordId);
+    const correction = correctionById.get(proposal.resolution.correctionRecordId);
+    if (correction) {
+      const remapped = resolveThroughHistory(proposal.target, correction.target.sourceRevision);
+      if (!remapped || canonicalJson(remapped) !== canonicalJson(correction.target)) {
+        errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${proposal.id}:remap-link`);
+      }
+    }
+  }
+  for (const correction of record.corrections) {
+    if (referenceCounts.get(correction.id) !== 1) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:reference-count`);
   }
   return errors;
 }

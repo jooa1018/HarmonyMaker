@@ -143,18 +143,26 @@ describe("canonical OMR fixture pipeline determinism", () => {
         source: chordCorrected.source, item: voiceItem, patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } },
         appliedAt: now.toISOString(), remaps: [chordCorrected.idRemap],
       });
+      const repeatedVoiceItem = await createOmrReviewItem({
+        target: voiceItem.target,
+        reasonCode: "OMR_MEASURE_DURATION_INVALID", alternatives: [{ labelKo: "E4", patch: { kind: "pitch", pitch: { step: "E", alter: 0, octave: 4 } } }], evidenceIds: [pageEvidenceId],
+      });
+      const repeatedVoiceCorrected = await manuallyCorrectOmrReviewItem({
+        source: voiceCorrected.source, item: repeatedVoiceItem, patch: { kind: "pitch", pitch: { step: "E", alter: 0, octave: 4 } },
+        appliedAt: now.toISOString(), remaps: [chordCorrected.idRemap, voiceCorrected.idRemap],
+      });
       const measureItem = await createOmrReviewItem({
         target: { sourceRevision: originalRevision, target: { kind: "measure-start", sourceMeasureId: project.source.sourceMeasures[0].id } },
         reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "G major", patch: { kind: "key-signature", value: { tonic: { step: "G", alter: 0 }, mode: "major" } } }], evidenceIds: [pageEvidenceId],
       });
       const measureCorrected = await manuallyCorrectOmrReviewItem({
-        source: voiceCorrected.source, item: measureItem, patch: { kind: "key-signature", value: { tonic: { step: "G", alter: 0 }, mode: "major" } },
-        appliedAt: now.toISOString(), remaps: [chordCorrected.idRemap, voiceCorrected.idRemap],
+        source: repeatedVoiceCorrected.source, item: measureItem, patch: { kind: "key-signature", value: { tonic: { step: "G", alter: 0 }, mode: "major" } },
+        appliedAt: now.toISOString(), remaps: [chordCorrected.idRemap, voiceCorrected.idRemap, repeatedVoiceCorrected.idRemap],
       });
       const reviewRecord: OmrReviewRecord = {
         ...initial.reviewRecord,
-        corrections: [chordCorrected.correction, voiceCorrected.correction, measureCorrected.correction],
-        reviewItems: [chordCorrected.item, voiceCorrected.item, measureCorrected.item],
+        corrections: [chordCorrected.correction, voiceCorrected.correction, repeatedVoiceCorrected.correction, measureCorrected.correction],
+        reviewItems: [chordCorrected.item, voiceCorrected.item, repeatedVoiceCorrected.item, measureCorrected.item],
       };
       const source = await attachOmrReviewContext({ source: measureCorrected.source, providerResult, reviewRecord, selection });
       if (iteration === 0) {
@@ -163,10 +171,10 @@ describe("canonical OMR fixture pipeline determinism", () => {
         if (integrity.status !== "complete") throw new Error(JSON.stringify(integrity.diagnostics));
         const encoded = await exportHarmonyProject(integrated);
         const imported = await importHarmonyProject(encoded);
-        expect(imported.source.importInfo?.omrReviewRecord?.corrections).toHaveLength(3);
+        expect(imported.source.importInfo?.omrReviewRecord?.corrections).toHaveLength(4);
         const localStore = new MemoryLocalProjectStore();
         await localStore.save({ projectId: "omr-sequential-reload", updatedAt: "2026-01-01T00:00:00.000Z", project: imported });
-        expect((await localStore.load("omr-sequential-reload"))?.project.source.importInfo?.omrReviewRecord?.corrections).toHaveLength(3);
+        expect((await localStore.load("omr-sequential-reload"))?.project.source.importInfo?.omrReviewRecord?.corrections).toHaveLength(4);
         const tamperedProject = JSON.parse(encoded) as { source: { importInfo: { omrReviewRecord: { corrections: Array<{ beforeProjection: string }> } } } };
         tamperedProject.source.importInfo.omrReviewRecord.corrections[1].beforeProjection = "{}";
         await expect(importHarmonyProject(JSON.stringify(tamperedProject))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");

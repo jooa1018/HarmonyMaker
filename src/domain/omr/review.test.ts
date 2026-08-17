@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import { parseChord } from "../chord/parser";
+import { semanticDigest, type SemanticDigest } from "../digest/canonical";
 import { digestMusicalSource } from "../digest/source";
 import { fraction } from "../fraction";
 import { COMMON_TIME } from "../meter";
 import type { SongSourceDocument } from "../source/model";
-import { computeRevisionHistoryDigest } from "../source/revision";
+import { computeRevisionHistoryDigest, createSourceRevisionProjection, revisionRefsEqual } from "../source/revision";
 import { isSongSourceDocument, validateSongSourceDocumentIntegrity } from "../source/validation";
-import { validateOmrReviewCompletion, validateOmrReviewRecord, type OmrReviewRecord } from "./foundation";
+import {
+  computeProviderBundleDigest, coordinateMicrounit, mapVendorEvidenceToSource,
+  remapRevisionScopedTarget, validateOmrReviewCompletion, validateOmrReviewRecord,
+  type OmrCorrectionRecord, type OmrReviewRecord, type RevisionScopedTarget,
+} from "./foundation";
+import { validatePersistedOmrContext } from "./persisted-context";
 import {
   acceptOmrReviewAlternative, applyOmrCorrection, createOmrReviewItem,
   manuallyCorrectOmrReviewItem, proposeOmrAutoRepairs, rejectOmrReviewAlternatives,
@@ -34,6 +40,69 @@ async function sourceFixture(): Promise<SongSourceDocument> {
   };
   source = { ...source, revisionDigest: await digestMusicalSource(source) };
   return source;
+}
+
+async function persistedOmrSource(source: SongSourceDocument, record: OmrReviewRecord): Promise<SongSourceDocument> {
+  const currentRevision = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
+  const resolve = (original: RevisionScopedTarget): RevisionScopedTarget => {
+    let target = original;
+    for (const revision of source.revisionHistory) {
+      if (!revisionRefsEqual(target.sourceRevision, revision.fromRevision)) continue;
+      const next = remapRevisionScopedTarget(target, revision.idRemap);
+      if (!next) throw new Error("test target could not be remapped");
+      target = next;
+    }
+    if (!revisionRefsEqual(target.sourceRevision, currentRevision)) throw new Error("test target did not reach current revision");
+    return target;
+  };
+  const reviewEvidence = record.reviewItems.flatMap((item) => item.evidenceIds.map((evidenceId) => ({ evidenceId, target: resolve(item.target) })));
+  const frame = { id: "frame:persisted", pageIndex: 0, coordinateSpace: "normalized-original" as const, widthPixels: 100, heightPixels: 100, imageDigest: record.vendorResultDigest };
+  const mappedEvidence = reviewEvidence.map(({ evidenceId }, index) => ({
+    id: evidenceId, vendorTargetId: `vendor_target_${index}`, granularity: "measure" as const,
+    box: { frameId: frame.id, xMu: coordinateMicrounit(index * 20_000), yMu: coordinateMicrounit(0), widthMu: coordinateMicrounit(10_000), heightMu: coordinateMicrounit(10_000) },
+    vendorId: record.vendorId,
+  }));
+  const archiveEvidence = {
+    id: "e:archive", granularity: "measure" as const,
+    box: { frameId: frame.id, xMu: coordinateMicrounit(900_000), yMu: coordinateMicrounit(0), widthMu: coordinateMicrounit(10_000), heightMu: coordinateMicrounit(10_000) },
+    vendorId: record.vendorId,
+  };
+  const payload = { granularity: "measure" as const, frames: [frame], transforms: [], evidence: [...mappedEvidence, archiveEvidence] };
+  const providerBundleDigest = await computeProviderBundleDigest(payload);
+  const mapped = await mapVendorEvidenceToSource({
+    sourceRevision: currentRevision,
+    mappingVersion: "persisted-context-test-v1",
+    vendorBundle: { ...payload, providerBundleDigest },
+    targetMappings: reviewEvidence.map(({ target }, index) => ({ vendorTargetId: `vendor_target_${index}`, target })),
+  });
+  return {
+    ...source,
+    importInfo: {
+      ...source.importInfo,
+      sourceKind: "omr",
+      importerVersion: "omr-normalizer-v1",
+      rawDigest: record.vendorResultDigest,
+      providerMetadata: { vendorId: record.vendorId, vendorResultDigest: record.vendorResultDigest, evidenceGranularity: "measure" },
+      omrReviewRecord: record,
+      omrEvidenceArchive: mapped.archive,
+    },
+    sourceEvidence: mapped.index,
+  };
+}
+
+async function correctionId(correction: Pick<OmrCorrectionRecord,
+  "target" | "beforeProjection" | "patch" | "source" | "reviewItemId" | "autoRepairProposalId"
+>): Promise<string> {
+  const digest = await semanticDigest({
+    projectionSchema: "hm-omr-correction-id-v2",
+    target: correction.target,
+    beforeProjection: correction.beforeProjection,
+    patch: correction.patch,
+    correctionSource: correction.source,
+    reviewItemId: correction.reviewItemId ?? null,
+    autoRepairProposalId: correction.autoRepairProposalId ?? null,
+  });
+  return `omr-correction:${digest.slice(0, 32)}`;
 }
 
 describe("typed OMR correction and Source revision", () => {
@@ -151,7 +220,7 @@ describe("typed OMR correction and Source revision", () => {
     expect(complete.corrections.map((correction) => correction.target.sourceRevision.revisionOrdinal)).toEqual([0, 1, 2]);
     expect(complete.corrections.map((correction) => correction.reviewItemTarget?.sourceRevision.revisionOrdinal)).toEqual([0, 0, 0]);
     expect(await validateOmrCorrectionHistory(sectionManual.source, complete)).toEqual([]);
-    const persistedSource = { ...sectionManual.source, importInfo: { ...sectionManual.source.importInfo!, omrReviewRecord: complete } };
+    const persistedSource = await persistedOmrSource(sectionManual.source, complete);
     expect(await validateSongSourceDocumentIntegrity(persistedSource, "repeat-v1")).toBe(true);
     const reloadedSource = JSON.parse(JSON.stringify(persistedSource)) as SongSourceDocument;
     const reloadedRecord = JSON.parse(JSON.stringify(complete)) as OmrReviewRecord;
@@ -192,5 +261,112 @@ describe("typed OMR correction and Source revision", () => {
     expect(validateOmrReviewRecord(remapLinkage)).toEqual([]);
     expect(await validateSongSourceDocumentIntegrity(withRecord(remapLinkage), "repeat-v1")).toBe(false);
     expect(sectionManual.source.sourceMeasures[0]).toMatchObject({ leadEvents: [expect.objectContaining({ pitch: { step: "D", alter: 0, octave: 4 } })], textEvents: [expect.objectContaining({ text: "Chorus" })] });
+  });
+
+  it("replays patches, chains repeated targets, and requires exactly one authoritative correction reference", async () => {
+    const original = await sourceFixture();
+    const originalRevision = { documentId: original.documentId, revisionOrdinal: 0, revisionDigest: original.revisionDigest };
+    const firstItem = await createOmrReviewItem({ target: { sourceRevision: originalRevision, target: { kind: "voice-event", eventId: "le:0:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "D4", patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } } }], evidenceIds: ["e:voice:first"] });
+    const first = await manuallyCorrectOmrReviewItem({ source: original, item: firstItem, patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } }, appliedAt: "2026-01-01T00:00:00.000Z" });
+    const secondItem = await createOmrReviewItem({ target: firstItem.target, reasonCode: "OMR_MEASURE_DURATION_INVALID", alternatives: [{ labelKo: "E4", patch: { kind: "pitch", pitch: { step: "E", alter: 0, octave: 4 } } }], evidenceIds: ["e:voice:second"] });
+    const second = await manuallyCorrectOmrReviewItem({ source: first.source, item: secondItem, patch: { kind: "pitch", pitch: { step: "E", alter: 0, octave: 4 } }, appliedAt: "2026-01-01T00:00:01.000Z", remaps: [first.idRemap] });
+    const chordItem = await createOmrReviewItem({ target: { sourceRevision: originalRevision, target: { kind: "chord-event", chordEventId: "ch:0:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "Dm", patch: { kind: "chord", parseResult: parseChord("Dm") as Extract<ReturnType<typeof parseChord>, { status: "ok" | "no-chord" }> } }], evidenceIds: ["e:chord:repeat"] });
+    const chord = await acceptOmrReviewAlternative({ source: second.source, item: chordItem, alternativeId: chordItem.alternatives[0].id, appliedAt: "2026-01-01T00:00:02.000Z", remaps: [first.idRemap, second.idRemap] });
+    const sectionItem = await createOmrReviewItem({ target: { sourceRevision: originalRevision, target: { kind: "section-text", sourceTextId: "tx:0:0/1:section-label:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "Chorus", patch: { kind: "replace-source-text", text: "Chorus" } }], evidenceIds: ["e:section:repeat"] });
+    const section = await manuallyCorrectOmrReviewItem({ source: chord.source, item: sectionItem, patch: { kind: "replace-source-text", text: "Chorus" }, appliedAt: "2026-01-01T00:00:03.000Z", remaps: [first.idRemap, second.idRemap, chord.idRemap] });
+    const record: OmrReviewRecord = {
+      vendorId: "hm-reference", vendorResultDigest: "2".repeat(64) as OmrReviewRecord["vendorResultDigest"], autoRepairs: [],
+      corrections: [first.correction, second.correction, chord.correction, section.correction],
+      reviewItems: [first.item, second.item, chord.item, section.item],
+    };
+    const persisted = await persistedOmrSource(section.source, record);
+    expect(await validatePersistedOmrContext(persisted)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(persisted, "repeat-v1")).toBe(true);
+    expect(await validateSongSourceDocumentIntegrity(JSON.parse(JSON.stringify(persisted)), "repeat-v1")).toBe(true);
+
+    const replaceCorrection = (candidate: OmrReviewRecord, index: number, replacement: OmrCorrectionRecord): OmrReviewRecord => {
+      const previousId = candidate.corrections[index].id;
+      return {
+        ...candidate,
+        corrections: candidate.corrections.map((item, ordinal) => ordinal === index ? replacement : item),
+        reviewItems: candidate.reviewItems.map((item) => (item.resolution.status === "accepted" || item.resolution.status === "manually-corrected") && item.resolution.correctionRecordId === previousId
+          ? { ...item, resolution: { ...item.resolution, correctionRecordId: replacement.id } }
+          : item),
+      };
+    };
+    const sourceWithRecord = (candidate: OmrReviewRecord, base = persisted): SongSourceDocument => ({ ...base, importInfo: { ...base.importInfo!, omrReviewRecord: candidate } });
+
+    const changedPatchBase = { ...record.corrections[0], patch: { kind: "pitch" as const, pitch: { step: "F" as const, alter: 0 as const, octave: 4 } } };
+    const changedPatch = { ...changedPatchBase, id: await correctionId(changedPatchBase) };
+    const changedPatchRecord = replaceCorrection(record, 0, changedPatch);
+    expect(validateOmrReviewRecord(changedPatchRecord)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(sourceWithRecord(changedPatchRecord), "repeat-v1")).toBe(false);
+
+    const afterHistory = persisted.revisionHistory.map((revision, index) => index === 0 ? {
+      ...revision,
+      afterProjection: createSourceRevisionProjection("omr-correction", { target: record.corrections[0].target.target, value: JSON.parse(record.corrections[0].beforeProjection) }),
+    } : revision);
+    const afterProjectionMismatch = { ...persisted, revisionHistory: afterHistory, revisionHistoryDigest: await computeRevisionHistoryDigest(afterHistory) };
+    expect(await validateSongSourceDocumentIntegrity(afterProjectionMismatch, "repeat-v1")).toBe(false);
+
+    const chainBase = { ...record.corrections[1], beforeProjection: record.corrections[0].beforeProjection };
+    const chainCorrection = { ...chainBase, id: await correctionId(chainBase) };
+    const chainRecord = replaceCorrection(record, 1, chainCorrection);
+    const chainHistory = persisted.revisionHistory.map((revision, index) => index === 1 ? {
+      ...revision,
+      beforeProjection: createSourceRevisionProjection("omr-correction", { target: chainCorrection.target.target, value: JSON.parse(chainCorrection.beforeProjection) }),
+    } : revision);
+    const brokenChain = sourceWithRecord(chainRecord, { ...persisted, revisionHistory: chainHistory, revisionHistoryDigest: await computeRevisionHistoryDigest(chainHistory) });
+    expect(await validateOmrCorrectionHistory(brokenChain, chainRecord)).toContain(`OMR_REVIEW_RESOLUTION_INVALID:${chainCorrection.id}:target-chain`);
+    expect(await validateSongSourceDocumentIntegrity(brokenChain, "repeat-v1")).toBe(false);
+
+    const orphanRecord = { ...record, reviewItems: record.reviewItems.map((item) => item.id === second.item.id ? { ...item, resolution: { status: "open" as const } } : item) };
+    expect(validateOmrReviewRecord(orphanRecord)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(sourceWithRecord(orphanRecord), "repeat-v1")).toBe(false);
+
+    const repairSource = await sourceFixture();
+    const proposal = (await proposeOmrAutoRepairs(repairSource))[0];
+    const acceptedRepair = await resolveOmrAutoRepair({ source: repairSource, proposal, resolution: "accepted", appliedAt: "2026-01-01T00:00:00.000Z" });
+    const repairRecord: OmrReviewRecord = { vendorId: "hm-reference", vendorResultDigest: "3".repeat(64) as OmrReviewRecord["vendorResultDigest"], autoRepairs: [acceptedRepair.proposal], corrections: [acceptedRepair.correction!], reviewItems: [] };
+    const persistedRepair = await persistedOmrSource(acceptedRepair.source, repairRecord);
+    expect(await validateSongSourceDocumentIntegrity(persistedRepair, "repeat-v1")).toBe(true);
+    const wrongProposal = { ...acceptedRepair.proposal, target: { ...acceptedRepair.proposal.target, target: { kind: "voice-event" as const, eventId: "le:wrong" } } };
+    const wrongRepairRecord = { ...repairRecord, autoRepairs: [wrongProposal] };
+    expect(validateOmrReviewRecord(wrongRepairRecord)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity({ ...persistedRepair, importInfo: { ...persistedRepair.importInfo!, omrReviewRecord: wrongRepairRecord } }, "repeat-v1")).toBe(false);
+  });
+
+  it("rejects tampered persisted OMR provenance, evidence, archive, and missing context", async () => {
+    const original = await sourceFixture();
+    const revision = { documentId: original.documentId, revisionOrdinal: 0, revisionDigest: original.revisionDigest };
+    const item = await createOmrReviewItem({ target: { sourceRevision: revision, target: { kind: "voice-event", eventId: "le:0:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "D4", patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } } }], evidenceIds: ["e:persisted"] });
+    const applied = await manuallyCorrectOmrReviewItem({ source: original, item, patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } }, appliedAt: "2026-01-01T00:00:00.000Z" });
+    const record: OmrReviewRecord = { vendorId: "hm-reference", vendorResultDigest: "4".repeat(64) as OmrReviewRecord["vendorResultDigest"], autoRepairs: [], corrections: [applied.correction], reviewItems: [applied.item] };
+    const valid = await persistedOmrSource(applied.source, record);
+    const check = (candidate: SongSourceDocument) => validateSongSourceDocumentIntegrity(candidate, "repeat-v1");
+    expect(await check(valid)).toBe(true);
+
+    const missingEvidenceRecord = { ...record, reviewItems: [{ ...record.reviewItems[0], evidenceIds: ["e:missing"] }] };
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, omrReviewRecord: missingEvidenceRecord } })).toBe(false);
+
+    const duplicateArchive = { ...valid.importInfo!.omrEvidenceArchive!, unmappedEvidence: [valid.sourceEvidence!.evidence[0]] };
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, omrEvidenceArchive: duplicateArchive } })).toBe(false);
+    expect(await check({ ...valid, sourceEvidence: { ...valid.sourceEvidence!, bundleDigest: "a".repeat(64) as SemanticDigest } })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, omrEvidenceArchive: { ...valid.importInfo!.omrEvidenceArchive!, archiveDigest: "b".repeat(64) as SemanticDigest } } })).toBe(false);
+    expect(await check({
+      ...valid,
+      sourceEvidence: { ...valid.sourceEvidence!, providerBundleDigest: "c".repeat(64) as SemanticDigest },
+      importInfo: { ...valid.importInfo!, omrEvidenceArchive: { ...valid.importInfo!.omrEvidenceArchive!, providerBundleDigest: "c".repeat(64) as SemanticDigest } },
+    })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, providerMetadata: { ...valid.importInfo!.providerMetadata!, vendorResultDigest: "d".repeat(64) } } })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, providerMetadata: { ...valid.importInfo!.providerMetadata!, vendorId: "different-vendor" } } })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, providerMetadata: { ...valid.importInfo!.providerMetadata!, evidenceGranularity: "symbol" } } })).toBe(false);
+
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, rawDigest: undefined } })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, providerMetadata: undefined } })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, omrReviewRecord: undefined } })).toBe(false);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, omrEvidenceArchive: undefined } })).toBe(false);
+    expect(await check({ ...valid, sourceEvidence: undefined })).toBe(false);
+    expect(await check({ ...valid, importInfo: { sourceKind: "omr", importerVersion: "omr-normalizer-v1" } })).toBe(false);
   });
 });

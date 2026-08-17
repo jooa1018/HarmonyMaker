@@ -9,8 +9,6 @@ import { rasterizePdfPages } from "../../domain/omr/browser-raster";
 import type { OmrProviderPreflight, OmrProviderResult, OmrPublicStatus } from "../../domain/omr/contracts";
 import { analyzeImageQuality, type ImageQualityReport } from "../../domain/omr/image-quality";
 import { classifyInputSource, type InputSourceKind } from "../../domain/omr/input";
-import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
-import { referenceOmrDuplicateJpegPages } from "../../domain/omr/reference-duplicate-jpeg-fixture-data";
 import { mapEvidenceBoxToNormalizedOriginal, type BoundingBox } from "../../domain/omr/foundation";
 import styles from "./omr.module.css";
 
@@ -82,7 +80,7 @@ function evidenceStyle(box: BoundingBox): CSSProperties {
   };
 }
 
-export function OmrClient() {
+export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControlsEnabled: boolean }) {
   const router = useRouter();
   const [pages, setPages] = useState<readonly PreparedPage[]>([]);
   const pagesRef = useRef(pages);
@@ -198,6 +196,8 @@ export function OmrClient() {
   const loadReference = async () => {
     setBusy(true); setError(undefined);
     try {
+      if (!fixtureControlsEnabled || preflight?.capabilities.vendorId !== "hm-reference") throw new RangeError("OMR_REFERENCE_FIXTURE_DISABLED");
+      const { referenceOmrPageBytes } = await import("../../domain/omr/reference-fixture-data");
       replacePages([await prepareAuthoritativeImage(referenceOmrPageBytes(), "image/png")]);
       setSourceKind("camera-photo"); setPdfConfirmation(false);
       setMessage("내장 결정적 reference fixture 1쪽을 준비했습니다. 실제 제공자 정확도 증거로 사용할 수 없습니다.");
@@ -208,6 +208,8 @@ export function OmrClient() {
   const loadCanonicalDuplicateReference = async () => {
     setBusy(true); setError(undefined);
     try {
+      if (!fixtureControlsEnabled || preflight?.capabilities.vendorId !== "hm-reference") throw new RangeError("OMR_REFERENCE_FIXTURE_DISABLED");
+      const { referenceOmrDuplicateJpegPages } = await import("../../domain/omr/reference-duplicate-jpeg-fixture-data");
       const prepared = await Promise.all(referenceOmrDuplicateJpegPages().map((bytes) => prepareAuthoritativeImage(bytes, "image/jpeg")));
       replacePages(prepared); setSourceKind("camera-photo"); setPdfConfirmation(false);
       setMessage("raw bytes는 다르지만 정규화된 decoded page가 같은 JPEG 2쪽을 준비했습니다.");
@@ -357,7 +359,7 @@ export function OmrClient() {
           <span>{busy ? "처리 중…" : "PDF / PNG / JPEG / MusicXML / MXL 선택 또는 드롭"}</span>
           <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.musicxml,.xml,.mxl,application/pdf,image/png,image/jpeg,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFile} disabled={busy} />
         </label>
-        <div className={styles.actions}><button type="button" onClick={() => void loadReference()} disabled={busy}>결정적 reference E2E 불러오기</button><button type="button" onClick={() => void loadCanonicalDuplicateReference()} disabled={busy}>canonical duplicate JPEG E2E</button></div>
+        {fixtureControlsEnabled && preflight?.capabilities.vendorId === "hm-reference" ? <div className={styles.actions}><button type="button" onClick={() => void loadReference()} disabled={busy}>결정적 reference E2E 불러오기</button><button type="button" onClick={() => void loadCanonicalDuplicateReference()} disabled={busy}>canonical duplicate JPEG E2E</button></div> : null}
         <p className={styles.status}>{message}</p>
         {error ? <p className={`${styles.status} ${styles.error}`} role="alert">{error}</p> : null}
       </section>
