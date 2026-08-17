@@ -190,3 +190,38 @@ Remote evidence for the exact code checkpoint:
 - Preview: `https://harmony-maker-e6rpor2yt-ecctom1.vercel.app`.
 
 The additive documentation commit containing this section receives its own final CI/Vercel run. Its immutable final remote SHA and terminal statuses are reported in the Segment D completion response. Real-provider accuracy, real-corpus thresholds, live PostgreSQL/S3 behavior, and physical-device behavior remain external verification items; the reference adapter remains plumbing evidence only.
+
+## Persisted-integrity closure
+
+This final narrow closure starts additively from accepted remote HEAD `c10ee4b43a5a25a64c3d5eae9804d2c5ef2e3f99` and produces immutable code checkpoint `8e17373b9815e17dc5c659ab535db0b46e25c71d`. It does not change a frozen WAG artifact, the 99-code diagnostic registry, or an accepted musical-selection path.
+
+- Every asynchronous `validateSongSourceDocumentIntegrity()` call now rejects an attached OMR review record unless `validateOmrCorrectionHistory()` returns zero errors. The synchronous shape validator remains the preliminary schema gate. HarmonyProject import, project-file import, and IndexedDB/local-store reload all reach this same check through `importHarmonyProject()`.
+- Tamper fixtures reject changed before-projection, correction ID, resolved application target/revision, correction order, and original review-target/remap linkage. A valid three-step chord/voice/measure correction history survives JSON Source reload, project export/import, local-store reload, and Product Core generation.
+- `PreparedPage` now carries both the raw byte digest used by create/upload integrity and the authoritative preflight canonical decoded-page digest. Client duplicate detection uses only the canonical digest.
+- Two deterministic JPEGs with different raw SHA-256 values but identical decoded pixels prove the browser warning/acknowledgment path and the server duplicate gate; both pages upload only after acknowledgment.
+
+Verification evidence:
+
+```text
+npm ci                            HOST-LIMITED — lifecycle child spawn EPERM
+npm ci --ignore-scripts           PASS — 451 packages installed, 452 audited, 0 vulnerabilities
+direct TypeScript                 PASS
+direct ESLint                     PASS — 0 warnings/errors
+direct Vitest                     PASS — 61 files, 584 tests
+direct Next.js production build  PASS
+git diff --check                  PASS
+Segment B determinism             PASS — 101 complete executions
+OMR determinism                   PASS — 101 canonical permutations
+history tamper/reload campaign    PASS
+raw/canonical duplicate campaign PASS
+browser persisted product flow   PASS — OMR review, IndexedDB reload, one validated generation candidate
+frozen-authority audit            PASS — six frozen SHA-256 values, semantic digests, 99 codes, 0 protected-path changes
+```
+
+Remote code-checkpoint evidence:
+
+- GitHub Actions `CI` run `32021883373`, quality job `95363100218`: `success`; exact remote `npm ci`, typecheck, lint, test, and build passed.
+- Vercel deployment `5943490925`, status `16910436295`: `success` (`Deployment has completed`).
+- Preview: `https://harmony-maker-2etxsaj0a-ecctom1.vercel.app`.
+
+The containing handoff-only commit receives a separate final remote run and is reported as the handoff-inclusive remote HEAD after that run reaches terminal success. External classifications remain unchanged, and neither Step 11 nor the separate Ultra audit was begun.

@@ -130,3 +130,17 @@ When sections 1 and 3 become authorized, additionally exercise the final recover
 7. Apply sequential mixed-target corrections across Source revisions, restart, export/import, and verify correction order, before-projection, original target, resolved target, and SourceIdRemap linkage.
 
 Until those authorized external runs occur, retain the existing external classifications and do not turn deterministic reference-adapter behavior into a provider-accuracy claim.
+
+## Persisted-integrity closure checkpoint
+
+Use code checkpoint `8e17373b9815e17dc5c659ab535db0b46e25c71d` or its verified additive handoff descendant. GitHub Actions run `32021883373`/quality job `95363100218` and Vercel deployment `5943490925`/status `16910436295` passed for that exact code checkpoint. These repository/deployment build results do not close any authorized real-provider, real-corpus, live-service, or physical-device item.
+
+For future authorized provider/service verification, retain both page digests in the evidence record:
+
+1. Record the raw byte SHA-256 bound to the create request and upload.
+2. Record the authoritative server-preflight canonical decoded-page digest used for evidence and duplicate comparison.
+3. Upload two raw-distinct encodings of identical decoded content. Require a duplicate warning and explicit acknowledgment, then verify both raw uploads remain integrity-bound while both canonical page digests compare equal.
+4. Export a project with sequential mixed-target OMR corrections, tamper each of before-projection, correction ID, resolved target/revision, correction order, and original review-target/remap linkage, and verify Source load, project-file import, and IndexedDB reload all reject it through the same integrity gate.
+5. Reload an untampered sequential history and verify correction replay plus Product Core generation remain valid.
+
+Until external sections 1–5 are actually performed with authorization, classifications remain `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.

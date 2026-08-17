@@ -116,3 +116,39 @@ git diff --check                  PASS
 No local exact-npm-script PASS is asserted. Remote GitHub Actions ran the exact unmodified commands successfully for the code checkpoint: run `https://github.com/jooa1018/HarmonyMaker/actions/runs/32017117803`, quality job `95348852985`, conclusion `success`. Vercel deployment `5942664716`, status `16908237205`, concluded `success`; preview `https://harmony-maker-e6rpor2yt-ecctom1.vercel.app`.
 
 External classifications remain unchanged: `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`. No paid provider was selected and no accuracy, frozen threshold, sealed-corpus PASS, live-service PASS, or physical-device PASS is fabricated.
+
+## Persisted-integrity closure evidence
+
+- Scope base: `c10ee4b43a5a25a64c3d5eae9804d2c5ef2e3f99`
+- Code checkpoint: `8e17373b9815e17dc5c659ab535db0b46e25c71d`
+
+The shared asynchronous SongSourceDocument integrity boundary now replays and verifies any attached OMR correction history. Five independently tampered histories cover before-projection, stable correction ID, resolved application target/revision, correction order, and original review target/SourceIdRemap linkage; every preliminary shape-valid tamper fails persisted Source/project integrity. A sequential three-target correction record passes Source JSON reload, HarmonyProject export/import, the local-store transfer path used by IndexedDB reload, and subsequent generation.
+
+The upload evidence separates two meanings that previously shared one field. Raw SHA-256 remains bound to the browser create request and page upload. The server quality-preflight `inspection.digest` is retained as the canonical decoded-page digest and alone controls client duplicate detection. Two JPEG fixtures have raw digests `512dcf51793ae06fef06c248a53ad7f56932b8fc0026ac9e99474d8339559275` and `ac321be7722441493098752c5b98a693af22a8590dbead278b16431719ef3ffa`, but both decode to canonical digest `0356aea0d0b26fb92768b49200bf5c3543b0716293a1e6550cb5bf9b72e82db0`. The durable service rejects the second upload before acknowledgment and accepts it afterward. The browser displays the canonical-duplicate acknowledgment, uploads both pages, and completes the deterministic reference result.
+
+Local evidence:
+
+```text
+npm ci                            HOST-LIMITED — spawn EPERM at lifecycle child creation
+npm ci --ignore-scripts           PASS — added 451, audited 452, 0 vulnerabilities
+direct TypeScript                 PASS
+direct ESLint                     PASS
+direct full Vitest                PASS — 61 files, 584 tests
+direct Next build                 PASS
+git diff --check                  PASS
+Segment B 101-run                 PASS
+canonical OMR 101-run             PASS
+review history tamper/reload      PASS — 1 file, 6 tests
+duplicate page decode/upload      PASS — 2 files, 29 tests
+Product Core transfer/reload      PASS — 1 file, 25 tests plus canonical OMR project fixture
+frozen WAG/diagnostic authority   PASS — 2 files, 7 tests and zero protected-path diff
+```
+
+Browser evidence used only the deterministic reference adapter. It proved two canonically identical JPEG pages are recognized as duplicates despite different raw bytes, the acknowledgment gates the upload, and the resulting OMR lifecycle completes. A separate canonical flow resolved chord, voice, and measure review items, handed off through Quick Review, loaded the workspace from IndexedDB after reload, and produced one independently validated generation candidate. This is plumbing and integrity evidence, not provider-accuracy evidence.
+
+Remote evidence for the exact code checkpoint:
+
+- GitHub Actions: `https://github.com/jooa1018/HarmonyMaker/actions/runs/32021883373`, quality job `95363100218`, `success`.
+- Vercel deployment `5943490925`, status `16910436295`, `success`; preview `https://harmony-maker-2etxsaj0a-ecctom1.vercel.app`.
+
+The six frozen artifacts and their accepted semantic digests remain exact; the 99-code registry and accepted musical-selection path are unchanged. The external classifications above remain open and unchanged.
