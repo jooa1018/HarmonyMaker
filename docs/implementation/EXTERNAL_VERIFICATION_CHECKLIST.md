@@ -144,3 +144,17 @@ For future authorized provider/service verification, retain both page digests in
 5. Reload an untampered sequential history and verify correction replay plus Product Core generation remain valid.
 
 Until external sections 1–5 are actually performed with authorization, classifications remain `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.
+
+## Persisted OMR-context integrity closure checkpoint
+
+Use code checkpoint `8dc0f8eedad7b5c075a95efbb4a36c707a21cd18` or its verified additive handoff descendant. GitHub Actions run `32025713245`/quality job `95374571925` and Vercel deployment `5944166770`/status `16912233530` passed for the exact code checkpoint. These repository/deployment build results do not close any real-provider, real-corpus, live-service, or physical-device item.
+
+For every future authorized real-provider/export sample, retain and verify the canonical persisted context now required by the repository:
+
+1. Record the raw Vendor result digest, Vendor ID, declared evidence granularity, review record, SourceEvidenceIndex, and OmrEvidenceArchive.
+2. Recompute the mapped index digest, unmapped archive digest, and combined provider-bundle digest from both evidence partitions plus their shared frames/transforms. Require current exact Source revisions and exactly-one review evidence membership.
+3. Export and reload sequential same-target and mixed-target corrections. Reapply every typed patch to before-projection, compare after-projection, follow `SourceIdRemap`, and require exactly one accepted review/manual/auto-repair authority reference.
+4. Tamper Vendor/result identity, evidence membership/digests, correction patch/projection/chain/reference/remap, and remove each OMR context member. Require Source load, project-file import, and IndexedDB reload to fail through the same asynchronous integrity boundary.
+5. Confirm deterministic reference and duplicate fixture controls are absent in production and whenever the selected provider is real, regardless of any development flag.
+
+Until external sections 1–5 are actually performed with authorization, retain `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`. Do not convert deterministic reference-adapter integrity evidence into provider-accuracy evidence.

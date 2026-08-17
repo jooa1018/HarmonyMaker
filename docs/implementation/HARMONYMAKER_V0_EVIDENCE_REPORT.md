@@ -152,3 +152,40 @@ Remote evidence for the exact code checkpoint:
 - Vercel deployment `5943490925`, status `16910436295`, `success`; preview `https://harmony-maker-2etxsaj0a-ecctom1.vercel.app`.
 
 The six frozen artifacts and their accepted semantic digests remain exact; the 99-code registry and accepted musical-selection path are unchanged. The external classifications above remain open and unchanged.
+
+## Persisted OMR-context integrity closure evidence
+
+- Scope base: `c01f53f316ae99502d1d999cd584180b2af2aaa3`
+- Code checkpoint: `8dc0f8eedad7b5c075a95efbb4a36c707a21cd18`
+
+For an OMR Source, the asynchronous integrity boundary now requires and cross-verifies `rawDigest`, provider metadata, the review record, evidence archive, and Source evidence index. The review result and metadata bind the same raw Vendor result; Vendor identity, current Source revision, provider granularity, evidence IDs, frames/transforms, mapped/unmapped partition, SourceEvidenceIndex bundle digest, archive digest, and combined provider-bundle digest are all independently revalidated.
+
+Correction replay proves each patch transforms its revision record's canonical before-projection into its after-projection. A logical target corrected more than once must carry the preceding after-projection into the next before-projection after remap. Every correction has exactly one accepted review/manual/auto-repair authority reference, and accepted auto-repair targets must remap to the recorded application target.
+
+The tamper matrix rejects changed patch plus recomputed ID, after-projection mismatch, same-target chain break, orphan correction, wrong auto-repair target, nonexistent and double-present evidence IDs, index/archive/provider digest changes, mismatched Vendor result/ID, and removed review/evidence context. Sequential same-target and mixed-target records pass JSON Source reload, HarmonyProject export/import, local persistence, and generation.
+
+Local evidence:
+
+```text
+npm ci                            HOST-LIMITED — spawn EPERM at lifecycle child creation
+npm ci --ignore-scripts           PASS — added 451, audited 452, 0 vulnerabilities
+direct TypeScript                 PASS
+direct ESLint                     PASS
+direct full Vitest                PASS — 62 files, 587 tests
+direct Next build                 PASS
+git diff --check                  PASS
+Segment B 101-run                 PASS
+canonical OMR 101-run             PASS
+persisted OMR tamper/reload       PASS
+mapping/archive round-trip        PASS
+browser OMR/Product Core flow     PASS — 3 review items, IndexedDB reload, 1 validated candidate
+fixture-control visibility        PASS — explicit development/test reference flag only
+frozen WAG/diagnostic authority   PASS — 2 files, 7 tests and zero protected-path diff
+```
+
+Remote evidence for the exact code checkpoint:
+
+- GitHub Actions: `https://github.com/jooa1018/HarmonyMaker/actions/runs/32025713245`, quality job `95374571925`, `success`; exact `npm ci` and every configured npm gate passed.
+- Vercel deployment `5944166770`, status `16912233530`, `success`; preview `https://harmony-maker-3akfdt50a-ecctom1.vercel.app`.
+
+The deterministic reference adapter remains plumbing/integrity evidence only. The six frozen artifacts, semantic authority digests, 99-code diagnostic registry, and accepted musical-selection path remain exact. All real-provider, rights-safe corpus, live PostgreSQL/S3, and physical-device external classifications remain open.

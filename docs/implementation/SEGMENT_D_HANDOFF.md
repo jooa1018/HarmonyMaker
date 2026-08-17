@@ -225,3 +225,39 @@ Remote code-checkpoint evidence:
 - Preview: `https://harmony-maker-2etxsaj0a-ecctom1.vercel.app`.
 
 The containing handoff-only commit receives a separate final remote run and is reported as the handoff-inclusive remote HEAD after that run reaches terminal success. External classifications remain unchanged, and neither Step 11 nor the separate Ultra audit was begun.
+
+## Persisted OMR-context integrity closure
+
+This additive closure starts from accepted remote HEAD `c01f53f316ae99502d1d999cd584180b2af2aaa3` and produces code checkpoint `8dc0f8eedad7b5c075a95efbb4a36c707a21cd18`. It changes no frozen WAG artifact, diagnostic-registry entry, or accepted musical-selection path.
+
+- One asynchronous persisted OMR-context validator is called by `validateSongSourceDocumentIntegrity()`. Every OMR Source must retain raw/result/provider/review/archive/index context; exact Vendor identity/result digest, current Source revision, provider granularity, evidence membership, shared frame/transform graph, index/archive digests, and the recomputed combined provider-bundle digest must agree.
+- Correction-history integrity now replays every typed patch from the revision record's before-projection to its after-projection, verifies repeated-target projection continuity through `SourceIdRemap`, requires exactly one authoritative accepted review/auto-repair reference per correction, and binds an accepted auto repair to its remapped application target.
+- Focused tamper fixtures reject a changed patch with recomputed correction ID, after-projection mismatch, broken same-target chain, orphan correction, wrong auto-repair target, missing/duplicated review evidence, all three evidence-digest mutations, Vendor result/ID mismatch, and removed OMR context. Valid sequential same-target plus mixed-target histories survive Source JSON, HarmonyProject, local-store/IndexedDB-equivalent reload, and generation.
+- Deterministic reference and canonical-duplicate controls are rendered only when the explicit `OMR_ENABLE_REFERENCE_FIXTURE_CONTROLS=enabled` flag is present in non-production reference mode. Unit policy tests reject missing-flag, real-provider, and production exposure; a browser run with the flag absent showed zero fixture controls.
+
+Verification evidence:
+
+```text
+npm ci                            HOST-LIMITED — lifecycle child spawn EPERM
+npm ci --ignore-scripts           PASS — 451 packages installed, 452 audited, 0 vulnerabilities
+direct TypeScript                 PASS
+direct ESLint                     PASS — 0 warnings/errors
+direct full Vitest                PASS — 62 files, 587 tests
+direct Next.js production build  PASS
+git diff --check                  PASS
+Segment B determinism             PASS — 101 complete executions
+OMR determinism                   PASS — 101 canonical permutations
+persisted context/tamper campaign PASS — Source, project, local-store/IndexedDB-equivalent reload
+mapping/archive round-trip        PASS
+browser persisted product flow   PASS — 3 item resolutions, IndexedDB reload, one validated generation candidate
+fixture-control policy           PASS — explicit dev/test reference flag only
+frozen-authority audit            PASS — six SHA-256 values, semantic digests, 99 codes, 0 protected-path changes
+```
+
+Remote evidence for the exact code checkpoint:
+
+- GitHub Actions `CI` run `32025713245`, quality job `95374571925`: `success`; exact remote `npm ci`, typecheck, lint, test, and build passed.
+- Vercel deployment `5944166770`, status `16912233530`: `success` (`Deployment has completed`).
+- Preview: `https://harmony-maker-3akfdt50a-ecctom1.vercel.app`.
+
+The containing handoff-only commit receives a separate final remote run and is reported as the handoff-inclusive remote HEAD after terminal CI/Vercel success. Real-provider accuracy, rights-safe real-corpus thresholds, live PostgreSQL/S3 behavior, and physical-device behavior remain external verification items. Step 11 and the separate Ultra audit were not begun.

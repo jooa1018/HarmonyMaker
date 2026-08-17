@@ -81,3 +81,17 @@ Local direct verification passed TypeScript, ESLint, 61 Vitest files/584 tests, 
 Remote evidence for the code checkpoint is GitHub Actions run `32021883373`/quality job `95363100218` success and Vercel deployment `5943490925`/status `16910436295` success. Preview: `https://harmony-maker-2etxsaj0a-ecctom1.vercel.app`.
 
 Campaign status remains `HARMONYMAKER_V0_COMPLETE_WITH_EXTERNAL_VERIFICATION_REMAINING`. The final handoff-only descendant is reported after its own CI/Vercel checks pass. No Step 11, Ultra audit, paid-provider selection, accuracy claim, or frozen musical-authority change is included.
+
+## Final persisted OMR-context integrity closure
+
+The additive closure from accepted remote HEAD `c01f53f316ae99502d1d999cd584180b2af2aaa3` has code checkpoint `8dc0f8eedad7b5c075a95efbb4a36c707a21cd18`.
+
+The shared asynchronous Source integrity boundary now requires complete canonical OMR provenance, review, evidence index, and archive context. It cross-binds the Vendor ID/result digest, current Source revision, provider granularity, mapped/unmapped evidence membership, shared frame/transform graph, and all index/archive/provider-bundle digests. Correction validation additionally replays each typed patch, enforces repeated-target before/after continuity through remaps, rejects orphan or multiply referenced corrections, and proves accepted auto-repair target linkage.
+
+Tamper coverage includes every requested provenance/evidence/history mutation, while sequential same-target and mixed-target records pass Source/project transfer and reload. The live browser reference campaign exposed all three actual review targets, resolved them individually, handed off through Quick Review, reloaded the persisted IndexedDB project, and generated one independently validated candidate. Reference/duplicate fixture controls require an explicit non-production reference-mode flag and are absent with no flag, in real-provider mode, and in production.
+
+Local direct verification passed TypeScript, ESLint, 62 Vitest files/587 tests, Next.js production build, diff check, both 101-run campaigns, persisted context/reload and mapping/archive campaigns, the browser OMR-to-generation campaign, and the frozen-authority audit. Exact local npm lifecycle child creation remains host-limited (`EPERM`); `npm ci --ignore-scripts` installed 451 packages and audited 452 with zero vulnerabilities. The unchanged remote workflow passed exact `npm ci` and all npm gates.
+
+Remote code-checkpoint evidence is GitHub Actions run `32025713245`/quality job `95374571925` success and Vercel deployment `5944166770`/status `16912233530` success. Preview: `https://harmony-maker-3akfdt50a-ecctom1.vercel.app`.
+
+Campaign status remains `HARMONYMAKER_V0_COMPLETE_WITH_EXTERNAL_VERIFICATION_REMAINING`. The additive handoff-only descendant is reported after its own remote checks pass. No Step 11, Ultra audit, provider selection, accuracy claim, or frozen musical-authority change is included.
