@@ -2,7 +2,7 @@
 
 ## Accepted implementation boundary
 
-HarmonyMaker v0 implementation Segments A–D are complete in-repository at Segment D code checkpoint `713a5d02f1091df9d273ef16f4fb5eb7108561fc`, descended exactly from the accepted Segment C handoff-inclusive base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` on `codex/harmonymaker-v0-segment-d`.
+HarmonyMaker v0 implementation Segments A–D are complete in-repository at Segment D code checkpoint `713a5d02f1091df9d273ef16f4fb5eb7108561fc`, with test-only CI-stabilization checkpoint `6834f1f2df7733785bd99724be5697244dd7d4b9`, descended exactly from the accepted Segment C handoff-inclusive base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` on `codex/harmonymaker-v0-segment-d`.
 
 The final handoff-inclusive remote HEAD is the additive documentation commit containing this handoff and is reported after its remote CI/Vercel checks pass. This document does not self-assert its containing commit SHA.
 
@@ -41,6 +41,7 @@ The final handoff-inclusive remote HEAD is the additive documentation commit con
 - Determinism: existing Segment B 101-run and new OMR 101-run pass.
 - Browser: reference OMR through complete workspace/generation, deletion truth, two-page live PDF.js raster, and phone layout pass.
 - Code-checkpoint remote: GitHub Actions run `32000608829`/job `95300072553` success; Vercel deployment `5939923221` and Preview Comments success.
+- CI-stabilized verification checkpoint: GitHub Actions run `32001540954`/job `95302682451` success; Vercel deployment `5940071810`/status `16901345450` and Preview Comments success. The checkpoint changes only two nondeterministic test fixtures and no production behavior.
 
 ## Campaign boundary
 

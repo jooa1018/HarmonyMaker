@@ -2,7 +2,7 @@
 
 ## Automated implementation evidence
 
-Code checkpoint: `713a5d02f1091df9d273ef16f4fb5eb7108561fc` from exact base `bfadfad1d4bc04e11d348c1270976802a1dc4acc`.
+Code checkpoint: `713a5d02f1091df9d273ef16f4fb5eb7108561fc`; CI-stabilized verification checkpoint: `6834f1f2df7733785bd99724be5697244dd7d4b9`; exact base: `bfadfad1d4bc04e11d348c1270976802a1dc4acc`.
 
 ```text
 typecheck                         PASS
@@ -23,6 +23,8 @@ Remote code-checkpoint evidence:
 - Vercel deployment `5939923221`, deployment status `16900977339`, success.
 - Vercel Preview Comments check, success.
 - Preview URL: `https://harmony-maker-6s87uzfp6-ecctom1.vercel.app`.
+
+An intermediate documentation-only HEAD produced GitHub Actions failure `32001097255` in a cleanup fixture: asynchronous fixture hashing made record-array order nondeterministic. The subsequent local full run also exposed a random-handle test that could replace a terminal `0` with the same `0`. Neither observation was a production failure. Test-only checkpoint `6834f1f2df7733785bd99724be5697244dd7d4b9` makes allocation sequential in the ordering-sensitive fixture and guarantees the tampered handle differs. Focused tests, all 59 files/558 tests, typecheck, lint, and build then passed locally. GitHub Actions run `32001540954`/quality job `95302682451` and Vercel deployment `5940071810`/status `16901345450` passed for that exact checkpoint; Preview Comments also passed. Preview URL: `https://harmony-maker-bk5qn4xl9-ecctom1.vercel.app`.
 
 The handoff-inclusive commit receives its own final run after this report is committed; that exact run and final remote SHA are reported in the Segment D completion response.
 

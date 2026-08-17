@@ -5,6 +5,7 @@
 - Exact accepted Segment C handoff-inclusive base: `bfadfad1d4bc04e11d348c1270976802a1dc4acc`.
 - Branch: `codex/harmonymaker-v0-segment-d`.
 - Segment D code checkpoint: `713a5d02f1091df9d273ef16f4fb5eb7108561fc`.
+- CI-stabilized verification checkpoint: `6834f1f2df7733785bd99724be5697244dd7d4b9` (test fixtures only; no production behavior changed).
 - Final handoff-inclusive remote HEAD: the additive documentation commit containing this file. Its immutable SHA is reported after that commit is pushed and its final CI/Vercel checks pass; a Git commit cannot contain its own SHA.
 - Fixed musical decision: `KEEP_WAG_V1_0_1`.
 - Logical Segment D implementation commit: `713a5d02f1091df9d273ef16f4fb5eb7108561fc` (`feat: complete provider-neutral OMR core`).
@@ -90,6 +91,8 @@ Remote verification for code checkpoint `713a5d02f1091df9d273ef16f4fb5eb7108561f
 - Vercel deployment `5939923221`, status `16900977339`: `success`.
 - Vercel Preview Comments: `success`.
 - Preview: `https://harmony-maker-6s87uzfp6-ecctom1.vercel.app`.
+
+The first documentation-only HEAD exposed two probabilistic assertions rather than a production defect: concurrent fixture hashing did not guarantee record-array order, and replacing a random handle's last character with `0` did not guarantee a changed handle. Checkpoint `6834f1f2df7733785bd99724be5697244dd7d4b9` makes those two test fixtures deterministic. At that checkpoint, focused tests, the full 59-file/558-test suite, typecheck, lint, and production build passed locally. Remote GitHub Actions `CI` run `32001540954`, quality job `95302682451`, passed; Vercel deployment `5940071810`, status `16901345450`, and Preview Comments passed. Preview: `https://harmony-maker-bk5qn4xl9-ecctom1.vercel.app`.
 
 The final handoff-commit CI/Vercel result is reported with `SEGMENT_D_COMPLETE` because it occurs after this document is committed.
 
