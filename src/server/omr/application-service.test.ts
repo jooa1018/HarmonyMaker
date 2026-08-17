@@ -105,7 +105,8 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(h.service.createJob({ sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "create-key-0002" })).rejects.toThrow("OMR_QUOTA_EXCEEDED");
     const foreign = new DurableOmrApplicationService({ ...h.dependencies, actor: { sessionId: "session:2" as PrivateRowId, ipOwnerHash: "ip:hmac:2" } });
     await expect(foreign.getStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
-    await expect(h.service.getStatus(`${handle.slice(0, -1)}0` as never)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    const tamperedHandle = `${handle.slice(0, -1)}${handle.endsWith("0") ? "1" : "0"}`;
+    await expect(h.service.getStatus(tamperedHandle as never)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
     const wrong = "f".repeat(64) as BinaryDigest;
     await expect(h.service.uploadPage(handle, { pageIndex: 0, pageDigest: wrong, mimeType: "image/png", idempotencyKey: "upload-key-0001", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) })).rejects.toThrow("OMR_PAGE_DIGEST_MISMATCH");
   });

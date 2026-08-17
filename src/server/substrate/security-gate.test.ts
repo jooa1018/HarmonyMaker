@@ -73,7 +73,11 @@ describe("C2 production boundary security gate", () => {
     const owner = "owner" as PrivateRowId;
     const backing = new MemoryOwnedObjectStore(store);
     const expiresAt = "2025-02-01T00:00:00.000Z";
-    const records = await Promise.all([1, 2, 3].map((value) => backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(value), contentType: "application/octet-stream", expiresAt })));
+    const records = [
+      await backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(1), contentType: "application/octet-stream", expiresAt }),
+      await backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(2), contentType: "application/octet-stream", expiresAt }),
+      await backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(3), contentType: "application/octet-stream", expiresAt }),
+    ];
     let failFirst = true;
     const failing: OwnedObjectStore = {
       put: (input) => backing.put(input), get: (id, sessionId) => backing.get(id, sessionId), head: (id, sessionId) => backing.head(id, sessionId),
