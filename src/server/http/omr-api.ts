@@ -64,11 +64,19 @@ export function parseCreateJobBody(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("OMR_REQUEST_INVALID");
   const record = value as Record<string, unknown>;
   if (!Number.isSafeInteger(record.pageCount) || !SOURCE_KINDS.includes(record.sourceKind as InputSourceKind)
+    || !Array.isArray(record.pages) || record.pages.length !== record.pageCount
+    || record.pages.some((page, index) => !page || typeof page !== "object" || Array.isArray(page)
+      || (page as Record<string, unknown>).pageIndex !== index
+      || typeof (page as Record<string, unknown>).pageDigest !== "string"
+      || !/^[0-9a-f]{64}$/u.test((page as Record<string, unknown>).pageDigest as string)
+      || !["image/png", "image/jpeg"].includes(String((page as Record<string, unknown>).mimeType)))
     || record.providerTransferConsent !== true || typeof record.idempotencyKey !== "string"
+    || record.idempotencyKey.length < 1 || record.idempotencyKey.length > 256
     || typeof record.consentCapabilitySnapshotDigest !== "string"
     || !/^[0-9a-f]{64}$/.test(record.consentCapabilitySnapshotDigest)) throw new RangeError("OMR_REQUEST_INVALID");
   return {
     pageCount: record.pageCount as number,
+    pages: (record.pages as Array<Record<string, unknown>>).map((page) => ({ pageIndex: page.pageIndex as number, pageDigest: page.pageDigest as import("../../domain/digest/canonical").BinaryDigest, mimeType: page.mimeType as "image/png" | "image/jpeg" })),
     sourceKind: record.sourceKind as Extract<InputSourceKind, "digital-pdf" | "scanned-pdf" | "camera-photo">,
     rights: parseRights(record.rights), providerTransferConsent: true as const,
     consentCapabilitySnapshotDigest: record.consentCapabilitySnapshotDigest as SemanticDigest,

@@ -66,7 +66,7 @@ export interface OmrAutoRepairProposal {
   readonly confidence: "high" | "medium" | "low";
   readonly resolution: OmrAutoRepairResolution;
 }
-export interface OmrCorrectionRecord { readonly id: string; readonly reviewItemId?: string; readonly autoRepairProposalId?: string; readonly target: RevisionScopedTarget; readonly beforeProjection: string; readonly patch: OmrCorrectionPatch; readonly source: "auto-accepted" | "review-alternative" | "manual"; readonly appliedAt: string }
+export interface OmrCorrectionRecord { readonly id: string; readonly reviewItemId?: string; readonly autoRepairProposalId?: string; readonly reviewItemTarget?: RevisionScopedTarget; readonly target: RevisionScopedTarget; readonly beforeProjection: string; readonly patch: OmrCorrectionPatch; readonly source: "auto-accepted" | "review-alternative" | "manual"; readonly appliedAt: string }
 export interface OmrReviewRecord { readonly vendorResultDigest: BinaryDigest; readonly vendorId: string; readonly autoRepairs: readonly OmrAutoRepairProposal[]; readonly corrections: readonly OmrCorrectionRecord[]; readonly reviewItems: readonly OmrReviewItem[]; readonly diagnostics?: readonly Diagnostic[] }
 
 function revisionEqual(left: SourceRevisionRef, right: SourceRevisionRef): boolean {
@@ -175,11 +175,13 @@ function isReviewRecordShape(value: unknown): value is OmrReviewRecord {
         && hasExactKeys(proposal.resolution, ["status", "correctionRecordId"])
         && isCanonicalId(proposal.resolution.correctionRecordId)))) return false;
   if (!value.corrections.every((correction) => isPlainRecord(correction)
-    && hasExactKeys(correction, ["id", "target", "beforeProjection", "patch", "source", "appliedAt"], ["reviewItemId", "autoRepairProposalId"])
+    && hasExactKeys(correction, ["id", "target", "beforeProjection", "patch", "source", "appliedAt"], ["reviewItemId", "autoRepairProposalId", "reviewItemTarget"])
     && isCanonicalId(correction.id)
     && (correction.reviewItemId === undefined || isCanonicalId(correction.reviewItemId))
     && (correction.autoRepairProposalId === undefined || isCanonicalId(correction.autoRepairProposalId))
     && !(correction.reviewItemId !== undefined && correction.autoRepairProposalId !== undefined)
+    && (correction.reviewItemTarget === undefined || isRevisionScopedTarget(correction.reviewItemTarget))
+    && ((correction.reviewItemId === undefined) === (correction.reviewItemTarget === undefined))
     && isRevisionScopedTarget(correction.target)
     && typeof correction.beforeProjection === "string"
     && (() => { try { return canonicalJson(JSON.parse(correction.beforeProjection as string)) === correction.beforeProjection; } catch { return false; } })()
@@ -237,8 +239,9 @@ export function validateOmrReviewRecord(value: unknown): readonly string[] {
       || (correction.autoRepairProposalId !== undefined && !autoRepair)
       || ((correction.source === "review-alternative" || correction.source === "manual") && !reviewItem)
       || (correction.source === "auto-accepted" && !autoRepair)
-      || (reviewItem && canonicalJson(reviewItem.target) !== canonicalJson(correction.target))
-      || (autoRepair && canonicalJson(autoRepair.target) !== canonicalJson(correction.target))) {
+      || (reviewItem && canonicalJson(reviewItem.target) !== canonicalJson(correction.reviewItemTarget))
+      || (reviewItem && correction.target.sourceRevision.revisionOrdinal < reviewItem.target.sourceRevision.revisionOrdinal)
+      || (autoRepair && correction.target.sourceRevision.revisionOrdinal < autoRepair.target.sourceRevision.revisionOrdinal)) {
       errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:review-reference`);
     }
   }

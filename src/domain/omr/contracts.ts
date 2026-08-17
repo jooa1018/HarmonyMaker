@@ -3,6 +3,7 @@ import type { RightsMetadata } from "../source/model";
 import type { BasisPoints } from "../rates";
 import type { EvidenceGranularity, VendorEvidenceBundle } from "./foundation";
 import type { InputSourceKind } from "./input";
+import { hasExactKeys, isPlainRecord } from "../validation";
 
 export interface OmrVendorCapabilities {
   readonly vendorId: string;
@@ -26,12 +27,12 @@ export interface OmrProviderPreflight {
 }
 
 export type VendorExportTargetSelector =
-  | { readonly kind: "measure"; readonly measureOrdinal: number }
-  | { readonly kind: "measure-start"; readonly measureOrdinal: number }
-  | { readonly kind: "measure-end"; readonly measureOrdinal: number }
-  | { readonly kind: "voice-event"; readonly measureOrdinal: number; readonly eventOrdinal: number }
-  | { readonly kind: "chord-event"; readonly measureOrdinal: number; readonly eventOrdinal: number }
-  | { readonly kind: "section-text"; readonly measureOrdinal: number; readonly eventOrdinal: number };
+  | { readonly kind: "measure"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
+  | { readonly kind: "measure-start"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
+  | { readonly kind: "measure-end"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
+  | { readonly kind: "voice-event"; readonly musicXmlPartOrdinal: number; readonly musicXmlStaffNumber: number; readonly musicXmlVoiceKey: string; readonly measureOrdinal: number; readonly eventOrdinal: number }
+  | { readonly kind: "chord-event"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number; readonly eventOrdinal: number }
+  | { readonly kind: "section-text"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number; readonly eventOrdinal: number };
 
 export interface VendorExportEvidenceMapping {
   readonly vendorTargetId: string;
@@ -39,7 +40,9 @@ export interface VendorExportEvidenceMapping {
 }
 
 export interface VendorNormalizationMappingArtifact {
-  readonly version: "vendor-export-target-map-v1";
+  readonly version: "vendor-export-target-map-v2";
+  readonly vendorResultDigest: BinaryDigest;
+  readonly providerBundleDigest: SemanticDigest;
   readonly mappings: readonly VendorExportEvidenceMapping[];
   readonly artifactDigest: SemanticDigest;
 }
@@ -48,22 +51,46 @@ export async function computeVendorNormalizationMappingDigest(
   artifact: Omit<VendorNormalizationMappingArtifact, "artifactDigest">,
 ): Promise<SemanticDigest> {
   return semanticDigest({
-    projectionSchema: "hm-vendor-export-target-map-v1",
+    projectionSchema: "hm-vendor-export-target-map-v2",
     version: artifact.version,
+    vendorResultDigest: artifact.vendorResultDigest,
+    providerBundleDigest: artifact.providerBundleDigest,
     mappings: [...artifact.mappings].sort(compareCanonicalValues),
   });
 }
 
 export async function validateVendorNormalizationMappingArtifact(artifact: VendorNormalizationMappingArtifact): Promise<void> {
-  if (artifact.version !== "vendor-export-target-map-v1" || !Array.isArray(artifact.mappings)) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+  if (!isPlainRecord(artifact) || !hasExactKeys(artifact, ["version", "vendorResultDigest", "providerBundleDigest", "mappings", "artifactDigest"])
+    || artifact.version !== "vendor-export-target-map-v2" || !/^[0-9a-f]{64}$/u.test(artifact.vendorResultDigest)
+    || !/^[0-9a-f]{64}$/u.test(artifact.providerBundleDigest) || !Array.isArray(artifact.mappings)) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
   const vendorTargetIds = artifact.mappings.map((mapping) => mapping.vendorTargetId);
   if (new Set(vendorTargetIds).size !== vendorTargetIds.length || artifact.mappings.some((mapping) => {
-    if (typeof mapping.vendorTargetId !== "string" || mapping.vendorTargetId.length === 0 || mapping.vendorTargetId.length > 256
-      || !Number.isSafeInteger(mapping.target.measureOrdinal) || mapping.target.measureOrdinal < 0) return true;
-    return (mapping.target.kind === "voice-event" || mapping.target.kind === "chord-event" || mapping.target.kind === "section-text")
-      && (!Number.isSafeInteger(mapping.target.eventOrdinal) || mapping.target.eventOrdinal < 0);
+    if (!isPlainRecord(mapping) || !hasExactKeys(mapping, ["vendorTargetId", "target"]) || !isPlainRecord(mapping.target)
+      || typeof mapping.vendorTargetId !== "string" || mapping.vendorTargetId.length === 0 || mapping.vendorTargetId.length > 256
+      || typeof mapping.target.musicXmlPartOrdinal !== "number" || !Number.isSafeInteger(mapping.target.musicXmlPartOrdinal) || mapping.target.musicXmlPartOrdinal < 0
+      || typeof mapping.target.measureOrdinal !== "number" || !Number.isSafeInteger(mapping.target.measureOrdinal) || mapping.target.measureOrdinal < 0) return true;
+    if (mapping.target.kind === "voice-event") return !hasExactKeys(mapping.target, ["kind", "musicXmlPartOrdinal", "musicXmlStaffNumber", "musicXmlVoiceKey", "measureOrdinal", "eventOrdinal"])
+      || typeof mapping.target.musicXmlStaffNumber !== "number" || !Number.isSafeInteger(mapping.target.musicXmlStaffNumber)
+      || mapping.target.musicXmlStaffNumber < 1 || typeof mapping.target.musicXmlVoiceKey !== "string"
+      || mapping.target.musicXmlVoiceKey.length === 0 || mapping.target.musicXmlVoiceKey.length > 128
+      || typeof mapping.target.eventOrdinal !== "number" || !Number.isSafeInteger(mapping.target.eventOrdinal) || mapping.target.eventOrdinal < 0;
+    if (mapping.target.kind === "chord-event" || mapping.target.kind === "section-text") return !hasExactKeys(mapping.target, ["kind", "musicXmlPartOrdinal", "measureOrdinal", "eventOrdinal"])
+      || typeof mapping.target.eventOrdinal !== "number" || !Number.isSafeInteger(mapping.target.eventOrdinal) || mapping.target.eventOrdinal < 0;
+    return !["measure", "measure-start", "measure-end"].includes(String(mapping.target.kind))
+      || !hasExactKeys(mapping.target, ["kind", "musicXmlPartOrdinal", "measureOrdinal"]);
   })) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
-  if (await computeVendorNormalizationMappingDigest({ version: artifact.version, mappings: artifact.mappings }) !== artifact.artifactDigest) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+  if (await computeVendorNormalizationMappingDigest({ version: artifact.version, vendorResultDigest: artifact.vendorResultDigest, providerBundleDigest: artifact.providerBundleDigest, mappings: artifact.mappings }) !== artifact.artifactDigest) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+}
+
+export class OmrVendorCallError extends Error {
+  constructor(
+    message: string,
+    readonly outcome: "definitive-rejection" | "outcome-uncertain",
+  ) { super(message); this.name = "OmrVendorCallError"; }
+}
+
+export function vendorCallOutcome(error: unknown): OmrVendorCallError["outcome"] {
+  return error instanceof OmrVendorCallError ? error.outcome : "outcome-uncertain";
 }
 
 export type VendorInputRequest =
@@ -129,6 +156,22 @@ export interface OmrVendorAdapter {
 
 export type OmrJobHandle = string & { readonly __brand: "OmrJobHandle" };
 
+export interface CanonicalOmrCreatePage {
+  readonly pageIndex: number;
+  readonly pageDigest: BinaryDigest;
+  readonly mimeType: "image/png" | "image/jpeg";
+}
+
+export interface CanonicalOmrCreateRequest {
+  readonly pageCount: number;
+  readonly pages: readonly CanonicalOmrCreatePage[];
+  readonly sourceKind: Exclude<InputSourceKind, "musicxml" | "mxl">;
+  readonly rights: RightsMetadata;
+  readonly providerTransferConsent: true;
+  readonly consentCapabilitySnapshotDigest: SemanticDigest;
+  readonly idempotencyKey: string;
+}
+
 export interface OmrProviderResult {
   readonly vendorId: string;
   readonly vendorResultDigest: BinaryDigest;
@@ -156,6 +199,7 @@ export interface OmrApplicationService {
   createJob(request: {
     readonly sessionId: string;
     readonly pageCount: number;
+    readonly pages: readonly CanonicalOmrCreatePage[];
     readonly sourceKind: Exclude<InputSourceKind, "musicxml" | "mxl">;
     readonly rights: RightsMetadata;
     readonly providerTransferConsent: true;
@@ -165,6 +209,8 @@ export interface OmrApplicationService {
   uploadPage(handle: OmrJobHandle, page: OmrPageUpload): Promise<void>;
   start(handle: OmrJobHandle): Promise<void>;
   getStatus(handle: OmrJobHandle): Promise<OmrPublicStatus>;
+  synchronizeStatus(handle: OmrJobHandle): Promise<OmrPublicStatus>;
+  preflightPage(page: Pick<OmrPageUpload, "pageIndex" | "pageDigest" | "mimeType" | "bytes">): Promise<{ readonly digest: BinaryDigest; readonly width: number; readonly height: number; readonly quality: import("./image-quality").ImageQualityReport }>;
   submitInput(handle: OmrJobHandle, input: VendorInputResponse): Promise<void>;
   exportResult(handle: OmrJobHandle): Promise<OmrProviderResult>;
   cancel(handle: OmrJobHandle): Promise<void>;

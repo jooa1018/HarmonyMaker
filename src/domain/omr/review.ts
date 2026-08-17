@@ -176,14 +176,48 @@ export async function applyOmrCorrection(input: {
   };
   const history = [...input.source.revisionHistory, revisionRecord];
   const source = normalizeSongSourceDocument({ ...pending, revisionDigest, revisionHistory: history, revisionHistoryDigest: await computeRevisionHistoryDigest(history) });
-  const correctionDigest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v1", target: input.target, beforeProjection, patch: input.patch, correctionSource: input.correctionSource, reviewItemId: input.reviewItemId ?? null, autoRepairProposalId: input.autoRepairProposalId ?? null });
+  const correctionDigest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v2", target, beforeProjection, patch: input.patch, correctionSource: input.correctionSource, reviewItemId: input.reviewItemId ?? null, autoRepairProposalId: input.autoRepairProposalId ?? null });
   const correction: OmrCorrectionRecord = {
     id: `omr-correction:${correctionDigest.slice(0, 32)}`,
     ...(input.reviewItemId ? { reviewItemId: input.reviewItemId } : {}),
     ...(input.autoRepairProposalId ? { autoRepairProposalId: input.autoRepairProposalId } : {}),
-    target: input.target, beforeProjection, patch: input.patch, source: input.correctionSource, appliedAt: input.appliedAt,
+    ...(input.reviewItemId ? { reviewItemTarget: input.target } : {}),
+    target, beforeProjection, patch: input.patch, source: input.correctionSource, appliedAt: input.appliedAt,
   };
   return { source, correction, revisionRecord, idRemap };
+}
+
+export async function validateOmrCorrectionHistory(source: SongSourceDocument, record: OmrReviewRecord): Promise<readonly string[]> {
+  const errors: string[] = [];
+  const history = source.revisionHistory.filter((entry) => entry.commandKind === "omr-correction");
+  if (history.length !== record.corrections.length) return ["OMR_REVIEW_RESOLUTION_INVALID:correction-history-count"];
+  const resolveThroughHistory = (original: RevisionScopedTarget, targetRevision: SourceRevisionRef): RevisionScopedTarget | undefined => {
+    let resolved = original;
+    for (const entry of source.revisionHistory) {
+      if (resolved.sourceRevision.revisionOrdinal >= targetRevision.revisionOrdinal) break;
+      if (!revisionRefsEqual(resolved.sourceRevision, entry.fromRevision)) continue;
+      const next = remapRevisionScopedTarget(resolved, entry.idRemap); if (!next) return undefined; resolved = next;
+    }
+    return revisionRefsEqual(resolved.sourceRevision, targetRevision) ? resolved : undefined;
+  };
+  for (const [index, correction] of record.corrections.entries()) {
+    const revisionRecord = history[index];
+    if (!revisionRecord || !revisionRefsEqual(correction.target.sourceRevision, revisionRecord.fromRevision)) {
+      errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:revision-order`); continue;
+    }
+    try {
+      const projection = JSON.parse(revisionRecord.beforeProjection) as { readonly value?: { readonly target?: unknown; readonly value?: unknown } };
+      if (canonicalJson(projection.value?.target) !== canonicalJson(correction.target.target)
+        || canonicalJson(projection.value?.value) !== correction.beforeProjection) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:before-projection`);
+    } catch { errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:before-projection`); }
+    const digest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v2", target: correction.target, beforeProjection: correction.beforeProjection, patch: correction.patch, correctionSource: correction.source, reviewItemId: correction.reviewItemId ?? null, autoRepairProposalId: correction.autoRepairProposalId ?? null });
+    if (correction.id !== `omr-correction:${digest.slice(0, 32)}`) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:id`);
+    if (correction.reviewItemTarget) {
+      const linked = resolveThroughHistory(correction.reviewItemTarget, correction.target.sourceRevision);
+      if (!linked || canonicalJson(linked) !== canonicalJson(correction.target)) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:remap-link`);
+    }
+  }
+  return errors;
 }
 
 export async function createOmrReviewItem(input: {

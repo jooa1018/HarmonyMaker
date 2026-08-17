@@ -13,7 +13,7 @@ import { validateSongSourceDocumentIntegrity } from "../source/validation";
 import { importMusicXml } from "../../import/musicxml/parser";
 import { step3ImportVersionsFromRegistry, type MusicXmlImportDraft } from "../../import/musicxml/types";
 import { finalizeImportedSource } from "../../import/review/finalize";
-import { createOmrReviewItem, proposeOmrAutoRepairs, unsupportedOmrAutoRepairDiagnostics, validateReviewEvidenceReferences } from "./review";
+import { createOmrReviewItem, proposeOmrAutoRepairs, unsupportedOmrAutoRepairDiagnostics, validateOmrCorrectionHistory, validateReviewEvidenceReferences } from "./review";
 import { validateOmrReviewCompletion } from "./foundation";
 
 export const OMR_NORMALIZER_VERSION = "omr-normalizer-v1" as const;
@@ -30,6 +30,9 @@ export async function prepareVendorMusicXml(result: OmrProviderResult, options: 
   const bytes = new TextEncoder().encode(result.rawMusicXml);
   const vendorResultDigest = await binaryDigest(bytes);
   if (vendorResultDigest !== result.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+  await validateVendorNormalizationMappingArtifact(result.normalizationMapping);
+  if (result.normalizationMapping.vendorResultDigest !== result.vendorResultDigest
+    || result.normalizationMapping.providerBundleDigest !== result.evidence.providerBundleDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
   const imported = await importMusicXml(bytes, {
     algorithmVersions: versions,
     ...(options.originalFileName ? { originalFileName: options.originalFileName } : {}),
@@ -44,9 +47,21 @@ function revision(source: SongSourceDocument): RevisionScopedTarget["sourceRevis
   return { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
 }
 
-function normalizedTarget(source: SongSourceDocument, mapping: VendorExportEvidenceMapping): RevisionScopedTarget | undefined {
+export interface OmrSelectedMusicXmlIdentity {
+  readonly partOrdinal: number;
+  readonly staffNumber: number;
+  readonly voiceKey: string;
+  readonly chordAuthorityPartOrdinal: number;
+}
+
+function normalizedTarget(source: SongSourceDocument, mapping: VendorExportEvidenceMapping, selection: OmrSelectedMusicXmlIdentity): RevisionScopedTarget | undefined {
   const sourceRevision = revision(source);
   const selector = mapping.target;
+  if (selector.kind === "voice-event") {
+    if (selector.musicXmlPartOrdinal !== selection.partOrdinal || selector.musicXmlStaffNumber !== selection.staffNumber || selector.musicXmlVoiceKey !== selection.voiceKey) return undefined;
+  } else if (selector.kind === "chord-event") {
+    if (selector.musicXmlPartOrdinal !== selection.chordAuthorityPartOrdinal) return undefined;
+  } else if (selector.musicXmlPartOrdinal !== selection.partOrdinal) return undefined;
   const measure = source.sourceMeasures[selector.measureOrdinal];
   if (!measure) return undefined;
   if (selector.kind === "measure" || selector.kind === "measure-start" || selector.kind === "measure-end") {
@@ -87,18 +102,20 @@ function alternativeForTarget(source: SongSourceDocument, target: RevisionScoped
   return undefined;
 }
 
-export async function createInitialOmrReviewContext(source: SongSourceDocument, providerResult: OmrProviderResult): Promise<{
+export async function createInitialOmrReviewContext(source: SongSourceDocument, providerResult: OmrProviderResult, selection: OmrSelectedMusicXmlIdentity): Promise<{
   readonly sourceEvidence: SourceEvidenceIndex;
   readonly evidenceArchive: OmrEvidenceArchive;
   readonly reviewRecord: OmrReviewRecord;
 }> {
   if (await binaryDigest(new TextEncoder().encode(providerResult.rawMusicXml)) !== providerResult.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
   await validateVendorNormalizationMappingArtifact(providerResult.normalizationMapping);
+  if (providerResult.normalizationMapping.vendorResultDigest !== providerResult.vendorResultDigest
+    || providerResult.normalizationMapping.providerBundleDigest !== providerResult.evidence.providerBundleDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
   const mappingByVendorTarget = new Map<string, EvidenceTargetMapping>();
   const evidenceVendorIds = new Set(providerResult.evidence.evidence.flatMap((evidence) => evidence.vendorTargetId ? [evidence.vendorTargetId] : []));
   for (const mapping of providerResult.normalizationMapping.mappings) {
     if (!evidenceVendorIds.has(mapping.vendorTargetId)) continue;
-    const target = normalizedTarget(source, mapping);
+    const target = normalizedTarget(source, mapping, selection);
     if (target) mappingByVendorTarget.set(mapping.vendorTargetId, { vendorTargetId: mapping.vendorTargetId, target });
   }
   const mapped = await mapVendorEvidenceToSource({ sourceRevision: revision(source), mappingVersion: "omr-evidence-map-v1", vendorBundle: providerResult.evidence, targetMappings: [...mappingByVendorTarget.values()] });
@@ -130,10 +147,12 @@ export async function attachOmrReviewContext(input: {
   readonly source: SongSourceDocument;
   readonly providerResult: OmrProviderResult;
   readonly reviewRecord: OmrReviewRecord;
+  readonly selection: OmrSelectedMusicXmlIdentity;
 }): Promise<SongSourceDocument> {
   if (input.reviewRecord.vendorId !== input.providerResult.vendorId || input.reviewRecord.vendorResultDigest !== input.providerResult.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
   if (validateOmrReviewCompletion(input.reviewRecord).length > 0) throw new RangeError("OMR_REVIEW_REQUIRED");
-  const context = await createInitialOmrReviewContext(input.source, input.providerResult);
+  if ((await validateOmrCorrectionHistory(input.source, input.reviewRecord)).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
+  const context = await createInitialOmrReviewContext(input.source, input.providerResult, input.selection);
   if (validateReviewEvidenceReferences(input.reviewRecord, context.sourceEvidence, context.evidenceArchive).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   const source = normalizeSongSourceDocument({
     ...input.source,

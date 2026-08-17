@@ -80,7 +80,7 @@ describe("canonical OMR fixture pipeline determinism", () => {
       const fixture: ReferenceOmrFixture = {
         id: `fixture:${iteration}`, orderedPageDigests: [pageDigest], statusScript: [{ kind: "completed" }],
         musicXml: REFERENCE_OMR_MUSICXML, evidence,
-        normalizationMappings: [{ vendorTargetId: "symbol_abc", target: { kind: "chord-event", measureOrdinal: 0, eventOrdinal: 0 } }],
+        normalizationMappings: [{ vendorTargetId: "symbol_abc", target: { kind: "chord-event", musicXmlPartOrdinal: 0, measureOrdinal: 0, eventOrdinal: 0 } }],
         retentionInfo: { canDeleteImmediately: true, policyReference: "in-repository-reference-fixture" },
       };
       const adapter = new ReferenceOmrVendorAdapter([fixture], {
@@ -103,11 +103,11 @@ describe("canonical OMR fixture pipeline determinism", () => {
         }),
       });
       const preflight = await service.getProviderPreflight();
-      const handle = await service.createJob({ sessionId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: `create:${iteration}` });
+      const handle = await service.createJob({ sessionId, pageCount: 1, pages: [{ pageIndex: 0, pageDigest, mimeType: "image/png" }], sourceKind: "camera-photo", rights, providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: `create:${iteration}` });
       opaqueHandles.add(handle);
       await service.uploadPage(handle, { pageIndex: 0, pageDigest, mimeType: "image/png", idempotencyKey: `upload:${iteration}`, bytes: new Blob([pageBytes.slice().buffer as ArrayBuffer], { type: "image/png" }) });
       await service.start(handle);
-      expect(await service.getStatus(handle)).toEqual({ kind: "completed" });
+      expect(await service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
       const providerResult = await service.exportResult(handle);
 
       const prepared = await prepareVendorMusicXml(providerResult);
@@ -117,7 +117,10 @@ describe("canonical OMR fixture pipeline determinism", () => {
       const analysis = await deriveQuickReview(reviewedDraft, versions);
       if (!analysis.state.readyForPlanning) throw new Error(JSON.stringify({ state: analysis.state, diagnostics: analysis.diagnostics }));
       const project = await createProjectFromQuickReview(reviewedDraft, analysis, "standard");
-      const initial = await createInitialOmrReviewContext(project.source, providerResult);
+      const selectedCandidate = reviewedDraft.leadCandidates.find((candidate) => candidate.key === reviewedDraft.selectedLeadStaffKey)!;
+      const selectedPart = reviewedDraft.parts.find((part) => part.partOrdinal === selectedCandidate.partOrdinal)!;
+      const selection = { partOrdinal: selectedCandidate.partOrdinal, staffNumber: selectedCandidate.staffNumber, voiceKey: selectedCandidate.voiceKey, chordAuthorityPartOrdinal: (selectedPart.measures.some((measure) => measure.chords.length > 0) ? selectedPart : reviewedDraft.parts.find((part) => part.measures.some((measure) => measure.chords.length > 0)) ?? selectedPart).partOrdinal };
+      const initial = await createInitialOmrReviewContext(project.source, providerResult, selection);
       expect(initial.reviewRecord.reviewItems).toHaveLength(1);
       const item = initial.reviewRecord.reviewItems[0];
       const parsedChord = parseChord("Dm");
@@ -129,7 +132,7 @@ describe("canonical OMR fixture pipeline determinism", () => {
         appliedAt: now.toISOString(),
       });
       const reviewRecord: OmrReviewRecord = { ...initial.reviewRecord, corrections: [corrected.correction], reviewItems: [corrected.item] };
-      const source = await attachOmrReviewContext({ source: corrected.source, providerResult, reviewRecord });
+      const source = await attachOmrReviewContext({ source: corrected.source, providerResult, reviewRecord, selection });
       if (iteration === 0) {
         const integrated = await integrateReviewedOmrSource(project, source);
         const integrity = await validateHarmonyProject(integrated, await loadProductExecutionRegistry());

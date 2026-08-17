@@ -4,6 +4,7 @@ import { pitchMidiNumber } from "../pitch";
 import type { SongSourceDocument } from "../source/model";
 import { materializeImportDiagnostics, type ImportDiagnosticInput } from "../../import/musicxml/diagnostics";
 import { validateOmrReviewCompletion } from "./foundation";
+import { validateOmrCorrectionHistory } from "./review";
 
 export type RuntimeOmrReadiness = "validator-ready" | "review-required" | "blocked";
 
@@ -18,6 +19,8 @@ export async function validateRuntimeOmrReadiness(source: SongSourceDocument): P
   if (omrReview) {
     const completionErrors = validateOmrReviewCompletion(omrReview);
     if (completionErrors.length > 0) diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "해결되지 않은 OMR 검토 항목 또는 자동 수리가 있습니다.", details: { unresolvedCount: completionErrors.length } });
+    const historyErrors = await validateOmrCorrectionHistory(source, omrReview);
+    if (historyErrors.length > 0) diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "OMR 수정 이력과 Source revision/remap 연결이 일치하지 않습니다.", details: { historyErrorCount: historyErrors.length } });
   }
   const timeline: Array<{ readonly event: SongSourceDocument["sourceMeasures"][number]["leadEvents"][number]; readonly sourceMeasureId: string; readonly start: import("../fraction").Fraction; readonly end: import("../fraction").Fraction; readonly ordinal: number }> = [];
   let measureStart = fraction(0);

@@ -4,7 +4,7 @@ import type { BinaryDigest, SemanticDigest } from "../../domain/digest/canonical
 import type { RightsMetadata } from "../../domain/source/model";
 import type { ImageQualityReport } from "../../domain/omr/image-quality";
 import type {
-  OmrPublicStatus, OmrQuotaConfig, OmrVendorCapabilities, RetentionInfo,
+  CanonicalOmrCreateRequest, OmrPublicStatus, OmrQuotaConfig, OmrVendorCapabilities, RetentionInfo,
   VendorDeleteResult, VendorInputRequest, VendorInputResponse, VendorNormalizationMappingArtifact,
 } from "../../domain/omr/contracts";
 import type { InputSourceKind } from "../../domain/omr/input";
@@ -64,6 +64,7 @@ export interface DurableOmrJobRecord {
   readonly handleExpiresAt: string;
   readonly sourceKind: InputSourceKind;
   readonly pageCount: number;
+  readonly canonicalCreateRequest: CanonicalOmrCreateRequest;
   readonly state: OmrLifecycleState;
   readonly rights: RightsMetadata;
   readonly providerTransferConsent: true;
@@ -90,8 +91,13 @@ export interface DurableOmrJobRecord {
   readonly vendorDeleteNextAttemptAt?: string;
   readonly localDeleteNextAttemptAt?: string;
   readonly operationKind?: OmrOperationKind;
+  readonly operationRequestDigest?: SemanticDigest;
   readonly operationLeaseToken?: string;
   readonly operationLeaseExpiresAt?: string;
+  readonly resultCaptureLeaseToken?: string;
+  readonly resultCaptureLeaseExpiresAt?: string;
+  readonly cleanupLeaseToken?: string;
+  readonly cleanupLeaseExpiresAt?: string;
   readonly reconciliationKind?: "create" | "page-upload" | OmrOperationKind;
   readonly publicFailureCode?: string;
   readonly publicFailureMessageKo?: string;
@@ -106,6 +112,7 @@ export interface DurableOmrJobRecord {
 export type OmrCreateClaim =
   | { readonly status: "claimed" | "resume"; readonly job: DurableOmrJobRecord }
   | { readonly status: "replay"; readonly handleReplayEnvelope: AeadEnvelopeV1 }
+  | { readonly status: "rejected"; readonly code: string; readonly messageKo: string }
   | { readonly status: "pending" | "conflict" | "quota-denied" | "credit-denied" };
 
 export type OmrPageClaim =
@@ -115,7 +122,11 @@ export type OmrPageClaim =
 
 export type OmrOperationClaim =
   | { readonly status: "claimed" | "resume"; readonly job: DurableOmrJobRecord }
-  | { readonly status: "pending" | "invalid" | "reconciliation-required" };
+  | { readonly status: "pending" | "invalid" | "request-conflict" | "reconciliation-required" };
+
+export type OmrResultCaptureClaim =
+  | { readonly status: "claimed"; readonly job: DurableOmrJobRecord }
+  | { readonly status: "pending" | "invalid" | "replay" };
 
 export interface OmrStore {
   claimCreate(input: {
@@ -131,18 +142,22 @@ export interface OmrStore {
   failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void>;
   findOwnedByHandleHash(handleHash: string, ownerSessionId: PrivateRowId, includeInactive?: boolean): Promise<DurableOmrJobRecord | undefined>;
   claimPage(jobId: PrivateRowId, page: OmrPageRecord, maxRetries: number, leaseToken: string, leaseExpiresAt: string, supportsIdempotency: boolean, now: string): Promise<OmrPageClaim>;
-  completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<void>;
+  completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<boolean>;
   failPage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, outcome: "failed" | "reconciliation-required", now: string): Promise<void>;
-  claimOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly expectedStates: readonly OmrLifecycleState[]; readonly leaseToken: string; readonly leaseExpiresAt: string; readonly supportsIdempotency: boolean; readonly now: string }): Promise<OmrOperationClaim>;
+  claimOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly operationRequestDigest: SemanticDigest; readonly expectedStates: readonly OmrLifecycleState[]; readonly leaseToken: string; readonly leaseExpiresAt: string; readonly supportsIdempotency: boolean; readonly now: string }): Promise<OmrOperationClaim>;
   completeOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
   failOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
+  claimResultCapture(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly leaseExpiresAt: string; readonly now: string }): Promise<OmrResultCaptureClaim>;
+  completeResultCapture(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
+  releaseResultCapture(jobId: PrivateRowId, leaseToken: string, now: string): Promise<void>;
   transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void>;
   markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void>;
   recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void>;
-  claimCleanup(now: string, limit: number): Promise<readonly DurableOmrJobRecord[]>;
+  claimCleanup(input: { readonly now: string; readonly limit: number; readonly leaseToken: string; readonly leaseExpiresAt: string }): Promise<readonly DurableOmrJobRecord[]>;
+  completeCleanup(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
 }
 
-interface IdempotencyEntry { readonly requestDigest: SemanticDigest; readonly jobId: PrivateRowId; complete: boolean }
+interface IdempotencyEntry { readonly requestDigest: SemanticDigest; readonly jobId: PrivateRowId; complete: boolean; failure?: { readonly code: string; readonly messageKo: string } }
 
 /** Deterministic durable-memory adapter for unit and reference E2E tests only. */
 export class MemoryOmrStore implements OmrStore {
@@ -170,8 +185,12 @@ export class MemoryOmrStore implements OmrStore {
       if (prior) {
         if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
         const job = this.jobs.get(prior.jobId)!;
-        if (prior.complete) return { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
-        if (job.vendorCreateLeaseExpiresAt <= input.now) return { status: "resume", job: this.clone(job) };
+        if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
+        if (job.vendorCreateLeaseExpiresAt <= input.now) {
+          const resumed = { ...job, vendorCreateLeaseExpiresAt: input.record.vendorCreateLeaseExpiresAt, updatedAt: input.now };
+          this.jobs.set(job.id, resumed);
+          return { status: "resume", job: this.clone(resumed) };
+        }
         return { status: "pending" };
       }
       const activeStates = new Set<OmrLifecycleState>(["created", "uploading", "queued", "processing", "needs-input", "cancel-pending", "cancel-failed"]);
@@ -204,7 +223,12 @@ export class MemoryOmrStore implements OmrStore {
   }
 
   async failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
-    await this.transition(jobId, { state: "failed", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo }, now);
+    await this.atomic(() => {
+      const job = this.jobs.get(jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      this.jobs.set(jobId, { ...job, state: "failed", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo, updatedAt: now });
+      const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
+      if (entry) { entry.complete = true; entry.failure = { code, messageKo }; }
+    });
   }
 
   async findOwnedByHandleHash(handleHash: string, ownerSessionId: PrivateRowId, includeInactive = false): Promise<DurableOmrJobRecord | undefined> {
@@ -238,11 +262,12 @@ export class MemoryOmrStore implements OmrStore {
     });
   }
 
-  async completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<void> {
-    await this.atomic(() => {
+  async completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<boolean> {
+    return this.atomic(() => {
       const job = this.jobs.get(jobId); const page = job?.pages.find((candidate) => candidate.pageIndex === pageIndex);
-      if (!job || !page || page.uploadState !== "pending" || page.uploadLeaseToken !== leaseToken) throw new RangeError("OMR_PAGE_UNAVAILABLE");
+      if (!job || !["created", "uploading"].includes(job.state) || !page || page.uploadState !== "pending" || page.uploadLeaseToken !== leaseToken) return false;
       this.jobs.set(jobId, { ...job, pages: job.pages.map((candidate) => candidate.pageIndex === pageIndex ? { ...candidate, objectReferenceId, uploadState: "uploaded", uploadLeaseToken: undefined, uploadLeaseExpiresAt: undefined } : candidate), updatedAt: now });
+      return true;
     });
   }
 
@@ -266,14 +291,15 @@ export class MemoryOmrStore implements OmrStore {
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
       if (job.operationKind) {
         if ((job.operationLeaseExpiresAt ?? "") > input.now) return { status: "pending" };
+        if (job.operationRequestDigest !== input.operationRequestDigest) return { status: "request-conflict" };
         if (job.operationKind !== input.kind || !input.supportsIdempotency) {
-          this.jobs.set(job.id, { ...job, state: "reconciliation-required", reconciliationKind: job.operationKind, operationKind: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined, updatedAt: input.now });
+          this.jobs.set(job.id, { ...job, state: "reconciliation-required", reconciliationKind: job.operationKind, operationKind: undefined, operationRequestDigest: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined, updatedAt: input.now });
           return { status: "reconciliation-required" };
         }
       } else if (!input.expectedStates.includes(job.state)) return { status: "invalid" };
       const resumed = Boolean(job.operationKind);
       const nextState = input.kind === "cancel" ? "cancel-pending" as const : job.state;
-      const updated = { ...job, state: nextState, operationKind: input.kind, operationLeaseToken: input.leaseToken, operationLeaseExpiresAt: input.leaseExpiresAt, updatedAt: input.now };
+      const updated = { ...job, state: nextState, operationKind: input.kind, operationRequestDigest: input.operationRequestDigest, operationLeaseToken: input.leaseToken, operationLeaseExpiresAt: input.leaseExpiresAt, updatedAt: input.now };
       this.jobs.set(job.id, updated);
       return { status: resumed ? "resume" : "claimed", job: this.clone(updated) };
     });
@@ -284,13 +310,39 @@ export class MemoryOmrStore implements OmrStore {
       const job = this.jobs.get(input.jobId);
       if (!job || job.operationKind !== input.kind || job.operationLeaseToken !== input.leaseToken) return false;
       if (input.update.state !== undefined && !isLegalOmrTransition(job.state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
-      this.jobs.set(job.id, { ...job, ...structuredClone(input.update), id: job.id, ownerSessionId: job.ownerSessionId, operationKind: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined, updatedAt: input.now });
+      this.jobs.set(job.id, { ...job, ...structuredClone(input.update), id: job.id, ownerSessionId: job.ownerSessionId, operationKind: undefined, operationRequestDigest: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined, updatedAt: input.now });
       return true;
     });
   }
 
   async failOperation(input: Parameters<OmrStore["failOperation"]>[0]): Promise<boolean> {
     return this.completeOperation(input);
+  }
+
+  async claimResultCapture(input: Parameters<OmrStore["claimResultCapture"]>[0]): Promise<OmrResultCaptureClaim> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (job.state === "completed") return { status: "replay" };
+      if (!["queued", "processing", "needs-input"].includes(job.state)) return { status: "invalid" };
+      if (job.resultCaptureLeaseToken && (job.resultCaptureLeaseExpiresAt ?? "") > input.now) return { status: "pending" };
+      const updated = { ...job, resultCaptureLeaseToken: input.leaseToken, resultCaptureLeaseExpiresAt: input.leaseExpiresAt, updatedAt: input.now };
+      this.jobs.set(job.id, updated);
+      return { status: "claimed", job: this.clone(updated) };
+    });
+  }
+
+  async completeResultCapture(input: Parameters<OmrStore["completeResultCapture"]>[0]): Promise<boolean> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      if (!job || job.resultCaptureLeaseToken !== input.leaseToken || !["queued", "processing", "needs-input"].includes(job.state)) return false;
+      if (input.update.state !== undefined && !isLegalOmrTransition(job.state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      this.jobs.set(job.id, { ...job, ...structuredClone(input.update), id: job.id, ownerSessionId: job.ownerSessionId, resultCaptureLeaseToken: undefined, resultCaptureLeaseExpiresAt: undefined, updatedAt: input.now });
+      return true;
+    });
+  }
+
+  async releaseResultCapture(jobId: PrivateRowId, leaseToken: string, now: string): Promise<void> {
+    await this.atomic(() => { const job = this.jobs.get(jobId); if (job?.resultCaptureLeaseToken === leaseToken) this.jobs.set(job.id, { ...job, resultCaptureLeaseToken: undefined, resultCaptureLeaseExpiresAt: undefined, updatedAt: now }); });
   }
 
   async transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void> {
@@ -305,10 +357,11 @@ export class MemoryOmrStore implements OmrStore {
   async recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void> {
     await this.atomic(() => { this.audits.push({ ...(jobId ? { jobId } : {}), eventKind, outcome, createdAt: now }); });
   }
-  async claimCleanup(now: string, limit: number): Promise<readonly DurableOmrJobRecord[]> {
+  async claimCleanup(input: Parameters<OmrStore["claimCleanup"]>[0]): Promise<readonly DurableOmrJobRecord[]> {
+    const { now, limit } = input;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new RangeError("OMR_CLEANUP_LIMIT_INVALID");
     return this.atomic(() => {
-      const selected = [...this.jobs.values()].filter((job) => job.state !== "deleted" && (
+      const selected = [...this.jobs.values()].filter((job) => job.state !== "deleted" && (!job.cleanupLeaseToken || (job.cleanupLeaseExpiresAt ?? "") <= now) && (
         (job.handleActive && job.handleExpiresAt <= now)
         || (job.state === "delete-pending" && (
           (job.vendorDeleteState !== "deleted" && (job.vendorDeleteNextAttemptAt ?? now) <= now)
@@ -316,10 +369,19 @@ export class MemoryOmrStore implements OmrStore {
         ))
       )).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
       return selected.map((job) => {
-        const updated = job.state === "delete-pending" ? job : { ...job, state: "expired" as const, handleActive: false, creditState: "released" as const, updatedAt: now };
+        const base = job.state === "delete-pending" ? job : { ...job, state: "expired" as const, handleActive: false, creditState: "released" as const, updatedAt: now };
+        const updated = { ...base, cleanupLeaseToken: input.leaseToken, cleanupLeaseExpiresAt: input.leaseExpiresAt };
         this.jobs.set(job.id, updated);
         return this.clone(updated);
       });
+    });
+  }
+  async completeCleanup(input: Parameters<OmrStore["completeCleanup"]>[0]): Promise<boolean> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId); if (!job || job.cleanupLeaseToken !== input.leaseToken) return false;
+      if (input.update.state !== undefined && !isLegalOmrTransition(job.state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      this.jobs.set(job.id, { ...job, ...structuredClone(input.update), id: job.id, ownerSessionId: job.ownerSessionId, cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined, updatedAt: input.now });
+      return true;
     });
   }
   listJobs(): readonly DurableOmrJobRecord[] { return [...this.jobs.values()].map((record) => this.clone(record)); }

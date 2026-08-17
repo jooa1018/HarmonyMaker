@@ -90,7 +90,8 @@ describe("revision-scoped OMR foundation", () => {
 
   it("checks review resolution to correction linkage", () => {
     const patch = { kind: "duration", duration: fraction(1) } as const;
-    const record: OmrReviewRecord = { vendorResultDigest: bd, vendorId: "vendor", autoRepairs: [], corrections: [{ id: "correction:0", reviewItemId: "review:0", target: { sourceRevision: fromRevision, target: { kind: "voice-event", eventId: "le:0" } }, beforeProjection: "{}", patch, source: "review-alternative", appliedAt: "2026-01-01T00:00:00Z" }], reviewItems: [{ id: "review:0", target: { sourceRevision: fromRevision, target: { kind: "voice-event", eventId: "le:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ id: "alternative:0", labelKo: "duration", patch, confidenceBp: basisPoints(8000) }], evidenceIds: [], resolution: { status: "accepted", selectedAlternativeId: "alternative:0", correctionRecordId: "correction:0" } }] };
+    const target = { sourceRevision: fromRevision, target: { kind: "voice-event" as const, eventId: "le:0" } };
+    const record: OmrReviewRecord = { vendorResultDigest: bd, vendorId: "vendor", autoRepairs: [], corrections: [{ id: "correction:0", reviewItemId: "review:0", reviewItemTarget: target, target, beforeProjection: "{}", patch, source: "review-alternative", appliedAt: "2026-01-01T00:00:00Z" }], reviewItems: [{ id: "review:0", target, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ id: "alternative:0", labelKo: "duration", patch, confidenceBp: basisPoints(8000) }], evidenceIds: [], resolution: { status: "accepted", selectedAlternativeId: "alternative:0", correctionRecordId: "correction:0" } }] };
     expect(validateOmrReviewRecord(record)).toEqual([]);
     expect(validateOmrReviewRecord({ ...record, corrections: [] })).toContain("OMR_REVIEW_RESOLUTION_INVALID:review:0");
     expect(validateOmrReviewRecord({

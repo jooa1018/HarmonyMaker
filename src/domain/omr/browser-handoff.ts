@@ -94,8 +94,6 @@ export async function takeOmrImportHandoff(): Promise<OmrImportHandoff | undefin
     const recovery = stored ? evaluateOmrHandoffRecovery(expiresAt, recoveryAttempts, new Date().toISOString()) : undefined;
     if (stored && recovery !== "available") {
       transaction.objectStore(STORE_NAME).delete(RECORD_KEY);
-    } else if (stored) {
-      transaction.objectStore(STORE_NAME).put({ ...stored, handoffId, expiresAt, recoveryAttempts: recoveryAttempts + 1 });
     }
     await transactionDone(transaction);
     if (!stored || recovery !== "available") return undefined;
@@ -108,6 +106,29 @@ export async function takeOmrImportHandoff(): Promise<OmrImportHandoff | undefin
   } finally {
     db.close();
   }
+}
+
+export async function recordOmrImportHandoffFailure(handoffId: string): Promise<void> {
+  const db = await database();
+  try {
+    const transaction = db.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get(RECORD_KEY);
+    const stored = await new Promise<StoredHandoff | undefined>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result as StoredHandoff | undefined);
+      request.onerror = () => reject(request.error ?? new Error("OMR_HANDOFF_READ_FAILED"));
+    });
+    if (stored?.handoffId === handoffId) {
+      const failures = (stored.recoveryAttempts ?? 0) + 1;
+      if (evaluateOmrHandoffRecovery(stored.expiresAt, failures, new Date().toISOString()) === "available") store.put({ ...stored, recoveryAttempts: failures });
+      else store.delete(RECORD_KEY);
+    }
+    await transactionDone(transaction);
+  } finally { db.close(); }
+}
+
+export async function abandonOmrImportHandoff(handoffId: string): Promise<void> {
+  return completeOmrImportHandoff(handoffId);
 }
 
 export async function completeOmrImportHandoff(handoffId: string): Promise<void> {

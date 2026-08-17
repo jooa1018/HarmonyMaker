@@ -10,7 +10,7 @@ import type { OmrProviderPreflight, OmrProviderResult, OmrPublicStatus } from ".
 import { analyzeImageQuality, type ImageQualityReport } from "../../domain/omr/image-quality";
 import { classifyInputSource, type InputSourceKind } from "../../domain/omr/input";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
-import type { OmrEvidence } from "../../domain/omr/foundation";
+import { mapEvidenceBoxToNormalizedOriginal, type BoundingBox } from "../../domain/omr/foundation";
 import styles from "./omr.module.css";
 
 interface PreparedPage {
@@ -21,6 +21,7 @@ interface PreparedPage {
   readonly previewUrl: string;
   readonly width: number;
   readonly height: number;
+  readonly clientQuality: ImageQualityReport;
   readonly quality: ImageQualityReport;
 }
 
@@ -61,7 +62,8 @@ async function prepareImage(bytes: Uint8Array, mimeType: "image/png" | "image/jp
       const offset = index * 4;
       luma[index] = Math.round(rgba[offset] * 0.2126 + rgba[offset + 1] * 0.7152 + rgba[offset + 2] * 0.0722);
     }
-    return { key: crypto.randomUUID(), bytes, mimeType, digest: await binaryDigest(bytes), previewUrl: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, quality: analyzeImageQuality({ width, height, luma, originalWidth: bitmap.width, originalHeight: bitmap.height }) };
+    const clientQuality = analyzeImageQuality({ width, height, luma, originalWidth: bitmap.width, originalHeight: bitmap.height });
+    return { key: crypto.randomUUID(), bytes, mimeType, digest: await binaryDigest(bytes), previewUrl: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, clientQuality, quality: clientQuality };
   } finally { bitmap.close(); }
 }
 
@@ -71,10 +73,10 @@ async function json<T>(response: Response): Promise<T> {
   return body;
 }
 
-function evidenceStyle(evidence: OmrEvidence): CSSProperties {
+function evidenceStyle(box: BoundingBox): CSSProperties {
   return {
-    left: `${Number(evidence.box.xMu) / 10_000}%`, top: `${Number(evidence.box.yMu) / 10_000}%`,
-    width: `${Number(evidence.box.widthMu) / 10_000}%`, height: `${Number(evidence.box.heightMu) / 10_000}%`,
+    left: `${Number(box.xMu) / 10_000}%`, top: `${Number(box.yMu) / 10_000}%`,
+    width: `${Number(box.widthMu) / 10_000}%`, height: `${Number(box.heightMu) / 10_000}%`,
   };
 }
 
@@ -94,6 +96,7 @@ export function OmrClient() {
   const [csrf, setCsrf] = useState<string>();
   const [preflight, setPreflight] = useState<OmrProviderPreflight>();
   const [handle, setHandle] = useState<string>();
+  const [handleRecoveryStorageKey, setHandleRecoveryStorageKey] = useState<string>();
   const [status, setStatus] = useState<OmrPublicStatus>();
   const [result, setResult] = useState<OmrProviderResult>();
   const [pageOrderInput, setPageOrderInput] = useState<readonly number[]>([]);
@@ -122,6 +125,19 @@ export function OmrClient() {
     return () => { active = false; };
   }, []);
 
+  const prepareAuthoritativeImage = useCallback(async (bytes: Uint8Array, mimeType: "image/png" | "image/jpeg"): Promise<PreparedPage> => {
+    const prepared = await prepareImage(bytes, mimeType);
+    let csrfToken = csrf;
+    if (!csrfToken) {
+      const session = await json<{ readonly csrfToken: string }>(await fetch("/api/session", { method: "POST" }));
+      csrfToken = session.csrfToken; setCsrf(csrfToken);
+    }
+    const response = await json<{ readonly inspection: { readonly digest: BinaryDigest; readonly width: number; readonly height: number; readonly quality: ImageQualityReport } }>(await fetch("/api/omr/quality-preflight", {
+      method: "POST", headers: { "content-type": mimeType, "x-csrf-token": csrfToken, "x-page-digest": prepared.digest }, body: bytes.slice().buffer as ArrayBuffer,
+    }));
+    return { ...prepared, width: response.inspection.width, height: response.inspection.height, quality: response.inspection.quality };
+  }, [csrf]);
+
   const selectFile = useCallback(async (file: File) => {
     setBusy(true); setError(undefined); setMessage(`${file.name} 형식과 서명을 검사하는 중…`);
     try {
@@ -136,7 +152,7 @@ export function OmrClient() {
       if (classification.detectedKind === "pdf") {
         setMessage("PDF.js 고정 정책으로 페이지를 래스터화하는 중…");
         const raster = await rasterizePdfPages({ bytes, maxPages: 12 });
-        const prepared = await Promise.all(raster.pages.map((page) => prepareImage(page.bytes, page.mimeType)));
+        const prepared = await Promise.all(raster.pages.map((page) => prepareAuthoritativeImage(page.bytes, page.mimeType)));
         replacePages(prepared);
         if (raster.classification.suggestedKind) {
           setSourceKind(raster.classification.suggestedKind); setPdfConfirmation(false);
@@ -146,12 +162,12 @@ export function OmrClient() {
           setMessage(`${raster.probe.pageCount}쪽 PDF 준비 완료 · 디지털/스캔 유형을 직접 확인하세요.`);
         }
       } else {
-        replacePages([await prepareImage(bytes, classification.mimeType as "image/png" | "image/jpeg")]);
+        replacePages([await prepareAuthoritativeImage(bytes, classification.mimeType as "image/png" | "image/jpeg")]);
         setSourceKind("camera-photo"); setPdfConfirmation(false); setMessage("사진 1쪽의 해상도·흐림·원근·반사·잘림 검사를 완료했습니다.");
       }
     } catch (caught) { setError(caught instanceof Error ? caught.message : "입력을 준비하지 못했습니다."); }
     finally { setBusy(false); }
-  }, [replacePages, router]);
+  }, [prepareAuthoritativeImage, replacePages, router]);
 
   const selectFiles = useCallback(async (files: readonly File[]) => {
     if (files.length === 1) { await selectFile(files[0]); return; }
@@ -163,13 +179,13 @@ export function OmrClient() {
         const bytes = new Uint8Array(await file.arrayBuffer());
         const classification = await classifyInputSource({ bytes, declaredMimeType: inferredMime(file), originalFileName: file.name });
         if (classification.detectedKind !== "camera-photo") throw new RangeError("OMR_MULTI_IMAGE_ONLY");
-        prepared.push(await prepareImage(bytes, classification.mimeType as "image/png" | "image/jpeg"));
+        prepared.push(await prepareAuthoritativeImage(bytes, classification.mimeType as "image/png" | "image/jpeg"));
       }
       replacePages(prepared); setSourceKind("camera-photo"); setPdfConfirmation(false);
       setMessage(`카메라/이미지 ${prepared.length}쪽을 선택한 순서대로 준비했습니다. 아래에서 명시적으로 순서를 조정하세요.`);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "여러 이미지 페이지를 준비하지 못했습니다."); }
     finally { setBusy(false); }
-  }, [replacePages, selectFile]);
+  }, [prepareAuthoritativeImage, replacePages, selectFile]);
 
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.target.files ?? [])];
@@ -180,7 +196,7 @@ export function OmrClient() {
   const loadReference = async () => {
     setBusy(true); setError(undefined);
     try {
-      replacePages([await prepareImage(referenceOmrPageBytes(), "image/png")]);
+      replacePages([await prepareAuthoritativeImage(referenceOmrPageBytes(), "image/png")]);
       setSourceKind("camera-photo"); setPdfConfirmation(false);
       setMessage("내장 결정적 reference fixture 1쪽을 준비했습니다. 실제 제공자 정확도 증거로 사용할 수 없습니다.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "reference fixture를 읽지 못했습니다."); }
@@ -199,7 +215,7 @@ export function OmrClient() {
 
   const poll = useCallback(async (jobHandle: string) => {
     for (let attempt = 0; attempt < 90; attempt += 1) {
-      const response = await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}`, { cache: "no-store" }));
+      const response = await json<{ readonly status: OmrPublicStatus }>(await mutate(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/sync`, "POST"));
       if (response.status.kind === "needs-input" && response.status.inputRequest.kind === "confirm-page-order") setPageOrderInput([...response.status.inputRequest.pageIndices]);
       if (response.status.kind === "needs-input" && response.status.inputRequest.kind === "vendor-specific") setVendorInputPayload(structuredClone(response.status.inputRequest.payload));
       setStatus(response.status);
@@ -213,7 +229,7 @@ export function OmrClient() {
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
     throw new Error("인식 상태 확인 시간이 초과되었습니다. handle로 다시 조회할 수 있습니다.");
-  }, []);
+  }, [mutate]);
 
   const start = async () => {
     if (!ready) return;
@@ -226,21 +242,38 @@ export function OmrClient() {
       }
       const headers = { "content-type": "application/json", "x-csrf-token": csrfToken };
       if (!preflight) throw new RangeError("OMR_PROVIDER_CAPABILITY_MISSING");
-      const createStorageKey = `harmonymaker:omr-create:${pages.map((page) => page.digest).join(":")}`;
-      const idempotencyKey = localStorage.getItem(createStorageKey) ?? crypto.randomUUID();
-      localStorage.setItem(createStorageKey, idempotencyKey);
-      const created = await json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify({ pageCount: pages.length, sourceKind, rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() }, providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey }) }));
-      localStorage.removeItem(createStorageKey);
-      setHandle(created.handle); setStatus({ kind: "created" });
-      for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
-        const page = pages[pageIndex];
-        setStatus({ kind: "uploading", uploadedPages: pageIndex, totalPages: pages.length });
-        await json(await fetch(`/api/omr/jobs/${encodeURIComponent(created.handle)}/pages/${pageIndex}`, {
-          method: "PUT", headers: { "content-type": page.mimeType, "x-csrf-token": csrfToken, "x-page-digest": page.digest, "x-idempotency-key": `${created.handle}:${pageIndex}`, "x-quality-warning-acknowledged": String(warnAccepted), "x-duplicate-page-confirmed": String(duplicatesAccepted) }, body: page.bytes.slice().buffer as ArrayBuffer,
-        }));
+      const createStorageKey = `harmonymaker:omr-create:v2:${preflight.capabilitySnapshotDigest}:${sourceKind}:${pages.map((page) => page.digest).join(":")}`;
+      const recoveryStorageKey = `${createStorageKey}:recovered-handle`;
+      let jobHandle = localStorage.getItem(recoveryStorageKey);
+      let recoveredStatus: OmrPublicStatus | undefined;
+      if (jobHandle) {
+        recoveredStatus = (await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}`, { cache: "no-store" }))).status;
+      } else {
+        const stored = localStorage.getItem(createStorageKey);
+        const createRequest = stored ? JSON.parse(stored) as Record<string, unknown> : {
+          pageCount: pages.length, pages: pages.map((page, pageIndex) => ({ pageIndex, pageDigest: page.digest, mimeType: page.mimeType })), sourceKind,
+          rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() },
+          providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: crypto.randomUUID(),
+        };
+        if (!stored) localStorage.setItem(createStorageKey, JSON.stringify(createRequest));
+        const created = await json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify(createRequest) }));
+        jobHandle = created.handle;
+        localStorage.setItem(recoveryStorageKey, jobHandle);
+        localStorage.removeItem(createStorageKey);
       }
-      await json(await fetch(`/api/omr/jobs/${encodeURIComponent(created.handle)}/start`, { method: "POST", headers: { "x-csrf-token": csrfToken } }));
-      await poll(created.handle);
+      setHandleRecoveryStorageKey(recoveryStorageKey);
+      setHandle(jobHandle); setStatus(recoveredStatus ?? { kind: "created" });
+      if (!recoveredStatus || recoveredStatus.kind === "created" || recoveredStatus.kind === "uploading") {
+        for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+          const page = pages[pageIndex];
+          setStatus({ kind: "uploading", uploadedPages: pageIndex, totalPages: pages.length });
+          await json(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/pages/${pageIndex}`, {
+            method: "PUT", headers: { "content-type": page.mimeType, "x-csrf-token": csrfToken, "x-page-digest": page.digest, "x-idempotency-key": `${jobHandle}:${pageIndex}`, "x-quality-warning-acknowledged": String(warnAccepted), "x-duplicate-page-confirmed": String(duplicatesAccepted) }, body: page.bytes.slice().buffer as ArrayBuffer,
+          }));
+        }
+        await json(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/start`, { method: "POST", headers: { "x-csrf-token": csrfToken } }));
+      }
+      await poll(jobHandle);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "OMR 작업을 시작하지 못했습니다."); }
     finally { setBusy(false); }
   };
@@ -269,6 +302,8 @@ export function OmrClient() {
     try {
       const response = await json<{ readonly deletion: { readonly localHandleDeleted: boolean; readonly vendor: { readonly status: string } } }>(await mutate(`/api/omr/jobs/${encodeURIComponent(handle)}`, "DELETE"));
       setMessage(`로컬 handle 삭제: ${String(response.deletion.localHandleDeleted)} · 제공자 삭제: ${response.deletion.vendor.status}`);
+      if (handleRecoveryStorageKey) localStorage.removeItem(handleRecoveryStorageKey);
+      setHandleRecoveryStorageKey(undefined);
       setHandle(undefined); setStatus(undefined); setResult(undefined);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "삭제하지 못했습니다."); }
     finally { setBusy(false); }
@@ -283,6 +318,8 @@ export function OmrClient() {
         bytes: new TextEncoder().encode(result.rawMusicXml), omrProviderResult: result,
         pageImages: pages.map((page) => ({ bytes: page.bytes, mimeType: page.mimeType })),
       });
+      if (handleRecoveryStorageKey) localStorage.removeItem(handleRecoveryStorageKey);
+      setHandleRecoveryStorageKey(undefined);
       router.push("/import");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Quick Review로 전달하지 못했습니다."); setBusy(false); }
   };
@@ -321,7 +358,8 @@ export function OmrClient() {
           <img src={page.previewUrl} alt={`악보 ${index + 1}쪽 미리보기`} />
           <p><strong>{index + 1}쪽</strong> · {page.width}×{page.height}</p>
           <span className={`${styles.badge} ${styles[page.quality.status]}`}>{page.quality.status.toUpperCase()}</span>
-          <p className={styles.subtle}>blur {page.quality.blurBp}/10000 · perspective {page.quality.perspectiveBp}/10000 · glare {page.quality.glareBp}/10000 · crop {page.quality.cropRiskBp}/10000</p>
+          <p className={styles.subtle}>server-authoritative · blur {page.quality.blurBp}/10000 · perspective {page.quality.perspectiveBp}/10000 · glare {page.quality.glareBp}/10000 · crop {page.quality.cropRiskBp}/10000</p>
+          <p className={styles.subtle}>browser preview (non-gating): {page.clientQuality.status}</p>
           {page.quality.reasons.length ? <p><code>{page.quality.reasons.join(", ")}</code></p> : null}
           <div className={styles.actions}><button type="button" onClick={() => move(index, -1)} disabled={index === 0 || busy}>앞으로</button><button type="button" onClick={() => move(index, 1)} disabled={index === pages.length - 1 || busy}>뒤로</button></div>
         </article>)}</div>
@@ -350,11 +388,15 @@ export function OmrClient() {
       {result ? <section className="panel" aria-labelledby="review-heading">
         <h2 id="review-heading">4. 인식 증거와 Quick Review</h2>
         <dl className={styles.meta}><dt>adapter</dt><dd>{result.vendorId}</dd><dt>결과 digest</dt><dd><code>{result.vendorResultDigest}</code></dd><dt>증거 granularity</dt><dd>{result.evidence.granularity}</dd><dt>즉시 삭제</dt><dd>{String(result.retentionInfo.canDeleteImmediately)}</dd><dt>보관 정책</dt><dd>{result.retentionInfo.policyReference ?? "제공자 고지 없음"}</dd></dl>
-        {pages[0] ? <div className={styles.evidence}>
+        {pages.map((page, pageIndex) => <div className={styles.evidence} key={page.key}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={pages[0].previewUrl} alt="첫 페이지 인식 증거 overlay" />
-          {result.evidence.evidence.filter((item) => item.granularity !== "page").map((item) => <span className={styles.evidenceBox} style={evidenceStyle(item)} key={item.id} title={`${item.id} · confidence ${item.confidenceBp ?? "미제공"}`} />)}
-        </div> : null}
+          <img src={page.previewUrl} alt={`${pageIndex + 1}쪽 인식 증거 overlay`} />
+          {result.evidence.evidence.filter((item) => item.granularity !== "page").map((item) => {
+            const box = mapEvidenceBoxToNormalizedOriginal(item, result.evidence.frames, result.evidence.transforms);
+            const frame = box && result.evidence.frames.find((candidate) => candidate.id === box.frameId);
+            return box && frame?.pageIndex === pageIndex ? <span className={styles.evidenceBox} style={evidenceStyle(box)} key={item.id} title={`${item.id} · confidence ${item.confidenceBp ?? "미제공"}`} /> : null;
+          })}
+        </div>)}
         <p>이 overlay는 제공자 증거의 원본 정규화 좌표를 표시합니다. 실제 음표·마디 수정과 Source revision/remap은 다음 Quick Review에서 정본 importer 결과에 적용됩니다.</p>
         <div className={styles.actions}><button className="primary" type="button" onClick={() => void handoff()} disabled={busy}>정본 importer · Quick Review로 전달</button><button type="button" onClick={() => void remove()} disabled={busy}>검토 후 삭제</button></div>
       </section> : null}

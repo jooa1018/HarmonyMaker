@@ -28,10 +28,10 @@ export const REFERENCE_OMR_FIXTURES: readonly ReferenceOmrFixture[] = Object.fre
     ],
   },
   normalizationMappings: [
-    { vendorTargetId: "page_1", target: { kind: "measure", measureOrdinal: 0 } },
-    { vendorTargetId: "staff_main", target: { kind: "voice-event", measureOrdinal: 0, eventOrdinal: 0 } },
-    { vendorTargetId: "measure_42", target: { kind: "measure-start", measureOrdinal: 0 } },
-    { vendorTargetId: "symbol_abc", target: { kind: "chord-event", measureOrdinal: 0, eventOrdinal: 0 } },
+    { vendorTargetId: "page_1", target: { kind: "measure", musicXmlPartOrdinal: 0, measureOrdinal: 0 } },
+    { vendorTargetId: "staff_main", target: { kind: "voice-event", musicXmlPartOrdinal: 0, musicXmlStaffNumber: 1, musicXmlVoiceKey: "1", measureOrdinal: 0, eventOrdinal: 0 } },
+    { vendorTargetId: "measure_42", target: { kind: "measure-start", musicXmlPartOrdinal: 0, measureOrdinal: 0 } },
+    { vendorTargetId: "symbol_abc", target: { kind: "chord-event", musicXmlPartOrdinal: 0, measureOrdinal: 0, eventOrdinal: 0 } },
   ],
   retentionInfo: { canDeleteImmediately: true, policyReference: "in-repository-reference-fixture" },
 }]);

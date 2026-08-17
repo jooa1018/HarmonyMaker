@@ -22,7 +22,7 @@ class MigrationClientFake {
 describe("versioned PostgreSQL migrations", () => {
   it("has a monotonic inventory with durable constraints and Segment-D-only foundation", () => {
     expect(() => validateMigrationInventory(MIGRATIONS)).not.toThrow();
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
     const sql = MIGRATIONS[0].sql;
     for (const required of ["anonymous_sessions", "quota_windows", "idempotency_records", "share_records", "object_references", "omr_jobs", "omr_pages", "omr_evidence", "omr_review_metadata", "REFERENCES", "UNIQUE", "expires_at"]) expect(sql).toContain(required);
     expect(sql).not.toContain("vendor_name");
@@ -33,11 +33,12 @@ describe("versioned PostgreSQL migrations", () => {
     expect(MIGRATIONS[2].sql).toContain("ciphertext");
     for (const required of ["omr_create_idempotency", "provider_transfer_consent", "credit_estimate", "quality_report", "vendor_result_digest", "delete-pending"]) expect(MIGRATIONS[3].sql).toContain(required);
     for (const required of ["operation_lease_token", "reconciliation-required", "vendor_delete_next_attempt_at", "upload_lease_token", "normalization_mapping"]) expect(MIGRATIONS[4].sql).toContain(required);
+    for (const required of ["canonical_create_request", "operation_request_digest", "result_capture_lease_token", "cleanup_lease_token"]) expect(MIGRATIONS[5].sql).toContain(required);
   });
 
   it("applies transactionally once and safely re-applies", async () => {
     const client = new MigrationClientFake();
-    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2, 3, 4, 5]);
+    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2, 3, 4, 5, 6]);
     await expect(applyMigrationsWithClient(client)).resolves.toEqual([]);
     expect(client.calls.filter((call) => call === "COMMIT")).toHaveLength(2);
   });

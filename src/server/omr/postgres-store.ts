@@ -40,6 +40,7 @@ function jobRow(row: Record<string, unknown>, pages: readonly OmrPageRecord[]): 
     publicHandleReplayEnvelope: json<AeadEnvelopeV1>(row.public_handle_replay_envelope),
     handleExpiresAt: iso(row.expires_at), sourceKind: row.source_kind as DurableOmrJobRecord["sourceKind"],
     pageCount: row.page_count as number, state: row.state as DurableOmrJobRecord["state"],
+    canonicalCreateRequest: json(row.canonical_create_request),
     rights: json(row.rights_json), providerTransferConsent: true,
     providerConsentRecordedAt: iso(row.provider_consent_recorded_at), capabilities: json(row.capability_snapshot),
     capabilitySnapshotDigest: row.capability_snapshot_digest as DurableOmrJobRecord["capabilitySnapshotDigest"],
@@ -61,8 +62,13 @@ function jobRow(row: Record<string, unknown>, pages: readonly OmrPageRecord[]): 
     ...(row.vendor_delete_next_attempt_at ? { vendorDeleteNextAttemptAt: iso(row.vendor_delete_next_attempt_at) } : {}),
     ...(row.local_delete_next_attempt_at ? { localDeleteNextAttemptAt: iso(row.local_delete_next_attempt_at) } : {}),
     ...(row.operation_kind ? { operationKind: row.operation_kind as DurableOmrJobRecord["operationKind"] } : {}),
+    ...(row.operation_request_digest ? { operationRequestDigest: row.operation_request_digest as DurableOmrJobRecord["operationRequestDigest"] } : {}),
     ...(row.operation_lease_token ? { operationLeaseToken: row.operation_lease_token as string } : {}),
     ...(row.operation_lease_expires_at ? { operationLeaseExpiresAt: iso(row.operation_lease_expires_at) } : {}),
+    ...(row.result_capture_lease_token ? { resultCaptureLeaseToken: row.result_capture_lease_token as string } : {}),
+    ...(row.result_capture_lease_expires_at ? { resultCaptureLeaseExpiresAt: iso(row.result_capture_lease_expires_at) } : {}),
+    ...(row.cleanup_lease_token ? { cleanupLeaseToken: row.cleanup_lease_token as string } : {}),
+    ...(row.cleanup_lease_expires_at ? { cleanupLeaseExpiresAt: iso(row.cleanup_lease_expires_at) } : {}),
     ...(row.reconciliation_kind ? { reconciliationKind: row.reconciliation_kind as DurableOmrJobRecord["reconciliationKind"] } : {}),
     ...(row.public_failure_code ? { publicFailureCode: row.public_failure_code as string } : {}),
     ...(row.public_failure_message_ko ? { publicFailureMessageKo: row.public_failure_message_ko as string } : {}),
@@ -97,8 +103,13 @@ const JOB_UPDATE_MAPPINGS: ReadonlyArray<{ key: keyof DurableOmrJobRecord; colum
   { key: "vendorDeleteNextAttemptAt", column: "vendor_delete_next_attempt_at" },
   { key: "localDeleteNextAttemptAt", column: "local_delete_next_attempt_at" },
   { key: "operationKind", column: "operation_kind" },
+  { key: "operationRequestDigest", column: "operation_request_digest" },
   { key: "operationLeaseToken", column: "operation_lease_token" },
   { key: "operationLeaseExpiresAt", column: "operation_lease_expires_at" },
+  { key: "resultCaptureLeaseToken", column: "result_capture_lease_token" },
+  { key: "resultCaptureLeaseExpiresAt", column: "result_capture_lease_expires_at" },
+  { key: "cleanupLeaseToken", column: "cleanup_lease_token" },
+  { key: "cleanupLeaseExpiresAt", column: "cleanup_lease_expires_at" },
   { key: "reconciliationKind", column: "reconciliation_kind" },
   { key: "publicFailureCode", column: "public_failure_code" },
   { key: "publicFailureMessageKo", column: "public_failure_message_ko" },
@@ -133,7 +144,7 @@ export class PostgresOmrStore implements OmrStore {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(1214349646)");
       const existing = await client.query(
-        `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope
+        `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope
          FROM omr_create_idempotency i JOIN omr_jobs j ON j.id=i.job_id
          WHERE i.owner_session_id=$1 AND i.key_hash=$2 FOR UPDATE OF i,j`,
         [input.ownerSessionId, input.idempotencyKeyHash],
@@ -141,8 +152,11 @@ export class PostgresOmrStore implements OmrStore {
       if (existing.rows[0]) {
         const row = existing.rows[0];
         if (row.request_digest !== input.requestDigest) { await client.query("ROLLBACK"); return { status: "conflict" }; }
-        if (row.idempotency_state === "complete") { await client.query("COMMIT"); return { status: "replay", handleReplayEnvelope: json(row.public_handle_replay_envelope) }; }
+        if (row.idempotency_state === "complete") { await client.query("COMMIT"); return row.failure_code
+          ? { status: "rejected", code: row.failure_code as string, messageKo: row.failure_message_ko as string }
+          : { status: "replay", handleReplayEnvelope: json(row.public_handle_replay_envelope) }; }
         if (iso(row.vendor_create_lease_expires_at) > input.now) { await client.query("COMMIT"); return { status: "pending" }; }
+        await client.query("UPDATE omr_jobs SET vendor_create_lease_expires_at=$2,updated_at=$3 WHERE id=$1", [row.job_id, input.record.vendorCreateLeaseExpiresAt, input.now]);
         const job = await loadJob(client, id(row.job_id));
         if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
         await client.query("COMMIT");
@@ -173,13 +187,13 @@ export class PostgresOmrStore implements OmrStore {
           ip_owner_hash,public_handle_replay_envelope,handle_active,source_kind,page_count,rights_json,
           provider_transfer_consent,provider_consent_recorded_at,capability_snapshot,vendor_create_idempotency_key,
           vendor_create_lease_expires_at,credit_estimate,credit_state,updated_at,capability_snapshot_digest,
-          vendor_delete_state,local_delete_state)
-         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,true,$8,$9,$10,true,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+          vendor_delete_state,local_delete_state,canonical_create_request)
+         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,true,$8,$9,$10,true,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
         [record.ownerSessionId, record.publicHandleHash, record.state, record.createdAt, record.handleExpiresAt,
           record.ipOwnerHash, JSON.stringify(record.publicHandleReplayEnvelope), record.sourceKind, record.pageCount,
           JSON.stringify(record.rights), record.providerConsentRecordedAt, JSON.stringify(record.capabilities),
           record.vendorCreateIdempotencyKey, record.vendorCreateLeaseExpiresAt, record.creditEstimate, record.creditState, record.updatedAt,
-          record.capabilitySnapshotDigest, record.vendorDeleteState, record.localDeleteState],
+          record.capabilitySnapshotDigest, record.vendorDeleteState, record.localDeleteState, JSON.stringify(record.canonicalCreateRequest)],
       );
       const jobId = id(inserted.rows[0].id);
       await client.query("INSERT INTO omr_create_idempotency (owner_session_id,key_hash,request_digest,job_id,state,created_at) VALUES ($1,$2,$3,$4,'pending',$5)", [input.ownerSessionId, input.idempotencyKeyHash, input.requestDigest, jobId, input.now]);
@@ -204,7 +218,15 @@ export class PostgresOmrStore implements OmrStore {
   }
 
   async failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
-    await this.transition(jobId, { state: "failed", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo }, now);
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const job = await client.query("SELECT state FROM omr_jobs WHERE id=$1 FOR UPDATE", [jobId]);
+      if (!job.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      await updateLockedJob(client, jobId, { state: "failed", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo }, now);
+      await client.query("UPDATE omr_create_idempotency SET state='complete',failure_code=$2,failure_message_ko=$3 WHERE job_id=$1", [jobId, code, messageKo]);
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 
   async findOwnedByHandleHash(handleHash: string, ownerSessionId: PrivateRowId, includeInactive = false): Promise<DurableOmrJobRecord | undefined> {
@@ -243,10 +265,20 @@ export class PostgresOmrStore implements OmrStore {
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 
-  async completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<void> {
-    const result = await this.database.query("UPDATE omr_pages SET processed_object_reference_id=$4,upload_state='uploaded',upload_lease_token=NULL,upload_lease_expires_at=NULL WHERE job_id=$1 AND page_ordinal=$2 AND upload_state='pending' AND upload_lease_token=$3", [jobId, pageIndex, leaseToken, objectReferenceId]);
-    if (result.rowCount !== 1) throw new RangeError("OMR_PAGE_UNAVAILABLE");
-    await this.database.query("UPDATE omr_jobs SET updated_at=$2 WHERE id=$1", [jobId, now]);
+  async completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<boolean> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const job = await client.query("SELECT state FROM omr_jobs WHERE id=$1 FOR UPDATE", [jobId]);
+      if (!job.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      const page = await client.query("SELECT upload_state,upload_lease_token FROM omr_pages WHERE job_id=$1 AND page_ordinal=$2 FOR UPDATE", [jobId, pageIndex]);
+      if (!["created", "uploading"].includes(job.rows[0].state) || page.rows[0]?.upload_state !== "pending" || page.rows[0]?.upload_lease_token !== leaseToken) {
+        await client.query("COMMIT"); return false;
+      }
+      await client.query("UPDATE omr_pages SET processed_object_reference_id=$4,upload_state='uploaded',upload_lease_token=NULL,upload_lease_expires_at=NULL WHERE job_id=$1 AND page_ordinal=$2 AND upload_lease_token=$3", [jobId, pageIndex, leaseToken, objectReferenceId]);
+      await client.query("UPDATE omr_jobs SET updated_at=$2 WHERE id=$1", [jobId, now]);
+      await client.query("COMMIT"); return true;
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 
   async failPage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, outcome: "failed" | "reconciliation-required", now: string): Promise<void> {
@@ -266,10 +298,13 @@ export class PostgresOmrStore implements OmrStore {
         if ((job.operationLeaseExpiresAt ?? "") > input.now) {
           await client.query("COMMIT"); return { status: "pending" };
         }
+        if (job.operationRequestDigest !== input.operationRequestDigest) {
+          await client.query("COMMIT"); return { status: "request-conflict" };
+        }
         if (job.operationKind !== input.kind || !input.supportsIdempotency) {
           await updateLockedJob(client, input.jobId, {
             state: "reconciliation-required", reconciliationKind: job.operationKind,
-            operationKind: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined,
+            operationKind: undefined, operationRequestDigest: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined,
           }, input.now);
           await client.query("COMMIT"); return { status: "reconciliation-required" };
         }
@@ -279,7 +314,7 @@ export class PostgresOmrStore implements OmrStore {
       const resumed = Boolean(job.operationKind);
       await updateLockedJob(client, input.jobId, {
         ...(input.kind === "cancel" ? { state: "cancel-pending" as const } : {}),
-        operationKind: input.kind, operationLeaseToken: input.leaseToken,
+        operationKind: input.kind, operationRequestDigest: input.operationRequestDigest, operationLeaseToken: input.leaseToken,
         operationLeaseExpiresAt: input.leaseExpiresAt,
       }, input.now);
       const loaded = await loadJob(client, input.jobId);
@@ -303,7 +338,7 @@ export class PostgresOmrStore implements OmrStore {
         throw new RangeError("OMR_STATE_TRANSITION_INVALID");
       }
       await updateLockedJob(client, input.jobId, {
-        ...input.update, operationKind: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined,
+        ...input.update, operationKind: undefined, operationRequestDigest: undefined, operationLeaseToken: undefined, operationLeaseExpiresAt: undefined,
       }, input.now);
       await client.query("COMMIT"); return true;
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
@@ -311,6 +346,39 @@ export class PostgresOmrStore implements OmrStore {
 
   async failOperation(input: Parameters<OmrStore["failOperation"]>[0]): Promise<boolean> {
     return this.completeOperation(input);
+  }
+
+  async claimResultCapture(input: Parameters<OmrStore["claimResultCapture"]>[0]) {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT state,result_capture_lease_token,result_capture_lease_expires_at FROM omr_jobs WHERE id=$1 FOR UPDATE", [input.jobId]);
+      if (!selected.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      const row = selected.rows[0];
+      if (row.state === "completed") { await client.query("COMMIT"); return { status: "replay" as const }; }
+      if (!["queued", "processing", "needs-input"].includes(row.state)) { await client.query("COMMIT"); return { status: "invalid" as const }; }
+      if (row.result_capture_lease_token && iso(row.result_capture_lease_expires_at) > input.now) { await client.query("COMMIT"); return { status: "pending" as const }; }
+      await updateLockedJob(client, input.jobId, { resultCaptureLeaseToken: input.leaseToken, resultCaptureLeaseExpiresAt: input.leaseExpiresAt }, input.now);
+      const job = await loadJob(client, input.jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      await client.query("COMMIT"); return { status: "claimed" as const, job };
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async completeResultCapture(input: Parameters<OmrStore["completeResultCapture"]>[0]): Promise<boolean> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT state,result_capture_lease_token FROM omr_jobs WHERE id=$1 FOR UPDATE", [input.jobId]);
+      if (!selected.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (selected.rows[0].result_capture_lease_token !== input.leaseToken || !["queued", "processing", "needs-input"].includes(selected.rows[0].state)) { await client.query("COMMIT"); return false; }
+      if (input.update.state !== undefined && !isLegalOmrTransition(selected.rows[0].state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      await updateLockedJob(client, input.jobId, { ...input.update, resultCaptureLeaseToken: undefined, resultCaptureLeaseExpiresAt: undefined }, input.now);
+      await client.query("COMMIT"); return true;
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async releaseResultCapture(jobId: PrivateRowId, leaseToken: string, now: string): Promise<void> {
+    await this.database.query("UPDATE omr_jobs SET result_capture_lease_token=NULL,result_capture_lease_expires_at=NULL,updated_at=$3 WHERE id=$1 AND result_capture_lease_token=$2", [jobId, leaseToken, now]);
   }
 
   async transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void> {
@@ -337,13 +405,14 @@ export class PostgresOmrStore implements OmrStore {
     );
   }
 
-  async claimCleanup(now: string, limit: number): Promise<readonly DurableOmrJobRecord[]> {
+  async claimCleanup(input: Parameters<OmrStore["claimCleanup"]>[0]): Promise<readonly DurableOmrJobRecord[]> {
+    const { now, limit } = input;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new RangeError("OMR_CLEANUP_LIMIT_INVALID");
     const client = await this.database.connect();
     try {
       await client.query("BEGIN");
       const selected = await client.query(
-        `SELECT id FROM omr_jobs WHERE state <> 'deleted' AND (
+         `SELECT id FROM omr_jobs WHERE state <> 'deleted' AND (cleanup_lease_token IS NULL OR cleanup_lease_expires_at <= $1) AND (
            (handle_active=true AND expires_at <= $1)
            OR (state='delete-pending' AND (
              (vendor_delete_state <> 'deleted' AND COALESCE(vendor_delete_next_attempt_at,$1) <= $1)
@@ -355,11 +424,24 @@ export class PostgresOmrStore implements OmrStore {
       const records: DurableOmrJobRecord[] = [];
       for (const row of selected.rows) {
         const jobId = id(row.id);
-        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state='released',updated_at=$2 WHERE id=$1", [jobId, now]);
+        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state='released',cleanup_lease_token=$3,cleanup_lease_expires_at=$4,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
         const loaded = await loadJob(client, jobId); if (loaded) records.push(loaded);
       }
       await client.query("COMMIT");
       return records;
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async completeCleanup(input: Parameters<OmrStore["completeCleanup"]>[0]): Promise<boolean> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT state,cleanup_lease_token FROM omr_jobs WHERE id=$1 FOR UPDATE", [input.jobId]);
+      if (!selected.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (selected.rows[0].cleanup_lease_token !== input.leaseToken) { await client.query("COMMIT"); return false; }
+      if (input.update.state !== undefined && !isLegalOmrTransition(selected.rows[0].state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      await updateLockedJob(client, input.jobId, { ...input.update, cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined }, input.now);
+      await client.query("COMMIT"); return true;
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 }

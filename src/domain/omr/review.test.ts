@@ -10,7 +10,7 @@ import { validateOmrReviewCompletion, validateOmrReviewRecord, type OmrReviewRec
 import {
   acceptOmrReviewAlternative, applyOmrCorrection, createOmrReviewItem,
   manuallyCorrectOmrReviewItem, proposeOmrAutoRepairs, rejectOmrReviewAlternatives,
-  resolveOmrAutoRepair,
+  resolveOmrAutoRepair, validateOmrCorrectionHistory,
 } from "./review";
 
 async function sourceFixture(): Promise<SongSourceDocument> {
@@ -147,6 +147,15 @@ describe("typed OMR correction and Source revision", () => {
     const complete: OmrReviewRecord = { ...partial, corrections: [...partial.corrections, sectionManual.correction], reviewItems: [voiceManual.item, chordAccepted.item, sectionManual.item] };
     expect(validateOmrReviewRecord(complete)).toEqual([]);
     expect(validateOmrReviewCompletion(complete)).toEqual([]);
+    expect(complete.corrections.map((correction) => correction.target.sourceRevision.revisionOrdinal)).toEqual([0, 1, 2]);
+    expect(complete.corrections.map((correction) => correction.reviewItemTarget?.sourceRevision.revisionOrdinal)).toEqual([0, 0, 0]);
+    expect(await validateOmrCorrectionHistory(sectionManual.source, complete)).toEqual([]);
+    const reloadedSource = JSON.parse(JSON.stringify(sectionManual.source)) as SongSourceDocument;
+    const reloadedRecord = JSON.parse(JSON.stringify(complete)) as OmrReviewRecord;
+    expect(validateOmrReviewRecord(reloadedRecord)).toEqual([]);
+    expect(await validateOmrCorrectionHistory(reloadedSource, reloadedRecord)).toEqual([]);
+    const tampered = { ...reloadedRecord, corrections: reloadedRecord.corrections.map((correction, index) => index === 1 ? { ...correction, beforeProjection: "{}" } : correction) };
+    expect(await validateOmrCorrectionHistory(reloadedSource, tampered)).toContain(`${"OMR_REVIEW_RESOLUTION_INVALID"}:${reloadedRecord.corrections[1].id}:before-projection`);
     expect(sectionManual.source.sourceMeasures[0]).toMatchObject({ leadEvents: [expect.objectContaining({ pitch: { step: "D", alter: 0, octave: 4 } })], textEvents: [expect.objectContaining({ text: "Chorus" })] });
   });
 });

@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { BinaryDigest } from "../../domain/digest/canonical";
+import { binaryDigest, type BinaryDigest } from "../../domain/digest/canonical";
 import { computeProviderBundleDigest, type VendorEvidenceBundle } from "../../domain/omr/foundation";
 import type {
   OmrPageUpload, OmrVendorAdapter, OmrVendorCapabilities, RetentionInfo,
@@ -147,7 +147,9 @@ export class ReferenceOmrVendorAdapter implements OmrVendorAdapter {
     this.callCounts.mapping += 1;
     const job = this.job(vendorJobId);
     if (!job.fixture) throw new RangeError("OMR_REFERENCE_FIXTURE_UNSUPPORTED");
-    const artifact = { version: "vendor-export-target-map-v1" as const, mappings: job.fixture.normalizationMappings ?? [] };
+    const evidence = job.fixture.evidence;
+    const providerBundleDigest = "providerBundleDigest" in evidence ? evidence.providerBundleDigest : await computeProviderBundleDigest(evidence);
+    const artifact = { version: "vendor-export-target-map-v2" as const, vendorResultDigest: await binaryDigest(new TextEncoder().encode(job.fixture.musicXml)), providerBundleDigest, mappings: job.fixture.normalizationMappings ?? [] };
     return structuredClone({ ...artifact, artifactDigest: await computeVendorNormalizationMappingDigest(artifact) });
   }
 

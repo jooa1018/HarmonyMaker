@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { binaryDigest, type BinaryDigest } from "../../domain/digest/canonical";
+import { binaryDigest, semanticDigest, type BinaryDigest } from "../../domain/digest/canonical";
+import { OmrVendorCallError } from "../../domain/omr/contracts";
 import { coordinateMicrounit } from "../../domain/omr/foundation";
 import { basisPoints } from "../../domain/rates";
 import type { PrivateRowId } from "../persistence/store";
@@ -49,9 +50,11 @@ async function harness(statusScript: ReferenceOmrFixture["statusScript"] = [{ ki
 
 const rights = { basis: "self-authored" as const, allowedUses: ["provider-transfer", "generation"] as const };
 
-async function createConsentedJob(service: DurableOmrApplicationService, request: Omit<Parameters<DurableOmrApplicationService["createJob"]>[0], "consentCapabilitySnapshotDigest">) {
+async function createConsentedJob(service: DurableOmrApplicationService, request: Omit<Parameters<DurableOmrApplicationService["createJob"]>[0], "consentCapabilitySnapshotDigest" | "pages"> & { readonly pages?: Parameters<DurableOmrApplicationService["createJob"]>[0]["pages"] }) {
   const preflight = await service.getProviderPreflight();
-  return service.createJob({ ...request, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest });
+  const pageDigest = await binaryDigest(new TextEncoder().encode("reference-page-fixture"));
+  const pages = request.pages ?? Array.from({ length: request.pageCount }, (_, pageIndex) => ({ pageIndex, pageDigest, mimeType: "image/png" as const }));
+  return service.createJob({ ...request, pages, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest });
 }
 
 describe("durable provider-neutral OMR application lifecycle", () => {
@@ -66,9 +69,9 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await h.service.uploadPage(handle, upload);
     expect(h.adapter.callCounts.upload).toBe(1);
     await h.service.start(handle);
-    expect(await h.service.getStatus(handle)).toEqual({ kind: "queued" });
-    expect(await h.service.getStatus(handle)).toEqual({ kind: "processing", progressBp: 5000 });
-    expect(await h.service.getStatus(handle)).toEqual({ kind: "completed" });
+    expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "queued" });
+    expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "processing", progressBp: 5000 });
+    expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
     const result = await h.service.exportResult(handle);
     expect(result.rawMusicXml).toBe(musicXml);
     expect(result.evidence.evidence).toHaveLength(1);
@@ -77,7 +80,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(h.service.delete(handle)).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "deleted" } });
     expect(h.adapter.callCounts.delete).toBe(1);
     expect(h.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
-    await expect(h.service.getStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    await expect(h.service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
   });
 
   it("recovers the post-Vendor/pre-persist crash window without creating a second Vendor job", async () => {
@@ -101,7 +104,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     h.advance(5 * 60 * 1_000 + 1);
     const recoveredHandle = await createConsentedJob(service, request);
     expect(h.adapter.callCounts.create).toBe(1);
-    expect(await service.getStatus(recoveredHandle)).toEqual({ kind: "created" });
+    expect(await service.synchronizeStatus(recoveredHandle)).toEqual({ kind: "created" });
   });
 
   it("enforces owner, handle authentication, exact concurrency quota, and digest conflicts", async () => {
@@ -109,11 +112,11 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "create-key-0001" });
     await expect(createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "create-key-0002" })).rejects.toThrow("OMR_QUOTA_EXCEEDED");
     const foreign = new DurableOmrApplicationService({ ...h.dependencies, actor: { sessionId: "session:2" as PrivateRowId, ipOwnerHash: "ip:hmac:2" } });
-    await expect(foreign.getStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    await expect(foreign.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
     const tamperedHandle = `${handle.slice(0, -1)}${handle.endsWith("0") ? "1" : "0"}`;
-    await expect(h.service.getStatus(tamperedHandle as never)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    await expect(h.service.synchronizeStatus(tamperedHandle as never)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
     const wrong = "f".repeat(64) as BinaryDigest;
-    await expect(h.service.uploadPage(handle, { pageIndex: 0, pageDigest: wrong, mimeType: "image/png", idempotencyKey: "upload-key-0001", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) })).rejects.toThrow("OMR_PAGE_DIGEST_MISMATCH");
+    await expect(h.service.uploadPage(handle, { pageIndex: 0, pageDigest: wrong, mimeType: "image/png", idempotencyKey: "upload-key-0001", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) })).rejects.toThrow("OMR_PAGE_UPLOAD_CONFLICT");
   });
 
   it("persists and validates needs-input before resuming processing", async () => {
@@ -126,24 +129,24 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "create-key-0001" });
     await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "upload-key-0001", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
     await h.service.start(handle);
-    await h.service.getStatus(handle);
-    expect(await h.service.getStatus(handle)).toMatchObject({ kind: "needs-input" });
+    await h.service.synchronizeStatus(handle);
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "needs-input" });
     await expect(h.service.submitInput(handle, { kind: "select-instrument", requestId: "request:1", choice: "drums" })).rejects.toThrow("OMR_VENDOR_INPUT_INVALID");
     await h.service.submitInput(handle, { kind: "select-instrument", requestId: "request:1", choice: "voice" });
     await h.service.submitInput(handle, { kind: "select-instrument", requestId: "request:1", choice: "voice" });
     await expect(h.service.submitInput(handle, { kind: "select-instrument", requestId: "request:1", choice: "piano" })).rejects.toThrow("OMR_VENDOR_INPUT_CONFLICT");
     expect(h.adapter.callCounts.input).toBe(1);
-    expect(await h.service.getStatus(handle)).toEqual({ kind: "processing", progressBp: 8000 });
+    expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "processing", progressBp: 8000 });
   });
 
   it("validates confirm-page-order input as the exact expected set", async () => {
     const h = await harness([{ kind: "needs-input", request: { kind: "confirm-page-order", requestId: "order:1", pageIndices: [0] } }, { kind: "completed" }]);
     const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "order-key-1" });
     await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "upload-key-1", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
-    await h.service.start(handle); expect(await h.service.getStatus(handle)).toMatchObject({ kind: "needs-input" });
+    await h.service.start(handle); expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "needs-input" });
     await expect(h.service.submitInput(handle, { kind: "confirm-page-order", requestId: "order:1", pageIndices: [1] })).rejects.toThrow("OMR_VENDOR_INPUT_INVALID");
     await h.service.submitInput(handle, { kind: "confirm-page-order", requestId: "order:1", pageIndices: [0] });
-    expect(await h.service.getStatus(handle)).toEqual({ kind: "completed" });
+    expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
   });
 
   it("blocks retake and unacknowledged warning pages before Vendor transfer", async () => {
@@ -242,7 +245,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await h.service.cancel(handle); await h.service.cancel(handle);
     expect(h.adapter.callCounts.cancel).toBe(1);
     h.advance(24 * 60 * 60 * 1_000 + 1);
-    await expect(h.service.getStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    await expect(h.service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
   });
 
   it("claims expired jobs into the same truthful cleanup lifecycle", async () => {
@@ -251,14 +254,14 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     h.advance(24 * 60 * 60 * 1_000 + 1);
     await expect(h.service.cleanupExpiredJobs()).resolves.toEqual([{ jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } } }]);
     expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", handleActive: false, creditState: "released" });
-    await expect(h.service.getStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    await expect(h.service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
   });
 
   it("binds informed transfer consent to the exact provider capability snapshot", async () => {
     const h = await harness();
     const consented = await h.service.getProviderPreflight();
     vi.spyOn(h.adapter, "getCapabilities").mockResolvedValue({ ...consented.capabilities, vendorDisplayName: "Changed provider disclosure" });
-    await expect(h.service.createJob({ sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, consentCapabilitySnapshotDigest: consented.capabilitySnapshotDigest, idempotencyKey: "stale-consent-key" })).rejects.toThrow("OMR_PROVIDER_CONSENT_STALE");
+    await expect(h.service.createJob({ sessionId: "session:1", pageCount: 1, pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" }], sourceKind: "camera-photo", rights, providerTransferConsent: true, consentCapabilitySnapshotDigest: consented.capabilitySnapshotDigest, idempotencyKey: "stale-consent-key" })).rejects.toThrow("OMR_PROVIDER_CONSENT_STALE");
     expect(h.adapter.callCounts.create).toBe(0);
   });
 
@@ -267,10 +270,10 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const failedHandle = await createConsentedJob(failed.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "cancel-failure-key" });
     const cancelSpy = vi.spyOn(failed.adapter, "cancelVendorJob").mockRejectedValueOnce(new Error("vendor cancel unavailable"));
     await expect(failed.service.cancel(failedHandle)).rejects.toThrow("OMR_VENDOR_CANCEL_FAILED");
-    expect(await failed.service.getStatus(failedHandle)).toMatchObject({ kind: "cancel-failed", code: "OMR_VENDOR_CANCEL_FAILED" });
+    expect(await failed.service.synchronizeStatus(failedHandle)).toMatchObject({ kind: "cancel-failed", code: "OMR_VENDOR_CANCEL_FAILED" });
     cancelSpy.mockRestore();
     await expect(failed.service.cancel(failedHandle)).resolves.toBeUndefined();
-    expect(await failed.service.getStatus(failedHandle)).toEqual({ kind: "cancelled" });
+    expect(await failed.service.synchronizeStatus(failedHandle)).toEqual({ kind: "cancelled" });
 
     const cancelCrash = await harness();
     let failCancelPersist = true;
@@ -325,7 +328,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const inputService = new DurableOmrApplicationService({ ...inputCrash.dependencies, store: inputStore });
     const inputHandle = await createConsentedJob(inputService, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "input-crash-key" });
     await inputService.uploadPage(inputHandle, { pageIndex: 0, pageDigest: inputCrash.pageDigest, mimeType: "image/png", idempotencyKey: "input-crash-upload", bytes: new Blob([inputCrash.pageBytes.slice().buffer as ArrayBuffer]) });
-    await inputService.start(inputHandle); expect(await inputService.getStatus(inputHandle)).toMatchObject({ kind: "needs-input" });
+    await inputService.start(inputHandle); expect(await inputService.synchronizeStatus(inputHandle)).toMatchObject({ kind: "needs-input" });
     const input = { kind: "select-instrument" as const, requestId: "instrument-crash", choice: "Voice" };
     await expect(inputService.submitInput(inputHandle, input)).rejects.toThrow("OMR_OPERATION_PENDING");
     await expect(inputService.submitInput(inputHandle, input)).rejects.toThrow("OMR_OPERATION_PENDING");
@@ -403,7 +406,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const unknownHandle = await createConsentedJob(unknown.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "unknown-key-1" });
     await unknown.service.uploadPage(unknownHandle, { pageIndex: 0, pageDigest: unknown.pageDigest, mimeType: "image/png", idempotencyKey: "upload-key-1", bytes: new Blob([unknown.pageBytes.slice().buffer as ArrayBuffer]) });
     await unknown.service.start(unknownHandle);
-    expect(await unknown.service.getStatus(unknownHandle)).toEqual({ kind: "failed", code: "OMR_VENDOR_STATUS_UNKNOWN", messageKo: "인식 작업 상태를 확인할 수 없습니다." });
+    expect(await unknown.service.synchronizeStatus(unknownHandle)).toEqual({ kind: "failed", code: "OMR_VENDOR_STATUS_UNKNOWN", messageKo: "인식 작업 상태를 확인할 수 없습니다." });
 
     const downgraded = await harness([{ kind: "completed" }]);
     const measureAdapter = new ReferenceOmrVendorAdapter([downgraded.fixture], { vendorId: "hm-reference", supportedMimeTypes: ["image/png"], maxPages: 12, evidenceGranularity: "measure", supportsDeletion: true, retentionDisclosure: true, supportsIdempotency: true, supportsInteractiveInput: true, estimatedCreditPerPage: 1 });
@@ -411,7 +414,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const measureHandle = await createConsentedJob(measureService, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "measure-key-1" });
     await measureService.uploadPage(measureHandle, { pageIndex: 0, pageDigest: downgraded.pageDigest, mimeType: "image/png", idempotencyKey: "upload-key-1", bytes: new Blob([downgraded.pageBytes.slice().buffer as ArrayBuffer]) });
     await measureService.start(measureHandle);
-    expect(await measureService.getStatus(measureHandle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_CAPABILITY_MISSING" });
+    expect(await measureService.synchronizeStatus(measureHandle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_CAPABILITY_MISSING" });
 
     const missingFixture = { ...downgraded.fixture, evidence: { ...downgraded.fixture.evidence, evidence: [] } };
     const missingAdapter = new ReferenceOmrVendorAdapter([missingFixture]);
@@ -420,7 +423,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const missingHandle = await createConsentedJob(missingService, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "missing-key-1" });
     await missingService.uploadPage(missingHandle, { pageIndex: 0, pageDigest: missing.pageDigest, mimeType: "image/png", idempotencyKey: "upload-key-1", bytes: new Blob([missing.pageBytes.slice().buffer as ArrayBuffer]) });
     await missingService.start(missingHandle);
-    expect(await missingService.getStatus(missingHandle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_CAPABILITY_MISSING" });
+    expect(await missingService.synchronizeStatus(missingHandle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_CAPABILITY_MISSING" });
   });
 
   it("preserves truthful unsupported and failed Vendor retention outcomes", async () => {
@@ -429,7 +432,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       const service = new DurableOmrApplicationService({ ...base.dependencies, adapter });
       const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: key });
       await service.uploadPage(handle, { pageIndex: 0, pageDigest: base.pageDigest, mimeType: "image/png", idempotencyKey: `${key}-upload`, bytes: new Blob([base.pageBytes.slice().buffer as ArrayBuffer]) });
-      await service.start(handle); await service.getStatus(handle);
+      await service.start(handle); await service.synchronizeStatus(handle);
       return service.delete(handle);
     };
     const unsupported = new ReferenceOmrVendorAdapter([base.fixture], { vendorId: "hm-reference", supportedMimeTypes: ["image/png"], maxPages: 12, evidenceGranularity: "page", supportsDeletion: false, retentionDisclosure: true, supportsIdempotency: true, supportsInteractiveInput: true, estimatedCreditPerPage: 1 });
@@ -446,7 +449,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const service = new DurableOmrApplicationService({ ...h.dependencies, adapter });
     const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "scheduled-delete-key" });
     await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "scheduled-delete-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
-    await service.start(handle); expect(await service.getStatus(handle)).toEqual({ kind: "completed" });
+    await service.start(handle); expect(await service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
     await expect(service.delete(handle)).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "not-supported", retentionInfo: { vendorDeletesAt } } });
     expect(adapter.callCounts.delete).toBe(1);
     h.advance(60 * 1_000);
@@ -455,5 +458,138 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(service.cleanupExpiredJobs()).resolves.toHaveLength(1);
     expect(adapter.callCounts.delete).toBe(2);
     expect(h.store.listJobs()[0]).toMatchObject({ state: "delete-pending", handleActive: false, vendorDeleteState: "not-supported", localDeleteState: "deleted", retentionInfo: { vendorDeletesAt } });
+  });
+
+  it("replays the exact canonical create request after lost responses and distinguishes uncertain from definitive outcomes", async () => {
+    const h = await harness();
+    const stableRights = { basis: "user-confirmed-rights" as const, allowedUses: ["provider-transfer", "generation"] as const, confirmedAt: "2026-01-01T00:00:00.000Z" };
+    const request = { sessionId: "session:1", pageCount: 1, pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" as const }], sourceKind: "camera-photo" as const, rights: stableRights, providerTransferConsent: true as const, idempotencyKey: "lost-http-response" };
+    const preflight = await h.service.getProviderPreflight();
+    const exact = { ...request, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest };
+    const lostResponseHandle = await h.service.createJob(exact);
+    expect(await h.service.createJob(exact)).toBe(lostResponseHandle);
+    expect(h.store.listJobs()[0].canonicalCreateRequest).toEqual({
+      pageCount: request.pageCount, pages: request.pages, sourceKind: request.sourceKind,
+      rights: request.rights, providerTransferConsent: true,
+      consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest,
+      idempotencyKey: request.idempotencyKey,
+    });
+    await expect(h.service.createJob({ ...exact, rights: { ...stableRights, confirmedAt: "2026-01-01T00:00:01.000Z" } })).rejects.toThrow("OMR_IDEMPOTENCY_CONFLICT");
+    expect(h.adapter.callCounts.create).toBe(1);
+
+    const responseLoss = await harness();
+    const originalCreate = responseLoss.adapter.createVendorJob.bind(responseLoss.adapter);
+    let loseVendorResponse = true;
+    vi.spyOn(responseLoss.adapter, "createVendorJob").mockImplementation(async (input) => {
+      const vendorJobId = await originalCreate(input);
+      if (loseVendorResponse) { loseVendorResponse = false; throw new OmrVendorCallError("lost vendor response", "outcome-uncertain"); }
+      return vendorJobId;
+    });
+    const responseLossService = new DurableOmrApplicationService({ ...responseLoss.dependencies, adapter: responseLoss.adapter });
+    const responseLossRequest = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "vendor-response-loss" };
+    await expect(createConsentedJob(responseLossService, responseLossRequest)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    responseLoss.advance(5 * 60 * 1_000 + 1);
+    await expect(createConsentedJob(responseLossService, responseLossRequest)).resolves.toMatch(/^v1\./u);
+    expect(responseLoss.adapter.callCounts.create).toBe(1);
+
+    const nonIdempotent = await harness();
+    const nonIdempotentAdapter = new ReferenceOmrVendorAdapter([nonIdempotent.fixture], { supportsIdempotency: false });
+    const originalNonIdempotentCreate = nonIdempotentAdapter.createVendorJob.bind(nonIdempotentAdapter);
+    vi.spyOn(nonIdempotentAdapter, "createVendorJob").mockImplementation(async (input) => {
+      await originalNonIdempotentCreate(input);
+      throw new OmrVendorCallError("transport ended after request transmission", "outcome-uncertain");
+    });
+    const nonIdempotentService = new DurableOmrApplicationService({ ...nonIdempotent.dependencies, adapter: nonIdempotentAdapter });
+    const nonIdempotentRequest = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "non-idempotent-uncertain-create" };
+    await expect(createConsentedJob(nonIdempotentService, nonIdempotentRequest)).rejects.toThrow("OMR_JOB_RECONCILIATION_REQUIRED");
+    nonIdempotent.advance(5 * 60 * 1_000 + 1);
+    await expect(createConsentedJob(nonIdempotentService, nonIdempotentRequest)).rejects.toThrow("OMR_JOB_RECONCILIATION_REQUIRED");
+    expect(nonIdempotentAdapter.callCounts.create).toBe(1);
+
+    const definitive = await harness();
+    let definitiveCalls = 0;
+    vi.spyOn(definitive.adapter, "createVendorJob").mockImplementation(async () => { definitiveCalls += 1; throw new OmrVendorCallError("rejected", "definitive-rejection"); });
+    const definitiveService = new DurableOmrApplicationService({ ...definitive.dependencies, adapter: definitive.adapter });
+    const definitiveRequest = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "definitive-rejection" };
+    await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_OPERATION_FAILED");
+    definitive.advance(5 * 60 * 1_000 + 1);
+    await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_OPERATION_FAILED");
+    expect(definitiveCalls).toBe(1);
+  });
+
+  it("keeps status reads side-effect free and fences concurrent result capture, page completion, and cleanup", async () => {
+    const resultHarness = await harness([{ kind: "completed" }]);
+    const resultHandle = await createConsentedJob(resultHarness.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "concurrent-result" });
+    await resultHarness.service.uploadPage(resultHandle, { pageIndex: 0, pageDigest: resultHarness.pageDigest, mimeType: "image/png", idempotencyKey: "concurrent-result-page", bytes: new Blob([resultHarness.pageBytes.slice().buffer as ArrayBuffer]) });
+    await resultHarness.service.start(resultHandle);
+    expect(await resultHarness.service.getStatus(resultHandle)).toEqual({ kind: "queued" });
+    expect(resultHarness.adapter.callCounts.status).toBe(0);
+    await Promise.all([resultHarness.service.synchronizeStatus(resultHandle), resultHarness.service.synchronizeStatus(resultHandle)]);
+    expect(await resultHarness.service.getStatus(resultHandle)).toEqual({ kind: "completed" });
+    expect(resultHarness.adapter.callCounts.export).toBe(1);
+    expect(resultHarness.adapter.callCounts.evidence).toBe(1);
+    expect(resultHarness.adapter.callCounts.mapping).toBe(1);
+
+    const race = await harness();
+    let releaseCompletion!: () => void;
+    let completionEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { completionEntered = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    const raceStore = new Proxy(race.store, {
+      get(target, property, receiver) {
+        if (property === "completePage") return async (...args: Parameters<OmrStore["completePage"]>) => { completionEntered(); await gate; return target.completePage(...args); };
+        const value = Reflect.get(target, property, receiver) as unknown; return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const raceService = new DurableOmrApplicationService({ ...race.dependencies, store: raceStore });
+    const raceHandle = await createConsentedJob(raceService, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "page-delete-race" });
+    const uploading = raceService.uploadPage(raceHandle, { pageIndex: 0, pageDigest: race.pageDigest, mimeType: "image/png", idempotencyKey: "page-delete-race-upload", bytes: new Blob([race.pageBytes.slice().buffer as ArrayBuffer]) });
+    await entered;
+    await raceService.delete(raceHandle);
+    releaseCompletion();
+    await uploading;
+    expect(race.store.listJobs()[0]).toMatchObject({ state: "deleted", resultObjectReferenceId: undefined });
+    expect(race.objects.buffers.size).toBe(0);
+
+    const cleanup = await harness();
+    await createConsentedJob(cleanup.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "two-cleanup-workers" });
+    cleanup.advance(24 * 60 * 60 * 1_000 + 1);
+    const workers = await Promise.all([cleanup.service.cleanupExpiredJobs(), cleanup.service.cleanupExpiredJobs()]);
+    expect(workers.flat()).toHaveLength(1);
+    expect(cleanup.store.listJobs()[0].cleanupLeaseToken).toBeUndefined();
+  });
+
+  it("binds submit-input resume to the exact operation request digest", async () => {
+    const h = await harness([{ kind: "needs-input", request: { kind: "select-instrument", requestId: "digest-input", choices: ["Voice", "Piano"] } }]);
+    const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "input-digest-job" });
+    await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "input-digest-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await h.service.start(handle); await h.service.synchronizeStatus(handle);
+    const job = h.store.listJobs()[0];
+    const firstInput = { kind: "select-instrument" as const, requestId: "digest-input", choice: "Voice" };
+    const digest = await semanticDigest({ projectionSchema: "hm-omr-vendor-input-v1", input: firstInput });
+    await h.store.claimOperation({ jobId: job.id, kind: "submit-input", operationRequestDigest: digest, expectedStates: ["needs-input"], leaseToken: "abandoned-input", leaseExpiresAt: "2026-01-01T00:00:01.000Z", supportsIdempotency: true, now: "2026-01-01T00:00:00.000Z" });
+    h.advance(1_001);
+    await expect(h.service.submitInput(handle, { ...firstInput, choice: "Piano" })).rejects.toThrow("OMR_VENDOR_INPUT_CONFLICT");
+    expect(h.adapter.callCounts.input).toBe(0);
+  });
+
+  it("rejects stale frame page/digest bindings before making a result authoritative", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const staleFixture: ReferenceOmrFixture = {
+      ...h.fixture,
+      id: "stale-frame-binding",
+      evidence: {
+        ...h.fixture.evidence,
+        frames: h.fixture.evidence.frames.map((frame) => ({ ...frame, pageIndex: 1, imageDigest: "f".repeat(64) as typeof frame.imageDigest })),
+      },
+    };
+    const adapter = new ReferenceOmrVendorAdapter([staleFixture]);
+    const service = new DurableOmrApplicationService({ ...h.dependencies, adapter });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "stale-frame-binding" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "stale-frame-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await expect(service.synchronizeStatus(handle)).resolves.toEqual(expect.objectContaining({ kind: "failed", code: "OMR_RESULT_INTEGRITY_FAILED" }));
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed" });
+    expect(h.store.listJobs()[0]).not.toHaveProperty("resultObjectReferenceId");
   });
 });
