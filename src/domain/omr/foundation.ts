@@ -76,7 +76,9 @@ export function isCorrectionPatchCompatible(target: OmrCorrectionTarget, patch: 
   if (["pitch", "duration", "accidental", "tie", "replace-event"].includes(patch.kind)) return target.kind === "voice-event";
   if (patch.kind === "chord") return target.kind === "chord-event";
   if (patch.kind === "time-signature" || patch.kind === "key-signature") return target.kind === "measure-start";
-  if (patch.kind === "insert-barline" || patch.kind === "delete-barline") return target.kind === "measure-end";
+  // Structural split/merge semantics are intentionally deferred. Never treat the legacy
+  // implicit-flag toggle as a completed barline correction.
+  if (patch.kind === "insert-barline" || patch.kind === "delete-barline") return false;
   return patch.kind === "replace-source-text" && target.kind === "section-text";
 }
 function isCorrectionTarget(value: unknown): value is OmrCorrectionTarget {
@@ -269,6 +271,19 @@ export function validateOmrReviewRecord(value: unknown): readonly string[] {
       const ids = new Set(item.alternatives.map((alternative) => alternative.id));
       if (new Set(item.resolution.rejectedAlternativeIds).size !== item.resolution.rejectedAlternativeIds.length || item.resolution.rejectedAlternativeIds.some((id) => !ids.has(id))) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${item.id}`);
     }
+  }
+  return errors;
+}
+
+export function validateOmrReviewCompletion(record: OmrReviewRecord): readonly string[] {
+  const errors = [...validateOmrReviewRecord(record)];
+  for (const item of record.reviewItems) {
+    if (item.resolution.status === "open" || item.resolution.status === "rejected") {
+      errors.push(`OMR_REVIEW_REQUIRED:${item.id}`);
+    }
+  }
+  for (const proposal of record.autoRepairs) {
+    if (proposal.resolution.status === "pending") errors.push(`OMR_REVIEW_REQUIRED:${proposal.id}`);
   }
   return errors;
 }

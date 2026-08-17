@@ -1,4 +1,4 @@
-import type { BinaryDigest } from "../digest/canonical";
+import { compareCanonicalValues, semanticDigest, type BinaryDigest, type SemanticDigest } from "../digest/canonical";
 import type { RightsMetadata } from "../source/model";
 import type { BasisPoints } from "../rates";
 import type { EvidenceGranularity, VendorEvidenceBundle } from "./foundation";
@@ -6,6 +6,7 @@ import type { InputSourceKind } from "./input";
 
 export interface OmrVendorCapabilities {
   readonly vendorId: string;
+  readonly vendorDisplayName: string;
   readonly supportedMimeTypes: readonly string[];
   readonly maxPages: number;
   readonly evidenceGranularity: EvidenceGranularity;
@@ -13,7 +14,56 @@ export interface OmrVendorCapabilities {
   readonly retentionDisclosure: boolean;
   readonly supportsIdempotency: boolean;
   readonly supportsInteractiveInput: boolean;
+  readonly canDeleteImmediately: boolean;
+  readonly retentionPolicyReference: string;
+  readonly externalTransfer: true;
   readonly estimatedCreditPerPage?: number;
+}
+
+export interface OmrProviderPreflight {
+  readonly capabilities: OmrVendorCapabilities;
+  readonly capabilitySnapshotDigest: SemanticDigest;
+}
+
+export type VendorExportTargetSelector =
+  | { readonly kind: "measure"; readonly measureOrdinal: number }
+  | { readonly kind: "measure-start"; readonly measureOrdinal: number }
+  | { readonly kind: "measure-end"; readonly measureOrdinal: number }
+  | { readonly kind: "voice-event"; readonly measureOrdinal: number; readonly eventOrdinal: number }
+  | { readonly kind: "chord-event"; readonly measureOrdinal: number; readonly eventOrdinal: number }
+  | { readonly kind: "section-text"; readonly measureOrdinal: number; readonly eventOrdinal: number };
+
+export interface VendorExportEvidenceMapping {
+  readonly vendorTargetId: string;
+  readonly target: VendorExportTargetSelector;
+}
+
+export interface VendorNormalizationMappingArtifact {
+  readonly version: "vendor-export-target-map-v1";
+  readonly mappings: readonly VendorExportEvidenceMapping[];
+  readonly artifactDigest: SemanticDigest;
+}
+
+export async function computeVendorNormalizationMappingDigest(
+  artifact: Omit<VendorNormalizationMappingArtifact, "artifactDigest">,
+): Promise<SemanticDigest> {
+  return semanticDigest({
+    projectionSchema: "hm-vendor-export-target-map-v1",
+    version: artifact.version,
+    mappings: [...artifact.mappings].sort(compareCanonicalValues),
+  });
+}
+
+export async function validateVendorNormalizationMappingArtifact(artifact: VendorNormalizationMappingArtifact): Promise<void> {
+  if (artifact.version !== "vendor-export-target-map-v1" || !Array.isArray(artifact.mappings)) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+  const vendorTargetIds = artifact.mappings.map((mapping) => mapping.vendorTargetId);
+  if (new Set(vendorTargetIds).size !== vendorTargetIds.length || artifact.mappings.some((mapping) => {
+    if (typeof mapping.vendorTargetId !== "string" || mapping.vendorTargetId.length === 0 || mapping.vendorTargetId.length > 256
+      || !Number.isSafeInteger(mapping.target.measureOrdinal) || mapping.target.measureOrdinal < 0) return true;
+    return (mapping.target.kind === "voice-event" || mapping.target.kind === "chord-event" || mapping.target.kind === "section-text")
+      && (!Number.isSafeInteger(mapping.target.eventOrdinal) || mapping.target.eventOrdinal < 0);
+  })) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+  if (await computeVendorNormalizationMappingDigest({ version: artifact.version, mappings: artifact.mappings }) !== artifact.artifactDigest) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
 }
 
 export type VendorInputRequest =
@@ -66,13 +116,14 @@ export interface OmrVendorAdapter {
   getCapabilities(): Promise<OmrVendorCapabilities>;
   createVendorJob(request: { readonly pageCount: number; readonly idempotencyKey: string }): Promise<VendorJobId>;
   uploadPage(vendorJobId: VendorJobId, page: OmrPageUpload): Promise<void>;
-  startVendorJob(vendorJobId: VendorJobId): Promise<void>;
+  startVendorJob(vendorJobId: VendorJobId, operation: { readonly idempotencyKey: string }): Promise<void>;
   getVendorStatus(vendorJobId: VendorJobId): Promise<VendorOmrStatus>;
-  submitVendorInput?(vendorJobId: VendorJobId, input: VendorInputResponse): Promise<void>;
+  submitVendorInput?(vendorJobId: VendorJobId, input: VendorInputResponse, operation: { readonly idempotencyKey: string }): Promise<void>;
   exportMusicXml(vendorJobId: VendorJobId): Promise<string>;
   getEvidence(vendorJobId: VendorJobId): Promise<VendorEvidenceBundle>;
-  cancelVendorJob(vendorJobId: VendorJobId): Promise<void>;
-  deleteVendorJob(vendorJobId: VendorJobId): Promise<VendorDeleteResult>;
+  getNormalizationMapping(vendorJobId: VendorJobId): Promise<VendorNormalizationMappingArtifact>;
+  cancelVendorJob(vendorJobId: VendorJobId, operation: { readonly idempotencyKey: string }): Promise<void>;
+  deleteVendorJob(vendorJobId: VendorJobId, operation: { readonly idempotencyKey: string }): Promise<VendorDeleteResult>;
   getRetentionInfo(vendorJobId: VendorJobId): Promise<RetentionInfo>;
 }
 
@@ -83,6 +134,7 @@ export interface OmrProviderResult {
   readonly vendorResultDigest: BinaryDigest;
   readonly rawMusicXml: string;
   readonly evidence: VendorEvidenceBundle;
+  readonly normalizationMapping: VendorNormalizationMappingArtifact;
   readonly retentionInfo: RetentionInfo;
 }
 
@@ -94,15 +146,20 @@ export type OmrPublicStatus =
   | { readonly kind: "needs-input"; readonly inputRequest: VendorInputRequest }
   | { readonly kind: "completed" }
   | { readonly kind: "failed"; readonly code: string; readonly messageKo: string }
+  | { readonly kind: "cancel-pending"; readonly messageKo: string }
+  | { readonly kind: "cancel-failed"; readonly code: string; readonly messageKo: string }
+  | { readonly kind: "reconciliation-required"; readonly code: string; readonly messageKo: string }
   | { readonly kind: "cancelled" };
 
 export interface OmrApplicationService {
+  getProviderPreflight(): Promise<OmrProviderPreflight>;
   createJob(request: {
     readonly sessionId: string;
     readonly pageCount: number;
     readonly sourceKind: Exclude<InputSourceKind, "musicxml" | "mxl">;
     readonly rights: RightsMetadata;
     readonly providerTransferConsent: true;
+    readonly consentCapabilitySnapshotDigest: SemanticDigest;
     readonly idempotencyKey: string;
   }): Promise<OmrJobHandle>;
   uploadPage(handle: OmrJobHandle, page: OmrPageUpload): Promise<void>;
@@ -135,9 +192,14 @@ export const CORE_OMR_QUOTA_DEFAULTS = Object.freeze({
 
 export function validateVendorCapabilities(capabilities: OmrVendorCapabilities): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/u.test(capabilities.vendorId)
+    || typeof capabilities.vendorDisplayName !== "string" || capabilities.vendorDisplayName.trim().length === 0 || capabilities.vendorDisplayName.length > 128
     || !Number.isSafeInteger(capabilities.maxPages) || capabilities.maxPages < 1
     || capabilities.evidenceGranularity === "none"
     || !capabilities.retentionDisclosure
+    || capabilities.externalTransfer !== true
+    || typeof capabilities.canDeleteImmediately !== "boolean"
+    || (capabilities.canDeleteImmediately && !capabilities.supportsDeletion)
+    || typeof capabilities.retentionPolicyReference !== "string" || capabilities.retentionPolicyReference.trim().length === 0 || capabilities.retentionPolicyReference.length > 512
     || capabilities.supportedMimeTypes.length === 0
     || new Set(capabilities.supportedMimeTypes).size !== capabilities.supportedMimeTypes.length
     || (capabilities.estimatedCreditPerPage !== undefined

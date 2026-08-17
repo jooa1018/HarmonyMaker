@@ -3,6 +3,7 @@ import { addFractions, compareFractions, fraction } from "../fraction";
 import { pitchMidiNumber } from "../pitch";
 import type { SongSourceDocument } from "../source/model";
 import { materializeImportDiagnostics, type ImportDiagnosticInput } from "../../import/musicxml/diagnostics";
+import { validateOmrReviewCompletion } from "./foundation";
 
 export type RuntimeOmrReadiness = "validator-ready" | "review-required" | "blocked";
 
@@ -13,6 +14,32 @@ export interface RuntimeOmrValidationResult {
 
 export async function validateRuntimeOmrReadiness(source: SongSourceDocument): Promise<RuntimeOmrValidationResult> {
   const diagnostics: ImportDiagnosticInput[] = [];
+  const omrReview = source.importInfo?.omrReviewRecord;
+  if (omrReview) {
+    const completionErrors = validateOmrReviewCompletion(omrReview);
+    if (completionErrors.length > 0) diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "해결되지 않은 OMR 검토 항목 또는 자동 수리가 있습니다.", details: { unresolvedCount: completionErrors.length } });
+  }
+  const timeline: Array<{ readonly event: SongSourceDocument["sourceMeasures"][number]["leadEvents"][number]; readonly sourceMeasureId: string; readonly start: import("../fraction").Fraction; readonly end: import("../fraction").Fraction; readonly ordinal: number }> = [];
+  let measureStart = fraction(0);
+  let ordinal = 0;
+  for (const measure of source.sourceMeasures) {
+    for (const event of measure.leadEvents) {
+      const start = addFractions(measureStart, event.onset);
+      timeline.push({ event, sourceMeasureId: measure.id, start, end: addFractions(start, event.duration), ordinal });
+      ordinal += 1;
+    }
+    measureStart = addFractions(measureStart, measure.duration);
+  }
+  timeline.sort((left, right) => compareFractions(left.start, right.start) || compareFractions(left.end, right.end) || left.ordinal - right.ordinal);
+  const sameSpelledPitch = (left: Extract<(typeof timeline)[number]["event"], { readonly kind: "note" }>, right: Extract<(typeof timeline)[number]["event"], { readonly kind: "note" }>) => left.pitch.step === right.pitch.step && left.pitch.alter === right.pitch.alter && left.pitch.octave === right.pitch.octave;
+  for (const [index, entry] of timeline.entries()) {
+    if (entry.event.kind !== "note") continue;
+    const previous = timeline[index - 1]; const next = timeline[index + 1];
+    if ((entry.event.tieStop && (!previous || previous.event.kind !== "note" || !previous.event.tieStart || compareFractions(previous.end, entry.start) !== 0 || !sameSpelledPitch(previous.event, entry.event)))
+      || (entry.event.tieStart && (!next || next.event.kind !== "note" || !next.event.tieStop || compareFractions(entry.end, next.start) !== 0 || !sameSpelledPitch(entry.event, next.event)))) {
+      diagnostics.push({ code: "OMR_TIE_INVALID", severity: "blocking", messageKo: "타이의 연결 음높이 또는 인접 관계가 올바르지 않습니다.", details: { sourceMeasureId: entry.sourceMeasureId, eventId: entry.event.id } });
+    }
+  }
   for (const [measureIndex, measure] of source.sourceMeasures.entries()) {
     const expected = fraction(measure.time.numerator * 4, measure.time.denominator);
     if ((!measure.implicit && compareFractions(measure.duration, expected) !== 0)
@@ -26,12 +53,6 @@ export async function validateRuntimeOmrReadiness(source: SongSourceDocument): P
       }
       cursor = addFractions(event.onset, event.duration);
       if (event.kind === "note") {
-        const previous = measure.leadEvents[eventIndex - 1];
-        const next = measure.leadEvents[eventIndex + 1];
-        if ((event.tieStop && (previous?.kind !== "note" || !previous.tieStart || pitchMidiNumber(previous.pitch) !== pitchMidiNumber(event.pitch)))
-          || (event.tieStart && (next?.kind !== "note" || !next.tieStop || pitchMidiNumber(next.pitch) !== pitchMidiNumber(event.pitch)))) {
-          diagnostics.push({ code: "OMR_TIE_INVALID", severity: "blocking", messageKo: "타이의 연결 음높이 또는 인접 관계가 올바르지 않습니다.", details: { sourceMeasureId: measure.id, eventId: event.id } });
-        }
         const previousNote = [...measure.leadEvents.slice(0, eventIndex)].reverse().find((candidate) => candidate.kind === "note");
         if (previousNote?.kind === "note" && Math.abs(pitchMidiNumber(previousNote.pitch) - pitchMidiNumber(event.pitch)) > 24) {
           diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "두 옥타브를 넘는 도약을 확인해 주세요.", details: { sourceMeasureId: measure.id, eventId: event.id, issue: "octave-jump" } });

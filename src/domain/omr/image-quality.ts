@@ -29,6 +29,9 @@ export interface DecodedLumaImage {
   readonly width: number;
   readonly height: number;
   readonly luma: Uint8Array;
+  /** Oriented original dimensions when the luma plane is a bounded analysis downscale. */
+  readonly originalWidth?: number;
+  readonly originalHeight?: number;
 }
 
 function bp(value: number): BasisPoints {
@@ -118,7 +121,13 @@ export function analyzeImageQuality(image: DecodedLumaImage): ImageQualityReport
   const bottomCentroid = lastInkCount === 0 ? undefined : [Math.floor(lastInkX / lastInkCount), Math.floor(lastInkY / lastInkCount)] as const;
   const perspectiveBp = bp(!topCentroid || !bottomCentroid ? 0
     : Math.abs(topCentroid[0] - bottomCentroid[0]) * 20_000 / Math.max(width, 1));
-  const estimatedStaffSpacePixels = estimateStaffSpace(image);
+  if ((image.originalWidth !== undefined && (!Number.isSafeInteger(image.originalWidth) || image.originalWidth < width))
+    || (image.originalHeight !== undefined && (!Number.isSafeInteger(image.originalHeight) || image.originalHeight < height))) {
+    throw new RangeError("OMR_IMAGE_QUALITY_INPUT_INVALID");
+  }
+  const analysisStaffSpacePixels = estimateStaffSpace(image);
+  const estimatedStaffSpacePixels = analysisStaffSpacePixels === undefined ? undefined
+    : Math.round(analysisStaffSpacePixels * (image.originalHeight ?? height) / height);
 
   const reasons: string[] = [];
   let status: ImageQualityReport["status"] = "pass";

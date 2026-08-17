@@ -6,6 +6,7 @@ import { fraction } from "../fraction";
 import { COMMON_TIME } from "../meter";
 import type { SongSourceDocument } from "../source/model";
 import { computeRevisionHistoryDigest } from "../source/revision";
+import { validateOmrReviewCompletion, validateOmrReviewRecord, type OmrReviewRecord } from "./foundation";
 import {
   acceptOmrReviewAlternative, applyOmrCorrection, createOmrReviewItem,
   manuallyCorrectOmrReviewItem, proposeOmrAutoRepairs, rejectOmrReviewAlternatives,
@@ -58,7 +59,7 @@ describe("typed OMR correction and Source revision", () => {
     expect(result.source.sourceMeasures[0].leadEvents[0]).toEqual({ kind: "rest", id: "le:0:0", sourceMeasureId: "sm:0", onset: fraction(0), duration: fraction(4) });
   });
 
-  it("applies every remaining typed musical and structural correction through a Source revision", async () => {
+  it("applies typed musical corrections and explicitly defers structural barline split/merge", async () => {
     const source = await sourceFixture();
     const at = "2026-01-01T00:00:00.000Z";
     const revision = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
@@ -88,13 +89,11 @@ describe("typed OMR correction and Source revision", () => {
     const text = await applyOmrCorrection({ source, target: { sourceRevision: revision, target: { kind: "section-text", sourceTextId: "tx:0:0/1:section-label:0" } }, patch: { kind: "replace-source-text", text: "Chorus" }, correctionSource: "manual", appliedAt: at });
     expect(text.source.sourceMeasures[0].textEvents[0].text).toBe("Chorus");
 
-    const deletedBoundary = await applyOmrCorrection({ source, target: { sourceRevision: revision, target: { kind: "measure-end", sourceMeasureId: "sm:0" } }, patch: { kind: "delete-barline" }, correctionSource: "manual", appliedAt: at });
-    expect(deletedBoundary.source.sourceMeasures[0].implicit).toBe(true);
+    await expect(applyOmrCorrection({ source, target: { sourceRevision: revision, target: { kind: "measure-end", sourceMeasureId: "sm:0" } }, patch: { kind: "delete-barline" }, correctionSource: "manual", appliedAt: at })).rejects.toThrow("OMR_CORRECTION_TARGET_INCOMPATIBLE");
     const implicitPending = { ...source, sourceMeasures: [{ ...source.sourceMeasures[0], implicit: true }] };
     const implicitSource = { ...implicitPending, revisionDigest: await digestMusicalSource(implicitPending) };
-    const insertedBoundary = await applyOmrCorrection({ source: implicitSource, target: { sourceRevision: { documentId: implicitSource.documentId, revisionOrdinal: 0, revisionDigest: implicitSource.revisionDigest }, target: { kind: "measure-end", sourceMeasureId: "sm:0" } }, patch: { kind: "insert-barline" }, correctionSource: "manual", appliedAt: at });
-    expect(insertedBoundary.source.sourceMeasures[0].implicit).toBe(false);
-    expect(insertedBoundary.source.revisionHistory[0].commandKind).toBe("omr-correction");
+    await expect(applyOmrCorrection({ source: implicitSource, target: { sourceRevision: { documentId: implicitSource.documentId, revisionOrdinal: 0, revisionDigest: implicitSource.revisionDigest }, target: { kind: "measure-end", sourceMeasureId: "sm:0" } }, patch: { kind: "insert-barline" }, correctionSource: "manual", appliedAt: at })).rejects.toThrow("OMR_CORRECTION_TARGET_INCOMPATIBLE");
+    expect(implicitSource.sourceMeasures[0].implicit).toBe(true);
 
     const rest = await applyOmrCorrection({ source, target: { sourceRevision: revision, target: { kind: "voice-event", eventId: "le:0:0" } }, patch: { kind: "replace-event", event: { kind: "rest", onset: fraction(0), duration: fraction(4) } }, correctionSource: "manual", appliedAt: at });
     const restored = await applyOmrCorrection({ source: rest.source, target: { sourceRevision: { documentId: rest.source.documentId, revisionOrdinal: rest.source.revisionOrdinal, revisionDigest: rest.source.revisionDigest }, target: { kind: "voice-event", eventId: "le:0:0" } }, patch: { kind: "replace-event", event: { kind: "note", onset: fraction(0), duration: fraction(4), pitch: { step: "F", alter: 0, octave: 4 }, tieStart: false, tieStop: false } }, correctionSource: "manual", appliedAt: at });
@@ -126,5 +125,28 @@ describe("typed OMR correction and Source revision", () => {
     expect(rejectedRepair.proposal.resolution).toEqual({ status: "rejected" });
     const acceptedRepair = await resolveOmrAutoRepair({ source, proposal, resolution: "accepted", appliedAt: "2026-01-01T00:00:00.000Z" });
     expect(acceptedRepair.correction).toMatchObject({ source: "auto-accepted", autoRepairProposalId: proposal.id });
+  });
+
+  it("keeps mixed-target, rejected, and unseen review items independently unresolved until each has authority", async () => {
+    const original = await sourceFixture();
+    const sourceRevision = { documentId: original.documentId, revisionOrdinal: original.revisionOrdinal, revisionDigest: original.revisionDigest };
+    const voice = await createOmrReviewItem({ target: { sourceRevision, target: { kind: "voice-event", eventId: "le:0:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "인식 pitch", patch: { kind: "pitch", pitch: { step: "C", alter: 0, octave: 4 } } }], evidenceIds: ["e:voice"] });
+    const chord = await createOmrReviewItem({ target: { sourceRevision, target: { kind: "chord-event", chordEventId: "ch:0:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "인식 chord", patch: { kind: "chord", parseResult: parseChord("C") as Extract<ReturnType<typeof parseChord>, { status: "ok" | "no-chord" }> } }], evidenceIds: ["e:chord"] });
+    const section = await createOmrReviewItem({ target: { sourceRevision, target: { kind: "section-text", sourceTextId: "tx:0:0/1:section-label:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "인식 section", patch: { kind: "replace-source-text", text: "Verse" } }], evidenceIds: ["e:section"] });
+    const rejectedVoice = rejectOmrReviewAlternatives(voice, [voice.alternatives[0].id]);
+    const initial: OmrReviewRecord = { vendorId: "hm-reference", vendorResultDigest: "1".repeat(64) as OmrReviewRecord["vendorResultDigest"], autoRepairs: [], corrections: [], reviewItems: [rejectedVoice, chord, section] };
+    expect(validateOmrReviewCompletion(initial)).toHaveLength(3);
+
+    const voiceManual = await manuallyCorrectOmrReviewItem({ source: original, item: rejectedVoice, patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } }, appliedAt: "2026-01-01T00:00:00.000Z" });
+    const chordAccepted = await acceptOmrReviewAlternative({ source: voiceManual.source, item: chord, alternativeId: chord.alternatives[0].id, appliedAt: "2026-01-01T00:00:01.000Z", remaps: [voiceManual.idRemap] });
+    const partial: OmrReviewRecord = { ...initial, corrections: [voiceManual.correction, chordAccepted.correction], reviewItems: [voiceManual.item, chordAccepted.item, section] };
+    expect(validateOmrReviewRecord(partial)).toEqual([]);
+    expect(validateOmrReviewCompletion(partial)).toEqual([expect.stringContaining(section.id)]);
+
+    const sectionManual = await manuallyCorrectOmrReviewItem({ source: chordAccepted.source, item: section, patch: { kind: "replace-source-text", text: "Chorus" }, appliedAt: "2026-01-01T00:00:02.000Z", remaps: [voiceManual.idRemap, chordAccepted.idRemap] });
+    const complete: OmrReviewRecord = { ...partial, corrections: [...partial.corrections, sectionManual.correction], reviewItems: [voiceManual.item, chordAccepted.item, sectionManual.item] };
+    expect(validateOmrReviewRecord(complete)).toEqual([]);
+    expect(validateOmrReviewCompletion(complete)).toEqual([]);
+    expect(sectionManual.source.sourceMeasures[0]).toMatchObject({ leadEvents: [expect.objectContaining({ pitch: { step: "D", alter: 0, octave: 4 } })], textEvents: [expect.objectContaining({ text: "Chorus" })] });
   });
 });

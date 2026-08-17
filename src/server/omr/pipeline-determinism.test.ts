@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../../app/algorithm-version-registry";
+import { parseChord } from "../../domain/chord/parser";
 import { binaryDigest, semanticDigest } from "../../domain/digest/canonical";
 import {
   computeProviderBundleDigest, coordinateMicrounit, quantizeHomography,
@@ -10,14 +11,17 @@ import {
 } from "../../domain/omr/foundation";
 import { REFERENCE_OMR_MUSICXML, referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
 import { attachOmrReviewContext, createInitialOmrReviewContext, prepareVendorMusicXml } from "../../domain/omr/normalization";
-import { acceptOmrReviewAlternative } from "../../domain/omr/review";
+import { integrateReviewedOmrSource } from "../../domain/omr/product-handoff";
+import { manuallyCorrectOmrReviewItem } from "../../domain/omr/review";
 import { basisPoints } from "../../domain/rates";
+import { validateHarmonyProject } from "../../domain/project";
 import {
   confirmChord, confirmRights, confirmSection, selectLeadCandidate, setDefaultTempo, setPerformerRange,
 } from "../../import/review/commands";
 import { deriveQuickReview } from "../../import/review/quick-review";
 import { step3ImportVersionsFromRegistry, type MusicXmlImportDraft } from "../../import/musicxml/types";
 import { createProjectFromQuickReview, generateProjectVariant } from "../../product/workspace";
+import { loadProductExecutionRegistry } from "../../product/registry";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
@@ -47,7 +51,7 @@ function evidenceFixture(iteration: number, pageDigest: Awaited<ReturnType<typeo
   const processed = { id: `frame:processed:${suffix}`, pageIndex: 0, coordinateSpace: "processed-pixels" as const, widthPixels: 260, heightPixels: 340, imageDigest: pageDigest };
   const transform = { id: `transform:${suffix}`, pageIndex: 0, sourceFrameId: processed.id, targetFrameId: original.id, matrix3x3Nano: quantizeHomography(["1", "0", "0", "0", "1", "0", "0", "0", "1"]) };
   const page = { id: `evidence:page:${suffix}`, granularity: "page" as const, box: { frameId: original.id, xMu: coordinateMicrounit(0), yMu: coordinateMicrounit(0), widthMu: coordinateMicrounit(260_000_000), heightMu: coordinateMicrounit(340_000_000) }, vendorId: "hm-reference" };
-  const measure = { id: `evidence:measure:${suffix}`, vendorTargetId: "ch:0:0", granularity: "measure" as const, box: { frameId: processed.id, xMu: coordinateMicrounit(13_000_000), yMu: coordinateMicrounit(14_000_000), widthMu: coordinateMicrounit(234_000_000), heightMu: coordinateMicrounit(95_000_000) }, transformId: transform.id, confidenceBp: basisPoints(9000), vendorId: "hm-reference" };
+  const measure = { id: `evidence:measure:${suffix}`, vendorTargetId: "symbol_abc", granularity: "measure" as const, box: { frameId: processed.id, xMu: coordinateMicrounit(13_000_000), yMu: coordinateMicrounit(14_000_000), widthMu: coordinateMicrounit(234_000_000), heightMu: coordinateMicrounit(95_000_000) }, transformId: transform.id, confidenceBp: basisPoints(9000), vendorId: "hm-reference" };
   const reverse = iteration % 2 === 1;
   return {
     granularity: "measure",
@@ -76,6 +80,7 @@ describe("canonical OMR fixture pipeline determinism", () => {
       const fixture: ReferenceOmrFixture = {
         id: `fixture:${iteration}`, orderedPageDigests: [pageDigest], statusScript: [{ kind: "completed" }],
         musicXml: REFERENCE_OMR_MUSICXML, evidence,
+        normalizationMappings: [{ vendorTargetId: "symbol_abc", target: { kind: "chord-event", measureOrdinal: 0, eventOrdinal: 0 } }],
         retentionInfo: { canDeleteImmediately: true, policyReference: "in-repository-reference-fixture" },
       };
       const adapter = new ReferenceOmrVendorAdapter([fixture], {
@@ -97,7 +102,8 @@ describe("canonical OMR fixture pipeline determinism", () => {
           quality: { blurBp: basisPoints(0), perspectiveBp: basisPoints(0), glareBp: basisPoints(0), cropRiskBp: basisPoints(0), estimatedStaffSpacePixels: 20, status: "pass", reasons: [] },
         }),
       });
-      const handle = await service.createJob({ sessionId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: `create:${iteration}` });
+      const preflight = await service.getProviderPreflight();
+      const handle = await service.createJob({ sessionId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: `create:${iteration}` });
       opaqueHandles.add(handle);
       await service.uploadPage(handle, { pageIndex: 0, pageDigest, mimeType: "image/png", idempotencyKey: `upload:${iteration}`, bytes: new Blob([pageBytes.slice().buffer as ArrayBuffer], { type: "image/png" }) });
       await service.start(handle);
@@ -114,11 +120,21 @@ describe("canonical OMR fixture pipeline determinism", () => {
       const initial = await createInitialOmrReviewContext(project.source, providerResult);
       expect(initial.reviewRecord.reviewItems).toHaveLength(1);
       const item = initial.reviewRecord.reviewItems[0];
-      const accepted = await acceptOmrReviewAlternative({ source: project.source, item, alternativeId: item.alternatives[0].id, appliedAt: now.toISOString() });
-      const reviewRecord: OmrReviewRecord = { ...initial.reviewRecord, corrections: [accepted.correction], reviewItems: [accepted.item] };
-      const source = await attachOmrReviewContext({ source: accepted.source, providerResult, reviewRecord });
+      const parsedChord = parseChord("Dm");
+      if (parsedChord.status !== "ok") throw new Error("deterministic test chord failed to parse");
+      const corrected = await manuallyCorrectOmrReviewItem({
+        source: project.source,
+        item,
+        patch: { kind: "chord", parseResult: parsedChord },
+        appliedAt: now.toISOString(),
+      });
+      const reviewRecord: OmrReviewRecord = { ...initial.reviewRecord, corrections: [corrected.correction], reviewItems: [corrected.item] };
+      const source = await attachOmrReviewContext({ source: corrected.source, providerResult, reviewRecord });
       if (iteration === 0) {
-        const generation = await generateProjectVariant({ ...project, source }, "standard");
+        const integrated = await integrateReviewedOmrSource(project, source);
+        const integrity = await validateHarmonyProject(integrated, await loadProductExecutionRegistry());
+        if (integrity.status !== "complete") throw new Error(JSON.stringify(integrity.diagnostics));
+        const generation = await generateProjectVariant(integrated, "standard");
         expect(generation.status).toBe("complete");
       }
 

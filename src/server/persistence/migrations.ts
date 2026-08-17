@@ -147,11 +147,50 @@ ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS omr_job_id bigint REFERENCES o
 CREATE INDEX IF NOT EXISTS audit_events_omr_job_idx ON audit_events (omr_job_id, created_at DESC);
 `;
 
+export const OMR_RECOVERY_SQL = String.raw`
+ALTER TABLE omr_jobs
+  ADD COLUMN IF NOT EXISTS capability_snapshot_digest text,
+  ADD COLUMN IF NOT EXISTS operation_kind text,
+  ADD COLUMN IF NOT EXISTS operation_lease_token text,
+  ADD COLUMN IF NOT EXISTS operation_lease_expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS reconciliation_kind text,
+  ADD COLUMN IF NOT EXISTS normalization_mapping jsonb,
+  ADD COLUMN IF NOT EXISTS vendor_delete_state text NOT NULL DEFAULT 'not-started',
+  ADD COLUMN IF NOT EXISTS local_delete_state text NOT NULL DEFAULT 'not-started',
+  ADD COLUMN IF NOT EXISTS vendor_delete_next_attempt_at timestamptz,
+  ADD COLUMN IF NOT EXISTS local_delete_next_attempt_at timestamptz;
+
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_state_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_state_check CHECK (state IN (
+  'created','uploading','queued','processing','needs-input','completed','failed',
+  'cancel-pending','cancel-failed','cancelled','reconciliation-required',
+  'delete-pending','deleted','expired'
+));
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_operation_kind_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_operation_kind_check CHECK (operation_kind IS NULL OR operation_kind IN ('start','submit-input','cancel'));
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_reconciliation_kind_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_reconciliation_kind_check CHECK (reconciliation_kind IS NULL OR reconciliation_kind IN ('create','page-upload','start','submit-input','cancel'));
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_vendor_delete_state_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_vendor_delete_state_check CHECK (vendor_delete_state IN ('not-started','pending','deleted','not-supported','failed'));
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_local_delete_state_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_local_delete_state_check CHECK (local_delete_state IN ('not-started','pending','deleted','failed'));
+CREATE INDEX IF NOT EXISTS omr_jobs_operation_lease_idx ON omr_jobs (operation_lease_expires_at, id) WHERE operation_kind IS NOT NULL;
+CREATE INDEX IF NOT EXISTS omr_jobs_delete_retry_idx ON omr_jobs (state, vendor_delete_next_attempt_at, local_delete_next_attempt_at, id) WHERE state = 'delete-pending';
+
+ALTER TABLE omr_pages
+  ADD COLUMN IF NOT EXISTS upload_lease_token text,
+  ADD COLUMN IF NOT EXISTS upload_lease_expires_at timestamptz;
+ALTER TABLE omr_pages DROP CONSTRAINT IF EXISTS omr_pages_upload_state_check;
+ALTER TABLE omr_pages ADD CONSTRAINT omr_pages_upload_state_check CHECK (upload_state IS NULL OR upload_state IN ('pending','uploaded','failed','reconciliation-required'));
+CREATE INDEX IF NOT EXISTS omr_pages_pending_lease_idx ON omr_pages (upload_lease_expires_at, job_id, page_ordinal) WHERE upload_state = 'pending';
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
   { version: 3, name: "share_replay_envelope", sql: SHARE_REPLAY_ENVELOPE_SQL },
   { version: 4, name: "omr_core", sql: OMR_CORE_SQL },
+  { version: 5, name: "omr_recovery", sql: OMR_RECOVERY_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {

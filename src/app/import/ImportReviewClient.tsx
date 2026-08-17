@@ -14,13 +14,21 @@ import { useRouter } from "next/navigation";
 import type { Diagnostic } from "../../domain/diagnostics";
 import type { PitchRange, SpelledPitch } from "../../domain/pitch";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
-import { takeOmrImportHandoff } from "../../domain/omr/browser-handoff";
+import { completeOmrImportHandoff, takeOmrImportHandoff } from "../../domain/omr/browser-handoff";
 import type { OmrProviderResult } from "../../domain/omr/contracts";
-import { mapEvidenceBoxToNormalizedOriginal, type BoundingBox } from "../../domain/omr/foundation";
+import {
+  mapEvidenceBoxToNormalizedOriginal, validateOmrReviewCompletion,
+  type BoundingBox, type OmrCorrectionPatch, type OmrEvidenceArchive,
+  type OmrReviewItem, type OmrReviewRecord, type SourceEvidenceIndex,
+} from "../../domain/omr/foundation";
 import { attachOmrReviewContext, createInitialOmrReviewContext } from "../../domain/omr/normalization";
-import { acceptOmrReviewAlternative, manuallyCorrectOmrReviewItem, rejectOmrReviewAlternatives } from "../../domain/omr/review";
+import { acceptOmrReviewAlternative, manuallyCorrectOmrReviewItem, rejectOmrReviewAlternatives, resolveOmrAutoRepair } from "../../domain/omr/review";
 import { validateRuntimeOmrReadiness } from "../../domain/omr/readiness";
+import { integrateReviewedOmrSource } from "../../domain/omr/product-handoff";
 import { parseChord } from "../../domain/chord/parser";
+import type { SongSourceDocument } from "../../domain/source/model";
+import type { SourceIdRemap } from "../../domain/source/revision";
+import { validateHarmonyProject } from "../../domain/project";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../algorithm-version-registry";
 import { importMusicXml } from "../../import/musicxml/parser";
 import {
@@ -46,6 +54,7 @@ import {
 } from "../../import/review/commands";
 import { deriveQuickReview, type QuickReviewAnalysis } from "../../import/review/quick-review";
 import { IndexedDbProjectStore } from "../../product/local-project-store";
+import { loadProductExecutionRegistry } from "../../product/registry";
 import { createProjectFromQuickReview } from "../../product/workspace";
 import styles from "./import.module.css";
 
@@ -282,6 +291,62 @@ function DiagnosticSummary({ diagnostics }: { readonly diagnostics: readonly Dia
   );
 }
 
+interface OmrReviewSession {
+  readonly baseRevisionDigest: string;
+  readonly source: SongSourceDocument;
+  readonly sourceEvidence: SourceEvidenceIndex;
+  readonly evidenceArchive: OmrEvidenceArchive;
+  readonly reviewRecord: OmrReviewRecord;
+  readonly remaps: readonly SourceIdRemap[];
+}
+
+function fractionText(value: string): { readonly n: number; readonly d: number } | undefined {
+  const match = /^(\d+)\/([1-9]\d*)$/u.exec(value.trim());
+  if (!match) return undefined;
+  const n = Number(match[1]); const d = Number(match[2]);
+  return Number.isSafeInteger(n) && Number.isSafeInteger(d) ? { n, d } : undefined;
+}
+
+function ManualOmrCorrectionEditor({ item, disabled, onApply }: {
+  readonly item: OmrReviewItem;
+  readonly disabled: boolean;
+  readonly onApply: (patch: OmrCorrectionPatch) => void;
+}) {
+  const [mode, setMode] = useState("pitch");
+  const [text, setText] = useState("");
+  const [secondary, setSecondary] = useState("1/1");
+  const [tieStart, setTieStart] = useState(false);
+  const [tieStop, setTieStop] = useState(false);
+  const target = item.target.target;
+  const apply = () => {
+    let patch: OmrCorrectionPatch | undefined;
+    if (target.kind === "voice-event") {
+      if (mode === "pitch") { const pitch = parsePitch(text); if (pitch) patch = { kind: "pitch", pitch }; }
+      if (mode === "duration") { const duration = fractionText(text); if (duration?.n) patch = { kind: "duration", duration }; }
+      if (mode === "accidental" && [-2, -1, 0, 1, 2].includes(Number(text))) patch = { kind: "accidental", alter: Number(text) as -2 | -1 | 0 | 1 | 2 };
+      if (mode === "tie") patch = { kind: "tie", tieStart, tieStop };
+      if (mode === "replace-rest") { const onset = fractionText(text); const duration = fractionText(secondary); if (onset && duration?.n) patch = { kind: "replace-event", event: { kind: "rest", onset, duration } }; }
+      if (mode === "replace-note") { const [pitchValue, onsetValue] = text.split("@"); const pitch = parsePitch(pitchValue ?? ""); const onset = fractionText(onsetValue ?? ""); const duration = fractionText(secondary); if (pitch && onset && duration?.n) patch = { kind: "replace-event", event: { kind: "note", pitch, onset, duration, tieStart, tieStop } }; }
+    } else if (target.kind === "chord-event") {
+      const parsed = parseChord(text); if (parsed.status === "ok" || parsed.status === "no-chord") patch = { kind: "chord", parseResult: parsed };
+    } else if (target.kind === "measure-start") {
+      if (mode === "time-signature") { const value = fractionText(text); if (value?.n && (value.d === 4 || value.d === 8)) patch = { kind: "time-signature", value: { numerator: value.n, denominator: value.d, beatGroups: value.d === 8 && value.n % 3 === 0 ? Array.from({ length: value.n / 3 }, () => 3) : Array.from({ length: value.n }, () => 1) } }; }
+      if (mode === "key-signature") { const value = keyFromText(text); if (value) patch = { kind: "key-signature", value }; }
+    } else if (target.kind === "section-text") patch = { kind: "replace-source-text", text };
+    if (patch) onApply(patch);
+  };
+  const modes = target.kind === "voice-event" ? ["pitch", "duration", "accidental", "tie", "replace-rest", "replace-note"]
+    : target.kind === "measure-start" ? ["time-signature", "key-signature"] : [];
+  const supported = target.kind === "voice-event" || target.kind === "chord-event" || target.kind === "measure-start" || target.kind === "section-text";
+  if (!supported) return <p className={styles.help}>이 target의 구조 변경 patch는 명시적으로 지원 보류되었습니다.</p>;
+  return <div className={styles.omrManual}>
+    {modes.length ? <label className={styles.field}><span>수정 유형</span><select value={mode} onChange={(event) => setMode(event.target.value)}>{modes.map((value) => <option value={value} key={value}>{value}</option>)}</select></label> : null}
+    {mode === "tie" ? <><label><input type="checkbox" checked={tieStart} onChange={(event) => setTieStart(event.target.checked)} /> tie start</label><label><input type="checkbox" checked={tieStop} onChange={(event) => setTieStop(event.target.checked)} /> tie stop</label></> : <label className={styles.field}><span>수동 값</span><input value={text} maxLength={256} onChange={(event) => setText(event.target.value)} placeholder={mode === "replace-note" ? "C4@0/1" : mode === "key-signature" ? "C major" : mode.includes("duration") || mode === "replace-rest" || mode === "time-signature" ? "예: 1/1" : "확정값"} /></label>}
+    {(mode === "replace-rest" || mode === "replace-note") ? <label className={styles.field}><span>duration</span><input value={secondary} pattern="[0-9]+/[1-9][0-9]*" onChange={(event) => setSecondary(event.target.value)} /></label> : null}
+    <button type="button" disabled={disabled} onClick={apply}>수동 correction 확정</button>
+  </div>;
+}
+
 export function ImportReviewClient() {
   const router = useRouter();
   const [draft, setDraft] = useState<MusicXmlImportDraft>();
@@ -293,9 +358,10 @@ export function ImportReviewClient() {
   const [tempoText, setTempoText] = useState("");
   const [keyText, setKeyText] = useState("");
   const [handoffBusy, setHandoffBusy] = useState(false);
-  const [omrHandoff, setOmrHandoff] = useState<{ readonly result: OmrProviderResult; readonly pageUrls: readonly string[] }>();
-  const [omrDecision, setOmrDecision] = useState<"open" | "accepted" | "rejected" | "manual">("open");
-  const [omrManualChord, setOmrManualChord] = useState("");
+  const [omrHandoff, setOmrHandoff] = useState<{ readonly handoffId: string; readonly result: OmrProviderResult; readonly pageUrls: readonly string[] }>();
+  const [omrSession, setOmrSession] = useState<OmrReviewSession>();
+  const [omrItemIndex, setOmrItemIndex] = useState(0);
+  const [omrPageIndex, setOmrPageIndex] = useState(0);
 
   const updateDraft = useCallback((updater: DraftUpdater) => {
     setReviewing(true);
@@ -318,7 +384,7 @@ export function ImportReviewClient() {
     return () => { active = false; };
   }, [draft]);
 
-  const loadFile = useCallback(async (file: File) => {
+  const loadFile = useCallback(async (file: File): Promise<boolean> => {
     setLoading(true);
     setAnalysis(undefined);
     setDraft(undefined);
@@ -332,14 +398,17 @@ export function ImportReviewClient() {
       if (result.status === "blocked") {
         setDiagnostics(result.diagnostics);
         setFileStatus("가져오기가 안전하게 차단되었습니다.");
+        return false;
       } else {
         setReviewing(true);
         setDraft(result.draft);
         setDiagnostics(result.diagnostics);
         setFileStatus(`${result.draft.containerKind.toUpperCase()} 구조 파싱 완료 · Quick Review 필요`);
+        return true;
       }
     } catch (error) {
       setFileStatus(error instanceof Error ? error.message : "파일을 읽지 못했습니다.");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -348,8 +417,8 @@ export function ImportReviewClient() {
   useEffect(() => {
     void takeOmrImportHandoff().then((handoff) => {
       if (handoff) {
-        if (handoff.omrProviderResult) setOmrHandoff({ result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image)) });
-        void loadFile(handoff.file);
+        if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image)) });
+        void loadFile(handoff.file).then((loaded) => loaded && !handoff.omrProviderResult ? completeOmrImportHandoff(handoff.handoffId) : undefined);
       }
     }).catch(() => {
       setFileStatus("OMR 결과 전달값을 읽지 못했습니다. OMR 검토 화면에서 다시 시도하세요.");
@@ -357,6 +426,22 @@ export function ImportReviewClient() {
   }, [loadFile]);
 
   useEffect(() => () => { for (const url of omrHandoff?.pageUrls ?? []) URL.revokeObjectURL(url); }, [omrHandoff]);
+
+  useEffect(() => {
+    if (!draft || !analysis?.state.readyForPlanning || !omrHandoff) return;
+    let active = true;
+    void createProjectFromQuickReview(draft, analysis, "standard").then(async (project) => {
+      if (!active) return;
+      if (omrSession?.baseRevisionDigest === project.source.revisionDigest) return;
+      const context = await createInitialOmrReviewContext(project.source, omrHandoff.result);
+      if (!active) return;
+      setOmrSession({ baseRevisionDigest: project.source.revisionDigest, source: project.source, ...context, remaps: [] });
+      setOmrItemIndex(0); setOmrPageIndex(0);
+    }).catch((error: unknown) => {
+      if (active) setFileStatus(error instanceof Error ? error.message : "OMR 검토 항목을 만들지 못했습니다.");
+    });
+    return () => { active = false; };
+  }, [analysis, draft, omrHandoff, omrSession?.baseRevisionDigest]);
 
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -393,36 +478,18 @@ export function ImportReviewClient() {
     try {
       let project = await createProjectFromQuickReview(draft, analysis, "standard");
       if (omrHandoff) {
-        if (omrDecision === "open") throw new RangeError("OMR_REVIEW_REQUIRED");
-        const context = await createInitialOmrReviewContext(project.source, omrHandoff.result);
-        let source = project.source;
-        const corrections = [];
-        const resolvedItems = [];
-        const remaps = [];
-        for (const item of context.reviewRecord.reviewItems) {
-          if (omrDecision === "rejected") {
-            resolvedItems.push(rejectOmrReviewAlternatives(item, item.alternatives.map((alternative) => alternative.id)));
-            continue;
-          }
-          if (omrDecision === "manual") {
-            const parsed = parseChord(omrManualChord);
-            if (item.target.target.kind !== "chord-event" || (parsed.status !== "ok" && parsed.status !== "no-chord")) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
-            const resolved = await manuallyCorrectOmrReviewItem({ source, item, patch: { kind: "chord", parseResult: parsed }, appliedAt: new Date().toISOString(), remaps });
-            source = resolved.source; corrections.push(resolved.correction); remaps.push(resolved.idRemap); resolvedItems.push(resolved.item);
-          } else {
-            const alternative = item.alternatives[0];
-            if (!alternative) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
-            const resolved = await acceptOmrReviewAlternative({ source, item, alternativeId: alternative.id, appliedAt: new Date().toISOString(), remaps });
-            source = resolved.source; corrections.push(resolved.correction); remaps.push(resolved.idRemap); resolvedItems.push(resolved.item);
-          }
-        }
-        source = await attachOmrReviewContext({ source, providerResult: omrHandoff.result, reviewRecord: { ...context.reviewRecord, corrections, reviewItems: resolvedItems } });
+        if (!omrSession || omrSession.baseRevisionDigest !== project.source.revisionDigest
+          || validateOmrReviewCompletion(omrSession.reviewRecord).length > 0) throw new RangeError("OMR_REVIEW_REQUIRED");
+        const source = await attachOmrReviewContext({ source: omrSession.source, providerResult: omrHandoff.result, reviewRecord: omrSession.reviewRecord });
         const readiness = await validateRuntimeOmrReadiness(source);
         if (readiness.readiness !== "validator-ready") throw new RangeError("OMR_REVIEW_REQUIRED");
-        project = { ...project, source };
+        project = await integrateReviewedOmrSource(project, source);
+        const integrity = await validateHarmonyProject(project, await loadProductExecutionRegistry());
+        if (integrity.status !== "complete") throw new RangeError(integrity.diagnostics.map((diagnostic) => diagnostic.code).join(","));
       }
       const projectId = crypto.randomUUID();
       await new IndexedDbProjectStore().save({ projectId, updatedAt: new Date().toISOString(), project });
+      if (omrHandoff) await completeOmrImportHandoff(omrHandoff.handoffId);
       router.push(`/workspace?project=${encodeURIComponent(projectId)}`);
     } catch (error) {
       setFileStatus(error instanceof Error ? error.message : "프로젝트를 만들지 못했습니다.");
@@ -430,11 +497,45 @@ export function ImportReviewClient() {
     }
   };
 
-  const omrTargetChordId = omrHandoff?.result.evidence.evidence.find((evidence) => evidence.vendorTargetId?.startsWith("ch:"))?.vendorTargetId;
-  const omrTargetChord = chords.find((chord) => chord.key === omrTargetChordId) ?? (omrTargetChordId ? chords[0] : undefined);
-  const omrPageIndex = 0;
-  const omrPageEvidence = omrHandoff?.result.evidence.evidence.filter((evidence) => omrHandoff.result.evidence.frames.find((frame) => frame.id === evidence.box.frameId)?.pageIndex === omrPageIndex) ?? [];
+  const currentOmrItem = omrSession?.reviewRecord.reviewItems[omrItemIndex];
+  const omrOpenCount = omrSession?.reviewRecord.reviewItems.filter((item) => item.resolution.status === "open" || item.resolution.status === "rejected").length ?? 0;
+  const pendingRepairCount = omrSession?.reviewRecord.autoRepairs.filter((proposal) => proposal.resolution.status === "pending").length ?? 0;
+  const currentEvidenceIds = new Set(currentOmrItem?.evidenceIds ?? []);
+  const omrPageEvidence = omrHandoff?.result.evidence.evidence.filter((evidence) => currentEvidenceIds.has(evidence.id)
+    && omrHandoff.result.evidence.frames.find((frame) => frame.id === evidence.box.frameId)?.pageIndex === omrPageIndex) ?? [];
   const omrBoxStyle = (box: BoundingBox) => ({ left: `${Number(box.xMu) / 10_000}%`, top: `${Number(box.yMu) / 10_000}%`, width: `${Number(box.widthMu) / 10_000}%`, height: `${Number(box.heightMu) / 10_000}%` });
+
+  const acceptOmrItem = async (item: OmrReviewItem, alternativeId: string) => {
+    if (!omrSession) return;
+    setHandoffBusy(true);
+    try {
+      const resolved = await acceptOmrReviewAlternative({ source: omrSession.source, item, alternativeId, appliedAt: new Date().toISOString(), remaps: omrSession.remaps });
+      setOmrSession({ ...omrSession, source: resolved.source, remaps: [...omrSession.remaps, resolved.idRemap], reviewRecord: { ...omrSession.reviewRecord, corrections: [...omrSession.reviewRecord.corrections, resolved.correction], reviewItems: omrSession.reviewRecord.reviewItems.map((candidate) => candidate.id === item.id ? resolved.item : candidate) } });
+    } catch (error) { setFileStatus(error instanceof Error ? error.message : "OMR 후보를 적용하지 못했습니다."); }
+    finally { setHandoffBusy(false); }
+  };
+
+  const manuallyResolveOmrItem = async (item: OmrReviewItem, patch: OmrCorrectionPatch) => {
+    if (!omrSession) return;
+    setHandoffBusy(true);
+    try {
+      const resolved = await manuallyCorrectOmrReviewItem({ source: omrSession.source, item, patch, appliedAt: new Date().toISOString(), remaps: omrSession.remaps });
+      setOmrSession({ ...omrSession, source: resolved.source, remaps: [...omrSession.remaps, resolved.idRemap], reviewRecord: { ...omrSession.reviewRecord, corrections: [...omrSession.reviewRecord.corrections, resolved.correction], reviewItems: omrSession.reviewRecord.reviewItems.map((candidate) => candidate.id === item.id ? resolved.item : candidate) } });
+    } catch (error) { setFileStatus(error instanceof Error ? error.message : "수동 OMR correction을 적용하지 못했습니다."); }
+    finally { setHandoffBusy(false); }
+  };
+
+  const resolveAutoRepair = async (proposalId: string, resolution: "accepted" | "rejected") => {
+    if (!omrSession) return;
+    const proposal = omrSession.reviewRecord.autoRepairs.find((candidate) => candidate.id === proposalId);
+    if (!proposal) return;
+    setHandoffBusy(true);
+    try {
+      const resolved = await resolveOmrAutoRepair({ source: omrSession.source, proposal, resolution, appliedAt: new Date().toISOString(), remaps: omrSession.remaps });
+      setOmrSession({ ...omrSession, source: resolved.source, remaps: resolved.idRemap ? [...omrSession.remaps, resolved.idRemap] : omrSession.remaps, reviewRecord: { ...omrSession.reviewRecord, corrections: resolved.correction ? [...omrSession.reviewRecord.corrections, resolved.correction] : omrSession.reviewRecord.corrections, autoRepairs: omrSession.reviewRecord.autoRepairs.map((candidate) => candidate.id === proposalId ? resolved.proposal : candidate) } });
+    } catch (error) { setFileStatus(error instanceof Error ? error.message : "OMR 자동 수리 결정을 적용하지 못했습니다."); }
+    finally { setHandoffBusy(false); }
+  };
 
   return (
     <div className={styles.flow}>
@@ -451,8 +552,19 @@ export function ImportReviewClient() {
       {draft ? (
         <>
           {omrHandoff ? <section className={styles.panel} aria-labelledby="omr-review-heading">
-            <h2 id="omr-review-heading">OMR 증거 검토 · 열린 항목 {omrDecision === "open" ? 1 : 0}개</h2>
+            <h2 id="omr-review-heading">OMR 증거 검토 · 열린 항목 {omrOpenCount}개 · pending repair {pendingRepairCount}개</h2>
             <p className={styles.notice}>제공자 결과는 아직 musical authority가 아닙니다. 아래 결정을 기록해도 기존 Quick Review의 코드·구간·음역·generation 권리 확인은 그대로 필요합니다.</p>
+            {!omrSession ? <p className={styles.notice}>아래 Quick Review 필수 확인을 끝내면 canonical Source target별 OMR 항목이 생성됩니다.</p> : null}
+            {omrSession && currentOmrItem ? <div className={styles.presetRow} aria-label="OMR item navigation">
+              <button type="button" disabled={omrItemIndex === 0} onClick={() => setOmrItemIndex((value) => Math.max(0, value - 1))}>이전 항목</button>
+              <span>항목 {omrItemIndex + 1}/{omrSession.reviewRecord.reviewItems.length}</span>
+              <button type="button" disabled={omrItemIndex >= omrSession.reviewRecord.reviewItems.length - 1} onClick={() => setOmrItemIndex((value) => Math.min(omrSession.reviewRecord.reviewItems.length - 1, value + 1))}>다음 항목</button>
+            </div> : null}
+            {omrHandoff.pageUrls.length ? <div className={styles.presetRow} aria-label="OMR page navigation">
+              <button type="button" disabled={omrPageIndex === 0} onClick={() => setOmrPageIndex((value) => Math.max(0, value - 1))}>이전 페이지</button>
+              <span>페이지 {omrPageIndex + 1}/{omrHandoff.pageUrls.length}</span>
+              <button type="button" disabled={omrPageIndex >= omrHandoff.pageUrls.length - 1} onClick={() => setOmrPageIndex((value) => Math.min(omrHandoff.pageUrls.length - 1, value + 1))}>다음 페이지</button>
+            </div> : null}
             {omrHandoff.pageUrls[omrPageIndex] ? <div className={styles.omrEvidence}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={omrHandoff.pageUrls[omrPageIndex]} alt="OMR 원본 페이지와 evidence overlay" />
@@ -462,13 +574,27 @@ export function ImportReviewClient() {
               })}
             </div> : null}
             <p><strong>진단:</strong> OMR_REVIEW_REQUIRED · <strong>evidence fallback:</strong> {omrHandoff.result.evidence.granularity === "measure" ? "원본 마디와 디지털 코드 후보 연결" : omrHandoff.result.evidence.granularity === "staff" ? "원본 staff crop만" : "원본 page preview만"}</p>
-            <dl className={styles.omrBeforeAfter}><div><dt>인식 전/후보</dt><dd>{omrTargetChord?.sourceText ?? "canonical target은 Quick Review에서 확인"}</dd></div><div><dt>현재 결정</dt><dd>{omrDecision}</dd></div></dl>
-            <div className={styles.presetRow}>
-              <button type="button" onClick={() => { if (omrTargetChord) commitChord(omrTargetChord.key, omrTargetChord.sourceText); setOmrDecision("accepted"); }}>인식 후보 수락</button>
-              <button type="button" onClick={() => setOmrDecision("rejected")}>후보 거절</button>
-            </div>
-            <div className={styles.omrManual}><label className={styles.field}><span>수동 코드 correction</span><input value={omrManualChord} onChange={(event) => setOmrManualChord(event.target.value)} placeholder="예: C, Am7, N.C." /></label><button type="button" disabled={!omrTargetChord || !omrManualChord.trim()} onClick={() => { if (omrTargetChord) commitChord(omrTargetChord.key, omrManualChord); setOmrDecision("manual"); }}>수동 correction 적용</button></div>
-            <p className={styles.status}><strong>correction history:</strong> {omrDecision === "open" ? "아직 결정 없음" : omrDecision === "manual" ? `manual · ${omrManualChord}` : omrDecision}</p>
+            {omrSession ? <ul className={styles.reviewList} aria-label="모든 OMR review item">{omrSession.reviewRecord.reviewItems.map((item, index) => {
+              const rejectedIds = new Set(item.resolution.status === "rejected" ? item.resolution.rejectedAlternativeIds : []);
+              const evidence = omrHandoff.result.evidence.evidence.filter((candidate) => item.evidenceIds.includes(candidate.id));
+              const pagesForItem = [...new Set(evidence.flatMap((candidate) => {
+                const frame = omrHandoff.result.evidence.frames.find((value) => value.id === candidate.box.frameId);
+                return frame ? [frame.pageIndex + 1] : [];
+              }))].sort((a, b) => a - b);
+              return <li className={styles.reviewItem} key={item.id} aria-current={index === omrItemIndex ? "true" : undefined}>
+                <button type="button" onClick={() => { setOmrItemIndex(index); if (pagesForItem[0]) setOmrPageIndex(pagesForItem[0] - 1); }}>항목 {index + 1} 보기</button>
+                <p><strong>actual target:</strong> <code>{JSON.stringify(item.target.target)}</code> · <strong>page:</strong> {pagesForItem.join(", ") || "archive/fallback"}</p>
+                <p><strong>evidence:</strong> {evidence.map((value) => `${value.id}(${value.granularity}, confidence ${value.confidenceBp ?? "미제공"})`).join(", ") || "unmapped archive"}</p>
+                <p><strong>current resolution:</strong> <code>{JSON.stringify(item.resolution)}</code></p>
+                <ul>{item.alternatives.map((alternative) => <li key={alternative.id}>{alternative.labelKo} · confidence {alternative.confidenceBp ?? "미제공"}
+                  <button type="button" disabled={handoffBusy || item.resolution.status === "accepted" || item.resolution.status === "manually-corrected" || rejectedIds.has(alternative.id)} onClick={() => void acceptOmrItem(item, alternative.id)}>이 후보 수락</button>
+                  <button type="button" disabled={handoffBusy || item.resolution.status === "accepted" || item.resolution.status === "manually-corrected" || rejectedIds.has(alternative.id)} onClick={() => setOmrSession((current) => current ? { ...current, reviewRecord: { ...current.reviewRecord, reviewItems: current.reviewRecord.reviewItems.map((candidate) => candidate.id === item.id ? rejectOmrReviewAlternatives(candidate, [alternative.id]) : candidate) } } : current)}>이 후보 거절</button>
+                </li>)}</ul>
+                {(item.resolution.status === "open" || item.resolution.status === "rejected") ? <ManualOmrCorrectionEditor key={`${item.id}:${item.resolution.status}`} item={item} disabled={handoffBusy} onApply={(patch) => void manuallyResolveOmrItem(item, patch)} /> : null}
+              </li>;
+            })}</ul> : null}
+            {omrSession?.reviewRecord.autoRepairs.length ? <div><h3>Auto repair proposals</h3><ul className={styles.reviewList}>{omrSession.reviewRecord.autoRepairs.map((proposal) => <li className={styles.reviewItem} key={proposal.id}><code>{proposal.reason}</code> · {proposal.confidence} · {proposal.resolution.status}<pre>{JSON.stringify(proposal.patch)}</pre>{proposal.resolution.status === "pending" ? <div className={styles.presetRow}><button type="button" disabled={handoffBusy} onClick={() => void resolveAutoRepair(proposal.id, "accepted")}>repair 적용</button><button type="button" disabled={handoffBusy} onClick={() => void resolveAutoRepair(proposal.id, "rejected")}>repair 거절</button></div> : null}</li>)}</ul></div> : null}
+            <p className={styles.status}><strong>correction history:</strong> {omrSession?.reviewRecord.corrections.length ?? 0}개 · unresolved item/repair가 하나라도 있으면 workspace handoff가 차단됩니다.</p>
             <p className={styles.help}>stale/remapped target은 Source revision 연결이 정확히 한 개일 때만 적용되며, 그 외에는 archive로 남습니다.</p>
           </section> : null}
           <section className={styles.panel} aria-labelledby="summary-heading">
@@ -559,7 +685,7 @@ export function ImportReviewClient() {
               </ul>
             ) : null}
             <DiagnosticSummary diagnostics={diagnostics} />
-            {analysis?.state.readyForPlanning ? <button className="primary" type="button" disabled={handoffBusy || Boolean(omrHandoff && omrDecision === "open")} onClick={() => void openWorkspace()}>{handoffBusy ? "워크스페이스 준비 중…" : "프로젝트 워크스페이스 열기 →"}</button> : null}
+            {analysis?.state.readyForPlanning ? <button className="primary" type="button" disabled={handoffBusy || Boolean(omrHandoff && (!omrSession || validateOmrReviewCompletion(omrSession.reviewRecord).length > 0))} onClick={() => void openWorkspace()}>{handoffBusy ? "워크스페이스 준비 중…" : "프로젝트 워크스페이스 열기 →"}</button> : null}
             <p className={styles.help}>여기서 확정한 Source, 코드, 구간, 가수 음역과 권리 정보가 그대로 프로젝트 authority가 됩니다.</p>
           </section>
         </>

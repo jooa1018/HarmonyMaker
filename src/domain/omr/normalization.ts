@@ -1,19 +1,20 @@
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../../app/algorithm-version-registry";
-import { binaryDigest } from "../digest/canonical";
+import { binaryDigest, canonicalJson } from "../digest/canonical";
 import { digestMusicalSource } from "../digest/source";
 import {
   mapVendorEvidenceToSource,
   type EvidenceTargetMapping, type OmrEvidenceArchive, type OmrReviewItem, type OmrReviewRecord,
   type RevisionScopedTarget, type SourceEvidenceIndex,
 } from "./foundation";
-import type { OmrProviderResult } from "./contracts";
+import { validateVendorNormalizationMappingArtifact, type OmrProviderResult, type VendorExportEvidenceMapping } from "./contracts";
 import type { RightsMetadata, SongSourceDocument } from "../source/model";
 import { normalizeSongSourceDocument } from "../source/normalize";
 import { validateSongSourceDocumentIntegrity } from "../source/validation";
 import { importMusicXml } from "../../import/musicxml/parser";
 import { step3ImportVersionsFromRegistry, type MusicXmlImportDraft } from "../../import/musicxml/types";
 import { finalizeImportedSource } from "../../import/review/finalize";
-import { createOmrReviewItem, proposeOmrAutoRepairs, validateReviewEvidenceReferences } from "./review";
+import { createOmrReviewItem, proposeOmrAutoRepairs, unsupportedOmrAutoRepairDiagnostics, validateReviewEvidenceReferences } from "./review";
+import { validateOmrReviewCompletion } from "./foundation";
 
 export const OMR_NORMALIZER_VERSION = "omr-normalizer-v1" as const;
 const versions = step3ImportVersionsFromRegistry(APPLICATION_ALGORITHM_VERSION_REGISTRY);
@@ -43,15 +44,24 @@ function revision(source: SongSourceDocument): RevisionScopedTarget["sourceRevis
   return { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
 }
 
-function explicitTarget(source: SongSourceDocument, vendorTargetId: string): RevisionScopedTarget | undefined {
+function normalizedTarget(source: SongSourceDocument, mapping: VendorExportEvidenceMapping): RevisionScopedTarget | undefined {
   const sourceRevision = revision(source);
-  for (const measure of source.sourceMeasures) {
-    if (measure.id === vendorTargetId) return { sourceRevision, target: { kind: "measure", sourceMeasureId: measure.id } };
-    if (measure.leadEvents.some((event) => event.id === vendorTargetId)) return { sourceRevision, target: { kind: "voice-event", eventId: vendorTargetId } };
-    if (measure.chordEvents.some((event) => event.id === vendorTargetId)) return { sourceRevision, target: { kind: "chord-event", chordEventId: vendorTargetId } };
-    if (measure.textEvents.some((event) => event.id === vendorTargetId)) return { sourceRevision, target: { kind: "section-text", sourceTextId: vendorTargetId } };
+  const selector = mapping.target;
+  const measure = source.sourceMeasures[selector.measureOrdinal];
+  if (!measure) return undefined;
+  if (selector.kind === "measure" || selector.kind === "measure-start" || selector.kind === "measure-end") {
+    return { sourceRevision, target: { kind: selector.kind, sourceMeasureId: measure.id } };
   }
-  return undefined;
+  if (selector.kind === "voice-event") {
+    const event = measure.leadEvents[selector.eventOrdinal];
+    return event ? { sourceRevision, target: { kind: "voice-event", eventId: event.id } } : undefined;
+  }
+  if (selector.kind === "chord-event") {
+    const event = measure.chordEvents[selector.eventOrdinal];
+    return event ? { sourceRevision, target: { kind: "chord-event", chordEventId: event.id } } : undefined;
+  }
+  const event = measure.textEvents[selector.eventOrdinal];
+  return event ? { sourceRevision, target: { kind: "section-text", sourceTextId: event.id } } : undefined;
 }
 
 function alternativeForTarget(source: SongSourceDocument, target: RevisionScopedTarget): { readonly labelKo: string; readonly patch: import("./foundation").OmrCorrectionPatch } | undefined {
@@ -70,6 +80,9 @@ function alternativeForTarget(source: SongSourceDocument, target: RevisionScoped
       const text = measure.textEvents.find((candidate) => candidate.id === correctionTarget.sourceTextId);
       if (text) return { labelKo: `${text.text} 인식값`, patch: { kind: "replace-source-text", text: text.text } };
     }
+    if (correctionTarget.kind === "measure-start" && measure.id === correctionTarget.sourceMeasureId) {
+      return { labelKo: `${measure.time.numerator}/${measure.time.denominator} 인식값`, patch: { kind: "time-signature", value: measure.time } };
+    }
   }
   return undefined;
 }
@@ -80,24 +93,34 @@ export async function createInitialOmrReviewContext(source: SongSourceDocument, 
   readonly reviewRecord: OmrReviewRecord;
 }> {
   if (await binaryDigest(new TextEncoder().encode(providerResult.rawMusicXml)) !== providerResult.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+  await validateVendorNormalizationMappingArtifact(providerResult.normalizationMapping);
   const mappingByVendorTarget = new Map<string, EvidenceTargetMapping>();
-  for (const evidence of providerResult.evidence.evidence) {
-    if (!evidence.vendorTargetId || mappingByVendorTarget.has(evidence.vendorTargetId)) continue;
-    const target = explicitTarget(source, evidence.vendorTargetId);
-    if (target) mappingByVendorTarget.set(evidence.vendorTargetId, { vendorTargetId: evidence.vendorTargetId, target });
+  const evidenceVendorIds = new Set(providerResult.evidence.evidence.flatMap((evidence) => evidence.vendorTargetId ? [evidence.vendorTargetId] : []));
+  for (const mapping of providerResult.normalizationMapping.mappings) {
+    if (!evidenceVendorIds.has(mapping.vendorTargetId)) continue;
+    const target = normalizedTarget(source, mapping);
+    if (target) mappingByVendorTarget.set(mapping.vendorTargetId, { vendorTargetId: mapping.vendorTargetId, target });
   }
   const mapped = await mapVendorEvidenceToSource({ sourceRevision: revision(source), mappingVersion: "omr-evidence-map-v1", vendorBundle: providerResult.evidence, targetMappings: [...mappingByVendorTarget.values()] });
   const reviewItems: OmrReviewItem[] = [];
+  const itemGroups = new Map<string, { readonly target: RevisionScopedTarget; readonly evidenceIds: string[] }>();
   for (const mapping of mappingByVendorTarget.values()) {
-    const alternative = alternativeForTarget(source, mapping.target);
-    if (!alternative) continue;
+    const key = canonicalJson(mapping.target);
     const evidenceIds = providerResult.evidence.evidence.filter((evidence) => evidence.vendorTargetId === mapping.vendorTargetId).map((evidence) => evidence.id);
-    reviewItems.push(await createOmrReviewItem({ target: mapping.target, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [alternative], evidenceIds }));
+    const group = itemGroups.get(key);
+    if (group) group.evidenceIds.push(...evidenceIds);
+    else itemGroups.set(key, { target: mapping.target, evidenceIds });
+  }
+  for (const group of itemGroups.values()) {
+    const alternative = alternativeForTarget(source, group.target);
+    if (!alternative) continue;
+    reviewItems.push(await createOmrReviewItem({ target: group.target, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [alternative], evidenceIds: [...new Set(group.evidenceIds)] }));
   }
   const reviewRecord: OmrReviewRecord = {
     vendorResultDigest: providerResult.vendorResultDigest, vendorId: providerResult.vendorId,
     autoRepairs: await proposeOmrAutoRepairs(source), corrections: [],
     reviewItems: reviewItems.sort((left, right) => left.id.localeCompare(right.id)),
+    diagnostics: await unsupportedOmrAutoRepairDiagnostics(source),
   };
   if (validateReviewEvidenceReferences(reviewRecord, mapped.index, mapped.archive).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   return { sourceEvidence: mapped.index, evidenceArchive: mapped.archive, reviewRecord };
@@ -109,6 +132,7 @@ export async function attachOmrReviewContext(input: {
   readonly reviewRecord: OmrReviewRecord;
 }): Promise<SongSourceDocument> {
   if (input.reviewRecord.vendorId !== input.providerResult.vendorId || input.reviewRecord.vendorResultDigest !== input.providerResult.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+  if (validateOmrReviewCompletion(input.reviewRecord).length > 0) throw new RangeError("OMR_REVIEW_REQUIRED");
   const context = await createInitialOmrReviewContext(input.source, input.providerResult);
   if (validateReviewEvidenceReferences(input.reviewRecord, context.sourceEvidence, context.evidenceArchive).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   const source = normalizeSongSourceDocument({
@@ -138,6 +162,7 @@ export async function finalizeReviewedOmrSource(input: {
     || input.reviewRecord.vendorResultDigest !== input.providerResult.vendorResultDigest
     || input.sourceEvidence.providerBundleDigest !== input.providerResult.evidence.providerBundleDigest
     || input.evidenceArchive.providerBundleDigest !== input.providerResult.evidence.providerBundleDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+  if (validateOmrReviewCompletion(input.reviewRecord).length > 0) throw new RangeError("OMR_REVIEW_REQUIRED");
   const finalized = await finalizeImportedSource({ ...input.reviewedDraft, rights: input.rights }, versions);
   if (finalized.status === "blocked") return finalized;
   let source = normalizeSongSourceDocument({

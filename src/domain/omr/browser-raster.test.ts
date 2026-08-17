@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const pdfState = vi.hoisted(() => ({ pageCount: 2, failLoad: false, failRenderPage: 0, destroyCount: 0 }));
+const pdfState = vi.hoisted(() => ({ pageCount: 2, failLoad: false, failRenderPage: 0, destroyCount: 0, oversized: false, rotations: [] as number[] }));
 
 vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
@@ -15,7 +15,10 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
           rotate: 0,
           getTextContent: async () => ({ items: [{ str: `deterministic digital score page ${pageNumber}` }] }),
           getOperatorList: async () => ({ fnArray: [3, 4, 5] }),
-          getViewport: ({ scale }: { readonly scale: number }) => ({ width: pageNumber * 100 * scale, height: pageNumber * 150 * scale }),
+          getViewport: ({ scale, rotation }: { readonly scale: number; readonly rotation: number }) => {
+            pdfState.rotations.push(rotation);
+            return pdfState.oversized ? { width: 13_000, height: 13_000 } : { width: pageNumber * 100 * scale, height: pageNumber * 150 * scale };
+          },
           render: ({ canvas }: { readonly canvas: HTMLCanvasElement }) => ({
             promise: pdfState.failRenderPage === pageNumber
               ? Promise.reject(new RangeError("OMR_PDF_RASTER_FAILED"))
@@ -52,7 +55,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  pdfState.pageCount = 2; pdfState.failLoad = false; pdfState.failRenderPage = 0; pdfState.destroyCount = 0;
+  pdfState.pageCount = 2; pdfState.failLoad = false; pdfState.failRenderPage = 0; pdfState.destroyCount = 0; pdfState.oversized = false; pdfState.rotations = [];
 });
 
 describe("deterministic browser PDF.js raster policy", () => {
@@ -69,6 +72,7 @@ describe("deterministic browser PDF.js raster policy", () => {
     expect(second.pages.map((page) => page.pageDigest)).toEqual(first.pages.map((page) => page.pageDigest));
     expect(first.classification).toEqual({ suggestedKind: "digital-pdf", requiresConfirmation: false });
     expect(pdfState.destroyCount).toBe(2);
+    expect(pdfState.rotations).toEqual([0, 0, 0, 0]);
   });
 
   it("rejects corrupt, over-page, cancelled, and partial raster results", async () => {
@@ -82,5 +86,13 @@ describe("deterministic browser PDF.js raster policy", () => {
     const controller = new AbortController(); controller.abort();
     await expect(rasterizePdfPages({ bytes: new Uint8Array([1]), maxPages: 2, signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
     await expect(rasterizePdfPages({ bytes: new Uint8Array([1]), maxPages: 0 })).rejects.toThrow("OMR_PAGE_LIMIT_INVALID");
+  });
+
+  it("rejects oversized viewports before canvas allocation and discards the whole document", async () => {
+    pdfState.oversized = true;
+    const createElement = vi.spyOn(globalThis.document, "createElement");
+    await expect(rasterizePdfPages({ bytes: new Uint8Array([1]), maxPages: 2 })).rejects.toThrow("OMR_IMAGE_DIMENSIONS_INVALID");
+    expect(createElement).not.toHaveBeenCalled();
+    createElement.mockRestore();
   });
 });

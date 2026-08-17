@@ -3,6 +3,7 @@ import "server-only";
 import type { NextRequest } from "next/server";
 
 import type { OmrJobHandle } from "../../domain/omr/contracts";
+import type { SemanticDigest } from "../../domain/digest/canonical";
 import type { InputSourceKind } from "../../domain/omr/input";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
 import { getProductionServices } from "../substrate/services";
@@ -63,16 +64,33 @@ export function parseCreateJobBody(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("OMR_REQUEST_INVALID");
   const record = value as Record<string, unknown>;
   if (!Number.isSafeInteger(record.pageCount) || !SOURCE_KINDS.includes(record.sourceKind as InputSourceKind)
-    || record.providerTransferConsent !== true || typeof record.idempotencyKey !== "string") throw new RangeError("OMR_REQUEST_INVALID");
-  return { pageCount: record.pageCount as number, sourceKind: record.sourceKind as Extract<InputSourceKind, "digital-pdf" | "scanned-pdf" | "camera-photo">, rights: parseRights(record.rights), providerTransferConsent: true as const, idempotencyKey: record.idempotencyKey };
+    || record.providerTransferConsent !== true || typeof record.idempotencyKey !== "string"
+    || typeof record.consentCapabilitySnapshotDigest !== "string"
+    || !/^[0-9a-f]{64}$/.test(record.consentCapabilitySnapshotDigest)) throw new RangeError("OMR_REQUEST_INVALID");
+  return {
+    pageCount: record.pageCount as number,
+    sourceKind: record.sourceKind as Extract<InputSourceKind, "digital-pdf" | "scanned-pdf" | "camera-photo">,
+    rights: parseRights(record.rights), providerTransferConsent: true as const,
+    consentCapabilitySnapshotDigest: record.consentCapabilitySnapshotDigest as SemanticDigest,
+    idempotencyKey: record.idempotencyKey,
+  };
 }
 
 export function parseVendorInputBody(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("OMR_REQUEST_INVALID");
   const record = value as Record<string, unknown>;
-  if (typeof record.requestId !== "string") throw new RangeError("OMR_REQUEST_INVALID");
+  if (typeof record.requestId !== "string" || record.requestId.length < 1 || record.requestId.length > 128) throw new RangeError("OMR_REQUEST_INVALID");
   if (record.kind === "select-instrument" && typeof record.choice === "string") return { kind: record.kind, requestId: record.requestId, choice: record.choice } as const;
   if (record.kind === "confirm-page-order" && Array.isArray(record.pageIndices) && record.pageIndices.every(Number.isSafeInteger)) return { kind: record.kind, requestId: record.requestId, pageIndices: record.pageIndices as number[] } as const;
-  if (record.kind === "vendor-specific" && typeof record.schemaId === "string" && record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)) return { kind: record.kind, requestId: record.requestId, schemaId: record.schemaId, payload: record.payload as Readonly<Record<string, string | number | boolean>> } as const;
+  if (record.kind === "vendor-specific" && typeof record.schemaId === "string" && record.schemaId.length > 0 && record.schemaId.length <= 128
+    && record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)) {
+    const payload = record.payload as Readonly<Record<string, unknown>>;
+    if (Object.keys(payload).length > 32 || JSON.stringify(payload).length > 8_192
+      || Object.entries(payload).some(([key, item]) => key.length < 1 || key.length > 128
+        || !["string", "number", "boolean"].includes(typeof item)
+        || (typeof item === "string" && item.length > 8_192)
+        || (typeof item === "number" && !Number.isFinite(item)))) throw new RangeError("OMR_REQUEST_INVALID");
+    return { kind: record.kind, requestId: record.requestId, schemaId: record.schemaId, payload: payload as Readonly<Record<string, string | number | boolean>> } as const;
+  }
   throw new RangeError("OMR_REQUEST_INVALID");
 }

@@ -108,11 +108,6 @@ function applyPatch(source: SongSourceDocument, target: RevisionScopedTarget["ta
     if (target.kind === "section-text" && patch.kind === "replace-source-text" && measure.textEvents.some((event) => event.id === target.sourceTextId)) {
       found = true; return { ...measure, textEvents: measure.textEvents.map((event) => event.id === target.sourceTextId ? { ...event, text: patch.text.normalize("NFC") } : event) };
     }
-    if (target.kind === "measure-end" && measure.id === target.sourceMeasureId && (patch.kind === "insert-barline" || patch.kind === "delete-barline")) {
-      // SongSourceDocument keeps the measure boundary structurally; `implicit` is the accepted
-      // authority for whether that boundary was explicit in the recognized score.
-      found = true; return { ...measure, implicit: patch.kind === "delete-barline" };
-    }
     return measure;
   });
   if (!found) throw new RangeError("STALE_REFERENCE");
@@ -181,12 +176,12 @@ export async function applyOmrCorrection(input: {
   };
   const history = [...input.source.revisionHistory, revisionRecord];
   const source = normalizeSongSourceDocument({ ...pending, revisionDigest, revisionHistory: history, revisionHistoryDigest: await computeRevisionHistoryDigest(history) });
-  const correctionDigest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v1", target, beforeProjection, patch: input.patch, correctionSource: input.correctionSource, reviewItemId: input.reviewItemId ?? null, autoRepairProposalId: input.autoRepairProposalId ?? null });
+  const correctionDigest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v1", target: input.target, beforeProjection, patch: input.patch, correctionSource: input.correctionSource, reviewItemId: input.reviewItemId ?? null, autoRepairProposalId: input.autoRepairProposalId ?? null });
   const correction: OmrCorrectionRecord = {
     id: `omr-correction:${correctionDigest.slice(0, 32)}`,
     ...(input.reviewItemId ? { reviewItemId: input.reviewItemId } : {}),
     ...(input.autoRepairProposalId ? { autoRepairProposalId: input.autoRepairProposalId } : {}),
-    target, beforeProjection, patch: input.patch, source: input.correctionSource, appliedAt: input.appliedAt,
+    target: input.target, beforeProjection, patch: input.patch, source: input.correctionSource, appliedAt: input.appliedAt,
   };
   return { source, correction, revisionRecord, idRemap };
 }
@@ -218,7 +213,7 @@ export async function acceptOmrReviewAlternative(input: {
   readonly appliedAt: string;
   readonly remaps?: readonly SourceIdRemap[];
 }): Promise<Awaited<ReturnType<typeof applyOmrCorrection>> & { readonly item: OmrReviewItem }> {
-  if (input.item.resolution.status !== "open") throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
+  if (input.item.resolution.status !== "open" && input.item.resolution.status !== "rejected") throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   const alternative = input.item.alternatives.find((candidate) => candidate.id === input.alternativeId);
   if (!alternative) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   const result = await applyOmrCorrection({ source: input.source, target: input.item.target, patch: alternative.patch, correctionSource: "review-alternative", appliedAt: input.appliedAt, reviewItemId: input.item.id, remaps: input.remaps });
@@ -232,16 +227,36 @@ export async function manuallyCorrectOmrReviewItem(input: {
   readonly appliedAt: string;
   readonly remaps?: readonly SourceIdRemap[];
 }): Promise<Awaited<ReturnType<typeof applyOmrCorrection>> & { readonly item: OmrReviewItem }> {
-  if (input.item.resolution.status !== "open" || !isCorrectionPatchCompatible(input.item.target.target, input.patch)) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
+  if ((input.item.resolution.status !== "open" && input.item.resolution.status !== "rejected") || !isCorrectionPatchCompatible(input.item.target.target, input.patch)) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   const result = await applyOmrCorrection({ source: input.source, target: input.item.target, patch: input.patch, correctionSource: "manual", appliedAt: input.appliedAt, reviewItemId: input.item.id, remaps: input.remaps });
   return { ...result, item: { ...input.item, resolution: { status: "manually-corrected", correctionRecordId: result.correction.id } } };
 }
 
 export function rejectOmrReviewAlternatives(item: OmrReviewItem, alternativeIds: readonly string[]): OmrReviewItem {
   const available = new Set(item.alternatives.map((alternative) => alternative.id));
-  if (item.resolution.status !== "open" || alternativeIds.length === 0 || new Set(alternativeIds).size !== alternativeIds.length
+  if ((item.resolution.status !== "open" && item.resolution.status !== "rejected") || alternativeIds.length === 0 || new Set(alternativeIds).size !== alternativeIds.length
     || alternativeIds.some((id) => !available.has(id))) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
-  return { ...item, resolution: { status: "rejected", rejectedAlternativeIds: [...alternativeIds].sort() } };
+  const prior = item.resolution.status === "rejected" ? item.resolution.rejectedAlternativeIds : [];
+  return { ...item, resolution: { status: "rejected", rejectedAlternativeIds: [...new Set([...prior, ...alternativeIds])].sort() } };
+}
+
+export async function unsupportedOmrAutoRepairDiagnostics(source: SongSourceDocument): Promise<readonly import("../diagnostics").Diagnostic[]> {
+  const diagnostics: import("../../import/musicxml/diagnostics").ImportDiagnosticInput[] = [];
+  for (const measure of source.sourceMeasures) {
+    if (measure.leadEvents.some((event) => event.kind === "note" && event.pitch.alter !== 0)) {
+      diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "임시표 문맥 자동 수리는 지원되지 않아 검토가 필요합니다.", details: { sourceMeasureId: measure.id, unsupportedAutoRepair: "ACCIDENTAL_CONTEXT" } });
+    }
+    let cursor = { n: 0, d: 1 } as Fraction;
+    if (measure.leadEvents.some((event) => {
+      const noncontiguous = compareFractions(event.onset, cursor) !== 0;
+      cursor = addFractions(event.onset, event.duration);
+      return noncontiguous;
+    })) {
+      diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "성부 시간축 자동 수리는 지원되지 않아 검토가 필요합니다.", details: { sourceMeasureId: measure.id, unsupportedAutoRepair: "VOICE_TIMELINE" } });
+    }
+  }
+  const { materializeImportDiagnostics } = await import("../../import/musicxml/diagnostics");
+  return materializeImportDiagnostics(diagnostics);
 }
 
 export async function resolveOmrAutoRepair(input: {

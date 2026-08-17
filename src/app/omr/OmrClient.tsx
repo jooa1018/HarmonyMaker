@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { binaryDigest, type BinaryDigest } from "../../domain/digest/canonical";
 import { storeOmrImportHandoff } from "../../domain/omr/browser-handoff";
 import { rasterizePdfPages } from "../../domain/omr/browser-raster";
-import type { OmrProviderResult, OmrPublicStatus, VendorInputRequest } from "../../domain/omr/contracts";
+import type { OmrProviderPreflight, OmrProviderResult, OmrPublicStatus } from "../../domain/omr/contracts";
 import { analyzeImageQuality, type ImageQualityReport } from "../../domain/omr/image-quality";
 import { classifyInputSource, type InputSourceKind } from "../../domain/omr/input";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
@@ -29,6 +29,7 @@ interface ApiErrorBody { readonly error?: { readonly messageKo?: string; readonl
 const statusLabels: Readonly<Record<OmrPublicStatus["kind"], string>> = {
   created: "작업 생성됨", uploading: "페이지 업로드 중", queued: "대기 중", processing: "인식 중",
   "needs-input": "추가 입력 필요", completed: "인식 완료", failed: "인식 실패", cancelled: "취소됨",
+  "cancel-pending": "제공자 취소 확인 중", "cancel-failed": "제공자 취소 실패", "reconciliation-required": "제공자 상태 조정 필요",
 };
 
 function inferredMime(file: File): string {
@@ -60,7 +61,7 @@ async function prepareImage(bytes: Uint8Array, mimeType: "image/png" | "image/jp
       const offset = index * 4;
       luma[index] = Math.round(rgba[offset] * 0.2126 + rgba[offset + 1] * 0.7152 + rgba[offset + 2] * 0.0722);
     }
-    return { key: crypto.randomUUID(), bytes, mimeType, digest: await binaryDigest(bytes), previewUrl: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, quality: analyzeImageQuality({ width, height, luma }) };
+    return { key: crypto.randomUUID(), bytes, mimeType, digest: await binaryDigest(bytes), previewUrl: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, quality: analyzeImageQuality({ width, height, luma, originalWidth: bitmap.width, originalHeight: bitmap.height }) };
   } finally { bitmap.close(); }
 }
 
@@ -91,9 +92,12 @@ export function OmrClient() {
   const [message, setMessage] = useState("사진(PNG/JPEG) 또는 PDF를 선택하세요. MusicXML/MXL은 인식 없이 정본 importer로 전달됩니다.");
   const [error, setError] = useState<string>();
   const [csrf, setCsrf] = useState<string>();
+  const [preflight, setPreflight] = useState<OmrProviderPreflight>();
   const [handle, setHandle] = useState<string>();
   const [status, setStatus] = useState<OmrPublicStatus>();
   const [result, setResult] = useState<OmrProviderResult>();
+  const [pageOrderInput, setPageOrderInput] = useState<readonly number[]>([]);
+  const [vendorInputPayload, setVendorInputPayload] = useState<Readonly<Record<string, string | number | boolean>>>({});
 
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => () => { for (const page of pagesRef.current) URL.revokeObjectURL(page.previewUrl); }, []);
@@ -101,6 +105,21 @@ export function OmrClient() {
   const replacePages = useCallback((next: readonly PreparedPage[]) => {
     for (const page of pagesRef.current) URL.revokeObjectURL(page.previewUrl);
     pagesRef.current = next; setPages(next); setHandle(undefined); setStatus(undefined); setResult(undefined);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const session = await json<{ readonly csrfToken: string }>(await fetch("/api/session", { method: "POST" }));
+      const response = await json<{ readonly preflight: OmrProviderPreflight }>(await fetch("/api/omr/provider-capabilities", { cache: "no-store" }));
+      if (!active) return;
+      setCsrf(session.csrfToken);
+      setPreflight((current) => {
+        if (current && current.capabilitySnapshotDigest !== response.preflight.capabilitySnapshotDigest) setTransfer(false);
+        return response.preflight;
+      });
+    })().catch((caught: unknown) => { if (active) setError(caught instanceof Error ? caught.message : "OMR 제공자 사전 고지를 불러오지 못했습니다."); });
+    return () => { active = false; };
   }, []);
 
   const selectFile = useCallback(async (file: File) => {
@@ -134,9 +153,27 @@ export function OmrClient() {
     finally { setBusy(false); }
   }, [replacePages, router]);
 
+  const selectFiles = useCallback(async (files: readonly File[]) => {
+    if (files.length === 1) { await selectFile(files[0]); return; }
+    setBusy(true); setError(undefined);
+    try {
+      if (files.length < 1 || files.length > 12) throw new RangeError("OMR_PAGE_LIMIT_EXCEEDED");
+      const prepared: PreparedPage[] = [];
+      for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const classification = await classifyInputSource({ bytes, declaredMimeType: inferredMime(file), originalFileName: file.name });
+        if (classification.detectedKind !== "camera-photo") throw new RangeError("OMR_MULTI_IMAGE_ONLY");
+        prepared.push(await prepareImage(bytes, classification.mimeType as "image/png" | "image/jpeg"));
+      }
+      replacePages(prepared); setSourceKind("camera-photo"); setPdfConfirmation(false);
+      setMessage(`카메라/이미지 ${prepared.length}쪽을 선택한 순서대로 준비했습니다. 아래에서 명시적으로 순서를 조정하세요.`);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "여러 이미지 페이지를 준비하지 못했습니다."); }
+    finally { setBusy(false); }
+  }, [replacePages, selectFile]);
+
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) void selectFile(file);
+    const files = [...(event.target.files ?? [])];
+    if (files.length) void selectFiles(files);
     event.target.value = "";
   };
 
@@ -153,7 +190,7 @@ export function OmrClient() {
   const duplicate = useMemo(() => new Set(pages.map((page) => page.digest)).size !== pages.length, [pages]);
   const hasWarning = pages.some((page) => page.quality.status === "warn");
   const hasRetake = pages.some((page) => page.quality.status === "retake");
-  const ready = pages.length > 0 && !hasRetake && rights && transfer && (!hasWarning || warnAccepted) && (!duplicate || duplicatesAccepted) && !pdfConfirmation;
+  const ready = pages.length > 0 && !hasRetake && rights && transfer && Boolean(preflight) && (!hasWarning || warnAccepted) && (!duplicate || duplicatesAccepted) && !pdfConfirmation;
 
   const mutate = useCallback(async (url: string, method: "POST" | "DELETE", body?: unknown) => {
     if (!csrf) throw new Error("세션 CSRF 토큰이 없습니다.");
@@ -163,8 +200,10 @@ export function OmrClient() {
   const poll = useCallback(async (jobHandle: string) => {
     for (let attempt = 0; attempt < 90; attempt += 1) {
       const response = await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}`, { cache: "no-store" }));
+      if (response.status.kind === "needs-input" && response.status.inputRequest.kind === "confirm-page-order") setPageOrderInput([...response.status.inputRequest.pageIndices]);
+      if (response.status.kind === "needs-input" && response.status.inputRequest.kind === "vendor-specific") setVendorInputPayload(structuredClone(response.status.inputRequest.payload));
       setStatus(response.status);
-      if (["completed", "failed", "cancelled", "needs-input"].includes(response.status.kind)) {
+      if (["completed", "failed", "cancelled", "needs-input", "cancel-failed", "reconciliation-required"].includes(response.status.kind)) {
         if (response.status.kind === "completed") {
           const exported = await json<{ readonly result: OmrProviderResult }>(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/result`, { cache: "no-store" }));
           setResult(exported.result);
@@ -186,7 +225,12 @@ export function OmrClient() {
         csrfToken = session.csrfToken; setCsrf(csrfToken);
       }
       const headers = { "content-type": "application/json", "x-csrf-token": csrfToken };
-      const created = await json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify({ pageCount: pages.length, sourceKind, rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() }, providerTransferConsent: true, idempotencyKey: crypto.randomUUID() }) }));
+      if (!preflight) throw new RangeError("OMR_PROVIDER_CAPABILITY_MISSING");
+      const createStorageKey = `harmonymaker:omr-create:${pages.map((page) => page.digest).join(":")}`;
+      const idempotencyKey = localStorage.getItem(createStorageKey) ?? crypto.randomUUID();
+      localStorage.setItem(createStorageKey, idempotencyKey);
+      const created = await json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify({ pageCount: pages.length, sourceKind, rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() }, providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey }) }));
+      localStorage.removeItem(createStorageKey);
       setHandle(created.handle); setStatus({ kind: "created" });
       for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
         const page = pages[pageIndex];
@@ -201,15 +245,10 @@ export function OmrClient() {
     finally { setBusy(false); }
   };
 
-  const submitInput = async (request: VendorInputRequest, choice: string) => {
+  const submitInput = async (response: import("../../domain/omr/contracts").VendorInputResponse) => {
     if (!handle) return;
     setBusy(true); setError(undefined);
     try {
-      const response = request.kind === "select-instrument"
-        ? { kind: request.kind, requestId: request.requestId, choice }
-        : request.kind === "confirm-page-order"
-          ? { kind: request.kind, requestId: request.requestId, pageIndices: request.pageIndices }
-          : { kind: request.kind, requestId: request.requestId, schemaId: request.schemaId, payload: request.payload };
       await json(await mutate(`/api/omr/jobs/${encodeURIComponent(handle)}/input`, "POST", response));
       await poll(handle);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "추가 입력을 제출하지 못했습니다."); }
@@ -219,7 +258,7 @@ export function OmrClient() {
   const cancel = async () => {
     if (!handle) return;
     setBusy(true); setError(undefined);
-    try { await json(await mutate(`/api/omr/jobs/${encodeURIComponent(handle)}/cancel`, "POST")); setStatus({ kind: "cancelled" }); }
+    try { await json(await mutate(`/api/omr/jobs/${encodeURIComponent(handle)}/cancel`, "POST")); await poll(handle); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "취소하지 못했습니다."); }
     finally { setBusy(false); }
   };
@@ -254,13 +293,20 @@ export function OmrClient() {
     const next = [...pages]; [next[index], next[target]] = [next[target], next[index]]; setPages(next);
   };
 
+  const moveRequestedPage = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= pageOrderInput.length) return;
+    const next = [...pageOrderInput]; [next[index], next[target]] = [next[target], next[index]]; setPageOrderInput(next);
+  };
+  const vendorSpecificRequest = status?.kind === "needs-input" && status.inputRequest.kind === "vendor-specific" ? status.inputRequest : undefined;
+
   return (
     <div className={styles.flow}>
       <section className="panel" aria-labelledby="omr-source-heading">
         <h2 id="omr-source-heading">1. 안전한 Source 준비</h2>
-        <label className={styles.dropZone} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file) void selectFile(file); }}>
+        <label className={styles.dropZone} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const files = [...event.dataTransfer.files]; if (files.length) void selectFiles(files); }}>
           <span>{busy ? "처리 중…" : "PDF / PNG / JPEG / MusicXML / MXL 선택 또는 드롭"}</span>
-          <input type="file" accept=".pdf,.png,.jpg,.jpeg,.musicxml,.xml,.mxl,application/pdf,image/png,image/jpeg,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFile} disabled={busy} />
+          <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.musicxml,.xml,.mxl,application/pdf,image/png,image/jpeg,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFile} disabled={busy} />
         </label>
         <div className={styles.actions}><button type="button" onClick={() => void loadReference()} disabled={busy}>결정적 reference E2E 불러오기</button></div>
         <p className={styles.status}>{message}</p>
@@ -284,7 +330,8 @@ export function OmrClient() {
           {hasWarning ? <label><input type="checkbox" checked={warnAccepted} onChange={(event) => setWarnAccepted(event.target.checked)} /> 경고 페이지를 확인했으며 현재 이미지로 계속합니다.</label> : null}
           {duplicate ? <label><input type="checkbox" checked={duplicatesAccepted} onChange={(event) => setDuplicatesAccepted(event.target.checked)} /> 같은 digest의 중복 페이지가 의도된 것임을 확인합니다.</label> : null}
           <label><input type="checkbox" checked={rights} onChange={(event) => setRights(event.target.checked)} /> 이 악보를 편곡 생성에 사용하고 처리할 권리가 있습니다.</label>
-          <label><input type="checkbox" checked={transfer} onChange={(event) => setTransfer(event.target.checked)} /> 페이지가 구성된 OMR 제공자에게 전송될 수 있음에 명시적으로 동의합니다.</label>
+          {preflight ? <div className={styles.status} aria-label="OMR provider capability preflight"><strong>{preflight.capabilities.vendorDisplayName}</strong> (<code>{preflight.capabilities.vendorId}</code>) · 외부 전송 {String(preflight.capabilities.externalTransfer)} · evidence {preflight.capabilities.evidenceGranularity} · 즉시 삭제 {String(preflight.capabilities.canDeleteImmediately)} · 보관 고지 <code>{preflight.capabilities.retentionPolicyReference}</code></div> : <p className={styles.notice}>제공자 capability와 보관 고지를 불러오는 중입니다.</p>}
+          <label><input type="checkbox" checked={transfer} disabled={!preflight} onChange={(event) => setTransfer(event.target.checked)} /> 위 capability snapshot과 외부 제공자 전송·보관 고지를 확인하고 명시적으로 동의합니다.</label>
         </div>
         {hasRetake ? <p className={`${styles.status} ${styles.error}`}>RETAKE 페이지는 업로드할 수 없습니다. 다시 촬영하거나 더 선명한 스캔을 선택하세요.</p> : null}
         <div className={styles.actions}><button className="primary" type="button" onClick={() => void start()} disabled={!ready || busy || Boolean(handle)}>인식 시작</button>{handle && status && !["completed", "failed", "cancelled"].includes(status.kind) ? <button type="button" onClick={() => void cancel()} disabled={busy}>취소</button> : null}{handle ? <button type="button" onClick={() => void remove()} disabled={busy}>작업·보관 데이터 삭제</button> : null}</div>
@@ -292,10 +339,11 @@ export function OmrClient() {
 
       {status ? <section className="panel" aria-labelledby="status-heading">
         <h2 id="status-heading">3. 작업 상태</h2>
-        <p className={styles.status}>{statusLabels[status.kind]}{status.kind === "uploading" ? ` · ${status.uploadedPages}/${status.totalPages}` : ""}{status.kind === "failed" ? ` · ${status.code}: ${status.messageKo}` : ""}</p>
+        <p className={styles.status}>{statusLabels[status.kind]}{status.kind === "uploading" ? ` · ${status.uploadedPages}/${status.totalPages}` : ""}{status.kind === "failed" || status.kind === "cancel-failed" || status.kind === "reconciliation-required" ? ` · ${status.code}: ${status.messageKo}` : status.kind === "cancel-pending" ? ` · ${status.messageKo}` : ""}</p>
         {status.kind === "processing" && status.progressBp !== undefined ? <progress className={styles.progress} max={10_000} value={status.progressBp}>{status.progressBp / 100}%</progress> : null}
-        {status.kind === "needs-input" && status.inputRequest.kind === "select-instrument" ? <div><p>인식할 악기/파트를 선택하세요.</p><div className={styles.actions}>{status.inputRequest.choices.map((choice) => <button type="button" key={choice} onClick={() => void submitInput(status.inputRequest, choice)} disabled={busy}>{choice}</button>)}</div></div> : null}
-        {status.kind === "needs-input" && status.inputRequest.kind !== "select-instrument" ? <button type="button" onClick={() => void submitInput(status.inputRequest, "")} disabled={busy}>요청 내용 확인 후 제출</button> : null}
+        {status.kind === "needs-input" && status.inputRequest.kind === "select-instrument" ? <div><p>인식할 악기/파트를 선택하세요.</p><div className={styles.actions}>{status.inputRequest.choices.map((choice) => <button type="button" key={choice} onClick={() => void submitInput({ kind: "select-instrument", requestId: status.inputRequest.requestId, choice })} disabled={busy}>{choice}</button>)}</div></div> : null}
+        {status.kind === "needs-input" && status.inputRequest.kind === "confirm-page-order" ? <div><p>제공자 요청 순서를 직접 확인하고 조정하세요.</p><ol>{pageOrderInput.map((pageIndex, index) => <li key={pageIndex}>원본 page {pageIndex + 1} <button type="button" onClick={() => moveRequestedPage(index, -1)} disabled={busy || index === 0}>앞으로</button><button type="button" onClick={() => moveRequestedPage(index, 1)} disabled={busy || index === pageOrderInput.length - 1}>뒤로</button></li>)}</ol><button type="button" disabled={busy} onClick={() => void submitInput({ kind: "confirm-page-order", requestId: status.inputRequest.requestId, pageIndices: pageOrderInput })}>이 page order 확정</button></div> : null}
+        {vendorSpecificRequest ? <div><p>제공자별 bounded 입력 (<code>{vendorSpecificRequest.schemaId}</code>)</p>{Object.entries(vendorInputPayload).slice(0, 32).map(([key, value]) => <label className={styles.field} key={key}><span>{key}</span>{typeof value === "boolean" ? <input type="checkbox" checked={value} onChange={(event) => setVendorInputPayload((current) => ({ ...current, [key]: event.target.checked }))} /> : <input value={String(value)} maxLength={8192} type={typeof value === "number" ? "number" : "text"} onChange={(event) => setVendorInputPayload((current) => ({ ...current, [key]: typeof value === "number" ? Number(event.target.value) : event.target.value }))} />}</label>)}<button type="button" disabled={busy || JSON.stringify(vendorInputPayload).length > 8192} onClick={() => void submitInput({ kind: "vendor-specific", requestId: vendorSpecificRequest.requestId, schemaId: vendorSpecificRequest.schemaId, payload: vendorInputPayload })}>bounded 입력 제출</button></div> : null}
         <dl className={styles.meta}><dt>opaque handle</dt><dd><code>{handle}</code></dd></dl>
       </section> : null}
 

@@ -66,4 +66,27 @@ describe("deterministic OMR image-quality policy", () => {
     expect(perspective.perspectiveBp).toBeGreaterThanOrEqual(6_500);
     expect(perspective.reasons).toContain("OMR_QUALITY_PERSPECTIVE_SEVERE");
   });
+
+  it("rescales bounded client staff estimates to original pixels at the exact 12/18 thresholds", () => {
+    const twelve = staffFixture(6);
+    const twelveReport = analyzeImageQuality({ ...twelve, originalWidth: twelve.width * 2, originalHeight: twelve.height * 2 });
+    expect(twelveReport.estimatedStaffSpacePixels).toBe(12);
+    expect(twelveReport.reasons).not.toContain("OMR_QUALITY_STAFF_SPACE_TOO_SMALL");
+    expect(twelveReport.reasons).toContain("OMR_QUALITY_STAFF_SPACE_BORDERLINE");
+    const eighteen = staffFixture(9);
+    const eighteenReport = analyzeImageQuality({ ...eighteen, originalWidth: eighteen.width * 2, originalHeight: eighteen.height * 2 });
+    expect(eighteenReport.estimatedStaffSpacePixels).toBe(18);
+    expect(eighteenReport.reasons).not.toContain("OMR_QUALITY_STAFF_SPACE_BORDERLINE");
+  });
+
+  it("keeps client/server policy output identical for a canonical high-resolution analysis plane and rejects malformed scale metadata", () => {
+    const canonical = staffFixture(18, 20, 1200, 1400);
+    const client = analyzeImageQuality({ ...canonical, originalWidth: 1200, originalHeight: 1400 });
+    const server = analyzeImageQuality(canonical);
+    expect(client).toEqual(server);
+    const rotated = { width: canonical.height, height: canonical.width, luma: new Uint8Array(canonical.width * canonical.height).fill(255) };
+    expect(() => analyzeImageQuality(rotated)).not.toThrow();
+    expect(() => analyzeImageQuality({ ...canonical, originalWidth: 100, originalHeight: 100 })).toThrow("OMR_IMAGE_QUALITY_INPUT_INVALID");
+    expect(() => analyzeImageQuality({ width: 1200, height: 1400, luma: new Uint8Array(7) })).toThrow("OMR_IMAGE_QUALITY_INPUT_INVALID");
+  });
 });
