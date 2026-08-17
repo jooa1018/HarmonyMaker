@@ -3,6 +3,7 @@ import "server-only";
 import { basisPoints } from "../../domain/rates";
 import { coordinateMicrounit } from "../../domain/omr/foundation";
 import { REFERENCE_OMR_MUSICXML, REFERENCE_OMR_PAGE_DIGEST } from "../../domain/omr/reference-fixture-data";
+import { REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST } from "../../domain/omr/reference-duplicate-jpeg-fixture-data";
 import type { ReferenceOmrFixture } from "./reference-adapter";
 
 export const REFERENCE_OMR_FIXTURES: readonly ReferenceOmrFixture[] = Object.freeze([{
@@ -33,5 +34,17 @@ export const REFERENCE_OMR_FIXTURES: readonly ReferenceOmrFixture[] = Object.fre
     { vendorTargetId: "measure_42", target: { kind: "measure-start", musicXmlPartOrdinal: 0, measureOrdinal: 0 } },
     { vendorTargetId: "symbol_abc", target: { kind: "chord-event", musicXmlPartOrdinal: 0, measureOrdinal: 0, eventOrdinal: 0 } },
   ],
+  retentionInfo: { canDeleteImmediately: true, policyReference: "in-repository-reference-fixture" },
+}, {
+  id: "hm-reference-canonical-duplicate-jpeg-v1",
+  orderedPageDigests: [REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST, REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST],
+  statusScript: [{ kind: "completed" }],
+  musicXml: REFERENCE_OMR_MUSICXML,
+  evidence: {
+    granularity: "measure",
+    frames: [{ id: "reference-duplicate-frame:original", pageIndex: 0, coordinateSpace: "normalized-original", widthPixels: 260, heightPixels: 340, imageDigest: REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST }],
+    transforms: [],
+    evidence: [{ id: "reference-duplicate-evidence:measure", vendorTargetId: "duplicate_measure_fixture", granularity: "measure", box: { frameId: "reference-duplicate-frame:original", xMu: coordinateMicrounit(0), yMu: coordinateMicrounit(0), widthMu: coordinateMicrounit(1_000_000), heightMu: coordinateMicrounit(1_000_000) }, vendorId: "hm-reference" }],
+  },
   retentionInfo: { canDeleteImmediately: true, policyReference: "in-repository-reference-fixture" },
 }]);

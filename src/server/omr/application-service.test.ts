@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 
 vi.mock("server-only", () => ({}));
 
 import { binaryDigest, semanticDigest, type BinaryDigest } from "../../domain/digest/canonical";
 import { OmrVendorCallError } from "../../domain/omr/contracts";
 import { coordinateMicrounit } from "../../domain/omr/foundation";
+import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
 import { basisPoints } from "../../domain/rates";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
 import { DurableOmrApplicationService, omrQuotaConfig } from "./application-service";
+import { decodeOmrImagePage } from "./page-decoder";
 import { ReferenceOmrVendorAdapter, type ReferenceOmrFixture } from "./reference-adapter";
 import { MemoryOmrStore, type OmrStore } from "./store";
 
@@ -187,6 +190,43 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(retry.service.uploadPage(retryHandle, retryUpload)).rejects.toThrow("OMR_PAGE_UPLOAD_FAILED");
     await expect(retry.service.uploadPage(retryHandle, retryUpload)).rejects.toThrow("OMR_PAGE_RETRY_EXHAUSTED");
     expect(retry.adapter.uploadPage).toHaveBeenCalledTimes(3);
+  });
+
+  it("detects canonical duplicate JPEG pages despite distinct raw upload digests and uploads after acknowledgment", async () => {
+    const jpeg = Uint8Array.from(await sharp(referenceOmrPageBytes()).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer());
+    if (jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) throw new Error("fixture JPEG lacks EOI marker");
+    const comment = new TextEncoder().encode("HarmonyMaker canonical duplicate fixture");
+    const commentSegment = Uint8Array.from([0xff, 0xfe, (comment.length + 2) >> 8, (comment.length + 2) & 0xff, ...comment]);
+    const jpegWithComment = Uint8Array.from([...jpeg.slice(0, -2), ...commentSegment, 0xff, 0xd9]);
+    const rawDigest0 = await binaryDigest(jpeg);
+    const rawDigest1 = await binaryDigest(jpegWithComment);
+    expect(rawDigest0).not.toBe(rawDigest1);
+    const decoded0 = await decodeOmrImagePage({ bytes: jpeg, declaredMimeType: "image/jpeg", pageIndex: 0 });
+    const decoded1 = await decodeOmrImagePage({ bytes: jpegWithComment, declaredMimeType: "image/jpeg", pageIndex: 1 });
+    expect(decoded1.pageDigest).toBe(decoded0.pageDigest);
+
+    const base = await harness();
+    const fixture = { ...base.fixture, orderedPageDigests: [decoded0.pageDigest, decoded1.pageDigest] };
+    const adapter = new ReferenceOmrVendorAdapter([fixture], { supportedMimeTypes: ["image/jpeg"] });
+    const service = new DurableOmrApplicationService({
+      ...base.dependencies,
+      adapter,
+      inspectPage: async ({ bytes, mimeType, pageIndex }) => {
+        if (mimeType !== "image/jpeg") throw new RangeError("OMR_INPUT_FORMAT_UNSUPPORTED");
+        const decoded = await decodeOmrImagePage({ bytes, declaredMimeType: mimeType, pageIndex });
+        return { bytes: decoded.bytes, digest: decoded.pageDigest, mimeType: decoded.mimeType, width: decoded.width, height: decoded.height, quality: decoded.quality };
+      },
+    });
+    const pages = [
+      { pageIndex: 0, pageDigest: rawDigest0, mimeType: "image/jpeg" as const },
+      { pageIndex: 1, pageDigest: rawDigest1, mimeType: "image/jpeg" as const },
+    ];
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 2, pages, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "canonical-jpeg-duplicate" });
+    await service.uploadPage(handle, { ...pages[0], idempotencyKey: "canonical-jpeg-upload-0", bytes: new Blob([jpeg.slice().buffer as ArrayBuffer], { type: "image/jpeg" }) });
+    const second = { ...pages[1], idempotencyKey: "canonical-jpeg-upload-1", bytes: new Blob([jpegWithComment.slice().buffer as ArrayBuffer], { type: "image/jpeg" }) };
+    await expect(service.uploadPage(handle, second)).rejects.toThrow("OMR_DUPLICATE_PAGE_CONFIRMATION_REQUIRED");
+    await expect(service.uploadPage(handle, { ...second, duplicateConfirmed: true })).resolves.toBeUndefined();
+    expect(base.store.listJobs()[0].pages.map((page) => page.pageDigest)).toEqual([decoded0.pageDigest, decoded1.pageDigest]);
   });
 
   it("recovers post-Vendor page persistence failure through the stable page idempotency key", async () => {

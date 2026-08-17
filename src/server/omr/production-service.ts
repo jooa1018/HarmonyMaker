@@ -17,7 +17,7 @@ export async function getProductionOmrApplicationService(input: {
 }): Promise<DurableOmrApplicationService> {
   const [services, config] = await Promise.all([getProductionServices(), Promise.resolve(loadProductionOmrConfig())]);
   if (!referenceAdapter && config.providerMode === "reference") referenceAdapter = new ReferenceOmrVendorAdapter(REFERENCE_OMR_FIXTURES, {
-    vendorId: "hm-reference", supportedMimeTypes: ["image/png"], maxPages: 12, evidenceGranularity: "measure",
+    vendorId: "hm-reference", supportedMimeTypes: ["image/png", "image/jpeg"], maxPages: 12, evidenceGranularity: "measure",
     supportsDeletion: true, retentionDisclosure: true, supportsIdempotency: true, supportsInteractiveInput: true, estimatedCreditPerPage: 1,
   });
   const adapter = createOmrVendorAdapter({

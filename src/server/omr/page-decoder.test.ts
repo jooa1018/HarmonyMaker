@@ -5,6 +5,8 @@ vi.mock("server-only", () => ({}));
 
 import { decodeOmrImagePage, validateOmrImageDimensions } from "./page-decoder";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
+import { REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST, REFERENCE_OMR_DUPLICATE_JPEG_RAW_DIGESTS, referenceOmrDuplicateJpegPages } from "../../domain/omr/reference-duplicate-jpeg-fixture-data";
+import { binaryDigest } from "../../domain/digest/canonical";
 import { analyzeImageQuality } from "../../domain/omr/image-quality";
 
 describe("authoritative OMR image decode", () => {
@@ -38,6 +40,14 @@ describe("authoritative OMR image decode", () => {
   it("keeps the shared client/server reference fixture quality decision stable", async () => {
     const decoded = await decodeOmrImagePage({ bytes: referenceOmrPageBytes(), declaredMimeType: "image/png", pageIndex: 0 });
     expect(decoded.quality).toMatchObject({ status: "pass", reasons: [] });
+  });
+
+  it("keeps distinct raw JPEG fixture bytes bound to one canonical decoded page", async () => {
+    const pages = referenceOmrDuplicateJpegPages();
+    expect(await Promise.all(pages.map(binaryDigest))).toEqual(REFERENCE_OMR_DUPLICATE_JPEG_RAW_DIGESTS);
+    const decoded = await Promise.all(pages.map((bytes, pageIndex) => decodeOmrImagePage({ bytes, declaredMimeType: "image/jpeg", pageIndex })));
+    expect(decoded.map((page) => page.pageDigest)).toEqual([REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST, REFERENCE_OMR_DUPLICATE_JPEG_CANONICAL_DIGEST]);
+    expect(decoded.map((page) => page.quality.status)).toEqual(["pass", "pass"]);
   });
 
   it("uses the server report as authority across actual high-resolution client downscales at 12/18px staff space", async () => {

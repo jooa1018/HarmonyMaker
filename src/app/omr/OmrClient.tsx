@@ -10,6 +10,7 @@ import type { OmrProviderPreflight, OmrProviderResult, OmrPublicStatus } from ".
 import { analyzeImageQuality, type ImageQualityReport } from "../../domain/omr/image-quality";
 import { classifyInputSource, type InputSourceKind } from "../../domain/omr/input";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
+import { referenceOmrDuplicateJpegPages } from "../../domain/omr/reference-duplicate-jpeg-fixture-data";
 import { mapEvidenceBoxToNormalizedOriginal, type BoundingBox } from "../../domain/omr/foundation";
 import styles from "./omr.module.css";
 
@@ -17,7 +18,8 @@ interface PreparedPage {
   readonly key: string;
   readonly bytes: Uint8Array;
   readonly mimeType: "image/png" | "image/jpeg";
-  readonly digest: BinaryDigest;
+  readonly rawDigest: BinaryDigest;
+  readonly canonicalPageDigest: BinaryDigest;
   readonly previewUrl: string;
   readonly width: number;
   readonly height: number;
@@ -44,7 +46,7 @@ function inferredMime(file: File): string {
   return "application/octet-stream";
 }
 
-async function prepareImage(bytes: Uint8Array, mimeType: "image/png" | "image/jpeg"): Promise<PreparedPage> {
+async function prepareImage(bytes: Uint8Array, mimeType: "image/png" | "image/jpeg"): Promise<Omit<PreparedPage, "canonicalPageDigest">> {
   const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: mimeType });
   const bitmap = await createImageBitmap(blob, { imageOrientation: "from-image", premultiplyAlpha: "none", colorSpaceConversion: "default" });
   try {
@@ -63,7 +65,7 @@ async function prepareImage(bytes: Uint8Array, mimeType: "image/png" | "image/jp
       luma[index] = Math.round(rgba[offset] * 0.2126 + rgba[offset + 1] * 0.7152 + rgba[offset + 2] * 0.0722);
     }
     const clientQuality = analyzeImageQuality({ width, height, luma, originalWidth: bitmap.width, originalHeight: bitmap.height });
-    return { key: crypto.randomUUID(), bytes, mimeType, digest: await binaryDigest(bytes), previewUrl: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, clientQuality, quality: clientQuality };
+    return { key: crypto.randomUUID(), bytes, mimeType, rawDigest: await binaryDigest(bytes), previewUrl: URL.createObjectURL(blob), width: bitmap.width, height: bitmap.height, clientQuality, quality: clientQuality };
   } finally { bitmap.close(); }
 }
 
@@ -133,9 +135,9 @@ export function OmrClient() {
       csrfToken = session.csrfToken; setCsrf(csrfToken);
     }
     const response = await json<{ readonly inspection: { readonly digest: BinaryDigest; readonly width: number; readonly height: number; readonly quality: ImageQualityReport } }>(await fetch("/api/omr/quality-preflight", {
-      method: "POST", headers: { "content-type": mimeType, "x-csrf-token": csrfToken, "x-page-digest": prepared.digest }, body: bytes.slice().buffer as ArrayBuffer,
+      method: "POST", headers: { "content-type": mimeType, "x-csrf-token": csrfToken, "x-page-digest": prepared.rawDigest }, body: bytes.slice().buffer as ArrayBuffer,
     }));
-    return { ...prepared, width: response.inspection.width, height: response.inspection.height, quality: response.inspection.quality };
+    return { ...prepared, canonicalPageDigest: response.inspection.digest, width: response.inspection.width, height: response.inspection.height, quality: response.inspection.quality };
   }, [csrf]);
 
   const selectFile = useCallback(async (file: File) => {
@@ -203,7 +205,17 @@ export function OmrClient() {
     finally { setBusy(false); }
   };
 
-  const duplicate = useMemo(() => new Set(pages.map((page) => page.digest)).size !== pages.length, [pages]);
+  const loadCanonicalDuplicateReference = async () => {
+    setBusy(true); setError(undefined);
+    try {
+      const prepared = await Promise.all(referenceOmrDuplicateJpegPages().map((bytes) => prepareAuthoritativeImage(bytes, "image/jpeg")));
+      replacePages(prepared); setSourceKind("camera-photo"); setPdfConfirmation(false);
+      setMessage("raw bytes는 다르지만 정규화된 decoded page가 같은 JPEG 2쪽을 준비했습니다.");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "중복 JPEG fixture를 읽지 못했습니다."); }
+    finally { setBusy(false); }
+  };
+
+  const duplicate = useMemo(() => new Set(pages.map((page) => page.canonicalPageDigest)).size !== pages.length, [pages]);
   const hasWarning = pages.some((page) => page.quality.status === "warn");
   const hasRetake = pages.some((page) => page.quality.status === "retake");
   const ready = pages.length > 0 && !hasRetake && rights && transfer && Boolean(preflight) && (!hasWarning || warnAccepted) && (!duplicate || duplicatesAccepted) && !pdfConfirmation;
@@ -242,7 +254,7 @@ export function OmrClient() {
       }
       const headers = { "content-type": "application/json", "x-csrf-token": csrfToken };
       if (!preflight) throw new RangeError("OMR_PROVIDER_CAPABILITY_MISSING");
-      const createStorageKey = `harmonymaker:omr-create:v2:${preflight.capabilitySnapshotDigest}:${sourceKind}:${pages.map((page) => page.digest).join(":")}`;
+      const createStorageKey = `harmonymaker:omr-create:v3:${preflight.capabilitySnapshotDigest}:${sourceKind}:${pages.map((page) => page.rawDigest).join(":")}`;
       const recoveryStorageKey = `${createStorageKey}:recovered-handle`;
       let jobHandle = localStorage.getItem(recoveryStorageKey);
       let recoveredStatus: OmrPublicStatus | undefined;
@@ -251,7 +263,7 @@ export function OmrClient() {
       } else {
         const stored = localStorage.getItem(createStorageKey);
         const createRequest = stored ? JSON.parse(stored) as Record<string, unknown> : {
-          pageCount: pages.length, pages: pages.map((page, pageIndex) => ({ pageIndex, pageDigest: page.digest, mimeType: page.mimeType })), sourceKind,
+          pageCount: pages.length, pages: pages.map((page, pageIndex) => ({ pageIndex, pageDigest: page.rawDigest, mimeType: page.mimeType })), sourceKind,
           rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() },
           providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: crypto.randomUUID(),
         };
@@ -268,7 +280,7 @@ export function OmrClient() {
           const page = pages[pageIndex];
           setStatus({ kind: "uploading", uploadedPages: pageIndex, totalPages: pages.length });
           await json(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/pages/${pageIndex}`, {
-            method: "PUT", headers: { "content-type": page.mimeType, "x-csrf-token": csrfToken, "x-page-digest": page.digest, "x-idempotency-key": `${jobHandle}:${pageIndex}`, "x-quality-warning-acknowledged": String(warnAccepted), "x-duplicate-page-confirmed": String(duplicatesAccepted) }, body: page.bytes.slice().buffer as ArrayBuffer,
+            method: "PUT", headers: { "content-type": page.mimeType, "x-csrf-token": csrfToken, "x-page-digest": page.rawDigest, "x-idempotency-key": `${jobHandle}:${pageIndex}`, "x-quality-warning-acknowledged": String(warnAccepted), "x-duplicate-page-confirmed": String(duplicatesAccepted) }, body: page.bytes.slice().buffer as ArrayBuffer,
           }));
         }
         await json(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/start`, { method: "POST", headers: { "x-csrf-token": csrfToken } }));
@@ -345,7 +357,7 @@ export function OmrClient() {
           <span>{busy ? "처리 중…" : "PDF / PNG / JPEG / MusicXML / MXL 선택 또는 드롭"}</span>
           <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.musicxml,.xml,.mxl,application/pdf,image/png,image/jpeg,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFile} disabled={busy} />
         </label>
-        <div className={styles.actions}><button type="button" onClick={() => void loadReference()} disabled={busy}>결정적 reference E2E 불러오기</button></div>
+        <div className={styles.actions}><button type="button" onClick={() => void loadReference()} disabled={busy}>결정적 reference E2E 불러오기</button><button type="button" onClick={() => void loadCanonicalDuplicateReference()} disabled={busy}>canonical duplicate JPEG E2E</button></div>
         <p className={styles.status}>{message}</p>
         {error ? <p className={`${styles.status} ${styles.error}`} role="alert">{error}</p> : null}
       </section>
@@ -366,7 +378,7 @@ export function OmrClient() {
         {pdfConfirmation ? <div className={styles.checks}><label><input type="radio" name="pdf-kind" onChange={() => { setSourceKind("digital-pdf"); setPdfConfirmation(false); }} /> 텍스트/벡터 기반 디지털 PDF</label><label><input type="radio" name="pdf-kind" onChange={() => { setSourceKind("scanned-pdf"); setPdfConfirmation(false); }} /> 스캔 이미지 PDF</label></div> : null}
         <div className={styles.checks}>
           {hasWarning ? <label><input type="checkbox" checked={warnAccepted} onChange={(event) => setWarnAccepted(event.target.checked)} /> 경고 페이지를 확인했으며 현재 이미지로 계속합니다.</label> : null}
-          {duplicate ? <label><input type="checkbox" checked={duplicatesAccepted} onChange={(event) => setDuplicatesAccepted(event.target.checked)} /> 같은 digest의 중복 페이지가 의도된 것임을 확인합니다.</label> : null}
+          {duplicate ? <label><input type="checkbox" checked={duplicatesAccepted} onChange={(event) => setDuplicatesAccepted(event.target.checked)} /> 정규화된 동일 페이지가 의도된 중복임을 확인합니다.</label> : null}
           <label><input type="checkbox" checked={rights} onChange={(event) => setRights(event.target.checked)} /> 이 악보를 편곡 생성에 사용하고 처리할 권리가 있습니다.</label>
           {preflight ? <div className={styles.status} aria-label="OMR provider capability preflight"><strong>{preflight.capabilities.vendorDisplayName}</strong> (<code>{preflight.capabilities.vendorId}</code>) · 외부 전송 {String(preflight.capabilities.externalTransfer)} · evidence {preflight.capabilities.evidenceGranularity} · 즉시 삭제 {String(preflight.capabilities.canDeleteImmediately)} · 보관 고지 <code>{preflight.capabilities.retentionPolicyReference}</code></div> : <p className={styles.notice}>제공자 capability와 보관 고지를 불러오는 중입니다.</p>}
           <label><input type="checkbox" checked={transfer} disabled={!preflight} onChange={(event) => setTransfer(event.target.checked)} /> 위 capability snapshot과 외부 제공자 전송·보관 고지를 확인하고 명시적으로 동의합니다.</label>

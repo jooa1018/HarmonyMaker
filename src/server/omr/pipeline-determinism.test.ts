@@ -12,7 +12,7 @@ import {
 import { REFERENCE_OMR_MUSICXML, referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
 import { attachOmrReviewContext, createInitialOmrReviewContext, prepareVendorMusicXml } from "../../domain/omr/normalization";
 import { integrateReviewedOmrSource } from "../../domain/omr/product-handoff";
-import { manuallyCorrectOmrReviewItem } from "../../domain/omr/review";
+import { createOmrReviewItem, manuallyCorrectOmrReviewItem } from "../../domain/omr/review";
 import { basisPoints } from "../../domain/rates";
 import { validateHarmonyProject } from "../../domain/project";
 import {
@@ -22,6 +22,8 @@ import { deriveQuickReview } from "../../import/review/quick-review";
 import { step3ImportVersionsFromRegistry, type MusicXmlImportDraft } from "../../import/musicxml/types";
 import { createProjectFromQuickReview, generateProjectVariant } from "../../product/workspace";
 import { loadProductExecutionRegistry } from "../../product/registry";
+import { MemoryLocalProjectStore } from "../../product/local-project-store";
+import { exportHarmonyProject, importHarmonyProject } from "../../product/project-transfer";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
@@ -125,18 +127,49 @@ describe("canonical OMR fixture pipeline determinism", () => {
       const item = initial.reviewRecord.reviewItems[0];
       const parsedChord = parseChord("Dm");
       if (parsedChord.status !== "ok") throw new Error("deterministic test chord failed to parse");
-      const corrected = await manuallyCorrectOmrReviewItem({
+      const chordCorrected = await manuallyCorrectOmrReviewItem({
         source: project.source,
         item,
         patch: { kind: "chord", parseResult: parsedChord },
         appliedAt: now.toISOString(),
       });
-      const reviewRecord: OmrReviewRecord = { ...initial.reviewRecord, corrections: [corrected.correction], reviewItems: [corrected.item] };
-      const source = await attachOmrReviewContext({ source: corrected.source, providerResult, reviewRecord, selection });
+      const originalRevision = item.target.sourceRevision;
+      const pageEvidenceId = providerResult.evidence.evidence.find((evidence) => evidence.granularity === "page")?.id ?? providerResult.evidence.evidence[0].id;
+      const voiceItem = await createOmrReviewItem({
+        target: { sourceRevision: originalRevision, target: { kind: "voice-event", eventId: project.source.sourceMeasures[0].leadEvents[0].id } },
+        reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "D4", patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } } }], evidenceIds: [pageEvidenceId],
+      });
+      const voiceCorrected = await manuallyCorrectOmrReviewItem({
+        source: chordCorrected.source, item: voiceItem, patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } },
+        appliedAt: now.toISOString(), remaps: [chordCorrected.idRemap],
+      });
+      const measureItem = await createOmrReviewItem({
+        target: { sourceRevision: originalRevision, target: { kind: "measure-start", sourceMeasureId: project.source.sourceMeasures[0].id } },
+        reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ labelKo: "G major", patch: { kind: "key-signature", value: { tonic: { step: "G", alter: 0 }, mode: "major" } } }], evidenceIds: [pageEvidenceId],
+      });
+      const measureCorrected = await manuallyCorrectOmrReviewItem({
+        source: voiceCorrected.source, item: measureItem, patch: { kind: "key-signature", value: { tonic: { step: "G", alter: 0 }, mode: "major" } },
+        appliedAt: now.toISOString(), remaps: [chordCorrected.idRemap, voiceCorrected.idRemap],
+      });
+      const reviewRecord: OmrReviewRecord = {
+        ...initial.reviewRecord,
+        corrections: [chordCorrected.correction, voiceCorrected.correction, measureCorrected.correction],
+        reviewItems: [chordCorrected.item, voiceCorrected.item, measureCorrected.item],
+      };
+      const source = await attachOmrReviewContext({ source: measureCorrected.source, providerResult, reviewRecord, selection });
       if (iteration === 0) {
         const integrated = await integrateReviewedOmrSource(project, source);
         const integrity = await validateHarmonyProject(integrated, await loadProductExecutionRegistry());
         if (integrity.status !== "complete") throw new Error(JSON.stringify(integrity.diagnostics));
+        const encoded = await exportHarmonyProject(integrated);
+        const imported = await importHarmonyProject(encoded);
+        expect(imported.source.importInfo?.omrReviewRecord?.corrections).toHaveLength(3);
+        const localStore = new MemoryLocalProjectStore();
+        await localStore.save({ projectId: "omr-sequential-reload", updatedAt: "2026-01-01T00:00:00.000Z", project: imported });
+        expect((await localStore.load("omr-sequential-reload"))?.project.source.importInfo?.omrReviewRecord?.corrections).toHaveLength(3);
+        const tamperedProject = JSON.parse(encoded) as { source: { importInfo: { omrReviewRecord: { corrections: Array<{ beforeProjection: string }> } } } };
+        tamperedProject.source.importInfo.omrReviewRecord.corrections[1].beforeProjection = "{}";
+        await expect(importHarmonyProject(JSON.stringify(tamperedProject))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
         const generation = await generateProjectVariant(integrated, "standard");
         expect(generation.status).toBe("complete");
       }

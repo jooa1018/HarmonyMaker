@@ -6,6 +6,7 @@ import { fraction } from "../fraction";
 import { COMMON_TIME } from "../meter";
 import type { SongSourceDocument } from "../source/model";
 import { computeRevisionHistoryDigest } from "../source/revision";
+import { isSongSourceDocument, validateSongSourceDocumentIntegrity } from "../source/validation";
 import { validateOmrReviewCompletion, validateOmrReviewRecord, type OmrReviewRecord } from "./foundation";
 import {
   acceptOmrReviewAlternative, applyOmrCorrection, createOmrReviewItem,
@@ -150,12 +151,46 @@ describe("typed OMR correction and Source revision", () => {
     expect(complete.corrections.map((correction) => correction.target.sourceRevision.revisionOrdinal)).toEqual([0, 1, 2]);
     expect(complete.corrections.map((correction) => correction.reviewItemTarget?.sourceRevision.revisionOrdinal)).toEqual([0, 0, 0]);
     expect(await validateOmrCorrectionHistory(sectionManual.source, complete)).toEqual([]);
-    const reloadedSource = JSON.parse(JSON.stringify(sectionManual.source)) as SongSourceDocument;
+    const persistedSource = { ...sectionManual.source, importInfo: { ...sectionManual.source.importInfo!, omrReviewRecord: complete } };
+    expect(await validateSongSourceDocumentIntegrity(persistedSource, "repeat-v1")).toBe(true);
+    const reloadedSource = JSON.parse(JSON.stringify(persistedSource)) as SongSourceDocument;
     const reloadedRecord = JSON.parse(JSON.stringify(complete)) as OmrReviewRecord;
     expect(validateOmrReviewRecord(reloadedRecord)).toEqual([]);
     expect(await validateOmrCorrectionHistory(reloadedSource, reloadedRecord)).toEqual([]);
-    const tampered = { ...reloadedRecord, corrections: reloadedRecord.corrections.map((correction, index) => index === 1 ? { ...correction, beforeProjection: "{}" } : correction) };
-    expect(await validateOmrCorrectionHistory(reloadedSource, tampered)).toContain(`${"OMR_REVIEW_RESOLUTION_INVALID"}:${reloadedRecord.corrections[1].id}:before-projection`);
+    expect(await validateSongSourceDocumentIntegrity(reloadedSource, "repeat-v1")).toBe(true);
+
+    const withRecord = (record: OmrReviewRecord): SongSourceDocument => ({ ...reloadedSource, importInfo: { ...reloadedSource.importInfo!, omrReviewRecord: record } });
+    const beforeProjection = { ...reloadedRecord, corrections: reloadedRecord.corrections.map((correction, index) => index === 1 ? { ...correction, beforeProjection: "{}" } : correction) };
+    expect(isSongSourceDocument(withRecord(beforeProjection))).toBe(true);
+    expect(await validateSongSourceDocumentIntegrity(withRecord(beforeProjection), "repeat-v1")).toBe(false);
+
+    const replacementId = `omr-correction:${"f".repeat(32)}`;
+    const correctionId = {
+      ...reloadedRecord,
+      corrections: reloadedRecord.corrections.map((correction, index) => index === 1 ? { ...correction, id: replacementId } : correction),
+      reviewItems: reloadedRecord.reviewItems.map((item) => item.id === reloadedRecord.corrections[1].reviewItemId
+        ? { ...item, resolution: { ...item.resolution, correctionRecordId: replacementId } }
+        : item),
+    } as OmrReviewRecord;
+    expect(validateOmrReviewRecord(correctionId)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(withRecord(correctionId), "repeat-v1")).toBe(false);
+
+    const resolvedTarget = { ...reloadedRecord, corrections: reloadedRecord.corrections.map((correction, index) => index === 1 ? { ...correction, target: { ...correction.target, sourceRevision: reloadedRecord.corrections[0].target.sourceRevision } } : correction) };
+    expect(validateOmrReviewRecord(resolvedTarget)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(withRecord(resolvedTarget), "repeat-v1")).toBe(false);
+
+    const correctionOrder = { ...reloadedRecord, corrections: [reloadedRecord.corrections[1], reloadedRecord.corrections[0], reloadedRecord.corrections[2]] };
+    expect(validateOmrReviewRecord(correctionOrder)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(withRecord(correctionOrder), "repeat-v1")).toBe(false);
+
+    const staleReviewTarget = { ...reloadedRecord.corrections[1].reviewItemTarget!, sourceRevision: { ...reloadedRecord.corrections[1].reviewItemTarget!.sourceRevision, revisionDigest: "f".repeat(64) as SongSourceDocument["revisionDigest"] } };
+    const remapLinkage = {
+      ...reloadedRecord,
+      corrections: reloadedRecord.corrections.map((correction, index) => index === 1 ? { ...correction, reviewItemTarget: staleReviewTarget } : correction),
+      reviewItems: reloadedRecord.reviewItems.map((item) => item.id === reloadedRecord.corrections[1].reviewItemId ? { ...item, target: staleReviewTarget } : item),
+    };
+    expect(validateOmrReviewRecord(remapLinkage)).toEqual([]);
+    expect(await validateSongSourceDocumentIntegrity(withRecord(remapLinkage), "repeat-v1")).toBe(false);
     expect(sectionManual.source.sourceMeasures[0]).toMatchObject({ leadEvents: [expect.objectContaining({ pitch: { step: "D", alter: 0, octave: 4 } })], textEvents: [expect.objectContaining({ text: "Chorus" })] });
   });
 });
