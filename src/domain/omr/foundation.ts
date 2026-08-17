@@ -4,6 +4,7 @@ import type { Fraction } from "../fraction";
 import type { Alter, KeySignature, SpelledPitch } from "../pitch";
 import type { TimeSignature } from "../meter";
 import type { ResolvedChordParseResult } from "../chord/model";
+import type { BasisPoints } from "../rates";
 import { remapSourceId, type SourceEntityKind, type SourceIdRemap, type SourceRevisionRef } from "../source/revision";
 import { canonicalJson, compareCanonicalValues, semanticDigest } from "../digest/canonical";
 import { isChordParseResult } from "../chord/parser";
@@ -42,19 +43,31 @@ export type EvidenceGranularity = "none" | "page" | "staff" | "measure" | "symbo
 export type CoordinateSpace = "original-pixels" | "normalized-original" | "processed-pixels";
 export type CoordinateMicrounit = number & { readonly __brand: "CoordinateMicrounit" };
 export type MatrixCoefficientNanounit = number & { readonly __brand: "MatrixCoefficientNanounit" };
+export const EVIDENCE_COORDINATE_SCALE = 1_000_000 as const;
+export const EVIDENCE_MATRIX_SCALE = 1_000_000_000 as const;
 export interface ImageCoordinateFrame { readonly id: string; readonly pageIndex: number; readonly coordinateSpace: CoordinateSpace; readonly widthPixels: number; readonly heightPixels: number; readonly imageDigest: BinaryDigest }
 export interface BoundingBox { readonly frameId: string; readonly xMu: CoordinateMicrounit; readonly yMu: CoordinateMicrounit; readonly widthMu: CoordinateMicrounit; readonly heightMu: CoordinateMicrounit }
 export interface ImageTransform { readonly id: string; readonly pageIndex: number; readonly sourceFrameId: string; readonly targetFrameId: string; readonly matrix3x3Nano: readonly MatrixCoefficientNanounit[]; readonly inverseMatrix3x3Nano?: readonly MatrixCoefficientNanounit[] }
-export interface OmrEvidence { readonly id: string; readonly vendorTargetId?: string; readonly granularity: EvidenceGranularity; readonly box: BoundingBox; readonly transformId?: string; readonly confidenceBp?: import("../rates").BasisPoints; readonly vendorId: string }
+export interface OmrEvidence { readonly id: string; readonly vendorTargetId?: string; readonly granularity: EvidenceGranularity; readonly box: BoundingBox; readonly transformId?: string; readonly confidenceBp?: BasisPoints; readonly vendorId: string }
 export interface EvidenceTargetMapping { readonly vendorTargetId: string; readonly target: RevisionScopedTarget }
 export interface VendorEvidenceBundle { readonly granularity: EvidenceGranularity; readonly frames: readonly ImageCoordinateFrame[]; readonly transforms: readonly ImageTransform[]; readonly evidence: readonly OmrEvidence[]; readonly providerBundleDigest: SemanticDigest }
 export interface SourceEvidenceIndex { readonly sourceRevision: SourceRevisionRef; readonly mappingVersion: string; readonly providerBundleDigest: SemanticDigest; readonly frames: readonly ImageCoordinateFrame[]; readonly transforms: readonly ImageTransform[]; readonly evidence: readonly OmrEvidence[]; readonly targetMappings: readonly EvidenceTargetMapping[]; readonly bundleDigest: SemanticDigest }
 export interface OmrEvidenceArchive { readonly sourceRevision: SourceRevisionRef; readonly providerBundleDigest: SemanticDigest; readonly frames: readonly ImageCoordinateFrame[]; readonly transforms: readonly ImageTransform[]; readonly unmappedEvidence: readonly OmrEvidence[]; readonly archiveDigest: SemanticDigest }
-export interface OmrReviewAlternative { readonly id: string; readonly labelKo: string; readonly patch: OmrCorrectionPatch }
+export interface OmrReviewAlternative { readonly id: string; readonly labelKo: string; readonly patch: OmrCorrectionPatch; readonly confidenceBp?: BasisPoints }
 export type OmrReviewResolution = { readonly status: "open" } | { readonly status: "accepted"; readonly selectedAlternativeId: string; readonly correctionRecordId: string } | { readonly status: "rejected"; readonly rejectedAlternativeIds: readonly string[] } | { readonly status: "manually-corrected"; readonly correctionRecordId: string };
 export interface OmrReviewItem { readonly id: string; readonly target: RevisionScopedTarget; readonly reasonCode: DiagnosticCode; readonly alternatives: readonly OmrReviewAlternative[]; readonly evidenceIds: readonly string[]; readonly resolution: OmrReviewResolution }
-export interface OmrCorrectionRecord { readonly id: string; readonly reviewItemId?: string; readonly target: RevisionScopedTarget; readonly beforeProjection: string; readonly patch: OmrCorrectionPatch; readonly source: "auto-accepted" | "review-alternative" | "manual"; readonly appliedAt: string }
-export interface OmrReviewRecord { readonly vendorResultDigest: BinaryDigest; readonly vendorId: string; readonly corrections: readonly OmrCorrectionRecord[]; readonly reviewItems: readonly OmrReviewItem[]; readonly diagnostics?: readonly Diagnostic[] }
+export type OmrAutoRepairResolution = { readonly status: "pending" } | { readonly status: "accepted"; readonly correctionRecordId: string } | { readonly status: "rejected" };
+export interface OmrAutoRepairProposal {
+  readonly id: string;
+  readonly target: RevisionScopedTarget;
+  readonly originalProjection: string;
+  readonly patch: OmrCorrectionPatch;
+  readonly reason: "MEASURE_DURATION" | "TIE_PITCH" | "CHORD_GRAMMAR" | "ACCIDENTAL_CONTEXT" | "VOICE_TIMELINE";
+  readonly confidence: "high" | "medium" | "low";
+  readonly resolution: OmrAutoRepairResolution;
+}
+export interface OmrCorrectionRecord { readonly id: string; readonly reviewItemId?: string; readonly autoRepairProposalId?: string; readonly target: RevisionScopedTarget; readonly beforeProjection: string; readonly patch: OmrCorrectionPatch; readonly source: "auto-accepted" | "review-alternative" | "manual"; readonly appliedAt: string }
+export interface OmrReviewRecord { readonly vendorResultDigest: BinaryDigest; readonly vendorId: string; readonly autoRepairs: readonly OmrAutoRepairProposal[]; readonly corrections: readonly OmrCorrectionRecord[]; readonly reviewItems: readonly OmrReviewItem[]; readonly diagnostics?: readonly Diagnostic[] }
 
 function revisionEqual(left: SourceRevisionRef, right: SourceRevisionRef): boolean {
   return left.documentId === right.documentId && left.revisionOrdinal === right.revisionOrdinal && left.revisionDigest === right.revisionDigest;
@@ -137,23 +150,42 @@ function isStoredDiagnostic(value: unknown): value is Diagnostic {
 
 function isReviewRecordShape(value: unknown): value is OmrReviewRecord {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["vendorResultDigest", "vendorId", "corrections", "reviewItems"], ["diagnostics"])
+    || !hasExactKeys(value, ["vendorResultDigest", "vendorId", "autoRepairs", "corrections", "reviewItems"], ["diagnostics"])
     || !isSemanticDigest(value.vendorResultDigest)
     || typeof value.vendorId !== "string" || value.vendorId.length === 0
-    || !Array.isArray(value.corrections) || !Array.isArray(value.reviewItems)
+    || !Array.isArray(value.autoRepairs) || !Array.isArray(value.corrections) || !Array.isArray(value.reviewItems)
     || (value.diagnostics !== undefined && (!Array.isArray(value.diagnostics)
       || !value.diagnostics.every(isStoredDiagnostic)))) return false;
+  if (!value.autoRepairs.every((proposal) => isPlainRecord(proposal)
+    && hasExactKeys(proposal, ["id", "target", "originalProjection", "patch", "reason", "confidence", "resolution"])
+    && isCanonicalId(proposal.id)
+    && isRevisionScopedTarget(proposal.target)
+    && typeof proposal.originalProjection === "string"
+    && (() => { try { return canonicalJson(JSON.parse(proposal.originalProjection as string)) === proposal.originalProjection; } catch { return false; } })()
+    && isCorrectionPatch(proposal.patch)
+    && isCorrectionPatchCompatible(proposal.target.target, proposal.patch)
+    && ["MEASURE_DURATION", "TIE_PITCH", "CHORD_GRAMMAR", "ACCIDENTAL_CONTEXT", "VOICE_TIMELINE"].includes(String(proposal.reason))
+    && ["high", "medium", "low"].includes(String(proposal.confidence))
+    && isPlainRecord(proposal.resolution)
+    && (proposal.resolution.status === "pending" || proposal.resolution.status === "rejected"
+      ? hasExactKeys(proposal.resolution, ["status"])
+      : proposal.resolution.status === "accepted"
+        && hasExactKeys(proposal.resolution, ["status", "correctionRecordId"])
+        && isCanonicalId(proposal.resolution.correctionRecordId)))) return false;
   if (!value.corrections.every((correction) => isPlainRecord(correction)
-    && hasExactKeys(correction, ["id", "target", "beforeProjection", "patch", "source", "appliedAt"], ["reviewItemId"])
+    && hasExactKeys(correction, ["id", "target", "beforeProjection", "patch", "source", "appliedAt"], ["reviewItemId", "autoRepairProposalId"])
     && isCanonicalId(correction.id)
     && (correction.reviewItemId === undefined || isCanonicalId(correction.reviewItemId))
+    && (correction.autoRepairProposalId === undefined || isCanonicalId(correction.autoRepairProposalId))
+    && !(correction.reviewItemId !== undefined && correction.autoRepairProposalId !== undefined)
     && isRevisionScopedTarget(correction.target)
     && typeof correction.beforeProjection === "string"
     && (() => { try { return canonicalJson(JSON.parse(correction.beforeProjection as string)) === correction.beforeProjection; } catch { return false; } })()
     && isCorrectionPatch(correction.patch)
     && isCorrectionPatchCompatible(correction.target.target, correction.patch)
     && ["auto-accepted", "review-alternative", "manual"].includes(String(correction.source))
-    && typeof correction.appliedAt === "string")) return false;
+    && typeof correction.appliedAt === "string"
+    && Number.isFinite(Date.parse(correction.appliedAt as string)))) return false;
   return value.reviewItems.every((item) => isPlainRecord(item)
     && hasExactKeys(item, ["id", "target", "reasonCode", "alternatives", "evidenceIds", "resolution"])
     && isCanonicalId(item.id)
@@ -161,10 +193,12 @@ function isReviewRecordShape(value: unknown): value is OmrReviewRecord {
     && DIAGNOSTIC_CODES.includes(item.reasonCode as typeof DIAGNOSTIC_CODES[number])
     && Array.isArray(item.alternatives)
     && item.alternatives.every((alternative) => isPlainRecord(alternative)
-      && hasExactKeys(alternative, ["id", "labelKo", "patch"])
+      && hasExactKeys(alternative, ["id", "labelKo", "patch"], ["confidenceBp"])
       && isCanonicalId(alternative.id)
       && typeof alternative.labelKo === "string"
       && isCorrectionPatch(alternative.patch)
+      && (alternative.confidenceBp === undefined || (Number.isSafeInteger(alternative.confidenceBp)
+        && (alternative.confidenceBp as number) >= 0 && (alternative.confidenceBp as number) <= 10_000))
       && isCorrectionPatchCompatible((item.target as RevisionScopedTarget).target, alternative.patch))
     && Array.isArray(item.evidenceIds)
     && item.evidenceIds.every(isCanonicalId)
@@ -188,20 +222,35 @@ export function validateOmrReviewRecord(value: unknown): readonly string[] {
   const errors: string[] = [];
   if (!isReviewRecordShape(value)) return ["OMR_REVIEW_RESOLUTION_INVALID:malformed-record"];
   const record = value;
-  if (!hasUniqueStrings(record.corrections.map((item) => item.id)) || !hasUniqueStrings(record.reviewItems.map((item) => item.id))) {
+  if (!hasUniqueStrings(record.autoRepairs.map((item) => item.id)) || !hasUniqueStrings(record.corrections.map((item) => item.id)) || !hasUniqueStrings(record.reviewItems.map((item) => item.id))) {
     errors.push("OMR_REVIEW_RESOLUTION_INVALID:duplicate-id");
   }
   const corrections = new Map(record.corrections.map((correction) => [correction.id, correction]));
   const reviewItems = new Map(record.reviewItems.map((item) => [item.id, item]));
+  const autoRepairs = new Map(record.autoRepairs.map((proposal) => [proposal.id, proposal]));
   for (const correction of record.corrections) {
     const reviewItem = correction.reviewItemId === undefined ? undefined : reviewItems.get(correction.reviewItemId);
+    const autoRepair = correction.autoRepairProposalId === undefined ? undefined : autoRepairs.get(correction.autoRepairProposalId);
     if ((correction.reviewItemId !== undefined && !reviewItem)
+      || (correction.autoRepairProposalId !== undefined && !autoRepair)
       || ((correction.source === "review-alternative" || correction.source === "manual") && !reviewItem)
-      || (reviewItem && canonicalJson(reviewItem.target) !== canonicalJson(correction.target))) {
+      || (correction.source === "auto-accepted" && !autoRepair)
+      || (reviewItem && canonicalJson(reviewItem.target) !== canonicalJson(correction.target))
+      || (autoRepair && canonicalJson(autoRepair.target) !== canonicalJson(correction.target))) {
       errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${correction.id}:review-reference`);
     }
   }
   const usedCorrectionIds = new Set<string>();
+  for (const proposal of record.autoRepairs) {
+    if (proposal.resolution.status !== "accepted") continue;
+    const correction = corrections.get(proposal.resolution.correctionRecordId);
+    if (!correction || correction.autoRepairProposalId !== proposal.id || correction.source !== "auto-accepted"
+      || canonicalJson(correction.patch) !== canonicalJson(proposal.patch)) {
+      errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${proposal.id}`);
+    }
+    if (usedCorrectionIds.has(proposal.resolution.correctionRecordId)) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${proposal.id}:duplicate-correction-reference`);
+    usedCorrectionIds.add(proposal.resolution.correctionRecordId);
+  }
   for (const item of record.reviewItems) {
     if (new Set(item.alternatives.map((alternative) => alternative.id)).size !== item.alternatives.length) errors.push(`OMR_REVIEW_RESOLUTION_INVALID:${item.id}:duplicate-alternative`);
     if (item.resolution.status === "accepted") {
@@ -231,6 +280,167 @@ export function coordinateMicrounit(value: number): CoordinateMicrounit {
 export function matrixCoefficientNanounit(value: number): MatrixCoefficientNanounit {
   if (!Number.isSafeInteger(value)) throw new RangeError("matrix coefficient must be a safe integer");
   return value as MatrixCoefficientNanounit;
+}
+
+interface DecimalFraction { readonly numerator: bigint; readonly denominator: bigint }
+
+function decimalFraction(value: string): DecimalFraction {
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/u.exec(value.trim());
+  if (!match) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:decimal");
+  const fractionDigits = match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 30) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:decimal");
+  const digits = BigInt(`${match[2]}${fractionDigits}`);
+  const decimalPlaces = fractionDigits.length - exponent;
+  const numeratorMagnitude = decimalPlaces < 0 ? digits * (BigInt(10) ** BigInt(-decimalPlaces)) : digits;
+  const denominator = decimalPlaces > 0 ? BigInt(10) ** BigInt(decimalPlaces) : BigInt(1);
+  return { numerator: match[1] === "-" ? -numeratorMagnitude : numeratorMagnitude, denominator };
+}
+
+function roundHalfUpFraction(numerator: bigint, denominator: bigint): bigint {
+  if (denominator <= BigInt(0)) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:division");
+  const sign = numerator < BigInt(0) ? -BigInt(1) : BigInt(1);
+  const absolute = numerator < BigInt(0) ? -numerator : numerator;
+  const quotient = absolute / denominator;
+  const remainder = absolute % denominator;
+  return sign * (quotient + (remainder * BigInt(2) >= denominator ? BigInt(1) : BigInt(0)));
+}
+
+export function quantizeEvidenceDecimal(value: string, scale: number): number {
+  if (!Number.isSafeInteger(scale) || scale <= 0) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:scale");
+  const fractionValue = decimalFraction(value);
+  const quantized = roundHalfUpFraction(fractionValue.numerator * BigInt(scale), fractionValue.denominator);
+  const numberValue = Number(quantized);
+  if (!Number.isSafeInteger(numberValue)) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:unsafe-integer");
+  return numberValue;
+}
+
+export function quantizeHomography(input: readonly string[]): readonly MatrixCoefficientNanounit[] {
+  if (input.length !== 9) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:matrix-size");
+  const values = input.map(decimalFraction);
+  const denominatorCoefficient = values[8];
+  const denominatorAbsolute = denominatorCoefficient.numerator < BigInt(0) ? -denominatorCoefficient.numerator : denominatorCoefficient.numerator;
+  if (denominatorAbsolute === BigInt(0) || denominatorAbsolute * BigInt(1_000_000_000_000) < denominatorCoefficient.denominator) {
+    throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:matrix-normalization");
+  }
+  return values.map((value, index) => {
+    if (index === 8) return matrixCoefficientNanounit(EVIDENCE_MATRIX_SCALE);
+    const numerator = value.numerator * denominatorCoefficient.denominator * BigInt(EVIDENCE_MATRIX_SCALE);
+    const denominator = value.denominator * denominatorCoefficient.numerator;
+    const normalizedNumerator = denominator < BigInt(0) ? -numerator : numerator;
+    const normalizedDenominator = denominator < BigInt(0) ? -denominator : denominator;
+    const quantized = roundHalfUpFraction(normalizedNumerator, normalizedDenominator);
+    const numberValue = Number(quantized);
+    if (!Number.isSafeInteger(numberValue)) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:unsafe-matrix");
+    return matrixCoefficientNanounit(numberValue);
+  });
+}
+
+async function deterministicOmrId(prefix: string, projection: object): Promise<string> {
+  const digest = await semanticDigest(projection);
+  return `${prefix}:${digest.slice(0, 32)}`;
+}
+
+export function createOmrReviewItemId(target: RevisionScopedTarget, reasonCode: DiagnosticCode): Promise<string> {
+  return deterministicOmrId("omr-review", { projectionSchema: "hm-omr-review-item-id-v1", target, reasonCode });
+}
+
+export function createOmrReviewAlternativeId(reviewItemId: string, patch: OmrCorrectionPatch, ordinal: number): Promise<string> {
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID:alternative-ordinal");
+  return deterministicOmrId("omr-alternative", { projectionSchema: "hm-omr-review-alternative-id-v1", reviewItemId, patch, ordinal });
+}
+
+export function createOmrAutoRepairProposalId(input: {
+  readonly target: RevisionScopedTarget;
+  readonly reason: OmrAutoRepairProposal["reason"];
+  readonly patch: OmrCorrectionPatch;
+  readonly patchOrdinal: number;
+}): Promise<string> {
+  if (!Number.isSafeInteger(input.patchOrdinal) || input.patchOrdinal < 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID:proposal-ordinal");
+  return deterministicOmrId("omr-repair", { projectionSchema: "hm-omr-auto-repair-id-v1", ...input });
+}
+
+export function findEvidenceTransformPath(
+  sourceFrameId: string,
+  frames: readonly ImageCoordinateFrame[],
+  transforms: readonly ImageTransform[],
+): readonly string[] | undefined {
+  const frameById = new Map(frames.map((frame) => [frame.id, frame]));
+  const source = frameById.get(sourceFrameId);
+  if (!source) return undefined;
+  if (source.coordinateSpace !== "processed-pixels") return [];
+  const ordered = [...transforms].sort((left, right) => left.id.localeCompare(right.id));
+  const queue: Array<{ readonly frameId: string; readonly path: readonly string[] }> = [{ frameId: sourceFrameId, path: [] }];
+  const shortest = new Map<string, number>([[sourceFrameId, 0]]);
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const transform of ordered) {
+      if (transform.sourceFrameId !== current.frameId) continue;
+      const target = frameById.get(transform.targetFrameId);
+      if (!target || target.pageIndex !== source.pageIndex) continue;
+      const path = [...current.path, transform.id];
+      if (target.coordinateSpace !== "processed-pixels") return path;
+      const known = shortest.get(target.id);
+      if (known !== undefined && known <= path.length) continue;
+      shortest.set(target.id, path.length);
+      queue.push({ frameId: target.id, path });
+    }
+  }
+  return undefined;
+}
+
+function applyEvidenceMatrixPoint(matrix: readonly MatrixCoefficientNanounit[], xMu: number, yMu: number): readonly [number, number] {
+  if (matrix.length !== 9 || matrix.some((value) => !Number.isSafeInteger(value))) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:matrix");
+  const x = BigInt(xMu); const y = BigInt(yMu); const coordinateOne = BigInt(EVIDENCE_COORDINATE_SCALE);
+  const value = (index: number) => BigInt(matrix[index]);
+  const denominator = value(6) * x + value(7) * y + value(8) * coordinateOne;
+  if (denominator === BigInt(0)) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:matrix-projection");
+  const project = (a: number, b: number, c: number) => {
+    const numerator = (value(a) * x + value(b) * y + value(c) * coordinateOne) * coordinateOne;
+    const normalizedNumerator = denominator < BigInt(0) ? -numerator : numerator;
+    const normalizedDenominator = denominator < BigInt(0) ? -denominator : denominator;
+    const result = Number(roundHalfUpFraction(normalizedNumerator, normalizedDenominator));
+    if (!Number.isSafeInteger(result)) throw new RangeError("OMR_EVIDENCE_CODEC_FAILED:matrix-projection");
+    return result;
+  };
+  return [project(0, 1, 2), project(3, 4, 5)];
+}
+
+export function mapEvidenceBoxToNormalizedOriginal(
+  evidence: OmrEvidence,
+  frames: readonly ImageCoordinateFrame[],
+  transforms: readonly ImageTransform[],
+): BoundingBox | undefined {
+  const frameById = new Map(frames.map((frame) => [frame.id, frame]));
+  const transformById = new Map(transforms.map((transform) => [transform.id, transform]));
+  let frame = frameById.get(evidence.box.frameId);
+  if (!frame) return undefined;
+  let corners: Array<readonly [number, number]> = [
+    [evidence.box.xMu, evidence.box.yMu],
+    [evidence.box.xMu + evidence.box.widthMu, evidence.box.yMu],
+    [evidence.box.xMu, evidence.box.yMu + evidence.box.heightMu],
+    [evidence.box.xMu + evidence.box.widthMu, evidence.box.yMu + evidence.box.heightMu],
+  ];
+  if (frame.coordinateSpace === "processed-pixels") {
+    const first = evidence.transformId ? transformById.get(evidence.transformId) : undefined;
+    if (!first || first.sourceFrameId !== frame.id) return undefined;
+    const tail = findEvidenceTransformPath(first.targetFrameId, frames, transforms);
+    if (tail === undefined) return undefined;
+    for (const transformId of [first.id, ...tail]) {
+      const transform = transformById.get(transformId);
+      if (!transform || transform.sourceFrameId !== frame.id) return undefined;
+      corners = corners.map(([x, y]) => applyEvidenceMatrixPoint(transform.matrix3x3Nano, x, y));
+      const next = frameById.get(transform.targetFrameId); if (!next) return undefined; frame = next;
+    }
+  }
+  if (frame.coordinateSpace === "processed-pixels") return undefined;
+  const maxX = frame.coordinateSpace === "normalized-original" ? EVIDENCE_COORDINATE_SCALE : frame.widthPixels * EVIDENCE_COORDINATE_SCALE;
+  const maxY = frame.coordinateSpace === "normalized-original" ? EVIDENCE_COORDINATE_SCALE : frame.heightPixels * EVIDENCE_COORDINATE_SCALE;
+  const xs = corners.map(([x]) => x); const ys = corners.map(([, y]) => y);
+  const left = Math.min(...xs); const top = Math.min(...ys); const right = Math.max(...xs); const bottom = Math.max(...ys);
+  if (![left, top, right, bottom].every(Number.isSafeInteger) || left < 0 || top < 0 || right > maxX || bottom > maxY || right <= left || bottom <= top) return undefined;
+  const normalized = (value: number, maximum: number) => coordinateMicrounit(Number(roundHalfUpFraction(BigInt(value) * BigInt(EVIDENCE_COORDINATE_SCALE), BigInt(maximum))));
+  return { frameId: frame.id, xMu: normalized(left, maxX), yMu: normalized(top, maxY), widthMu: normalized(right - left, maxX), heightMu: normalized(bottom - top, maxY) };
 }
 export function remapRevisionScopedTarget(target: RevisionScopedTarget, remap: SourceIdRemap): RevisionScopedTarget | undefined {
   if (!revisionEqual(target.sourceRevision, remap.fromRevision)) return undefined;

@@ -39,8 +39,17 @@
 .checklist { list-style: none; padding: 0; display: grid; gap: .45rem; }
 .checklist li { display: grid; grid-template-columns: 5.5rem 1fr; gap: .55rem; align-items: center; }
 .checklist span { border: 1px solid #aeb6c7; border-radius: 999px; padding: .25rem .55rem; text-align: center; font-size: .8rem; font-weight: 750; }
+.omrEvidence { position: relative; width: min(520px, 100%); margin: .8rem 0; border: 1px solid #aeb6c7; background: white; }
+.omrEvidence img { display: block; width: 100%; height: auto; }
+.omrEvidenceBox { position: absolute; border: 3px solid #e11d48; background: #e11d4824; pointer-events: none; }
+.omrBeforeAfter { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+.omrBeforeAfter div { padding: .65rem; border-radius: 9px; background: #f5f7fb; }
+.omrBeforeAfter dt { font-size: .8rem; color: #586176; }
+.omrBeforeAfter dd { margin: .25rem 0 0; font-weight: 750; }
+.omrManual { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .6rem; align-items: end; }
 @media (max-width: 760px) {
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .reviewItem, .addRow, .rangeGrid { grid-template-columns: 1fr; }
   .inlineField { grid-template-columns: 1fr; }
+  .omrBeforeAfter, .omrManual { grid-template-columns: 1fr; }
 }

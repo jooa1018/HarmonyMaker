@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { BinaryDigest, SemanticDigest } from "../digest/canonical";
 import { fraction } from "../fraction";
+import { basisPoints } from "../rates";
 import { createSourceIdRemap } from "../source/revision";
 import {
   computeProviderBundleDigest, coordinateMicrounit, isCorrectionPatchCompatible,
-  mapVendorEvidenceToSource, matrixCoefficientNanounit, remapRevisionScopedTarget,
+  findEvidenceTransformPath, mapEvidenceBoxToNormalizedOriginal, mapVendorEvidenceToSource, matrixCoefficientNanounit,
+  quantizeEvidenceDecimal, quantizeHomography, remapRevisionScopedTarget,
   validateOmrReviewRecord, type OmrReviewRecord, type VendorEvidenceBundle,
 } from "./foundation";
 
@@ -71,7 +73,13 @@ describe("revision-scoped OMR foundation", () => {
     expect(second.index.targetMappings).toEqual(first.index.targetMappings);
     await expect(mapVendorEvidenceToSource({ sourceRevision: fromRevision, mappingVersion: "map-v1", vendorBundle: { ...payload, providerBundleDigest: sd }, targetMappings: mappings })).rejects.toThrow("providerBundleDigest");
     await expect(computeProviderBundleDigest({ ...payload, evidence: [{ ...evidence0, box: { ...evidence0.box, frameId: "frame:missing" } }] })).rejects.toThrow("evidence");
+    await expect(computeProviderBundleDigest({ ...payload, evidence: [{ ...evidence0, box: { ...evidence0.box, xMu: coordinateMicrounit(900_000), widthMu: coordinateMicrounit(500_000) } }] })).rejects.toThrow("evidence");
     await expect(computeProviderBundleDigest({ ...payload, transforms: [{ ...transform, targetFrameId: "frame:missing" }] })).rejects.toThrow("transform");
+    await expect(computeProviderBundleDigest({ ...payload, transforms: [], evidence: [evidence1] })).rejects.toThrow("evidence");
+    await expect(computeProviderBundleDigest({ ...payload, frames: [frame1, { ...frame1, id: "frame:cycle", imageDigest: "3".repeat(64) as BinaryDigest }], transforms: [
+      { ...transform, targetFrameId: "frame:cycle" },
+      { ...transformBack, sourceFrameId: "frame:cycle", targetFrameId: frame1.id },
+    ], evidence: [evidence1] })).rejects.toThrow("evidence");
     await expect(computeProviderBundleDigest({ ...payload, frames: [frame0, frame0] })).rejects.toThrow("duplicate ID");
   });
 
@@ -82,7 +90,7 @@ describe("revision-scoped OMR foundation", () => {
 
   it("checks review resolution to correction linkage", () => {
     const patch = { kind: "duration", duration: fraction(1) } as const;
-    const record: OmrReviewRecord = { vendorResultDigest: bd, vendorId: "vendor", corrections: [{ id: "correction:0", reviewItemId: "review:0", target: { sourceRevision: fromRevision, target: { kind: "voice-event", eventId: "le:0" } }, beforeProjection: "{}", patch, source: "review-alternative", appliedAt: "2026-01-01T00:00:00Z" }], reviewItems: [{ id: "review:0", target: { sourceRevision: fromRevision, target: { kind: "voice-event", eventId: "le:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ id: "alternative:0", labelKo: "duration", patch }], evidenceIds: [], resolution: { status: "accepted", selectedAlternativeId: "alternative:0", correctionRecordId: "correction:0" } }] };
+    const record: OmrReviewRecord = { vendorResultDigest: bd, vendorId: "vendor", autoRepairs: [], corrections: [{ id: "correction:0", reviewItemId: "review:0", target: { sourceRevision: fromRevision, target: { kind: "voice-event", eventId: "le:0" } }, beforeProjection: "{}", patch, source: "review-alternative", appliedAt: "2026-01-01T00:00:00Z" }], reviewItems: [{ id: "review:0", target: { sourceRevision: fromRevision, target: { kind: "voice-event", eventId: "le:0" } }, reasonCode: "OMR_REVIEW_REQUIRED", alternatives: [{ id: "alternative:0", labelKo: "duration", patch, confidenceBp: basisPoints(8000) }], evidenceIds: [], resolution: { status: "accepted", selectedAlternativeId: "alternative:0", correctionRecordId: "correction:0" } }] };
     expect(validateOmrReviewRecord(record)).toEqual([]);
     expect(validateOmrReviewRecord({ ...record, corrections: [] })).toContain("OMR_REVIEW_RESOLUTION_INVALID:review:0");
     expect(validateOmrReviewRecord({
@@ -94,5 +102,54 @@ describe("revision-scoped OMR foundation", () => {
       ...record,
       corrections: [{ ...record.corrections[0], patch: { kind: "replace-event", event: { kind: "note", onset: fraction(0), duration: fraction(1), pitch: {}, tieStart: false, tieStop: false } } }],
     })).toContain("OMR_REVIEW_RESOLUTION_INVALID:malformed-record");
+  });
+
+  it("quantizes decimal evidence inputs with sign-restored half-up arithmetic", () => {
+    expect(quantizeEvidenceDecimal("1.2345675", 1_000_000)).toBe(1_234_568);
+    expect(quantizeEvidenceDecimal("-1.2345675", 1_000_000)).toBe(-1_234_568);
+    expect(quantizeEvidenceDecimal("0.000000499999", 1_000_000)).toBe(0);
+    expect(quantizeEvidenceDecimal("0.0000005", 1_000_000)).toBe(1);
+    expect(() => quantizeEvidenceDecimal("NaN", 1_000_000)).toThrow("decimal");
+    expect(() => quantizeEvidenceDecimal("Infinity", 1_000_000)).toThrow("decimal");
+    expect(() => quantizeEvidenceDecimal("9007199254740992", 1_000_000)).toThrow("unsafe-integer");
+    expect(quantizeEvidenceDecimal("0.0000000005", 1_000_000_000)).toBe(1);
+    expect(quantizeHomography(["2", "0", "0", "0", "2", "0", "0", "0", "2"]))
+      .toEqual([1_000_000_000, 0, 0, 0, 1_000_000_000, 0, 0, 0, 1_000_000_000]);
+    expect(() => quantizeHomography(["1", "0", "0", "0", "1", "0", "0", "0", "0"])).toThrow("matrix-normalization");
+  });
+
+  it("selects the shortest evidence transform path then canonical transform ID", () => {
+    const frames = [
+      { id: "frame:p", pageIndex: 0, coordinateSpace: "processed-pixels", widthPixels: 10, heightPixels: 10, imageDigest: bd },
+      { id: "frame:q", pageIndex: 0, coordinateSpace: "processed-pixels", widthPixels: 10, heightPixels: 10, imageDigest: bd },
+      { id: "frame:o", pageIndex: 0, coordinateSpace: "original-pixels", widthPixels: 10, heightPixels: 10, imageDigest: bd },
+    ] as const;
+    const matrix = quantizeHomography(["1", "0", "0", "0", "1", "0", "0", "0", "1"]);
+    const transforms = [
+      { id: "transform:z-direct", pageIndex: 0, sourceFrameId: "frame:p", targetFrameId: "frame:o", matrix3x3Nano: matrix },
+      { id: "transform:a-hop", pageIndex: 0, sourceFrameId: "frame:p", targetFrameId: "frame:q", matrix3x3Nano: matrix },
+      { id: "transform:b-hop", pageIndex: 0, sourceFrameId: "frame:q", targetFrameId: "frame:o", matrix3x3Nano: matrix },
+    ] as const;
+    expect(findEvidenceTransformPath("frame:p", frames, transforms)).toEqual(["transform:z-direct"]);
+    expect(findEvidenceTransformPath("frame:missing", frames, transforms)).toBeUndefined();
+    const equalPaths = [
+      { id: "transform:z-first", pageIndex: 0, sourceFrameId: "frame:p", targetFrameId: "frame:q", matrix3x3Nano: matrix },
+      { id: "transform:z-second", pageIndex: 0, sourceFrameId: "frame:q", targetFrameId: "frame:o", matrix3x3Nano: matrix },
+      { id: "transform:a-first", pageIndex: 0, sourceFrameId: "frame:p", targetFrameId: "frame:r", matrix3x3Nano: matrix },
+      { id: "transform:a-second", pageIndex: 0, sourceFrameId: "frame:r", targetFrameId: "frame:o", matrix3x3Nano: matrix },
+    ] as const;
+    expect(findEvidenceTransformPath("frame:p", [...frames, { id: "frame:r", pageIndex: 0, coordinateSpace: "processed-pixels", widthPixels: 10, heightPixels: 10, imageDigest: bd }], equalPaths)).toEqual(["transform:a-first", "transform:a-second"]);
+  });
+
+  it("maps processed and pixel evidence boxes to deterministic normalized-original coordinates", () => {
+    const frames = [
+      { id: "frame:p", pageIndex: 0, coordinateSpace: "processed-pixels", widthPixels: 100, heightPixels: 200, imageDigest: bd },
+      { id: "frame:o", pageIndex: 0, coordinateSpace: "original-pixels", widthPixels: 100, heightPixels: 200, imageDigest: bd },
+    ] as const;
+    const matrix = quantizeHomography(["1", "0", "0", "0", "1", "0", "0", "0", "1"]);
+    const transforms = [{ id: "transform:p-o", pageIndex: 0, sourceFrameId: "frame:p", targetFrameId: "frame:o", matrix3x3Nano: matrix }] as const;
+    const evidence = { id: "e:box", granularity: "measure", vendorId: "vendor", transformId: "transform:p-o", box: { frameId: "frame:p", xMu: coordinateMicrounit(10_000_000), yMu: coordinateMicrounit(20_000_000), widthMu: coordinateMicrounit(50_000_000), heightMu: coordinateMicrounit(100_000_000) } } as const;
+    expect(mapEvidenceBoxToNormalizedOriginal(evidence, frames, transforms)).toEqual({ frameId: "frame:o", xMu: 100_000, yMu: 100_000, widthMu: 500_000, heightMu: 500_000 });
+    expect(mapEvidenceBoxToNormalizedOriginal({ ...evidence, transformId: "missing" }, frames, transforms)).toBeUndefined();
   });
 });

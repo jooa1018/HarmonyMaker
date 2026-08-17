@@ -1,0 +1,23 @@
+{
+  "version": "hm-omr-corpus-manifest-v1",
+  "entries": [
+    {
+      "pageId": "replace-with-rights-safe-page-id",
+      "songId": "replace-with-song-group-id",
+      "captureId": "replace-with-capture-group-id",
+      "split": "dev",
+      "sourceKind": "camera-photo",
+      "meter": "4/4",
+      "keyMode": "major",
+      "features": ["accidentals", "dotted-notes", "ties"],
+      "groundTruthDigest": "compute-with-createOmrGroundTruthPage-do-not-invent",
+      "captureDevice": "replace-with-device-class",
+      "rights": {
+        "basis": "replace-with-documented-rights-basis",
+        "allowedUses": ["evaluation"],
+        "reference": "replace-with-auditable-rights-reference"
+      }
+    }
+  ],
+  "manifestDigest": "compute-with-createOmrCorpusManifest-do-not-invent"
+}

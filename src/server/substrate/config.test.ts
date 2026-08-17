@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  loadProductionOmrConfig,
   loadProductionSubstrateConfig,
   ProductionSubstrateConfigurationError,
   PRODUCTION_SUBSTRATE_ENVIRONMENT_VARIABLES,
@@ -70,5 +71,29 @@ describe("production substrate configuration", () => {
       ...completeEnvironment,
       CSRF_HMAC_KEY: "not+base64url",
     })).toThrow("invalid base64url key encoding: CSRF_HMAC_KEY");
+  });
+});
+
+describe("production OMR configuration", () => {
+  const environment = {
+    OMR_HANDLE_HMAC_KEY: Buffer.alloc(32, 8).toString("base64url"),
+    OMR_VENDOR_JOB_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64url"),
+    OMR_DAILY_GLOBAL_CREDIT_CEILING: "1000",
+    OMR_PROVIDER_MODE: "unconfigured",
+    NODE_ENV: "production",
+  } as const;
+
+  it("loads independent exact keys and a positive deployment ceiling", () => {
+    expect(loadProductionOmrConfig(environment)).toMatchObject({
+      dailyGlobalCreditCeiling: 1000,
+      providerMode: "unconfigured",
+    });
+  });
+
+  it("fails closed for missing/invalid values and production reference mode", () => {
+    expect(() => loadProductionOmrConfig({})).toThrow("missing OMR configuration");
+    expect(() => loadProductionOmrConfig({ ...environment, OMR_HANDLE_HMAC_KEY: Buffer.alloc(31).toString("base64url") })).toThrow("OMR_HANDLE_HMAC_KEY");
+    expect(() => loadProductionOmrConfig({ ...environment, OMR_DAILY_GLOBAL_CREDIT_CEILING: "0" })).toThrow("OMR_DAILY_GLOBAL_CREDIT_CEILING");
+    expect(() => loadProductionOmrConfig({ ...environment, OMR_PROVIDER_MODE: "reference" })).toThrow("prohibited in production");
   });
 });

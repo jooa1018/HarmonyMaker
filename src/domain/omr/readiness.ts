@@ -1,0 +1,61 @@
+import type { Diagnostic } from "../diagnostics";
+import { addFractions, compareFractions, fraction } from "../fraction";
+import { pitchMidiNumber } from "../pitch";
+import type { SongSourceDocument } from "../source/model";
+import { materializeImportDiagnostics, type ImportDiagnosticInput } from "../../import/musicxml/diagnostics";
+
+export type RuntimeOmrReadiness = "validator-ready" | "review-required" | "blocked";
+
+export interface RuntimeOmrValidationResult {
+  readonly readiness: RuntimeOmrReadiness;
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+export async function validateRuntimeOmrReadiness(source: SongSourceDocument): Promise<RuntimeOmrValidationResult> {
+  const diagnostics: ImportDiagnosticInput[] = [];
+  for (const [measureIndex, measure] of source.sourceMeasures.entries()) {
+    const expected = fraction(measure.time.numerator * 4, measure.time.denominator);
+    if ((!measure.implicit && compareFractions(measure.duration, expected) !== 0)
+      || (measure.implicit && (compareFractions(measure.duration, fraction(0)) <= 0 || compareFractions(measure.duration, expected) > 0))) {
+      diagnostics.push({ code: "OMR_MEASURE_DURATION_INVALID", severity: "blocking", messageKo: "마디 길이가 박자표와 일치하지 않습니다.", details: { sourceMeasureId: measure.id, measureIndex } });
+    }
+    let cursor = fraction(0);
+    for (const [eventIndex, event] of measure.leadEvents.entries()) {
+      if (compareFractions(event.onset, cursor) < 0 || compareFractions(addFractions(event.onset, event.duration), measure.duration) > 0) {
+        diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "성부 시간축이 겹치거나 마디 범위를 벗어납니다.", details: { sourceMeasureId: measure.id, eventIndex, issue: "voice-timeline" } });
+      }
+      cursor = addFractions(event.onset, event.duration);
+      if (event.kind === "note") {
+        const previous = measure.leadEvents[eventIndex - 1];
+        const next = measure.leadEvents[eventIndex + 1];
+        if ((event.tieStop && (previous?.kind !== "note" || !previous.tieStart || pitchMidiNumber(previous.pitch) !== pitchMidiNumber(event.pitch)))
+          || (event.tieStart && (next?.kind !== "note" || !next.tieStop || pitchMidiNumber(next.pitch) !== pitchMidiNumber(event.pitch)))) {
+          diagnostics.push({ code: "OMR_TIE_INVALID", severity: "blocking", messageKo: "타이의 연결 음높이 또는 인접 관계가 올바르지 않습니다.", details: { sourceMeasureId: measure.id, eventId: event.id } });
+        }
+        const previousNote = [...measure.leadEvents.slice(0, eventIndex)].reverse().find((candidate) => candidate.kind === "note");
+        if (previousNote?.kind === "note" && Math.abs(pitchMidiNumber(previousNote.pitch) - pitchMidiNumber(event.pitch)) > 24) {
+          diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "두 옥타브를 넘는 도약을 확인해 주세요.", details: { sourceMeasureId: measure.id, eventId: event.id, issue: "octave-jump" } });
+        }
+      }
+    }
+    for (const chord of measure.chordEvents) {
+      if (chord.parseResult.status !== "ok" && chord.parseResult.status !== "no-chord") {
+        diagnostics.push({ code: "OMR_CHORD_UNPARSEABLE", severity: "blocking", messageKo: "화음 기호를 해석할 수 없습니다.", details: { sourceMeasureId: measure.id, chordEventId: chord.id } });
+      } else if (chord.confirmation !== "confirmed") {
+        diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "OMR 화음 기호를 확인해 주세요.", details: { sourceMeasureId: measure.id, chordEventId: chord.id, issue: "chord-confirmation" } });
+      }
+    }
+  }
+  const sourceIds = new Set(source.sourceMeasures.map((measure) => measure.id));
+  if (source.performanceSequence.occurrences.some((occurrence) => !sourceIds.has(occurrence.sourceMeasureId))) {
+    diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "연주 순서가 Source 마디를 올바르게 참조하지 않습니다.", details: { issue: "performance-order" } });
+  }
+  if (source.sourceMeasures.every((measure) => measure.leadEvents.every((event) => event.kind === "rest"))) {
+    diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "선택된 주선율 성부가 없습니다.", details: { issue: "selected-melody-staff" } });
+  }
+  const materialized = await materializeImportDiagnostics(diagnostics);
+  const readiness: RuntimeOmrReadiness = materialized.some((diagnostic) => diagnostic.severity === "blocking" || diagnostic.severity === "error")
+    ? "blocked"
+    : materialized.length > 0 ? "review-required" : "validator-ready";
+  return { readiness, diagnostics: materialized };
+}

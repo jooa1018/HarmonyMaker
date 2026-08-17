@@ -20,6 +20,10 @@ export async function mapApiFailure(error: unknown): Promise<NextResponse> {
   if (error instanceof ProductionSubstrateConfigurationError) return apiError("PERSISTENCE_UNAVAILABLE", 503, "서버 저장 기능이 아직 구성되지 않았습니다.");
   if (error instanceof SessionSecurityError) return apiError(error.code, 403, "요청 보안 확인에 실패했습니다.");
   if (error instanceof RangeError) {
+    if (error.message === "OMR_JOB_UNAVAILABLE" || error.message === "OMR_PAGE_UNAVAILABLE") return apiError("OMR_JOB_UNAVAILABLE", 404, "OMR 작업을 찾을 수 없습니다.");
+    if (error.message === "OMR_QUOTA_EXCEEDED" || error.message === "OMR_GLOBAL_CREDIT_CEILING_EXCEEDED") return apiError(error.message, 429, "현재 OMR 사용 한도를 초과했습니다.");
+    if (error.message.includes("CONFLICT") || error.message.includes("PENDING") || error.message === "OMR_RESULT_UNAVAILABLE") return apiError(error.message, 409, "OMR 작업 상태가 요청과 맞지 않습니다.");
+    if (error.message === "OMR_IMAGE_RETAKE_REQUIRED" || error.message === "OMR_IMAGE_WARNING_ACK_REQUIRED") return apiError(error.message, 422, "페이지 품질 확인이 필요합니다.");
     if (error.message === "SHARE_UNAVAILABLE") return apiError("SHARE_UNAVAILABLE", 404, "공유를 열 수 없습니다.");
     if (error.message === "SHARE_RIGHTS_REQUIRED") return apiError("SHARE_RIGHTS_REQUIRED", 400, "공유 권리를 확인해 주세요.");
     return apiError(error.message, 400, "요청 내용을 확인해 주세요.");
