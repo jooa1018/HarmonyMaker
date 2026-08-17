@@ -88,3 +88,31 @@ PostgreSQL store/migration and private S3-compatible object-store code are imple
 Status: **not available**.
 
 Responsive browser automation passed at `390×844` without horizontal overflow. No physical iPhone Safari or Kakao in-app browser was available, so camera-picker, memory pressure, background/resume, download, audio unlock, and in-app-browser behavior are not claimed. Classification: `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.
+
+## Final correctness-closure evidence
+
+Scope base: `871b79ce7aa2efa90591e0998ed2bc194c08b2bb`
+Code checkpoint: `85c6e2a78cb7e87010169b1062895870baf5ae0c`
+
+The full direct suite passed 61 files and 582 tests. Named campaigns passed the Segment B 101-run determinism gate; canonical OMR 101-run determinism; exact create-request replay after lost HTTP/Vendor responses; definitive rejection and non-idempotent uncertainty; simultaneous result capture, page-complete/delete, two-worker cleanup, and abandoned submit-input digest conflict; multi-part/multi-staff mapping and stale result/bundle/frame/page-digest rejection; actual high-resolution browser downscale versus server decode at 12/18-pixel staff-space boundaries; sequential mixed-target correction export/import/reload; and OMR to Quick Review to persisted workspace to validated generation.
+
+The browser run used only the deterministic reference adapter. It obtained provider capability disclosure before consent, completed create/upload/start/needs-input/result, displayed normalized evidence boxes through `mapEvidenceBoxToNormalizedOriginal`, reloaded and recovered the same handle, and reached three item-scoped mixed targets. Rejecting the chord kept handoff blocked until a typed `Dm` replacement was recorded; the true open count reached zero only after the remaining voice and measure items were resolved. The persisted workspace then reloaded and generated one independently validated candidate. There were no observed console warnings/errors. This proves product plumbing, not recognition accuracy.
+
+Authority verification recalculated all six frozen-file SHA-256 values, their semantic authority digests, and the exact 99-code diagnostic-registry digest. The diff from closure base contains zero frozen/protected authority paths and no accepted production musical-selection path.
+
+Local execution truth:
+
+```text
+npm ci                            HOST-LIMITED — spawn EPERM before lifecycle scripts
+npm ci --ignore-scripts           PASS — 447 packages, 0 vulnerabilities
+direct TypeScript                 PASS
+direct ESLint                     PASS — 0 warnings/errors
+direct Vitest                     PASS — 61 files, 582 tests
+direct Next build                 PASS
+npm audit --audit-level=high      PASS — 0 vulnerabilities
+git diff --check                  PASS
+```
+
+No local exact-npm-script PASS is asserted. Remote GitHub Actions ran the exact unmodified commands successfully for the code checkpoint: run `https://github.com/jooa1018/HarmonyMaker/actions/runs/32017117803`, quality job `95348852985`, conclusion `success`. Vercel deployment `5942664716`, status `16908237205`, concluded `success`; preview `https://harmony-maker-e6rpor2yt-ecctom1.vercel.app`.
+
+External classifications remain unchanged: `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`. No paid provider was selected and no accuracy, frozen threshold, sealed-corpus PASS, live-service PASS, or physical-device PASS is fabricated.

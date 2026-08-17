@@ -149,3 +149,44 @@ In-repository Segment D is complete. Genuine external items are:
 - physical iPhone Safari and Kakao in-app browser.
 
 These are recorded in `EXTERNAL_VERIFICATION_CHECKLIST.md`. No real-provider accuracy, threshold, sealed PASS, or device PASS is claimed. The documented local Windows `npm ci` postinstall spawn failure is runner-specific; unmodified remote `npm ci` passed in GitHub Actions.
+
+## Final correctness closure
+
+The final Segment D correctness closure starts additively from accepted remote HEAD `871b79ce7aa2efa90591e0998ed2bc194c08b2bb`. Its immutable code checkpoint is `85c6e2a78cb7e87010169b1062895870baf5ae0c`. It does not change a frozen WAG artifact, production selection path, Product Core musical-selection semantic, or the 99-code diagnostic registry.
+
+The checkpoint completes the remaining exactness boundaries:
+
+- the complete canonical create request, stable rights timestamp, consent/capability binding, page order/digests, source kind, and idempotency key survive response loss and are replayed exactly until a usable public handle is durably recovered; definitive rejection and idempotent/non-idempotent uncertainty have distinct durable outcomes;
+- submit-input request digests, dedicated result-capture leases, page-completion state/lease checks, and cleanup leases/tokens fence competing workers; status GET is read-only and Vendor synchronization is a CSRF-protected mutation;
+- normalization mappings are bound to the exact Vendor result and provider bundle, selectors preserve MusicXML part/staff/voice identity until the selected melody candidate is known, and every evidence frame is bound through a processed-to-original path to the uploaded canonical page digest;
+- server quality preflight is the authoritative upload gate; the browser report remains advisory, including when the browser downsamples a high-resolution source;
+- correction records retain both the original review target and the resolved application-revision target, use the latter in their stable ID, and verify remap linkage, before-projection, canonical order, and revision history across export/import and reload;
+- the result screen maps evidence with `mapEvidenceBoxToNormalizedOriginal`, unsupported automatic-repair diagnostics require acknowledgment, and IndexedDB handoff reads no longer consume the record absent an actual failed decode or explicit abandonment.
+
+Final local and focused evidence:
+
+```text
+local npm ci                       HOST-LIMITED — Windows child-process spawn EPERM
+local npm ci --ignore-scripts      PASS — 447 packages, 0 vulnerabilities
+direct typecheck equivalent        PASS
+direct ESLint equivalent           PASS — 0 warnings/errors
+direct full Vitest                 PASS — 61 files, 582 tests
+direct Next.js production build    PASS — sync and quality-preflight routes emitted
+npm audit --audit-level=high       PASS — 0 vulnerabilities
+git diff --check                   PASS
+Segment B determinism              PASS — 101 complete executions
+OMR determinism                    PASS — 101 canonical permutations
+correctness-focused fixtures       PASS — response loss/uncertainty, fencing/races, mapping/frame binding, high-resolution quality, correction reload
+browser persisted product flow     PASS — OMR, reload/recovery, item review, Quick Review, IndexedDB workspace, generation
+frozen/protected authority audit   PASS — all six SHA-256 values and semantic digests exact; 99-code registry exact; 0 protected paths changed
+```
+
+The browser flow recovered the same opaque job handle after reload, showed three mixed-target review items with their actual page/evidence/confidence, kept handoff blocked after rejecting the chord value, accepted a typed `Dm` replacement plus the remaining item resolutions, loaded the persisted schema-v9 workspace, and generated one independently validated Product Core candidate. No browser console warning or error was observed.
+
+Remote evidence for the exact code checkpoint:
+
+- GitHub Actions `CI` run `32017117803`, quality job `95348852985`: `success`; the unmodified workflow ran exact `npm ci`, typecheck, lint, test, and build gates.
+- Vercel deployment `5942664716`, status `16908237205`: `success` (`Deployment has completed`).
+- Preview: `https://harmony-maker-e6rpor2yt-ecctom1.vercel.app`.
+
+The additive documentation commit containing this section receives its own final CI/Vercel run. Its immutable final remote SHA and terminal statuses are reported in the Segment D completion response. Real-provider accuracy, real-corpus thresholds, live PostgreSQL/S3 behavior, and physical-device behavior remain external verification items; the reference adapter remains plumbing evidence only.

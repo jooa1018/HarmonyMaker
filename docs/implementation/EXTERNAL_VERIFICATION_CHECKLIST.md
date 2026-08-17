@@ -77,7 +77,7 @@ Procedure:
 
 1. Start the app with `DATABASE_URL`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, all Segment C keys, and all OMR keys/credit variables.
 2. Invoke `/api/substrate-compatibility`; require Node/pg/S3/PDF.js/Sharp readiness.
-3. Confirm migrations `1..5` apply transactionally; restart twice and require checksum/order repeat safety.
+3. Confirm migrations `1..6` apply transactionally; restart twice and require checksum/order repeat safety.
 4. Submit simultaneous create requests from the same session and same IP. Require exact session/IP quotas and daily credit ceiling under database concurrency.
 5. Interrupt after each provider effect and before persistence: create, page upload, start, submit-input, and cancel. With provider idempotency, recover under the stable key and fence; without it, require explicit reconciliation and no blind replay. Abandon a pending page claim and require lease recovery. Confirm `maxRetriesPerPage=2` permits the initial attempt plus exactly two retries.
 6. Complete a job; verify private object ownership, digest, type, size, expiry, and no public bucket/object URL.
@@ -114,3 +114,19 @@ Test the exact deployed SHA on at least one supported physical iPhone in Safari 
 6. capture OS/browser/app versions, viewport, console/network evidence where available, screenshots, and result.
 
 Expected: no horizontal overflow, picker failure, lost page/order, duplicate submission, memory crash, stale handle, blocked audio, or failed user-initiated download. Until completed: `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.
+
+## Final correctness-closure checkpoint
+
+Use code checkpoint `85c6e2a78cb7e87010169b1062895870baf5ae0c` or its verified additive handoff descendant. GitHub Actions run `32017117803`/quality job `95348852985` and Vercel deployment `5942664716`/status `16908237205` passed for the exact code checkpoint. These green build results do not satisfy any real-provider, real-corpus, live-service, or physical-device item above.
+
+When sections 1 and 3 become authorized, additionally exercise the final recovery/fencing boundaries against the real services:
+
+1. Lose the create HTTP response and separately lose the Vendor response before local persistence. Verify the same stored canonical request and idempotency key are replayed byte/semantically unchanged until a usable public handle is durably recovered.
+2. Return a definitive Vendor rejection and verify it is not retried. Return uncertain transport outcomes with and without provider idempotency; require resumable replay only for the former and explicit reconciliation for the latter.
+3. Race result capture workers, page completion with delete, and two cleanup workers. Verify operation request digests, lease tokens, fencing generations, and cleanup completion reject stale writers.
+4. Submit a different provider-input payload after an abandoned lease and require a request-digest conflict rather than accidental replay.
+5. Return multi-part/multi-staff evidence with real Vendor IDs. Verify mapping binds the exact provider bundle/result and selected MusicXML part/staff/voice, while every frame page/digest reaches the uploaded canonical page; stale/unmappable evidence must archive or fail closed.
+6. Compare browser-downscaled and server-decoded high-resolution inputs. The server preflight report must remain the final quality gate for blur, perspective, glare, crop risk, and 12/18-pixel staff-space boundaries.
+7. Apply sequential mixed-target corrections across Source revisions, restart, export/import, and verify correction order, before-projection, original target, resolved target, and SourceIdRemap linkage.
+
+Until those authorized external runs occur, retain the existing external classifications and do not turn deterministic reference-adapter behavior into a provider-accuracy claim.

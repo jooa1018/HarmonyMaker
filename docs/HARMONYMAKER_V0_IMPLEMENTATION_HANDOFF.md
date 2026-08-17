@@ -55,3 +55,15 @@ The six frozen files, their semantic digests, the 99-code registry, selector, li
 Campaign status is `HARMONYMAKER_V0_COMPLETE_WITH_EXTERNAL_VERIFICATION_REMAINING`, not `HARMONYMAKER_V0_COMPLETE`, because no paid/real provider was authorized and no rights-safe real Dev/sealed recognition corpus, live PostgreSQL/S3 deployment, or physical iPhone/Kakao device was supplied.
 
 This handoff does not begin Step 11, select a provider, perform OCR/ML research, redesign Product Core, alter frozen musical semantics, or perform the separate final Ultra audit. The next operation is the independently authorized Ultra audit of the exact final handoff-inclusive remote HEAD reported with Segment D completion.
+
+## Final Segment D correctness closure
+
+An additive final closure starts from accepted remote HEAD `871b79ce7aa2efa90591e0998ed2bc194c08b2bb` and produces code checkpoint `85c6e2a78cb7e87010169b1062895870baf5ae0c`.
+
+This checkpoint makes create-response recovery semantic/byte stable, distinguishes definitive rejection from uncertain provider outcome, and restores idempotent uncertain creates while fencing non-idempotent uncertainty behind reconciliation. Operation request digests and dedicated result, page, and cleanup leases fence concurrent completion/delete/worker races. Status reads are side-effect free. Mapping artifacts bind the exact result and provider bundle; selected MusicXML part/staff/voice identities bridge to Source only after melody selection; frame pages/digests bind the uploaded canonical page. Server preflight is the authoritative quality gate. Correction history records original and resolved targets and verifies remaps, projections, order, and revisions after reload. The remaining result-overlay, unsupported-diagnostic acknowledgment, and IndexedDB failure-count semantics are connected.
+
+Verification for that exact checkpoint passed locally through direct installed tools: 61 Vitest files/582 tests, typecheck, ESLint with zero warnings/errors, Next.js production build, audit with zero vulnerabilities, diff check, Segment B 101-run, OMR 101-run, focused response-loss/uncertainty/concurrency/evidence/quality/history campaigns, persisted browser OMR-to-generation, and the frozen-authority audit. This Windows host could not spawn lifecycle children from exact `npm ci`/npm scripts (`EPERM`); `npm ci --ignore-scripts` installed the exact 447-package lock graph, and exact unmodified npm gates passed remotely.
+
+Remote code-checkpoint evidence is GitHub Actions run `32017117803`/quality job `95348852985` success and Vercel deployment `5942664716`/status `16908237205` success. Preview: `https://harmony-maker-e6rpor2yt-ecctom1.vercel.app`.
+
+The final handoff-inclusive remote HEAD is the additive commit containing this update and is reported only after its own CI and Vercel checks reach terminal success. Campaign status remains `HARMONYMAKER_V0_COMPLETE_WITH_EXTERNAL_VERIFICATION_REMAINING`; reference-adapter results are not accuracy evidence, and no real-provider, rights-safe corpus, live PostgreSQL/S3, or physical-device result is claimed. Step 11 and the separate Ultra audit were not begun.
