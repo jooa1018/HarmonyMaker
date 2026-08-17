@@ -4,6 +4,8 @@
 
 Code checkpoint: `713a5d02f1091df9d273ef16f4fb5eb7108561fc`; CI-stabilized verification checkpoint: `6834f1f2df7733785bd99724be5697244dd7d4b9`; exact base: `bfadfad1d4bc04e11d348c1270976802a1dc4acc`.
 
+P1/P2 verification-closure code checkpoint: `9132731c960793e24bb83544a685949733f19cdd`; closure base: `caf5953e0c8fde9511aee020f6d4a4fd04e57a6c`.
+
 ```text
 typecheck                         PASS
 lint                              PASS
@@ -27,6 +29,30 @@ Remote code-checkpoint evidence:
 An intermediate documentation-only HEAD produced GitHub Actions failure `32001097255` in a cleanup fixture: asynchronous fixture hashing made record-array order nondeterministic. The subsequent local full run also exposed a random-handle test that could replace a terminal `0` with the same `0`. Neither observation was a production failure. Test-only checkpoint `6834f1f2df7733785bd99724be5697244dd7d4b9` makes allocation sequential in the ordering-sensitive fixture and guarantees the tampered handle differs. Focused tests, all 59 files/558 tests, typecheck, lint, and build then passed locally. GitHub Actions run `32001540954`/quality job `95302682451` and Vercel deployment `5940071810`/status `16901345450` passed for that exact checkpoint; Preview Comments also passed. Preview URL: `https://harmony-maker-bk5qn4xl9-ecctom1.vercel.app`.
 
 The handoff-inclusive commit receives its own final run after this report is committed; that exact run and final remote SHA are reported in the Segment D completion response.
+
+## P1/P2 closure evidence
+
+The closure-focused Vitest campaign passed 51 tests in 9 files. It covers two retries after initial page upload, all idempotent post-effect recovery windows, non-idempotent reconciliation, row-locked expected-state concurrency, stale fences, expired-handle cleanup, mixed Vendor/S3 sibling failures, vendor deletion follow-up, noncanonical page/staff/measure/symbol mappings, cross-measure/pickup/same-measure ties, rejected/unseen/mixed review items, explicit barline deferral, IndexedDB TTL/recovery, high-resolution original-scale quality parity, and oversized pre-canvas rejection.
+
+The full suite passed 61 files and 573 tests. Separate named runs passed Segment B 101-execution determinism and OMR 101-permutation determinism. Frozen authority verification passed all six file SHA-256 values, four semantic authority digests, the full 99-code registry digest, algorithm bindings, insertion-order invariance, and zero changed frozen/protected paths.
+
+Browser verification used local reference mode only and observed:
+
+- capability disclosure before consent and consent bound to the returned snapshot;
+- completed create/upload/start/needs-input/input/result flow;
+- three initially open items with actual chord-event, voice-event, and measure-start targets plus page, evidence, and confidence;
+- a rejected voice value remained unresolved and kept workspace handoff disabled until typed manual correction;
+- typed chord and voice corrections plus the measure decision reduced the true open count to zero;
+- IndexedDB persistence loaded the schema-v9 workspace; Product Core generation completed with one candidate and independent Validator success.
+
+No console warning/error was observed in that browser run. This is plumbing/semantic-boundary evidence only, never reference-adapter accuracy evidence.
+
+Remote closure evidence for `9132731c960793e24bb83544a685949733f19cdd`:
+
+- GitHub Actions: `https://github.com/jooa1018/HarmonyMaker/actions/runs/32008741642`, quality job `95323564571`, success. Workflow steps `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` each succeeded.
+- Vercel deployment `5941245985`, deployment status `16904469707`, success; preview `https://harmony-maker-p0s3or6d0-ecctom1.vercel.app`.
+
+Local `npm ci` could not launch lifecycle child processes on this Windows execution host (`EPERM`); `npm ci --ignore-scripts` installed the exact lock graph with zero vulnerabilities, direct tool equivalents passed, and unmodified exact `npm ci` passed remotely. No local exact-`npm ci` success is claimed.
 
 ## Deterministic mock/reference lifecycle evidence
 

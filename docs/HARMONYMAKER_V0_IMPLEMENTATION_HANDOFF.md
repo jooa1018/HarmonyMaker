@@ -4,6 +4,8 @@
 
 HarmonyMaker v0 implementation Segments A–D are complete in-repository at Segment D code checkpoint `713a5d02f1091df9d273ef16f4fb5eb7108561fc`, with test-only CI-stabilization checkpoint `6834f1f2df7733785bd99724be5697244dd7d4b9`, descended exactly from the accepted Segment C handoff-inclusive base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` on `codex/harmonymaker-v0-segment-d`.
 
+The Segment D P1/P2 verification closure starts additively from remote HEAD `caf5953e0c8fde9511aee020f6d4a4fd04e57a6c` and has code checkpoint `9132731c960793e24bb83544a685949733f19cdd`.
+
 The final handoff-inclusive remote HEAD is the additive documentation commit containing this handoff and is reported after its remote CI/Vercel checks pass. This document does not self-assert its containing commit SHA.
 
 ## Segment A — authority and substrate decisions
@@ -32,8 +34,9 @@ The final handoff-inclusive remote HEAD is the additive documentation commit con
 - Deterministic fixture/reference lifecycle that is explicitly prohibited in production and makes no recognition-accuracy claim.
 - Vendor MusicXML digest verification and normalization through the accepted importer; semantic readiness gate.
 - Fixed-point evidence frames/transforms, canonical digest, explicit mapping, fallback, archive, remap, and browser overlay.
-- Deterministic review alternatives/repairs, every typed patch, Source revisions/remaps/history, Quick Review, workspace, and unchanged Product Core handoff.
+- Deterministic review alternatives/repairs, every implemented typed patch, explicit structural-barline deferral, Source revisions/remaps/history, Quick Review, workspace, and unchanged Product Core handoff.
 - Versioned evaluation ground truth, corpus manifest, metric report, Dev/sealed leakage/category validation, threshold-freeze boundary, and sealed-report codec.
+- Per-item review authority, explicit noncanonical Vendor-target mapping, row-locked/fenced durable recovery and reconciliation, truthful independent deletion retry, pre-allocation raster bounds and original-scale quality parity, cross-measure tie validation, capability-snapshot consent, and explicit structural-barline deferral.
 
 ## Final verified implementation evidence
 
@@ -42,6 +45,10 @@ The final handoff-inclusive remote HEAD is the additive documentation commit con
 - Browser: reference OMR through complete workspace/generation, deletion truth, two-page live PDF.js raster, and phone layout pass.
 - Code-checkpoint remote: GitHub Actions run `32000608829`/job `95300072553` success; Vercel deployment `5939923221` and Preview Comments success.
 - CI-stabilized verification checkpoint: GitHub Actions run `32001540954`/job `95302682451` success; Vercel deployment `5940071810`/status `16901345450` and Preview Comments success. The checkpoint changes only two nondeterministic test fixtures and no production behavior.
+- P1/P2 verification-closure checkpoint `9132731c960793e24bb83544a685949733f19cdd`: local direct typecheck/lint, 61 files/573 tests, production build, diff check, 9-file/51-test focused campaign, Segment B 101-run, OMR 101-run, item-scoped browser review, IndexedDB workspace reload, and complete Product Core generation pass.
+- Closure remote: GitHub Actions run `32008741642`/quality job `95323564571` success with exact `npm ci` and all five workflow gates; Vercel deployment `5941245985`/status `16904469707` success; preview `https://harmony-maker-p0s3or6d0-ecctom1.vercel.app`.
+
+The six frozen files, their semantic digests, the 99-code registry, selector, lifecycle, Solver, marginal/pair assembly, Validator, and `src/product` have zero diff from closure base `caf5953e0c8fde9511aee020f6d4a4fd04e57a6c`.
 
 ## Campaign boundary
 

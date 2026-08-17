@@ -23,6 +23,8 @@ git diff --check
 
 Expected: all pass; production reference mode remains rejected; no raw Vendor job ID, provider error, credential, or result object key appears in client bundles or public JSON.
 
+Before asking for transfer consent, call the provider-capability preflight and record the exact snapshot digest, Vendor identity/name, external-transfer flag, retention disclosure/reference, immediate-delete capability, and evidence granularity. Change any capability and confirm stale consent is rejected.
+
 Real-provider procedure with a rights-safe self-authored score:
 
 1. Set `OMR_PROVIDER_MODE=real`, `OMR_HANDLE_HMAC_KEY`, `OMR_VENDOR_JOB_ENCRYPTION_KEY`, `OMR_DAILY_GLOBAL_CREDIT_CEILING`, provider credentials, PostgreSQL, and S3-compatible variables in the deployment secret store.
@@ -30,7 +32,7 @@ Real-provider procedure with a rights-safe self-authored score:
 3. Repeat the create request with the same idempotency key and confirm one provider job/one credit reservation.
 4. Repeat an identical page upload and confirm no second provider page effect; submit a conflicting digest and confirm rejection.
 5. Exercise every provider-returned `needs-input` type, poll to completion, export MusicXML/evidence, and complete OMR review plus Quick Review into workspace generation.
-6. Confirm evidence granularity is declared-or-better and all mappings are explicit; a downgrade/missing bundle must fail.
+6. Confirm evidence granularity is declared-or-better and all mappings are explicit. Use provider-native IDs that do not resemble HarmonyMaker IDs, retain those raw IDs, and verify only the validated Vendor-export-to-canonical mapping artifact creates Source targets; archive every unmappable item. A downgrade/missing bundle must fail.
 7. Cancel a nonterminal job twice and confirm one safe provider effect.
 8. Delete a completed job and record the exact provider result. If deletion is unsupported or fails, record returned retention policy/status rather than claiming deletion.
 9. Inspect browser/network/server logs and durable rows: no raw Vendor job ID or credential crosses the server boundary; result/evidence/page objects are gone or truthfully retained.
@@ -75,12 +77,13 @@ Procedure:
 
 1. Start the app with `DATABASE_URL`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, all Segment C keys, and all OMR keys/credit variables.
 2. Invoke `/api/substrate-compatibility`; require Node/pg/S3/PDF.js/Sharp readiness.
-3. Confirm migrations `1..4` apply transactionally; restart twice and require checksum/order repeat safety.
+3. Confirm migrations `1..5` apply transactionally; restart twice and require checksum/order repeat safety.
 4. Submit simultaneous create requests from the same session and same IP. Require exact session/IP quotas and daily credit ceiling under database concurrency.
-5. Interrupt once after provider create/before persistence and once after provider page upload/before page persistence. After lease recovery, require one provider job/page effect.
+5. Interrupt after each provider effect and before persistence: create, page upload, start, submit-input, and cancel. With provider idempotency, recover under the stable key and fence; without it, require explicit reconciliation and no blind replay. Abandon a pending page claim and require lease recovery. Confirm `maxRetriesPerPage=2` permits the initial attempt plus exactly two retries.
 6. Complete a job; verify private object ownership, digest, type, size, expiry, and no public bucket/object URL.
-7. Force one object delete failure; require `delete-pending`, successful later retry, sibling cleanup progress, and audit records.
-8. Delete/expire the OMR job and verify result/page cleanup plus truthful provider retention.
+7. Force Vendor cancel failure and require persisted cancel-pending/failure rather than `cancelled`.
+8. Force Vendor delete and local S3 delete failures independently; require `delete-pending`, independent idempotent retries, sibling cleanup progress, and audit records. Expire the public handle and prove internal cleanup remains claimable.
+9. Return deletion-not-supported with `vendorDeletesAt`; require a durable retry at that time. Delete/expire the OMR job and verify result/page cleanup plus truthful provider retention.
 
 Expected: no migration drift, quota/credit oversubscription, duplicate provider effects, ownership bypass, public object exposure, or lost cleanup retry. Until completed: `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE` and `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`.
 

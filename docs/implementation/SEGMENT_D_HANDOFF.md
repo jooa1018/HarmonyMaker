@@ -6,6 +6,8 @@
 - Branch: `codex/harmonymaker-v0-segment-d`.
 - Segment D code checkpoint: `713a5d02f1091df9d273ef16f4fb5eb7108561fc`.
 - CI-stabilized verification checkpoint: `6834f1f2df7733785bd99724be5697244dd7d4b9` (test fixtures only; no production behavior changed).
+- Verification-closure accepted remote HEAD: `caf5953e0c8fde9511aee020f6d4a4fd04e57a6c`.
+- Verification-closure code checkpoint: `9132731c960793e24bb83544a685949733f19cdd`.
 - Final handoff-inclusive remote HEAD: the additive documentation commit containing this file. Its immutable SHA is reported after that commit is pushed and its final CI/Vercel checks pass; a Git commit cannot contain its own SHA.
 - Fixed musical decision: `KEEP_WAG_V1_0_1`.
 - Logical Segment D implementation commit: `713a5d02f1091df9d273ef16f4fb5eb7108561fc` (`feat: complete provider-neutral OMR core`).
@@ -26,7 +28,7 @@ The supplied frozen WAG ZIP SHA-256 is `9b27e30c10315622022c7d459fac3515ddd0fe21
 
 ## Durable application and provider boundary
 
-- Migration `004_omr_core.sql` / migration `4:omr_core` adds durable OMR job/page state, capability snapshots, encrypted replay/vendor-job envelopes, credit state, evidence/result/retention fields, lifecycle checks, expiry indexes, and audit linkage.
+- Migrations `004_omr_core.sql` and `005_omr_recovery.sql` add durable OMR job/page state, capability snapshots, encrypted replay/vendor-job envelopes, credit state, evidence/result/retention fields, row/operation leases and fencing, reconciliation state, independent deletion retry state, lifecycle checks, expiry indexes, and audit linkage.
 - Production configuration adds independent exact 32-byte `OMR_HANDLE_HMAC_KEY` and `OMR_VENDOR_JOB_ENCRYPTION_KEY`, a positive `OMR_DAILY_GLOBAL_CREDIT_CEILING`, and `OMR_PROVIDER_MODE`. Reference mode is prohibited in production. Production has no memory/filesystem fallback.
 - Lifecycle: `created → uploading → queued → processing/needs-input → completed`, with sanitized `failed`, idempotent `cancelled`, `expired`, and truthful `delete-pending → deleted` paths.
 - `OmrApplicationService` owns opaque signed 24-hour handles, ownership, encrypted Vendor job IDs, rights/provider-transfer consent, exact quotas, global credit reservation, exactly-once Vendor job creation, idempotent/retry-fenced page upload, needs-input replay, status sanitization, result/evidence durability, cancel, expiry, delete, and cleanup.
@@ -38,6 +40,7 @@ Connected routes:
 
 ```text
 POST   /api/omr/jobs
+GET    /api/omr/provider-capabilities
 PUT    /api/omr/jobs/:handle/pages/:pageIndex
 GET    /api/omr/jobs/:handle/pages/:pageIndex
 POST   /api/omr/jobs/:handle/start
@@ -54,7 +57,7 @@ DELETE /api/omr/jobs/:handle
 - Runtime semantic readiness returns `validator-ready`, `review-required`, or `blocked`; blocking measure/timeline/tie errors never auto-ready.
 - Evidence uses integer microunits, nanounit homographies, sign-restored half-up decimal quantization, normalized matrices, deterministic frame/transform/evidence ordering, ID-invariant semantic projections, shortest transform path then transform-ID tie-break, exact provider digest recomputation, revision-scoped target mapping, and a durable unmapped archive.
 - The browser shows only the actual available page/staff/measure fallback and never invents symbol/measure alignment.
-- Review has deterministic items, alternatives, and auto-repair proposals; accepted/rejected/manual/auto resolution linkage; all typed pitch, duration, accidental, chord, time/key, tie, note/rest replacement, source-text, and explicit/implicit barline patches; canonical before projections; Source revisions; one-to-one remaps; deletion markers; and repair history.
+- Review has deterministic per-item alternatives and auto-repair proposals; accepted/rejected/manual/auto resolution linkage; typed pitch, duration, accidental, chord, time/key, tie, note/rest replacement, and source-text patches; canonical before projections; Source revisions; one-to-one remaps; deletion markers; and repair history. Structural barline split/merge is explicitly deferred and rejected rather than represented by the false `SourceMeasure.implicit` toggle.
 - The browser carries the Vendor result and original page blobs through IndexedDB to the accepted importer, OMR evidence review, Quick Review, schema-v9 project creation, and the unchanged Product Core generation pipeline.
 
 ## Verification
@@ -95,6 +98,45 @@ Remote verification for code checkpoint `713a5d02f1091df9d273ef16f4fb5eb7108561f
 The first documentation-only HEAD exposed two probabilistic assertions rather than a production defect: concurrent fixture hashing did not guarantee record-array order, and replacing a random handle's last character with `0` did not guarantee a changed handle. Checkpoint `6834f1f2df7733785bd99724be5697244dd7d4b9` makes those two test fixtures deterministic. At that checkpoint, focused tests, the full 59-file/558-test suite, typecheck, lint, and production build passed locally. Remote GitHub Actions `CI` run `32001540954`, quality job `95302682451`, passed; Vercel deployment `5940071810`, status `16901345450`, and Preview Comments passed. Preview: `https://harmony-maker-bk5qn4xl9-ecctom1.vercel.app`.
 
 The final handoff-commit CI/Vercel result is reported with `SEGMENT_D_COMPLETE` because it occurs after this document is committed.
+
+## P1/P2 verification closure
+
+Closure checkpoint `9132731c960793e24bb83544a685949733f19cdd` resolves P1-01 through P1-08 and the requested P2s without changing the frozen musical authority:
+
+- item-scoped review displays every target, page, evidence reference, confidence, alternative, and resolution; rejected or unseen items remain unresolved; all unresolved items and pending repairs block handoff; mixed voice/chord/measure targets support typed correction and repair history;
+- normalization now carries a separately digested `VendorNormalizationMappingArtifact`; raw IDs such as `page_1`, `staff_main`, `measure_42`, and `symbol_abc` remain raw, and only deterministic export ordinals map to canonical Source targets; unmappable evidence is archived;
+- PostgreSQL transitions use row locks and expected-state validation, page/operation leases are fenced and recoverable, every provider effect has a durable crash boundary, non-idempotent uncertain effects enter reconciliation, and `maxRetriesPerPage=2` means two retries after the initial attempt;
+- cancel failure remains `cancel-failed`/retryable, delete-pending cleanup is claimable after handle expiry, Vendor and S3 deletion retry independently, and disclosed `vendorDeletesAt` follow-up is durable;
+- PDF bounds are checked before canvas allocation, partial raster output is discarded, staff-space is evaluated at original scale, and high-resolution/borderline/oversized/malformed parity fixtures pass;
+- tie validation uses one Source-order event timeline across measure boundaries and covers valid/invalid cross-measure, pickup, and same-measure cases;
+- provider capability preflight discloses identity, external transfer, retention, immediate deletion, and evidence granularity, and create is bound to the consented snapshot digest;
+- confirm-page-order, bounded provider input, multi-image ordering, IndexedDB TTL/recovery, unsupported accidental/voice repair diagnostics, and OMR-derived Product Core authority rebuild are connected.
+
+Closure verification:
+
+```text
+local npm ci                       HOST-LIMITED — Windows .cmd/process spawn EPERM
+local npm ci --ignore-scripts      PASS — 447 packages, 0 vulnerabilities
+direct typecheck equivalent        PASS
+direct ESLint equivalent           PASS
+direct full Vitest                 PASS — 61 files, 573 tests
+direct Next.js production build    PASS
+git diff --check                   PASS
+focused closure fixtures           PASS — 9 files, 51 tests
+Segment B determinism              PASS — 101 complete executions
+OMR determinism                    PASS — 101 provider/governance permutations
+browser item review                PASS — 3 mixed targets; rejected value blocked until manual correction
+OMR → Quick Review → workspace     PASS — persisted workspace and complete validated generation
+frozen/protected authority audit   PASS — 0 frozen paths, 0 protected paths changed
+```
+
+Remote verification for the exact closure code checkpoint:
+
+- GitHub Actions CI run `32008741642`, quality job `95323564571`: `success`; exact `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` all passed.
+- Vercel deployment `5941245985`, status `16904469707`: `success` (`Deployment has completed`).
+- Preview: `https://harmony-maker-p0s3or6d0-ecctom1.vercel.app`.
+
+The additive commit containing this section receives a separate final CI/Vercel run. Its immutable SHA and final statuses are reported in the Segment D completion response because a commit cannot contain its own SHA.
 
 ## External verification and non-blocking debt
 
