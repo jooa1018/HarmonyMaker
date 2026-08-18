@@ -203,6 +203,15 @@ export interface OmrStore {
     readonly expectedState: OmrLifecycleState;
     readonly expectedVendorCreateLeaseExpiresAt?: string;
     readonly cleanupLeaseToken?: string;
+    readonly completionMode: "public-handle-recovery" | "cleanup-reconciliation";
+    readonly now: string;
+  }): Promise<void>;
+  markVendorCreationUnresolved(input: {
+    readonly jobId: PrivateRowId;
+    readonly expectedState: OmrLifecycleState;
+    readonly expectedVendorCreateLeaseExpiresAt: string;
+    readonly code: string;
+    readonly messageKo: string;
     readonly now: string;
   }): Promise<void>;
   failVendorCreation(input: {
@@ -257,7 +266,8 @@ export class MemoryOmrStore implements OmrStore {
       if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
       const job = this.jobs.get(prior.jobId)!;
       if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
-      if (!job.handleActive || !["created", "reconciliation-required"].includes(job.state)) return { status: "pending" };
+      if (!job.handleActive || (job.state !== "created"
+        && !(job.state === "reconciliation-required" && job.reconciliationKind === "create"))) return { status: "pending" };
       if (job.vendorCreateLeaseExpiresAt > input.now) return { status: "pending" };
       const resumed = { ...job, vendorCreateLeaseExpiresAt: input.vendorCreateLeaseExpiresAt, updatedAt: input.now };
       this.jobs.set(job.id, resumed);
@@ -273,7 +283,8 @@ export class MemoryOmrStore implements OmrStore {
         if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
         const job = this.jobs.get(prior.jobId)!;
         if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
-        if (!job.handleActive || !["created", "reconciliation-required"].includes(job.state)) return { status: "pending" };
+        if (!job.handleActive || (job.state !== "created"
+          && !(job.state === "reconciliation-required" && job.reconciliationKind === "create"))) return { status: "pending" };
         if (job.vendorCreateLeaseExpiresAt <= input.now) {
           const resumed = { ...job, vendorCreateLeaseExpiresAt: input.record.vendorCreateLeaseExpiresAt, updatedAt: input.now };
           this.jobs.set(job.id, resumed);
@@ -304,6 +315,7 @@ export class MemoryOmrStore implements OmrStore {
       const job = this.jobs.get(input.jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
       if (!job.handleActive || job.state !== input.expectedState
+        || (job.state === "reconciliation-required" && job.reconciliationKind !== "create")
         || job.vendorCreateOutcomeState !== input.expectedOutcomeState
         || job.vendorCreateLeaseExpiresAt !== input.expectedVendorCreateLeaseExpiresAt
         || job.vendorJobIdEnvelope !== undefined || job.cleanupLeaseToken !== undefined) {
@@ -317,19 +329,63 @@ export class MemoryOmrStore implements OmrStore {
     await this.atomic(() => {
       const job = this.jobs.get(input.jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      const entry = [...this.idempotency.values()].find((value) => value.jobId === input.jobId);
+      const publicRecovery = input.completionMode === "public-handle-recovery";
+      const modeMatches = publicRecovery
+        ? job.handleActive
+          && (job.state === "created" || (job.state === "reconciliation-required" && job.reconciliationKind === "create"))
+          && job.cleanupLeaseToken === undefined
+          && input.cleanupLeaseToken === undefined
+          && input.expectedVendorCreateLeaseExpiresAt !== undefined
+          && job.vendorCreateLeaseExpiresAt === input.expectedVendorCreateLeaseExpiresAt
+        : !job.handleActive
+          && job.state === "delete-pending"
+          && (input.cleanupLeaseToken === undefined
+            ? job.cleanupLeaseToken === undefined
+              && input.expectedVendorCreateLeaseExpiresAt !== undefined
+              && job.vendorCreateLeaseExpiresAt === input.expectedVendorCreateLeaseExpiresAt
+            : job.cleanupLeaseToken === input.cleanupLeaseToken);
       const fenceMatches = job.state === input.expectedState
         && job.vendorCreateOutcomeState === "outcome-uncertain"
         && job.vendorJobIdEnvelope === undefined
-        && (input.cleanupLeaseToken === undefined
-          ? job.cleanupLeaseToken === undefined
-            && input.expectedVendorCreateLeaseExpiresAt !== undefined
-            && job.vendorCreateLeaseExpiresAt === input.expectedVendorCreateLeaseExpiresAt
-          : job.cleanupLeaseToken === input.cleanupLeaseToken);
+        && entry !== undefined
+        && !entry.complete
+        && modeMatches;
       if (!fenceMatches) throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
-      const updated = { ...job, vendorCreateOutcomeState: "confirmed" as const, vendorJobIdEnvelope: structuredClone(input.vendorJobIdEnvelope), updatedAt: input.now };
+      const updated = publicRecovery
+        ? {
+          ...job, state: "created" as const, vendorCreateOutcomeState: "confirmed" as const,
+          vendorJobIdEnvelope: structuredClone(input.vendorJobIdEnvelope), reconciliationKind: undefined,
+          publicFailureCode: undefined, publicFailureMessageKo: undefined, updatedAt: input.now,
+        }
+        : {
+          ...job, vendorCreateOutcomeState: "confirmed" as const,
+          vendorJobIdEnvelope: structuredClone(input.vendorJobIdEnvelope), updatedAt: input.now,
+        };
       this.jobs.set(input.jobId, updated);
+      entry.complete = true;
+      entry.failure = undefined;
+    });
+  }
+
+  async markVendorCreationUnresolved(input: Parameters<OmrStore["markVendorCreationUnresolved"]>[0]): Promise<void> {
+    await this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
       const entry = [...this.idempotency.values()].find((value) => value.jobId === input.jobId);
-      if (entry) entry.complete = true;
+      const resumableState = job.state === "created"
+        || (job.state === "reconciliation-required" && job.reconciliationKind === "create");
+      if (!job.handleActive || job.state !== input.expectedState || !resumableState
+        || job.vendorCreateOutcomeState !== "outcome-uncertain"
+        || job.vendorCreateLeaseExpiresAt !== input.expectedVendorCreateLeaseExpiresAt
+        || job.vendorJobIdEnvelope !== undefined || job.cleanupLeaseToken !== undefined
+        || entry === undefined || entry.complete) {
+        throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
+      }
+      this.jobs.set(input.jobId, {
+        ...job, state: "reconciliation-required", reconciliationKind: "create",
+        publicFailureCode: input.code, publicFailureMessageKo: input.messageKo, updatedAt: input.now,
+      });
     });
   }
 

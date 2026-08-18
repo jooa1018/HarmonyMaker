@@ -797,6 +797,229 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(h.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
   });
 
+  it("recovers uncertain -> replay rejection -> later replay success into one usable Provider A handle", async () => {
+    const h = await harness();
+    const fixtureA: ReferenceOmrFixture = {
+      ...h.fixture,
+      evidence: {
+        ...h.fixture.evidence,
+        evidence: h.fixture.evidence.evidence.map((item) => ({ ...item, vendorId: "provider-a" })),
+      },
+    };
+    const fixtureB: ReferenceOmrFixture = {
+      ...h.fixture,
+      evidence: {
+        ...h.fixture.evidence,
+        evidence: h.fixture.evidence.evidence.map((item) => ({ ...item, vendorId: "provider-b" })),
+      },
+    };
+    const adapterA = new ReferenceOmrVendorAdapter([fixtureA], { vendorId: "provider-a", vendorDisplayName: "Provider A" });
+    const adapterB = new ReferenceOmrVendorAdapter([fixtureB], { vendorId: "provider-b", vendorDisplayName: "Provider B" });
+    const registry = new Map([["binding:a", adapterA], ["binding:b", adapterB]]);
+    const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
+      ? registry.get(bindingId)
+      : undefined;
+    const serviceA = new DurableOmrApplicationService({
+      ...h.dependencies, adapter: adapterA, providerBindingId: "binding:a",
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
+    });
+    const preflightA = await serviceA.getProviderPreflight();
+    const request = {
+      sessionId: "session:1" as PrivateRowId, pageCount: 1,
+      pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" as const }],
+      sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const,
+      consentCapabilitySnapshotDigest: preflightA.capabilitySnapshotDigest,
+      idempotencyKey: "uncertain-rejection-later-success",
+    };
+    const originalCreate = adapterA.createVendorJob.bind(adapterA);
+    let invocation = 0;
+    let originalVendorJobId: Awaited<ReturnType<typeof originalCreate>> | undefined;
+    vi.spyOn(adapterA, "createVendorJob").mockImplementation(async (input) => {
+      invocation += 1;
+      if (invocation === 1) {
+        originalVendorJobId = await originalCreate(input);
+        throw new OmrVendorCallError("response lost after side effect", "outcome-uncertain");
+      }
+      if (invocation === 2) throw new OmrVendorCallError("ordinary replay rejected", "definitive-rejection");
+      const replayed = await originalCreate(input);
+      expect(replayed).toBe(originalVendorJobId);
+      return replayed;
+    });
+    await expect(serviceA.createJob(request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+
+    const rotated = new DurableOmrApplicationService({
+      ...h.dependencies, adapter: adapterB, providerBindingId: "binding:b",
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
+    });
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(rotated.createJob(request)).rejects.toThrow("OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN");
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "reconciliation-required", reconciliationKind: "create",
+      vendorCreateOutcomeState: "outcome-uncertain", creditState: "reserved",
+      publicFailureCode: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN", handleActive: true,
+    });
+
+    h.advance(5 * 60 * 1_000 + 1);
+    const recoveredHandle = await rotated.createJob(request);
+    const recovered = h.store.listJobs()[0];
+    expect(recovered).toMatchObject({
+      state: "created", vendorCreateOutcomeState: "confirmed",
+      vendorJobIdEnvelope: expect.any(Object), handleActive: true,
+    });
+    expect(recovered.reconciliationKind).toBeUndefined();
+    expect(recovered.publicFailureCode).toBeUndefined();
+    expect(recovered.publicFailureMessageKo).toBeUndefined();
+    expect(await rotated.synchronizeStatus(recoveredHandle)).toEqual({ kind: "created" });
+    await rotated.uploadPage(recoveredHandle, {
+      pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "later-success-upload",
+      bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]),
+    });
+    await rotated.start(recoveredHandle);
+    expect(await rotated.synchronizeStatus(recoveredHandle)).toEqual({ kind: "queued" });
+    expect(await rotated.createJob(request)).toBe(recoveredHandle);
+    expect(h.store.listJobs()).toHaveLength(1);
+    expect(adapterA.callCounts).toMatchObject({ create: 1, upload: 1, start: 1, status: 1 });
+    expect(adapterB.callCounts).toMatchObject({ create: 0, upload: 0, start: 0, status: 0 });
+  });
+
+  it("fences a stale delayed replay rejection after a newer lease confirms the usable handle", async () => {
+    const h = await harness();
+    const adapterB = new ReferenceOmrVendorAdapter([h.fixture], { vendorId: "provider-b", vendorDisplayName: "Provider B" });
+    const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
+      ? bindingId === "binding:a" ? h.adapter : adapterB
+      : undefined;
+    const serviceA = new DurableOmrApplicationService({
+      ...h.dependencies, providerBindingId: "binding:a",
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
+    });
+    const preflightA = await serviceA.getProviderPreflight();
+    const request = {
+      sessionId: "session:1" as PrivateRowId, pageCount: 1,
+      pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" as const }],
+      sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const,
+      consentCapabilitySnapshotDigest: preflightA.capabilitySnapshotDigest,
+      idempotencyKey: "stale-rejection-after-newer-success",
+    };
+    const originalCreate = h.adapter.createVendorJob.bind(h.adapter);
+    let invocation = 0;
+    let releaseWorkerA!: () => void;
+    let workerAEntered!: () => void;
+    const workerAStarted = new Promise<void>((resolve) => { workerAEntered = resolve; });
+    vi.spyOn(h.adapter, "createVendorJob").mockImplementation(async (input) => {
+      invocation += 1;
+      if (invocation === 1) {
+        await originalCreate(input);
+        throw new OmrVendorCallError("initial response lost", "outcome-uncertain");
+      }
+      if (invocation === 2) {
+        workerAEntered();
+        await new Promise<void>((resolve) => { releaseWorkerA = resolve; });
+        throw new OmrVendorCallError("late ordinary replay rejection", "definitive-rejection");
+      }
+      return originalCreate(input);
+    });
+    await expect(serviceA.createJob(request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+
+    const rotated = new DurableOmrApplicationService({
+      ...h.dependencies, adapter: adapterB, providerBindingId: "binding:b",
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
+    });
+    h.advance(5 * 60 * 1_000 + 1);
+    const staleWorker = expect(rotated.createJob(request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    await workerAStarted;
+    const workerALease = h.store.listJobs()[0].vendorCreateLeaseExpiresAt;
+    h.advance(5 * 60 * 1_000 + 1);
+    const recoveredHandle = await rotated.createJob(request);
+    const afterNewerSuccess = structuredClone(h.store.listJobs()[0]);
+    expect(afterNewerSuccess).toMatchObject({
+      state: "created", vendorCreateOutcomeState: "confirmed", vendorJobIdEnvelope: expect.any(Object),
+      handleActive: true,
+    });
+    expect(afterNewerSuccess.reconciliationKind).toBeUndefined();
+    expect(afterNewerSuccess.publicFailureCode).toBeUndefined();
+    expect(afterNewerSuccess.publicFailureMessageKo).toBeUndefined();
+    await expect(h.store.completeVendorCreation({
+      jobId: afterNewerSuccess.id, vendorJobIdEnvelope: afterNewerSuccess.publicHandleReplayEnvelope,
+      expectedState: "created", expectedVendorCreateLeaseExpiresAt: workerALease,
+      completionMode: "public-handle-recovery", now: afterNewerSuccess.updatedAt,
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+    await expect(h.store.failVendorCreation({
+      jobId: afterNewerSuccess.id, expectedVendorCreateLeaseExpiresAt: workerALease,
+      code: "OMR_VENDOR_OPERATION_FAILED", messageKo: "stale", now: afterNewerSuccess.updatedAt,
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+
+    releaseWorkerA();
+    await staleWorker;
+    expect(h.store.listJobs()[0]).toEqual(afterNewerSuccess);
+    expect(await rotated.createJob(request)).toBe(recoveredHandle);
+    expect(await rotated.synchronizeStatus(recoveredHandle)).toEqual({ kind: "created" });
+    expect(h.store.listJobs()).toHaveLength(1);
+    expect(h.adapter.callCounts.create).toBe(1);
+    expect(adapterB.callCounts.create).toBe(0);
+  });
+
+  it("keeps successful expiry cleanup reconciliation delete-pending until exact Provider A deletion completes", async () => {
+    const h = await harness();
+    const adapterB = new ReferenceOmrVendorAdapter([h.fixture], { vendorId: "provider-b", vendorDisplayName: "Provider B" });
+    const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
+      ? bindingId === "binding:a" ? h.adapter : adapterB
+      : undefined;
+    let beforeCompleteCleanup: ReturnType<MemoryOmrStore["listJobs"]>[number] | undefined;
+    const cleanupStore = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completeCleanup") return async (...args: Parameters<OmrStore["completeCleanup"]>) => {
+          beforeCompleteCleanup = structuredClone(target.listJobs()[0]);
+          return target.completeCleanup(...args);
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const serviceA = new DurableOmrApplicationService({
+      ...h.dependencies, store: cleanupStore, providerBindingId: "binding:a",
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
+    });
+    const preflightA = await serviceA.getProviderPreflight();
+    const request = {
+      sessionId: "session:1" as PrivateRowId, pageCount: 1,
+      pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" as const }],
+      sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const,
+      consentCapabilitySnapshotDigest: preflightA.capabilitySnapshotDigest,
+      idempotencyKey: "uncertain-expiry-cleanup-success",
+    };
+    const originalCreate = h.adapter.createVendorJob.bind(h.adapter);
+    let loseFirstResponse = true;
+    vi.spyOn(h.adapter, "createVendorJob").mockImplementation(async (input) => {
+      const vendorJobId = await originalCreate(input);
+      if (loseFirstResponse) {
+        loseFirstResponse = false;
+        throw new OmrVendorCallError("response lost after side effect", "outcome-uncertain");
+      }
+      return vendorJobId;
+    });
+    await expect(serviceA.createJob(request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    const rotated = new DurableOmrApplicationService({
+      ...h.dependencies, store: cleanupStore, adapter: adapterB, providerBindingId: "binding:b",
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
+    });
+    await expect(rotated.cleanupExpiredJobs()).resolves.toEqual([{
+      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } },
+    }]);
+    expect(beforeCompleteCleanup).toMatchObject({
+      state: "delete-pending", handleActive: false, vendorCreateOutcomeState: "confirmed",
+      vendorJobIdEnvelope: expect.any(Object), cleanupLeaseToken: expect.any(String),
+    });
+    const deleted = h.store.listJobs()[0];
+    expect(deleted).toMatchObject({
+      state: "deleted", handleActive: false, vendorCreateOutcomeState: "confirmed",
+      vendorDeleteState: "deleted", localDeleteState: "deleted",
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined, vendorJobIdEnvelope: undefined,
+    });
+    expect(h.adapter.callCounts).toMatchObject({ create: 1, delete: 1 });
+    expect(adapterB.callCounts).toMatchObject({ create: 0, delete: 0 });
+  });
+
   it("counts outcome-uncertain delete-pending exposure against the shared IP limit", async () => {
     const h = await harness();
     const originalCreate = h.adapter.createVendorJob.bind(h.adapter);
@@ -893,7 +1116,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     }, uncertain.updatedAt);
     await expect(stale.store.completeVendorCreation({
       jobId: uncertain.id, vendorJobIdEnvelope: uncertain.publicHandleReplayEnvelope,
-      expectedState: "created", now: uncertain.updatedAt,
+      expectedState: "created", completionMode: "public-handle-recovery", now: uncertain.updatedAt,
     })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
     expect(stale.store.listJobs()[0]).toMatchObject({
       state: "deleted", vendorCreateOutcomeState: "definitive-no-job",

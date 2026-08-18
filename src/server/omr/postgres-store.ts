@@ -161,7 +161,7 @@ export class PostgresOmrStore implements OmrStore {
     try {
       await client.query("BEGIN");
       const existing = await client.query(
-        `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.handle_active
+         `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.reconciliation_kind,j.handle_active
          FROM omr_create_idempotency i JOIN omr_jobs j ON j.id=i.job_id
          WHERE i.owner_session_id=$1 AND i.key_hash=$2 FOR UPDATE OF i,j`,
         [input.ownerSessionId, input.idempotencyKeyHash],
@@ -175,7 +175,8 @@ export class PostgresOmrStore implements OmrStore {
           ? { status: "rejected" as const, code: row.failure_code as string, messageKo: row.failure_message_ko as string }
           : { status: "replay" as const, handleReplayEnvelope: json<AeadEnvelopeV1>(row.public_handle_replay_envelope) };
       }
-      if (!row.handle_active || !["created", "reconciliation-required"].includes(row.job_state)) { await client.query("COMMIT"); return { status: "pending" as const }; }
+       if (!row.handle_active || (row.job_state !== "created"
+         && !(row.job_state === "reconciliation-required" && row.reconciliation_kind === "create"))) { await client.query("COMMIT"); return { status: "pending" as const }; }
       if (iso(row.vendor_create_lease_expires_at) > input.now) { await client.query("COMMIT"); return { status: "pending" as const }; }
       await client.query("UPDATE omr_jobs SET vendor_create_lease_expires_at=$2,updated_at=$3 WHERE id=$1", [row.job_id, input.vendorCreateLeaseExpiresAt, input.now]);
       const job = await loadJob(client, id(row.job_id));
@@ -191,7 +192,7 @@ export class PostgresOmrStore implements OmrStore {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(1214349646)");
       const existing = await client.query(
-        `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.handle_active
+         `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.reconciliation_kind,j.handle_active
          FROM omr_create_idempotency i JOIN omr_jobs j ON j.id=i.job_id
          WHERE i.owner_session_id=$1 AND i.key_hash=$2 FOR UPDATE OF i,j`,
         [input.ownerSessionId, input.idempotencyKeyHash],
@@ -202,7 +203,8 @@ export class PostgresOmrStore implements OmrStore {
         if (row.idempotency_state === "complete") { await client.query("COMMIT"); return row.failure_code
           ? { status: "rejected", code: row.failure_code as string, messageKo: row.failure_message_ko as string }
           : { status: "replay", handleReplayEnvelope: json(row.public_handle_replay_envelope) }; }
-        if (!row.handle_active || !["created", "reconciliation-required"].includes(row.job_state)) { await client.query("COMMIT"); return { status: "pending" }; }
+         if (!row.handle_active || (row.job_state !== "created"
+           && !(row.job_state === "reconciliation-required" && row.reconciliation_kind === "create"))) { await client.query("COMMIT"); return { status: "pending" }; }
         if (iso(row.vendor_create_lease_expires_at) > input.now) { await client.query("COMMIT"); return { status: "pending" }; }
         await client.query("UPDATE omr_jobs SET vendor_create_lease_expires_at=$2,updated_at=$3 WHERE id=$1", [row.job_id, input.record.vendorCreateLeaseExpiresAt, input.now]);
         const job = await loadJob(client, id(row.job_id));
@@ -253,9 +255,10 @@ export class PostgresOmrStore implements OmrStore {
 
   async beginVendorCreation(input: Parameters<OmrStore["beginVendorCreation"]>[0]): Promise<void> {
     const result = await this.database.query(
-      `UPDATE omr_jobs SET vendor_create_outcome_state='outcome-uncertain',updated_at=$5
+       `UPDATE omr_jobs SET vendor_create_outcome_state='outcome-uncertain',updated_at=$5
        WHERE id=$1 AND handle_active=true AND state=$2 AND vendor_create_outcome_state=$3
-         AND vendor_create_lease_expires_at=$4 AND vendor_job_id_envelope IS NULL AND cleanup_lease_token IS NULL`,
+          AND (state='created' OR (state='reconciliation-required' AND reconciliation_kind='create'))
+          AND vendor_create_lease_expires_at=$4 AND vendor_job_id_envelope IS NULL AND cleanup_lease_token IS NULL`,
       [input.jobId, input.expectedState, input.expectedOutcomeState, input.expectedVendorCreateLeaseExpiresAt, input.now],
     );
     if (result.rowCount !== 1) {
@@ -269,11 +272,23 @@ export class PostgresOmrStore implements OmrStore {
     const client = await this.database.connect();
     try {
       await client.query("BEGIN");
+      const publicRecovery = input.completionMode === "public-handle-recovery";
       const updated = await client.query(
-        `UPDATE omr_jobs SET vendor_job_id_envelope=$2,vendor_create_outcome_state='confirmed',updated_at=$3
-         WHERE id=$1 AND state=$4 AND vendor_create_outcome_state='outcome-uncertain' AND vendor_job_id_envelope IS NULL
-           AND (($5::text IS NULL AND cleanup_lease_token IS NULL AND vendor_create_lease_expires_at=$6) OR cleanup_lease_token=$5)
-         RETURNING id`,
+        publicRecovery
+          ? `UPDATE omr_jobs AS j SET vendor_job_id_envelope=$2,vendor_create_outcome_state='confirmed',state='created',
+               reconciliation_kind=NULL,public_failure_code=NULL,public_failure_message_ko=NULL,updated_at=$3
+             FROM omr_create_idempotency i
+             WHERE j.id=$1 AND i.job_id=j.id AND i.state='pending' AND j.handle_active=true AND j.state=$4
+               AND (j.state='created' OR (j.state='reconciliation-required' AND j.reconciliation_kind='create'))
+               AND j.vendor_create_outcome_state='outcome-uncertain' AND j.vendor_job_id_envelope IS NULL
+               AND j.cleanup_lease_token IS NULL AND $5::text IS NULL AND j.vendor_create_lease_expires_at=$6
+             RETURNING j.id`
+          : `UPDATE omr_jobs AS j SET vendor_job_id_envelope=$2,vendor_create_outcome_state='confirmed',updated_at=$3
+             FROM omr_create_idempotency i
+             WHERE j.id=$1 AND i.job_id=j.id AND i.state='pending' AND j.handle_active=false AND j.state=$4
+               AND j.state='delete-pending' AND j.vendor_create_outcome_state='outcome-uncertain' AND j.vendor_job_id_envelope IS NULL
+               AND (($5::text IS NULL AND j.cleanup_lease_token IS NULL AND j.vendor_create_lease_expires_at=$6) OR j.cleanup_lease_token=$5)
+             RETURNING j.id`,
         [input.jobId, JSON.stringify(input.vendorJobIdEnvelope), input.now, input.expectedState, input.cleanupLeaseToken ?? null, input.expectedVendorCreateLeaseExpiresAt ?? null],
       );
       if (updated.rowCount !== 1) {
@@ -281,9 +296,28 @@ export class PostgresOmrStore implements OmrStore {
         if (!found.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
         throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
       }
-      await client.query("UPDATE omr_create_idempotency SET state='complete' WHERE job_id=$1", [input.jobId]);
+      const completed = await client.query("UPDATE omr_create_idempotency SET state='complete',failure_code=NULL,failure_message_ko=NULL WHERE job_id=$1 AND state='pending'", [input.jobId]);
+      if (completed.rowCount !== 1) throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async markVendorCreationUnresolved(input: Parameters<OmrStore["markVendorCreationUnresolved"]>[0]): Promise<void> {
+    const result = await this.database.query(
+      `UPDATE omr_jobs AS j SET state='reconciliation-required',reconciliation_kind='create',
+         public_failure_code=$4,public_failure_message_ko=$5,updated_at=$6
+       FROM omr_create_idempotency i
+       WHERE j.id=$1 AND i.job_id=j.id AND i.state='pending' AND j.handle_active=true AND j.state=$2
+         AND (j.state='created' OR (j.state='reconciliation-required' AND j.reconciliation_kind='create'))
+         AND j.vendor_create_outcome_state='outcome-uncertain' AND j.vendor_create_lease_expires_at=$3
+         AND j.vendor_job_id_envelope IS NULL AND j.cleanup_lease_token IS NULL`,
+      [input.jobId, input.expectedState, input.expectedVendorCreateLeaseExpiresAt, input.code, input.messageKo, input.now],
+    );
+    if (result.rowCount !== 1) {
+      const found = await this.database.query("SELECT id FROM omr_jobs WHERE id=$1", [input.jobId]);
+      if (!found.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
+    }
   }
 
   async failVendorCreation(input: Parameters<OmrStore["failVendorCreation"]>[0]): Promise<void> {

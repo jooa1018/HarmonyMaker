@@ -18,6 +18,9 @@ interface FakeJobRow extends Record<string, unknown> {
   result_capture_lease_token: string | null;
   cleanup_lease_token: string | null;
   cleanup_lease_expires_at: string | null;
+  reconciliation_kind: string | null;
+  public_failure_code: string | null;
+  public_failure_message_ko: string | null;
   vendor_create_outcome_state: string;
   vendor_job_id_envelope: Record<string, unknown> | null;
   upload_state: string | null;
@@ -27,6 +30,7 @@ interface FakeJobRow extends Record<string, unknown> {
 class LockedPoolFake {
   readonly calls: string[] = [];
   cleanupCandidate = false;
+  createIdempotencyState = "pending";
   readonly row: FakeJobRow = {
     id: "1", owner_session_id: "1", ip_owner_hash: "ip:fixture", public_handle_hash: "handle:fixture",
     public_handle_replay_envelope: { version: "aead-v1", associatedDataVersion: "test", iv: "iv", ciphertext: "cipher", tag: "tag" },
@@ -38,7 +42,9 @@ class LockedPoolFake {
     vendor_delete_state: "not-started", local_delete_state: "not-started", handle_active: true,
     created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
     state: "processing", operation_kind: null, operation_request_digest: null, operation_lease_token: null, operation_lease_expires_at: null,
-    result_capture_lease_token: null, cleanup_lease_token: null, cleanup_lease_expires_at: null, upload_state: null, upload_lease_token: null,
+    result_capture_lease_token: null, cleanup_lease_token: null, cleanup_lease_expires_at: null,
+    reconciliation_kind: null, public_failure_code: null, public_failure_message_ko: null,
+    upload_state: null, upload_lease_token: null,
   };
   private lock = Promise.resolve();
 
@@ -63,17 +69,55 @@ class LockedPoolFake {
         if (sql.startsWith("SELECT * FROM omr_jobs")) return { rows: [{ ...this.row }], rowCount: 1 };
         if (sql.startsWith("SELECT * FROM omr_pages")) return { rows: [], rowCount: 0 };
         if (sql === "SELECT id FROM omr_jobs WHERE id=$1") return { rows: [{ id: this.row.id }], rowCount: 1 };
-        if (sql.startsWith("UPDATE omr_jobs SET")) {
+        if (sql.startsWith("UPDATE omr_create_idempotency SET state='complete'")) {
+          if (this.createIdempotencyState !== "pending") return { rows: [], rowCount: 0 };
+          this.createIdempotencyState = "complete";
+          return { rows: [], rowCount: 1 };
+        }
+        if (sql.startsWith("UPDATE omr_jobs")) {
           if (sql.includes("vendor_job_id_envelope=$2")) {
             const leaseToken = values[4] === null ? null : String(values[4]);
-            const matches = this.row.state === values[3]
+            const publicRecovery = sql.includes("state='created'");
+            const statePermitsPublicRecovery = this.row.state === "created"
+              || (this.row.state === "reconciliation-required" && this.row.reconciliation_kind === "create");
+            const authorityMatches = publicRecovery
+              ? this.row.handle_active === true && statePermitsPublicRecovery
+                && this.row.cleanup_lease_token === null && leaseToken === null
+                && this.row.vendor_create_lease_expires_at === values[5]
+              : this.row.handle_active === false && this.row.state === "delete-pending"
+                && (leaseToken === null
+                  ? this.row.cleanup_lease_token === null && this.row.vendor_create_lease_expires_at === values[5]
+                  : this.row.cleanup_lease_token === leaseToken);
+            const matches = this.createIdempotencyState === "pending"
+              && this.row.state === values[3]
               && this.row.vendor_create_outcome_state === "outcome-uncertain"
               && this.row.vendor_job_id_envelope === null
-              && (leaseToken === null ? this.row.cleanup_lease_token === null : this.row.cleanup_lease_token === leaseToken);
+              && authorityMatches;
             if (!matches) return { rows: [], rowCount: 0 };
             this.row.vendor_job_id_envelope = JSON.parse(String(values[1])) as Record<string, unknown>;
             this.row.vendor_create_outcome_state = "confirmed";
+            if (publicRecovery) {
+              this.row.state = "created";
+              this.row.reconciliation_kind = null;
+              this.row.public_failure_code = null;
+              this.row.public_failure_message_ko = null;
+            }
             return { rows: [{ id: this.row.id }], rowCount: 1 };
+          }
+          if (sql.includes("state='reconciliation-required',reconciliation_kind='create'")) {
+            const statePermitsReplay = this.row.state === "created"
+              || (this.row.state === "reconciliation-required" && this.row.reconciliation_kind === "create");
+            const matches = this.createIdempotencyState === "pending"
+              && this.row.handle_active === true && this.row.state === values[1] && statePermitsReplay
+              && this.row.vendor_create_outcome_state === "outcome-uncertain"
+              && this.row.vendor_create_lease_expires_at === values[2]
+              && this.row.vendor_job_id_envelope === null && this.row.cleanup_lease_token === null;
+            if (!matches) return { rows: [], rowCount: 0 };
+            this.row.state = "reconciliation-required";
+            this.row.reconciliation_kind = "create";
+            this.row.public_failure_code = String(values[3]);
+            this.row.public_failure_message_ko = String(values[4]);
+            return { rows: [], rowCount: 1 };
           }
           if (sql.includes("handle_active=false,state='delete-pending'")) {
             if (!this.row.handle_active) return { rows: [], rowCount: 0 };
@@ -307,30 +351,97 @@ describe("PostgreSQL OMR transition fencing", () => {
       .resolves.toEqual({ status: "credit-denied" });
   });
 
-  it("fences stale and cleanup-lease-losing PostgreSQL create completions", async () => {
+  it("atomically restores created lifecycle and clears failure authority for PostgreSQL public recovery", async () => {
+    const envelope = {
+      version: 1 as const, algorithm: "aes-256-gcm" as const, nonce: "nonce",
+      ciphertext: "ciphertext", authenticationTag: "tag", associatedDataVersion: "omr-vendor-job-id-v1",
+    };
+    for (const initialState of ["created", "reconciliation-required"] as const) {
+      const pool = new LockedPoolFake();
+      pool.row.state = initialState;
+      pool.row.reconciliation_kind = initialState === "reconciliation-required" ? "create" : null;
+      pool.row.public_failure_code = "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN";
+      pool.row.public_failure_message_ko = "uncertain";
+      pool.row.vendor_create_outcome_state = "outcome-uncertain";
+      pool.row.vendor_create_lease_expires_at = "2026-01-01T00:05:00.000Z";
+      const store = new PostgresOmrStore(pool as unknown as Pool);
+      await expect(store.completeVendorCreation({
+        jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: initialState,
+        expectedVendorCreateLeaseExpiresAt: "2026-01-01T00:05:00.000Z",
+        completionMode: "public-handle-recovery", now: "2026-01-01T00:01:00.000Z",
+      })).resolves.toBeUndefined();
+      expect(pool.row).toMatchObject({
+        state: "created", vendor_create_outcome_state: "confirmed", vendor_job_id_envelope: envelope,
+        reconciliation_kind: null, public_failure_code: null, public_failure_message_ko: null, handle_active: true,
+      });
+      expect(pool.createIdempotencyState).toBe("complete");
+      const confirmed = structuredClone(pool.row);
+      await expect(store.markVendorCreationUnresolved({
+        jobId: "1" as PrivateRowId, expectedState: initialState,
+        expectedVendorCreateLeaseExpiresAt: "2026-01-01T00:05:00.000Z",
+        code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN", messageKo: "stale", now: "2026-01-01T00:02:00.000Z",
+      })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+      expect(pool.row).toEqual(confirmed);
+    }
+  });
+
+  it("keeps cleanup reconciliation delete-pending, inactive, and fenced by the current cleanup lease", async () => {
     const pool = new LockedPoolFake();
     const store = new PostgresOmrStore(pool as unknown as Pool);
     const envelope = {
       version: 1 as const, algorithm: "aes-256-gcm" as const, nonce: "nonce",
       ciphertext: "ciphertext", authenticationTag: "tag", associatedDataVersion: "omr-vendor-job-id-v1",
     };
-    pool.row.state = "deleted"; pool.row.vendor_create_outcome_state = "definitive-no-job";
-    await expect(store.completeVendorCreation({
-      jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: "created",
-      now: "2026-01-01T00:00:00.000Z",
-    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
-    expect(pool.row.vendor_job_id_envelope).toBeNull();
-
-    pool.row.state = "delete-pending"; pool.row.vendor_create_outcome_state = "outcome-uncertain";
+    pool.row.state = "delete-pending"; pool.row.handle_active = false;
+    pool.row.vendor_create_outcome_state = "outcome-uncertain";
+    pool.row.reconciliation_kind = "create";
+    pool.row.public_failure_code = "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN";
+    pool.row.public_failure_message_ko = "uncertain";
     pool.row.cleanup_lease_token = "cleanup:current";
     await expect(store.completeVendorCreation({
       jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
-      cleanupLeaseToken: "cleanup:stale", now: "2026-01-01T00:01:00.000Z",
+      cleanupLeaseToken: "cleanup:stale", completionMode: "cleanup-reconciliation", now: "2026-01-01T00:01:00.000Z",
     })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
     await expect(store.completeVendorCreation({
       jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
-      cleanupLeaseToken: "cleanup:current", now: "2026-01-01T00:02:00.000Z",
+      cleanupLeaseToken: "cleanup:current", completionMode: "cleanup-reconciliation", now: "2026-01-01T00:02:00.000Z",
     })).resolves.toBeUndefined();
-    expect(pool.row).toMatchObject({ vendor_create_outcome_state: "confirmed", vendor_job_id_envelope: envelope });
+    expect(pool.row).toMatchObject({
+      state: "delete-pending", handle_active: false, cleanup_lease_token: "cleanup:current",
+      vendor_create_outcome_state: "confirmed", vendor_job_id_envelope: envelope,
+      reconciliation_kind: "create", public_failure_code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN",
+    });
+    expect(pool.createIdempotencyState).toBe("complete");
+  });
+
+  it("semantically fences PostgreSQL unresolved writes by state, lease, envelope, cleanup, and idempotency authority", async () => {
+    const pool = new LockedPoolFake();
+    pool.row.state = "created";
+    pool.row.vendor_create_outcome_state = "outcome-uncertain";
+    pool.row.vendor_create_lease_expires_at = "2026-01-01T00:05:00.000Z";
+    const store = new PostgresOmrStore(pool as unknown as Pool);
+    const unresolved = {
+      jobId: "1" as PrivateRowId, expectedState: "created" as const,
+      code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN", messageKo: "uncertain", now: "2026-01-01T00:01:00.000Z",
+    };
+    await expect(store.markVendorCreationUnresolved({
+      ...unresolved, expectedVendorCreateLeaseExpiresAt: "2026-01-01T00:04:59.000Z",
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+    expect(pool.row.state).toBe("created");
+    await expect(store.markVendorCreationUnresolved({
+      ...unresolved, expectedVendorCreateLeaseExpiresAt: "2026-01-01T00:05:00.000Z",
+    })).resolves.toBeUndefined();
+    expect(pool.row).toMatchObject({
+      state: "reconciliation-required", reconciliation_kind: "create",
+      vendor_create_outcome_state: "outcome-uncertain", vendor_job_id_envelope: null,
+      public_failure_code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN", public_failure_message_ko: "uncertain",
+    });
+    expect(pool.createIdempotencyState).toBe("pending");
+
+    pool.row.cleanup_lease_token = "cleanup:newer";
+    await expect(store.markVendorCreationUnresolved({
+      ...unresolved, expectedState: "reconciliation-required",
+      expectedVendorCreateLeaseExpiresAt: "2026-01-01T00:05:00.000Z",
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
   });
 });

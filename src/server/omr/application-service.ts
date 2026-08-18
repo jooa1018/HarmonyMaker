@@ -325,7 +325,15 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     if (claim.status !== "claimed" && claim.status !== "resume") throw new RangeError("OMR_CREATE_STATE_INVALID");
     const claimedJob = claim.job;
     if (claim.status === "resume" && !claimedJob.capabilities.supportsIdempotency) {
-      await this.dependencies.store.transition(claimedJob.id, { state: "reconciliation-required", reconciliationKind: "create", publicFailureCode: "OMR_JOB_RECONCILIATION_REQUIRED", publicFailureMessageKo: "인식 작업 생성 상태를 확인해야 합니다." }, now.toISOString());
+      try {
+        await this.dependencies.store.markVendorCreationUnresolved({
+          jobId: claimedJob.id, expectedState: claimedJob.state,
+          expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt,
+          code: "OMR_JOB_RECONCILIATION_REQUIRED", messageKo: "인식 작업 생성 상태를 확인해야 합니다.", now: now.toISOString(),
+        });
+      } catch {
+        await this.dependencies.store.recordAudit(claimedJob.id, "job-create-superseded", "non-idempotent-resume-fence", now.toISOString());
+      }
       throw new RangeError("OMR_JOB_RECONCILIATION_REQUIRED");
     }
     let vendorJobId: VendorJobId;
@@ -357,11 +365,20 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         await this.dependencies.store.recordAudit(claimedJob.id, "job-create-failed", "definitive-vendor-rejection", now.toISOString());
         throw new RangeError("OMR_VENDOR_OPERATION_FAILED");
       }
-      if (!claimedJob.capabilities.supportsIdempotency || outcome === "definitive-rejection") await this.dependencies.store.transition(claimedJob.id, {
-        state: "reconciliation-required", reconciliationKind: "create",
-        publicFailureCode: outcome === "definitive-rejection" ? CREATE_OUTCOME_UNCERTAIN_CODE : "OMR_JOB_RECONCILIATION_REQUIRED",
-        publicFailureMessageKo: outcome === "definitive-rejection" ? CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO : "인식 작업 생성 상태를 확인해야 합니다.",
-      }, now.toISOString());
+      if (!claimedJob.capabilities.supportsIdempotency || outcome === "definitive-rejection") {
+        try {
+          await this.dependencies.store.markVendorCreationUnresolved({
+            jobId: claimedJob.id, expectedState: claimedJob.state,
+            expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt,
+            code: outcome === "definitive-rejection" ? CREATE_OUTCOME_UNCERTAIN_CODE : "OMR_JOB_RECONCILIATION_REQUIRED",
+            messageKo: outcome === "definitive-rejection" ? CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO : "인식 작업 생성 상태를 확인해야 합니다.",
+            now: now.toISOString(),
+          });
+        } catch {
+          await this.dependencies.store.recordAudit(claimedJob.id, "job-create-superseded", "unresolved-create-fence", now.toISOString());
+          throw new RangeError(claimedJob.capabilities.supportsIdempotency ? "OMR_IDEMPOTENCY_PENDING" : "OMR_JOB_RECONCILIATION_REQUIRED");
+        }
+      }
       await this.dependencies.store.recordAudit(claimedJob.id, "job-create-uncertain", claimedJob.capabilities.supportsIdempotency ? "resumable" : "reconciliation-required", now.toISOString());
       throw new RangeError(outcome === "definitive-rejection"
         ? CREATE_OUTCOME_UNCERTAIN_CODE
@@ -371,17 +388,19 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       const envelope = encryptAeadV1(new TextEncoder().encode(vendorJobId), this.dependencies.vendorJobEncryptionKey, { associatedDataVersion: "omr-vendor-job-id-v1" });
       await this.dependencies.store.completeVendorCreation({
         jobId: claimedJob.id, vendorJobIdEnvelope: envelope, expectedState: claimedJob.state,
-        expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt, now: now.toISOString(),
+        expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt,
+        completionMode: "public-handle-recovery", now: now.toISOString(),
       });
       await this.dependencies.store.recordAudit(claimedJob.id, "job-created", claim.status, now.toISOString());
       return claim.status === "resume"
         ? new TextDecoder().decode(decryptAeadV1(claimedJob.publicHandleReplayEnvelope, this.dependencies.vendorJobEncryptionKey)) as OmrJobHandle
         : handle;
     } catch {
-      if (!claimedJob.capabilities.supportsIdempotency) await this.dependencies.store.transition(claimedJob.id, {
-        state: "reconciliation-required", reconciliationKind: "create",
-        publicFailureCode: "OMR_JOB_RECONCILIATION_REQUIRED", publicFailureMessageKo: "인식 작업 생성 상태를 확인해야 합니다.",
-      }, now.toISOString()).catch(() => undefined);
+      if (!claimedJob.capabilities.supportsIdempotency) await this.dependencies.store.markVendorCreationUnresolved({
+        jobId: claimedJob.id, expectedState: claimedJob.state,
+        expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt,
+        code: "OMR_JOB_RECONCILIATION_REQUIRED", messageKo: "인식 작업 생성 상태를 확인해야 합니다.", now: now.toISOString(),
+      }).catch(() => undefined);
       await this.dependencies.store.recordAudit(claimedJob.id, "job-create-persist-pending", claimedJob.capabilities.supportsIdempotency ? "retry-after-lease" : "reconciliation-required", now.toISOString());
       throw new RangeError(claimedJob.capabilities.supportsIdempotency ? "OMR_IDEMPOTENCY_PENDING" : "OMR_JOB_RECONCILIATION_REQUIRED");
     }
@@ -730,6 +749,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
               try {
                 await this.dependencies.store.completeVendorCreation({
                   jobId: job.id, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
+                  completionMode: "cleanup-reconciliation",
                   ...(cleanupLeaseToken
                     ? { cleanupLeaseToken }
                     : { expectedVendorCreateLeaseExpiresAt: job.vendorCreateLeaseExpiresAt }),
