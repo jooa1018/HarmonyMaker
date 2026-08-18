@@ -18,6 +18,12 @@ export type OmrLifecycleState =
 
 export type OmrOperationKind = "start" | "submit-input" | "cancel";
 
+export type VendorCreateOutcomeState =
+  | "not-attempted"
+  | "definitive-no-job"
+  | "outcome-uncertain"
+  | "confirmed";
+
 const LEGAL_OMR_TRANSITIONS: Readonly<Record<OmrLifecycleState, readonly OmrLifecycleState[]>> = Object.freeze({
   created: ["uploading", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
   uploading: ["queued", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
@@ -78,6 +84,7 @@ export interface DurableOmrJobRecord {
   readonly adapterContractVersion: string;
   readonly vendorCreateIdempotencyKey: string;
   readonly vendorCreateLeaseExpiresAt: string;
+  readonly vendorCreateOutcomeState: VendorCreateOutcomeState;
   readonly vendorJobIdEnvelope?: AeadEnvelopeV1;
   readonly creditEstimate: number;
   readonly creditState: "reserved" | "settled" | "released";
@@ -151,6 +158,7 @@ export interface OmrStore {
     readonly now: string;
   }): Promise<OmrCreateClaim>;
   completeVendorCreation(jobId: PrivateRowId, vendorJobIdEnvelope: AeadEnvelopeV1, now: string): Promise<void>;
+  completeVendorCreationNoJob(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void>;
   failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void>;
   findOwnedByHandleHash(handleHash: string, ownerSessionId: PrivateRowId, includeInactive?: boolean): Promise<DurableOmrJobRecord | undefined>;
   claimPage(jobId: PrivateRowId, page: OmrPageRecord, maxRetries: number, leaseToken: string, leaseExpiresAt: string, supportsIdempotency: boolean, now: string): Promise<OmrPageClaim>;
@@ -227,7 +235,8 @@ export class MemoryOmrStore implements OmrStore {
       if ([...this.jobs.values()].filter((job) => job.ownerSessionId === input.ownerSessionId && job.createdAt > hourStart).length >= input.quota.maxJobsPerSessionPerHour
         || [...this.jobs.values()].filter((job) => job.ipOwnerHash === input.ipOwnerHash && job.createdAt > hourStart).length >= input.quota.maxJobsPerIpPerHour) return { status: "quota-denied" };
       const day = input.now.slice(0, 10);
-      const reserved = [...this.jobs.values()].filter((job) => job.createdAt.startsWith(day) && job.creditState !== "released")
+      const reserved = [...this.jobs.values()].filter((job) => job.creditState === "reserved"
+        || (job.createdAt.startsWith(day) && job.creditState !== "released"))
         .reduce((sum, job) => sum + job.creditEstimate, 0);
       if (reserved + input.record.creditEstimate > input.quota.dailyGlobalCreditCeiling) return { status: "credit-denied" };
       const record = { ...structuredClone(input.record), id: this.id() } as DurableOmrJobRecord;
@@ -241,17 +250,27 @@ export class MemoryOmrStore implements OmrStore {
     await this.atomic(() => {
       const job = this.jobs.get(jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
-      const updated = { ...job, vendorJobIdEnvelope: structuredClone(vendorJobIdEnvelope), updatedAt: now };
+      const updated = { ...job, vendorCreateOutcomeState: "confirmed" as const, vendorJobIdEnvelope: structuredClone(vendorJobIdEnvelope), updatedAt: now };
       this.jobs.set(jobId, updated);
       const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
       if (entry) entry.complete = true;
     });
   }
 
+  async completeVendorCreationNoJob(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
+    await this.atomic(() => {
+      const job = this.jobs.get(jobId);
+      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      this.jobs.set(jobId, { ...job, vendorCreateOutcomeState: "definitive-no-job", updatedAt: now });
+      const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
+      if (entry) { entry.complete = true; entry.failure = { code, messageKo }; }
+    });
+  }
+
   async failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
     await this.atomic(() => {
       const job = this.jobs.get(jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
-      this.jobs.set(jobId, { ...job, state: "failed", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo, updatedAt: now });
+      this.jobs.set(jobId, { ...job, state: "failed", vendorCreateOutcomeState: "definitive-no-job", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo, updatedAt: now });
       const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
       if (entry) { entry.complete = true; entry.failure = { code, messageKo }; }
     });
@@ -381,7 +400,18 @@ export class MemoryOmrStore implements OmrStore {
     });
   }
 
-  async markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void> { await this.transition(jobId, { handleActive: false, state: "delete-pending", deletedAt: now, creditState: "released" }, now); }
+  async markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void> {
+    await this.atomic(() => {
+      const job = this.jobs.get(jobId);
+      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (!isLegalOmrTransition(job.state, "delete-pending")) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      const creditState = job.creditState === "reserved"
+        && (job.vendorCreateOutcomeState === "outcome-uncertain" || (job.vendorCreateOutcomeState === "confirmed" && job.vendorDeleteState !== "deleted"))
+        ? "reserved"
+        : "released";
+      this.jobs.set(jobId, { ...job, handleActive: false, state: "delete-pending", deletedAt: now, creditState, updatedAt: now });
+    });
+  }
   async recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void> {
     await this.atomic(() => { this.audits.push({ ...(jobId ? { jobId } : {}), eventKind, outcome, createdAt: now }); });
   }
@@ -397,7 +427,11 @@ export class MemoryOmrStore implements OmrStore {
         ))
       )).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
       return selected.map((job) => {
-        const base = job.state === "delete-pending" ? job : { ...job, state: "expired" as const, handleActive: false, creditState: "released" as const, updatedAt: now };
+        const preserveReservedExposure = job.creditState === "reserved"
+          && (job.vendorCreateOutcomeState === "outcome-uncertain" || (job.vendorCreateOutcomeState === "confirmed" && job.vendorDeleteState !== "deleted"));
+        const base = job.state === "delete-pending"
+          ? job
+          : { ...job, state: "expired" as const, handleActive: false, creditState: preserveReservedExposure ? "reserved" as const : "released" as const, updatedAt: now };
         const updated = { ...base, cleanupLeaseToken: input.leaseToken, cleanupLeaseExpiresAt: input.leaseExpiresAt };
         this.jobs.set(job.id, updated);
         return this.clone(updated);

@@ -120,9 +120,12 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(createConsentedJob(service, request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
     expect(h.adapter.callCounts.create).toBe(1);
     expect(h.store.listJobs()).toHaveLength(1);
+    expect(h.store.listJobs()[0]).toMatchObject({ vendorCreateOutcomeState: "outcome-uncertain", creditState: "reserved" });
+    expect(h.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
     h.advance(5 * 60 * 1_000 + 1);
     const recoveredHandle = await createConsentedJob(service, request);
     expect(h.adapter.callCounts.create).toBe(1);
+    expect(h.store.listJobs()[0]).toMatchObject({ vendorCreateOutcomeState: "confirmed", vendorJobIdEnvelope: expect.any(Object) });
     expect(await service.synchronizeStatus(recoveredHandle)).toEqual({ kind: "created" });
   });
 
@@ -655,6 +658,70 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(createCrash.store.listJobs()[0]).toMatchObject({ creditState: "reserved", creditEstimate: 1 });
   });
 
+  it("keeps non-idempotent post-create persistence uncertainty, local cleanup, and credit exposure durable through expiry", async () => {
+    const h = await harness();
+    const adapter = new ReferenceOmrVendorAdapter([h.fixture], { supportsIdempotency: false });
+    const createSpy = vi.spyOn(adapter, "createVendorJob");
+    const deleteSpy = vi.spyOn(adapter, "deleteVendorJob");
+    const retentionSpy = vi.spyOn(adapter, "getRetentionInfo");
+    const unstableStore = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completeVendorCreation") return async () => { throw new Error("post-effect create persistence failure"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store: unstableStore, adapter });
+    await expect(createConsentedJob(service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "non-idempotent-expiry-uncertainty",
+    })).rejects.toThrow("OMR_JOB_RECONCILIATION_REQUIRED");
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const localObject = await h.objects.put({
+      ownerSessionId: "session:1" as PrivateRowId,
+      bytes: new TextEncoder().encode("uncertain-local-page"), contentType: "image/png",
+    });
+    const uncertain = h.store.listJobs()[0];
+    await h.store.transition(uncertain.id, { pages: [{
+      pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKeyHash: "local-page-key",
+      width: 100, height: 120,
+      quality: { blurBp: basisPoints(100), perspectiveBp: basisPoints(100), glareBp: basisPoints(100), cropRiskBp: basisPoints(100), estimatedStaffSpacePixels: 20, status: "pass", reasons: [] },
+      warnAcknowledged: false, duplicateConfirmed: false, uploadState: "uploaded", retryCount: 0,
+      objectReferenceId: localObject.id,
+    }] }, uncertain.updatedAt);
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "reconciliation-required", reconciliationKind: "create",
+      vendorCreateOutcomeState: "outcome-uncertain", creditState: "reserved",
+    });
+    expect(h.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
+
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    await expect(service.cleanupExpiredJobs()).resolves.toEqual([{
+      jobId: "1", result: { localHandleDeleted: true, vendor: expect.objectContaining({ status: "failed", code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN" }) },
+    }]);
+    expect(createSpy).toHaveBeenCalledTimes(1); expect(deleteSpy).not.toHaveBeenCalled(); expect(retentionSpy).not.toHaveBeenCalled();
+    const pending = h.store.listJobs()[0];
+    expect(pending).toMatchObject({
+      state: "delete-pending", vendorCreateOutcomeState: "outcome-uncertain",
+      vendorDeleteState: "failed", localDeleteState: "deleted", creditState: "reserved",
+      publicFailureCode: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN",
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+    expect(pending.vendorJobIdEnvelope).toBeUndefined();
+    expect(pending.vendorCreateIdempotencyKey).toBe(uncertain.vendorCreateIdempotencyKey);
+    expect(pending.vendorDeleteNextAttemptAt).toBeDefined();
+    await expect(h.objects.get(localObject.id, uncertain.ownerSessionId)).rejects.toThrow("OBJECT_UNAVAILABLE");
+
+    const creditService = new DurableOmrApplicationService({
+      ...h.dependencies, store: h.store, adapter, quota: omrQuotaConfig(1),
+      actor: { sessionId: "session:credit-after-expiry" as PrivateRowId, ipOwnerHash: "ip:hmac:credit-after-expiry" },
+    });
+    await expect(createConsentedJob(creditService, {
+      sessionId: "session:credit-after-expiry", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "credit-after-uncertain-expiry",
+    })).rejects.toThrow("OMR_GLOBAL_CREDIT_CEILING_EXCEEDED");
+  });
+
   it("retries Vendor and local object deletion independently for mixed delete-pending siblings", async () => {
     const h = await harness();
     const originalVendorDelete = h.adapter.deleteVendorJob.bind(h.adapter);
@@ -803,9 +870,24 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const definitiveService = new DurableOmrApplicationService({ ...definitive.dependencies, adapter: definitive.adapter });
     const definitiveRequest = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "definitive-rejection" };
     await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_OPERATION_FAILED");
+    expect(definitive.store.listJobs()[0]).toMatchObject({
+      state: "failed", vendorCreateOutcomeState: "definitive-no-job",
+      creditState: "released",
+    });
+    expect(definitive.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
     definitive.advance(5 * 60 * 1_000 + 1);
     await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_OPERATION_FAILED");
     expect(definitiveCalls).toBe(1);
+    definitive.advance(24 * 60 * 60 * 1_000);
+    await expect(definitiveService.cleanupExpiredJobs()).resolves.toEqual([{
+      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } },
+    }]);
+    expect(definitive.adapter.callCounts.delete).toBe(0);
+    expect(definitive.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorCreateOutcomeState: "definitive-no-job", vendorDeleteState: "deleted",
+      localDeleteState: "deleted", creditState: "released", vendorJobIdEnvelope: undefined,
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
   });
 
   it("keeps status reads side-effect free and fences concurrent result capture, page completion, and cleanup", async () => {

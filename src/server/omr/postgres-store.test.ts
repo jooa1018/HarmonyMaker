@@ -14,12 +14,15 @@ interface FakeJobRow extends Record<string, unknown> {
   operation_lease_expires_at: string | null;
   result_capture_lease_token: string | null;
   cleanup_lease_token: string | null;
+  cleanup_lease_expires_at: string | null;
+  vendor_create_outcome_state: string;
   upload_state: string | null;
   upload_lease_token: string | null;
 }
 
 class LockedPoolFake {
   readonly calls: string[] = [];
+  cleanupCandidate = false;
   readonly row: FakeJobRow = {
     id: "1", owner_session_id: "1", ip_owner_hash: "ip:fixture", public_handle_hash: "handle:fixture",
     public_handle_replay_envelope: { version: "aead-v1", associatedDataVersion: "test", iv: "iv", ciphertext: "cipher", tag: "tag" },
@@ -27,11 +30,11 @@ class LockedPoolFake {
     canonical_create_request: { pageCount: 1, pages: [], sourceKind: "camera-photo", rights: { basis: "user-confirmed-rights", allowedUses: ["provider-transfer"] }, providerTransferConsent: true, consentCapabilitySnapshotDigest: "a".repeat(64), idempotencyKey: "fixture" },
     rights_json: { basis: "user-confirmed-rights", allowedUses: ["provider-transfer"] }, provider_consent_recorded_at: "2026-01-01T00:00:00.000Z",
     capability_snapshot: { vendorId: "fixture" }, capability_snapshot_digest: "a".repeat(64), vendor_create_idempotency_key: "vendor-key",
-    vendor_create_lease_expires_at: "2026-01-01T00:00:00.000Z", credit_estimate: 1, credit_state: "reserved",
+    vendor_create_lease_expires_at: "2026-01-01T00:00:00.000Z", vendor_create_outcome_state: "confirmed", credit_estimate: 1, credit_state: "reserved",
     vendor_delete_state: "not-started", local_delete_state: "not-started", handle_active: true,
     created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
     state: "processing", operation_kind: null, operation_request_digest: null, operation_lease_token: null, operation_lease_expires_at: null,
-    result_capture_lease_token: null, cleanup_lease_token: null, upload_state: null, upload_lease_token: null,
+    result_capture_lease_token: null, cleanup_lease_token: null, cleanup_lease_expires_at: null, upload_state: null, upload_lease_token: null,
   };
   private lock = Promise.resolve();
 
@@ -50,12 +53,23 @@ class LockedPoolFake {
         this.calls.push(sql);
         if (sql.includes("FOR UPDATE")) {
           if (!releaseLock) releaseLock = await this.acquire();
-          if (sql.startsWith("SELECT id FROM omr_jobs")) return { rows: [], rowCount: 0 };
+          if (sql.startsWith("SELECT id FROM omr_jobs")) return { rows: this.cleanupCandidate ? [{ id: this.row.id }] : [], rowCount: this.cleanupCandidate ? 1 : 0 };
           return { rows: [{ ...this.row }], rowCount: 1 };
         }
         if (sql.startsWith("SELECT * FROM omr_jobs")) return { rows: [{ ...this.row }], rowCount: 1 };
         if (sql.startsWith("SELECT * FROM omr_pages")) return { rows: [], rowCount: 0 };
         if (sql.startsWith("UPDATE omr_jobs SET")) {
+          if (sql.includes("state=CASE WHEN state='delete-pending'")) {
+            if (this.row.state !== "delete-pending") this.row.state = "expired";
+            this.row.handle_active = false;
+            const preserve = this.row.credit_state === "reserved"
+              && (this.row.vendor_create_outcome_state === "outcome-uncertain"
+                || (this.row.vendor_create_outcome_state === "confirmed" && this.row.vendor_delete_state !== "deleted"));
+            this.row.credit_state = preserve ? "reserved" : "released";
+            this.row.cleanup_lease_token = String(values[2]);
+            this.row.cleanup_lease_expires_at = String(values[3]);
+            return { rows: [], rowCount: 1 };
+          }
           const assignments = sql.slice(sql.indexOf(" SET ") + 5, sql.indexOf(" WHERE ")).split(",");
           for (const assignment of assignments) {
             const match = /^([a-z_]+)=\$(\d+)$/u.exec(assignment.trim());
@@ -146,5 +160,27 @@ describe("PostgreSQL OMR transition fencing", () => {
     expect(sql).toContain("state='delete-pending'");
     expect(sql).toContain("vendor_delete_next_attempt_at");
     expect(sql).toContain("local_delete_next_attempt_at");
+  });
+
+  it("preserves uncertain create credit exposure in PostgreSQL cleanup claims and releases definitive no-job credit", async () => {
+    const uncertainPool = new LockedPoolFake(); uncertainPool.cleanupCandidate = true;
+    uncertainPool.row.state = "reconciliation-required";
+    uncertainPool.row.vendor_create_outcome_state = "outcome-uncertain";
+    const uncertainStore = new PostgresOmrStore(uncertainPool as unknown as Pool);
+    await expect(uncertainStore.claimCleanup({
+      now: "2026-01-03T00:00:00.000Z", limit: 10,
+      leaseToken: "cleanup:uncertain", leaseExpiresAt: "2026-01-03T00:05:00.000Z",
+    })).resolves.toMatchObject([{ creditState: "reserved", vendorCreateOutcomeState: "outcome-uncertain" }]);
+    const claimSql = uncertainPool.calls.find((call) => call.includes("state=CASE WHEN state='delete-pending'"));
+    expect(claimSql).toContain("vendor_create_outcome_state='outcome-uncertain'");
+    expect(claimSql).toContain("vendor_delete_state<>'deleted'");
+
+    const noJobPool = new LockedPoolFake(); noJobPool.cleanupCandidate = true;
+    noJobPool.row.state = "failed"; noJobPool.row.vendor_create_outcome_state = "definitive-no-job";
+    const noJobStore = new PostgresOmrStore(noJobPool as unknown as Pool);
+    await expect(noJobStore.claimCleanup({
+      now: "2026-01-03T00:00:00.000Z", limit: 10,
+      leaseToken: "cleanup:no-job", leaseExpiresAt: "2026-01-03T00:05:00.000Z",
+    })).resolves.toMatchObject([{ creditState: "released", vendorCreateOutcomeState: "definitive-no-job" }]);
   });
 });

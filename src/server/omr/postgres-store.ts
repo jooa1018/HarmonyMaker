@@ -48,6 +48,7 @@ function jobRow(row: Record<string, unknown>, pages: readonly OmrPageRecord[]): 
     adapterContractVersion: row.adapter_contract_version as string,
     vendorCreateIdempotencyKey: row.vendor_create_idempotency_key as string,
     vendorCreateLeaseExpiresAt: iso(row.vendor_create_lease_expires_at),
+    vendorCreateOutcomeState: row.vendor_create_outcome_state as DurableOmrJobRecord["vendorCreateOutcomeState"],
     ...(row.vendor_job_id_envelope ? { vendorJobIdEnvelope: json<AeadEnvelopeV1>(row.vendor_job_id_envelope) } : {}),
     creditEstimate: row.credit_estimate as number, creditState: row.credit_state as DurableOmrJobRecord["creditState"],
     pages, ...(row.progress_bp === null || row.progress_bp === undefined ? {} : { progressBp: row.progress_bp as number }),
@@ -94,6 +95,7 @@ async function loadJob(client: Pool | PoolClient, jobId: PrivateRowId): Promise<
 
 const JOB_UPDATE_MAPPINGS: ReadonlyArray<{ key: keyof DurableOmrJobRecord; column: string; json?: boolean }> = [
   { key: "state", column: "state" }, { key: "creditState", column: "credit_state" },
+  { key: "vendorCreateOutcomeState", column: "vendor_create_outcome_state" },
   { key: "progressBp", column: "progress_bp" },
   { key: "vendorJobIdEnvelope", column: "vendor_job_id_envelope", json: true },
   { key: "currentInputRequest", column: "current_input_request", json: true },
@@ -206,7 +208,7 @@ export class PostgresOmrStore implements OmrStore {
           count(*) FILTER (WHERE ip_owner_hash=$2 AND state IN ('created','uploading','queued','processing','needs-input','sync-retry-pending','capture-retry-pending','cancel-pending','cancel-failed','reconciliation-required'))::int AS ip_active,
           count(*) FILTER (WHERE owner_session_id=$1 AND created_at > $3::timestamptz - interval '1 hour')::int AS session_hour,
           count(*) FILTER (WHERE ip_owner_hash=$2 AND created_at > $3::timestamptz - interval '1 hour')::int AS ip_hour,
-          COALESCE(sum(credit_estimate) FILTER (WHERE created_at >= date_trunc('day',$3::timestamptz) AND credit_state <> 'released'),0)::int AS day_credit
+          COALESCE(sum(credit_estimate) FILTER (WHERE credit_state = 'reserved' OR (created_at >= date_trunc('day',$3::timestamptz) AND credit_state <> 'released')),0)::int AS day_credit
          FROM omr_jobs`,
         [input.ownerSessionId, input.ipOwnerHash, input.now],
       );
@@ -224,13 +226,13 @@ export class PostgresOmrStore implements OmrStore {
           owner_session_id,public_handle_hash,vendor_job_id_envelope,state,created_at,expires_at,
           ip_owner_hash,public_handle_replay_envelope,handle_active,source_kind,page_count,rights_json,
           provider_transfer_consent,provider_consent_recorded_at,capability_snapshot,provider_binding_id,adapter_contract_version,vendor_create_idempotency_key,
-          vendor_create_lease_expires_at,credit_estimate,credit_state,updated_at,capability_snapshot_digest,
+          vendor_create_lease_expires_at,vendor_create_outcome_state,credit_estimate,credit_state,updated_at,capability_snapshot_digest,
           vendor_delete_state,local_delete_state,canonical_create_request)
-         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,true,$8,$9,$10,true,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
+         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,true,$8,$9,$10,true,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
         [record.ownerSessionId, record.publicHandleHash, record.state, record.createdAt, record.handleExpiresAt,
           record.ipOwnerHash, JSON.stringify(record.publicHandleReplayEnvelope), record.sourceKind, record.pageCount,
           JSON.stringify(record.rights), record.providerConsentRecordedAt, JSON.stringify(record.capabilities), record.providerBindingId, record.adapterContractVersion,
-          record.vendorCreateIdempotencyKey, record.vendorCreateLeaseExpiresAt, record.creditEstimate, record.creditState, record.updatedAt,
+          record.vendorCreateIdempotencyKey, record.vendorCreateLeaseExpiresAt, record.vendorCreateOutcomeState, record.creditEstimate, record.creditState, record.updatedAt,
           record.capabilitySnapshotDigest, record.vendorDeleteState, record.localDeleteState, JSON.stringify(record.canonicalCreateRequest)],
       );
       const jobId = id(inserted.rows[0].id);
@@ -245,12 +247,23 @@ export class PostgresOmrStore implements OmrStore {
     const client = await this.database.connect();
     try {
       await client.query("BEGIN");
-      const updated = await client.query("UPDATE omr_jobs SET vendor_job_id_envelope=$2,updated_at=$3 WHERE id=$1 AND vendor_job_id_envelope IS NULL RETURNING id", [jobId, JSON.stringify(envelope), now]);
+      const updated = await client.query("UPDATE omr_jobs SET vendor_job_id_envelope=$2,vendor_create_outcome_state='confirmed',updated_at=$3 WHERE id=$1 AND vendor_job_id_envelope IS NULL RETURNING id", [jobId, JSON.stringify(envelope), now]);
       if (updated.rowCount !== 1) {
         const found = await client.query("SELECT vendor_job_id_envelope FROM omr_jobs WHERE id=$1", [jobId]);
         if (!found.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
       }
       await client.query("UPDATE omr_create_idempotency SET state='complete' WHERE job_id=$1", [jobId]);
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async completeVendorCreationNoJob(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query("UPDATE omr_jobs SET vendor_create_outcome_state='definitive-no-job',updated_at=$2 WHERE id=$1", [jobId, now]);
+      if (updated.rowCount !== 1) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      await client.query("UPDATE omr_create_idempotency SET state='complete',failure_code=$2,failure_message_ko=$3 WHERE job_id=$1", [jobId, code, messageKo]);
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
@@ -261,7 +274,7 @@ export class PostgresOmrStore implements OmrStore {
       await client.query("BEGIN");
       const job = await client.query("SELECT state FROM omr_jobs WHERE id=$1 FOR UPDATE", [jobId]);
       if (!job.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
-      await updateLockedJob(client, jobId, { state: "failed", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo }, now);
+      await updateLockedJob(client, jobId, { state: "failed", vendorCreateOutcomeState: "definitive-no-job", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo }, now);
       await client.query("UPDATE omr_create_idempotency SET state='complete',failure_code=$2,failure_message_ko=$3 WHERE job_id=$1", [jobId, code, messageKo]);
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
@@ -434,7 +447,7 @@ export class PostgresOmrStore implements OmrStore {
   }
 
   async markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void> {
-    const result = await this.database.query("UPDATE omr_jobs SET handle_active=false,state='delete-pending',deleted_at=COALESCE(deleted_at,$2),credit_state='released',updated_at=$2 WHERE id=$1 AND handle_active=true", [jobId, now]);
+    const result = await this.database.query("UPDATE omr_jobs SET handle_active=false,state='delete-pending',deleted_at=COALESCE(deleted_at,$2),credit_state=CASE WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN credit_state ELSE 'released' END,updated_at=$2 WHERE id=$1 AND handle_active=true", [jobId, now]);
     if (result.rowCount !== 1) throw new RangeError("OMR_JOB_UNAVAILABLE");
   }
 
@@ -464,7 +477,7 @@ export class PostgresOmrStore implements OmrStore {
       const records: DurableOmrJobRecord[] = [];
       for (const row of selected.rows) {
         const jobId = id(row.id);
-        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state='released',cleanup_lease_token=$3,cleanup_lease_expires_at=$4,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
+        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state=CASE WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN credit_state ELSE 'released' END,cleanup_lease_token=$3,cleanup_lease_expires_at=$4,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
         const loaded = await loadJob(client, jobId); if (loaded) records.push(loaded);
       }
       await client.query("COMMIT");

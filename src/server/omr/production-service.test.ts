@@ -199,6 +199,103 @@ describe("production OMR provider composition", () => {
     expect(h.store.listJobs()[0]).toMatchObject({ providerBindingId: generation1.active.bindingId, state: "created" });
   });
 
+  it("reconciles an idempotent response-lost A create during expiry cleanup before deleting the same A job", async () => {
+    const h = await setup();
+    const generation1 = await createProductionOmrProviderRegistry({ active: h.registrationA });
+    const generation2 = await createProductionOmrProviderRegistry({ active: h.registrationB, historical: [h.registrationA] });
+    const prepared = await h.createRequest(generation1, "provider-a-expiry-reconciliation");
+    const originalCreate = h.adapterA.createVendorJob.bind(h.adapterA);
+    const observedIds: string[] = [];
+    let loseFirstResponse = true;
+    const aCreate = vi.spyOn(h.adapterA, "createVendorJob").mockImplementation(async (request) => {
+      const id = await originalCreate(request); observedIds.push(id);
+      if (loseFirstResponse) { loseFirstResponse = false; throw new OmrVendorCallError("response lost", "outcome-uncertain"); }
+      return id;
+    });
+    const persistRecoveredId = vi.spyOn(h.store, "completeVendorCreation");
+    const aDelete = vi.spyOn(h.adapterA, "deleteVendorJob");
+    const bCapabilities = vi.spyOn(h.adapterB, "getCapabilities");
+    const bCreate = vi.spyOn(h.adapterB, "createVendorJob");
+    const bDelete = vi.spyOn(h.adapterB, "deleteVendorJob");
+    const bRetention = vi.spyOn(h.adapterB, "getRetentionInfo");
+
+    await expect(prepared.service.createJob(prepared.request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    const uncertain = h.store.listJobs()[0];
+    expect(uncertain).toMatchObject({
+      vendorCreateOutcomeState: "outcome-uncertain",
+      creditState: "reserved", providerBindingId: generation1.active.bindingId,
+    });
+    expect(uncertain.vendorJobIdEnvelope).toBeUndefined();
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+
+    await expect(h.serviceFor(generation2).cleanupExpiredJobs()).resolves.toEqual([{
+      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } },
+    }]);
+    expect(aCreate).toHaveBeenCalledTimes(2);
+    expect(aCreate.mock.calls[1][0]).toEqual(aCreate.mock.calls[0][0]);
+    expect(observedIds).toHaveLength(2); expect(observedIds[1]).toBe(observedIds[0]);
+    expect(h.adapterA.callCounts.create).toBe(1);
+    expect(persistRecoveredId).toHaveBeenCalledTimes(1);
+    expect(aDelete).toHaveBeenCalledTimes(1); expect(aDelete.mock.calls[0][0]).toBe(observedIds[0]);
+    expect(bCapabilities).not.toHaveBeenCalled(); expect(bCreate).not.toHaveBeenCalled();
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorCreateOutcomeState: "confirmed", vendorDeleteState: "deleted",
+      localDeleteState: "deleted", vendorJobIdEnvelope: undefined, creditState: "released",
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+  });
+
+  it("keeps an unavailable idempotent A create uncertain through expiry and reconciles only after exact A restoration", async () => {
+    const h = await setup();
+    const generation1 = await createProductionOmrProviderRegistry({ active: h.registrationA });
+    const generation2 = await createProductionOmrProviderRegistry({ active: h.registrationB });
+    const generation3 = await createProductionOmrProviderRegistry({ active: h.registrationB, historical: [h.registrationA] });
+    const prepared = await h.createRequest(generation1, "provider-a-unavailable-expiry-reconciliation");
+    const originalCreate = h.adapterA.createVendorJob.bind(h.adapterA);
+    let loseFirstResponse = true;
+    const aCreate = vi.spyOn(h.adapterA, "createVendorJob").mockImplementation(async (request) => {
+      const id = await originalCreate(request);
+      if (loseFirstResponse) { loseFirstResponse = false; throw new OmrVendorCallError("response lost", "outcome-uncertain"); }
+      return id;
+    });
+    const aDelete = vi.spyOn(h.adapterA, "deleteVendorJob");
+    const bCapabilities = vi.spyOn(h.adapterB, "getCapabilities");
+    const bCreate = vi.spyOn(h.adapterB, "createVendorJob");
+    const bDelete = vi.spyOn(h.adapterB, "deleteVendorJob");
+    const bRetention = vi.spyOn(h.adapterB, "getRetentionInfo");
+
+    await expect(prepared.service.createJob(prepared.request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    const createKey = h.store.listJobs()[0].vendorCreateIdempotencyKey;
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    await expect(h.serviceFor(generation2).cleanupExpiredJobs()).resolves.toHaveLength(1);
+    expect(aCreate).toHaveBeenCalledTimes(1); expect(aDelete).not.toHaveBeenCalled();
+    expect(bCapabilities).not.toHaveBeenCalled(); expect(bCreate).not.toHaveBeenCalled();
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    const pending = h.store.listJobs()[0];
+    expect(pending).toMatchObject({
+      state: "delete-pending", vendorCreateOutcomeState: "outcome-uncertain",
+      vendorDeleteState: "failed", localDeleteState: "deleted", creditState: "reserved",
+      providerBindingId: generation1.active.bindingId, adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
+      vendorCreateIdempotencyKey: createKey,
+      publicFailureCode: "OMR_PROVIDER_BINDING_UNAVAILABLE",
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+    expect(pending.vendorJobIdEnvelope).toBeUndefined();
+    expect(pending.vendorDeleteNextAttemptAt).toBeDefined();
+
+    h.advance(60_001);
+    await expect(h.serviceFor(generation3).cleanupExpiredJobs()).resolves.toHaveLength(1);
+    expect(aCreate).toHaveBeenCalledTimes(2); expect(aCreate.mock.calls[1][0].idempotencyKey).toBe(createKey);
+    expect(aDelete).toHaveBeenCalledTimes(1);
+    expect(bCreate).not.toHaveBeenCalled(); expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorCreateOutcomeState: "confirmed", vendorDeleteState: "deleted",
+      localDeleteState: "deleted", creditState: "released", vendorJobIdEnvelope: undefined,
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+  });
+
   it("keeps local cleanup and Vendor retry durable when user delete cannot resolve historical A", async () => {
     const h = await setup();
     const generation1 = await createProductionOmrProviderRegistry({ active: h.registrationA });
