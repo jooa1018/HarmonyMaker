@@ -529,3 +529,70 @@ ULTRA_AUDIT_READY = NO
 ```
 
 The reason is procedural and explicit: a separate full Segment D saturation audit is planned after this targeted code closure. This work did not perform that audit and did not begin Ultra, Step 11, a real provider, corpus calibration, live PostgreSQL/S3, or physical-device verification.
+
+## Saturation findings targeted closure handoff
+
+- Exact starting remote HEAD: `3367e7775b029f42fc7b3372cde46e5027fee67f`
+- Previous code checkpoint: `61dbe29e93d7a8a9857becb342090c61ff2a8981`
+- New code checkpoint: `456312527684d419cb3ee54c3e4f031d4c2cd613`
+- Migration: none required
+- Final handoff-inclusive HEAD: the additive documentation commit containing this section; exact SHA is reported with terminal remote evidence
+
+The saturation audit found four residual boundaries. Completed create idempotency assumed its replay handle was still public; audit insertion failure remained inside business compensation blocks; PostgreSQL daily credit depended on session timezone; and no-length JSON used whole-body `text()` buffering. All four production roots are now closed without changing schema, provider contract, WAG, Product Core musical selection, or existing create-certainty/cleanup authority.
+
+```text
+P1-SAT-01 replay usability
+  active, unexpired completed replay               PASS — exact same usable handle
+  expired before cleanup                           PASS — OMR_CREATE_REPLAY_UNAVAILABLE
+  inactive/delete-pending/deleted                  PASS — OMR_CREATE_REPLAY_UNAVAILABLE
+  completed key reopened/new job/new Vendor call  PASS — none
+  Memory atomic / PostgreSQL i+j row lock          PASS
+
+P1-SAT-02 post-commit object ownership
+  page commit then audit failure                   PASS — uploaded object readable/startable
+  page pre-commit interruption                     PASS — compensation retained
+  result commit then audit failure                 PASS — completed/settled/exportable
+  service reconstruction read                      PASS
+  result completion superseded                     PASS — unreferenced object deleted
+  create/start/input/cancel/delete audit failures  PASS — business authority preserved
+
+P1-SAT-03 UTC credit
+  central UTC half-open window                     PASS
+  same UTC day across Asia/Seoul local midnight    PASS — credit denied
+  previous UTC day settled                         PASS — excluded
+  prior-day unresolved reservation                 PASS — counted
+  UTC session parity                               PASS
+  real PostgreSQL migrations/store                 PASS — 1 file/5 tests
+
+P2-SAT-04 bounded JSON stream
+  no-Content-Length multi-chunk oversize            PASS — early cancel
+  single oversized chunk                           PASS
+  bounded multi-chunk JSON                         PASS
+  raw multibyte UTF-8 byte limit                    PASS
+  malformed UTF-8                                  PASS — invalid
+  invalid/unsafe/oversized Content-Length           PASS — before read
+  authorization ordering                           PASS
+```
+
+Clean-install verification at the code checkpoint passed npm 11.6.2 `npm ci` with 451 packages added, 452 audited, and zero vulnerabilities; typecheck; lint; 65 files/646 default tests; production build; and diff check. Separate Segment B and OMR 101-run campaigns passed. Six frozen byte hashes, 99 diagnostics, and protected musical paths are unchanged. GitHub Actions run `32158587762`, quality job `95781697271`, passed the same gates plus PostgreSQL 17 `npm run test:postgres` with all 5 tests. Vercel deployment `6Nkn2y6FEmgSXYimyLC856XmV1DZ` succeeded for the exact code checkpoint. CI PostgreSQL is ephemeral repository verification, not production live-service evidence.
+
+```text
+P1_SAT_01 = CLOSED
+P1_SAT_02 = CLOSED
+P1_SAT_03 = CLOSED
+P2_SAT_04 = CLOSED
+
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This is an implementation closure, not the required audit-only re-saturation. It supersedes earlier `SEGMENT_D_ACCEPTED=YES` or `ULTRA_AUDIT_READY=YES` text until that independent pass completes. Remaining external work is unchanged: real provider selection/credentials/accuracy/refund/retention/idempotency, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3-compatible storage, and physical iPhone Safari/Kakao verification. Ultra, Step 11, and real-provider integration were not started.

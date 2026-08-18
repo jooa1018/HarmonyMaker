@@ -185,3 +185,34 @@ ULTRA_AUDIT_READY = NO
 ```
 
 `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, and no additional P0/P1/P2 was found. Acceptance remains deliberately withheld because a separate full Segment D saturation audit is the next authorized stage. That audit, Ultra, Step 11, real-provider integration, corpus calibration, live PostgreSQL/S3, and physical-device verification were not started.
+
+## Segment D saturation-findings targeted closure
+
+The independent saturation audit at exact remote HEAD `3367e7775b029f42fc7b3372cde46e5027fee67f` reported `P1-SAT-01`, `P1-SAT-02`, `P1-SAT-03`, and `P2-SAT-04`. This implementation-only closure produces code checkpoint `456312527684d419cb3ee54c3e4f031d4c2cd613`. Its additive documentation descendant is the final handoff-inclusive remote HEAD reported after exact-SHA CI and Vercel verification; this document does not self-assert its containing commit SHA.
+
+- Completed create-idempotency replay now uses one shared handle-usability authority inside the Memory critical section or the PostgreSQL idempotency/job row-lock transaction. Active, unexpired public handles still replay exactly. Inactive, cryptographically expired, `delete-pending`, or `deleted` handles return sanitized `OMR_CREATE_REPLAY_UNAVAILABLE`; the completed key is not reopened and no second Vendor create or job occurs.
+- OMR audit events are explicitly lower authority than business completion. A best-effort server-visible audit helper is used across create, page, start, sync/input, result capture, cancel, and delete/cleanup decisions. After `completePage=true` or `completeResultCapture=true`, the referenced object is no longer compensatable; audit failure cannot delete it, change completed/settled authority, or enter retry. Pre-commit and superseded-result compensation remains intact.
+- `utcAccountingWindow()` supplies explicit UTC `[dayStart,nextDayStart)` timestamps to both stores. Reserved credit remains counted across days, settled credit only in its original UTC day, and released credit is excluded. PostgreSQL SQL no longer calls session-timezone-dependent `date_trunc`.
+- JSON mutation bodies are read from `Request.body` with a bounded raw-byte stream reader. It validates `Content-Length`, independently counts streamed bytes, cancels immediately after the limit is crossed, retains at most the bound, and applies fatal UTF-8 decoding before `JSON.parse`. Origin/session/CSRF authorization still precedes body consumption.
+
+No schema change was required. Fresh local npm 11.6.2 verification passed `npm ci` (451 added, 452 audited, zero vulnerabilities), typecheck, lint, 65 Vitest files/646 tests, production build, and `git diff --check`. Separate Segment B and OMR 101-run campaigns passed; the six frozen hashes and 99-code authority remain exact and protected musical-path diff is zero.
+
+Actual repository-controlled PostgreSQL evidence ran against PostgreSQL 17 in GitHub Actions with a non-UTC `Asia/Seoul` session and a UTC session. All 5 integration tests passed: same-UTC-day settled denial across a local calendar boundary, previous-UTC-day exclusion, cross-day reserved exposure, UTC-session parity, and locked active/retired create replay. Code-checkpoint remote evidence is Actions run `32158587762`, quality job `95781697271`, and Vercel deployment `6Nkn2y6FEmgSXYimyLC856XmV1DZ`, all successful. This ephemeral CI result is not production live-PostgreSQL verification.
+
+```text
+P1_SAT_01 = CLOSED
+P1_SAT_02 = CLOSED
+P1_SAT_03 = CLOSED
+P2_SAT_04 = CLOSED
+
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This gate supersedes every earlier Segment D acceptance or Ultra-readiness statement. A separate audit-only re-saturation pass is still required. Real-provider selection/credentials/accuracy/refund authority, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3, and physical iPhone/Kakao verification remain external and incomplete. Re-saturation, Ultra, Step 11, and real-provider integration were not started here.

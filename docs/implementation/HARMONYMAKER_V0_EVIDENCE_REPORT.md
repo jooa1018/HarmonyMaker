@@ -370,3 +370,50 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This deliberately supersedes earlier readiness statements until the separately planned Segment D saturation audit is performed. That audit and all external provider/corpus/live-service/device work remain outside this closure.
+
+## Segment D saturation findings closure evidence
+
+- Audit baseline: `3367e7775b029f42fc7b3372cde46e5027fee67f`
+- New implementation-and-test checkpoint: `456312527684d419cb3ee54c3e4f031d4c2cd613`
+- Migration: none
+- Default suite: 65 files/646 tests
+- Actual PostgreSQL suite: 1 file/5 tests
+- Code-checkpoint Actions: run `32158587762`, quality job `95781697271`, success
+- Code-checkpoint Vercel: deployment `6Nkn2y6FEmgSXYimyLC856XmV1DZ`, status `52442449575`, success
+- Final handoff-inclusive HEAD: the containing additive documentation commit, reported after exact-SHA remote verification
+
+`P1-SAT-01`: one shared `isCreateReplayUsable()` authority checks active handle, cryptographic expiry, and non-retired lifecycle. Memory decides inside its serialized `atomic()` section. PostgreSQL selects idempotency plus job expiry/state/active fields with `FOR UPDATE OF i,j`, computes the result before commit, and therefore serializes against handle deactivation/cleanup updates. Completed success becomes either exact replay or `replay-unavailable`; it never resumes Vendor create, reopens idempotency, issues a new handle, or creates a new job. Tests cover active completed result replay, user deletion, pre-cleanup expiry, partial `delete-pending`, final cleanup deletion, exact rejection mapping, one job, and one Vendor side effect.
+
+`P1-SAT-02`: `recordAuditBestEffort()` catches audit persistence failure and emits only the sanitized event kind to server error visibility. Every Segment D audit call site was reviewed and routed through the lower-authority policy. Page/result ownership transfers exactly when the durable completion returns true. Post-commit audit failure preserves page/result objects, uploaded/completed state, settled credit, read/export access, and restart access. Page pre-commit interruption still deletes the compensatable object. A superseded result completion still deletes the unreferenced result object. Create/start/input/cancel/delete remain authoritative under injected audit failure.
+
+`P1-SAT-03`: `utcAccountingWindow()` returns explicit normalized UTC day start and exclusive next-day start. Memory and PostgreSQL share `reserved OR (settled AND createdAt in UTC window)` semantics; released credit is excluded. PostgreSQL receives the two instants as query parameters and no longer uses `date_trunc`. The actual PostgreSQL 17 suite applies migrations 1–8 in an isolated schema, pins sessions independently to `Asia/Seoul` and UTC, and passes same-UTC-day/local-next-day denial, prior-UTC-day exclusion, cross-day reservation, UTC parity, and real-store replay authority.
+
+`P2-SAT-04`: `readBoundedJson()` validates numeric/safe/nonnegative declared length, then reads the Web `ReadableStream` incrementally. It counts raw bytes, retains no data beyond the maximum, cancels on the first crossing chunk, concatenates only bounded chunks, decodes with fatal UTF-8, and parses JSON. Tests observe early cancellation and incomplete source consumption, single-chunk rejection, bounded multi-chunk parsing, multibyte byte accounting, malformed UTF-8 rejection, pre-read header rejection, and stream authority despite under-declaration. Static route checks retain authorization-before-body ordering for create, input, page PUT, Origin/session, and CSRF gates.
+
+Regression matrix:
+
+```text
+active create replay                               PASS
+response-loss and later-success recovery           PASS
+stale replay rejection/create fencing              PASS
+expired/inactive/delete-pending/deleted replay      PASS — explicit unavailable
+same key second Vendor side effect                  PASS — none
+page pre-commit compensation                        PASS
+page post-commit audit preservation                 PASS
+result superseded cleanup                           PASS
+result post-commit audit preservation/reload        PASS
+uncertain session/IP exposure                       PASS
+settled user-delete and expiry accounting           PASS
+non-UTC actual PostgreSQL UTC ceiling               PASS
+reserved cross-day/released exclusion               PASS
+Provider A/B and unavailable historical binding     PASS
+transient/terminal taxonomy                         PASS
+Vendor/local cleanup and lease recovery             PASS
+chunked JSON early bound/cancellation                PASS
+authorization-before-body                           PASS
+duplicate upload/provider payload limits            PASS
+```
+
+Fresh local verification used npm 11.6.2: `npm ci` added 451 packages and audited 452 with zero vulnerabilities; typecheck, lint, 65 files/646 tests, production build, and diff check passed. Separate Segment B 101-run, OMR 101-run, and 2-file/7-test frozen authority campaigns passed. All six frozen SHA-256 values and the 99-code registry remain exact; protected WAG/Product Core musical paths have zero diff.
+
+No additional defect was found: `ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`. Targeted unresolved counts are zero. The authoritative post-closure gate is `TARGETED_SATURATION_FINDINGS_CLOSED=YES`, `SEGMENT_D_RESATURATION_AUDIT_READY=YES`, `SEGMENT_D_ACCEPTED=NO`, `ULTRA_AUDIT_READY=NO`. Earlier acceptance/Ultra-ready text is superseded until a separate audit-only re-saturation pass succeeds. No such audit, Ultra, Step 11, real provider, production live PostgreSQL/S3, corpus calibration, or physical-device verification was performed.

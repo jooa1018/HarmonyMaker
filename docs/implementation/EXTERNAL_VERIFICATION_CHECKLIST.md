@@ -256,3 +256,32 @@ ULTRA_AUDIT_READY = NO
 ```
 
 The separate Segment D saturation audit remains unperformed. Real-provider selection/credentials, provider accuracy/refund authority, rights-safe corpus calibration, live PostgreSQL/S3, and physical iPhone/Kakao verification remain external and incomplete. Ultra and Step 11 were not started.
+
+## Saturation-findings closure verification checkpoint
+
+Scope base is exact remote HEAD `3367e7775b029f42fc7b3372cde46e5027fee67f`; implementation-and-test checkpoint is `456312527684d419cb3ee54c3e4f031d4c2cd613`. The final handoff-inclusive SHA is the additive documentation commit containing this section and is reported with its own terminal evidence.
+
+Repository verification completed for the four saturation findings:
+
+1. Repeat an active completed create with the same canonical request/key and require the exact usable handle. Delete it, leave it expired before cleanup, leave deletion pending, and finish cleanup to `deleted`; each retired replay must return `OMR_CREATE_REPLAY_UNAVAILABLE`, preserve the completed idempotency authority, create no new job, and make zero additional Vendor create calls.
+2. Fail `page-uploaded` audit after `completePage=true`; require uploaded state, readable object, successful page GET/start, zero post-commit object deletion, and usability after service reconstruction. Fail before page commit and require the existing compensation.
+3. Fail `job-completed` audit after `completeResultCapture=true`; require completed/settled state, readable/exportable result, no capture retry/failure, zero post-commit result deletion, and usability after reconstruction. Return superseded completion and require deletion of the unreferenced result object.
+4. Run actual PostgreSQL with session `TimeZone=Asia/Seoul`: settled `2026-01-01T10:00:00Z` plus a create at `2026-01-01T16:00:00Z` under ceiling one must be credit-denied. Previous UTC-day settled credit must be excluded; prior-day reserved exposure must remain counted. Repeat the same-day case under UTC.
+5. Send no-`Content-Length` chunked JSON, one oversized chunk, bounded multi-chunk JSON, multibyte UTF-8, malformed UTF-8, and invalid/unsafe/oversized `Content-Length`. Require early cancellation, raw-byte authority, bounded retention, stable error codes, and authorization before consumption.
+
+The PostgreSQL campaign is not a fake SQL substring test: GitHub Actions run `32158587762`, quality job `95781697271`, started PostgreSQL 17, applied migrations 1–8 into an isolated schema, and passed 1 file/5 tests through `npm run test:postgres`. The ordinary suite passed 65 files/646 tests. Local clean-install typecheck, lint, full tests, build, diff check, both 101-run campaigns, six frozen hashes, 99-code authority, and protected-path diff also passed. `MIGRATION = NONE REQUIRED`.
+
+Current repository gate:
+
+```text
+P1_SAT_01 = CLOSED
+P1_SAT_02 = CLOSED
+P1_SAT_03 = CLOSED
+P2_SAT_04 = CLOSED
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+The ephemeral CI database is not production live PostgreSQL. Still required externally: real provider selection and credentials; provider accuracy, pricing/refund, retention/deletion, and idempotency certification; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL and S3-compatible storage; physical iPhone Safari and Kakao in-app browser. Do not mark these PASS from CI or Vercel success.
