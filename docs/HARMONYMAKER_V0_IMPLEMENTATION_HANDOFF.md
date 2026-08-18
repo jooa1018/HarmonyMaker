@@ -243,3 +243,30 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This was not a full re-saturation audit. Real-provider selection/credentials/accuracy/pricing/refund/retention/idempotency evidence, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3, and physical iPhone Safari/Kakao verification remain external. Ultra, Step 11, real-provider integration, corpus calibration, and live-service/device verification were not started.
+
+## Browser explicit fresh-start ambiguity closure
+
+A follow-up independent audit found one caller-state residual after the prior browser replay closure: an explicit fresh click generated and persisted K1, but `freshStartReason` was cleared only after acquisition success. A lost response, timeout, or 5xx therefore left explicit mode armed; the next sequential click used `forceFresh=true`, deleted ambiguous K1, and generated K2. This narrow closure starts from exact documentation-inclusive remote HEAD `ad0d8c5295a2a0fc0ed618d8473bedc38a4f71ab` with prior code checkpoint `7e56e7e408f0a00aea50355943bc6c1b24bdd895`, and produces implementation-and-test checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529`.
+
+The client now represents fresh-start authority as a small `normal` / `explicit-required` state machine. The accepted click consumes `explicit-required` synchronously, before session lookup or create network work, and passes `forceFresh=true` exactly once. Ambiguous failure leaves the state normal and the serialized canonical K1 request intact, so the next click uses `forceFresh=false` and replays K1 with the original capability snapshot, rights metadata, page identity, and idempotency key. Only exact `409 OMR_CREATE_REPLAY_UNAVAILABLE` removes K1 and re-arms an explicit action; it performs no automatic K2 request. The existing in-flight ref is retained through tested begin/finish helpers, so same-tick and rapid clicks admit one active create.
+
+The caller-state two-attempt campaigns begin with an exact stale recovery handle, consume one explicit action, create one logical job under K1, then lose the response by `TypeError` or sanitized 503. Each second click records force-fresh history `[false,true,false]`, posts `[K1,K1]`, calls the random request factory once, creates one logical job, returns the original handle, removes the create record only on success, and installs that handle as recovery authority. A separate exact retired-K1 campaign re-arms explicit mode after one request and proves no automatic K2. Focused browser/backend/commit-ack/UTC/streaming regression passed 4 files/90 tests.
+
+Fresh local npm 11.6.2 verification passed `npm ci` (451 packages added, 452 audited, zero vulnerabilities), typecheck, lint, 66 Vitest files/663 tests, a real ephemeral PostgreSQL 17.9 run with migrations 1–8 and 1 file/7 tests, Next.js 16.3.0 production build, and `git diff --check`. Separate Segment B and OMR 101-run campaigns passed; frozen WAG/diagnostic authority passed 2 files/7 tests with zero protected-path diff. The additive documentation commit containing this section is the final handoff-inclusive SHA reported with its own exact-SHA Actions and Vercel terminal evidence.
+
+```text
+P1_SAT_01_BROWSER_RECOVERY = CLOSED
+P1_SAT_02_COMMIT_ACK = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This section supersedes the earlier browser-closure claim only for the newly identified caller-state ambiguity. It does not claim a full re-saturation audit. Re-saturation, Ultra, Step 11, real-provider integration, corpus calibration, production live services, and physical-device verification were not started.

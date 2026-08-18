@@ -673,3 +673,67 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This closes only the two residual product/distributed-commit boundaries. Full re-saturation, Ultra, Step 11, real-provider integration, corpus calibration, production live PostgreSQL/S3, and physical-device verification were not started. External verification remains real provider selection/credentials/accuracy/pricing/refund/retention/idempotency, rights-safe Dev `>=36` and sealed `>=24`, production live services, physical iPhone Safari, and Kakao in-app browser.
+
+## Final browser explicit-fresh ambiguity closure
+
+The exact starting branch HEAD is `ad0d8c5295a2a0fc0ed618d8473bedc38a4f71ab`; `7e56e7e408f0a00aea50355943bc6c1b24bdd895` is its immediate implementation-and-test checkpoint ancestor for the prior browser replay/commit-ack work. This minimal additive correction produces code checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529`. The containing documentation-only descendant is reported as the final handoff-inclusive remote HEAD after exact-SHA CI and Vercel verification.
+
+The remaining defect was outside `acquireOmrJob`: `OmrClient` passed `Boolean(freshStartReason)` and cleared that state only after acquisition success. An explicit fresh POST could therefore persist/commit K1 and lose its response, while the next click still passed `forceFresh=true`; the force-fresh branch deleted K1 and generated K2. The client now uses a pure `normal` / `explicit-required` state. A click consumes explicit intent synchronously before any awaited session/create operation. Ambiguous network/timeout/5xx failure leaves normal state plus persisted K1. The next click passes `forceFresh=false` and reuses the exact serialized request. Exact retired-create 409 alone clears K1 and re-arms explicit state, without an automatic request.
+
+The same pure transition used by `OmrClient` drives the mandatory caller-level two-attempt tests. Starting from a stale handle, the test records state `explicit-required → normal` before K1 create, simulates a real logical K1 job followed by response loss, and then obtains the original handle by K1 replay. A matching 503 test proves generic structured server ambiguity. Assertions bind random generation count 1, logical job count 1, two identical K1 POSTs, no K2, complete original request metadata, absent recovery handle until response, create-key removal only after success, and original-handle recovery storage. An exact retired-K1 test proves one request, explicit re-arm, and no loop. The extracted in-flight begin/finish guard proves one active create across same-tick and rapid clicks.
+
+```text
+Browser explicit-fresh closure
+  explicit fresh success                              PASS
+  explicit fresh response loss                        PASS
+  explicit fresh 503                                  PASS
+  state consumed before request                       PASS
+  second click forceFresh=false                       PASS
+  first/second idempotency key                         PASS — K1/K1
+  random key generation                               PASS — 1
+  logical Vendor/local job                            PASS — 1
+  K2                                                  PASS — never generated
+  original handle recovery                            PASS
+  create/recovery storage transitions                 PASS
+  exact retired K1 re-arm                             PASS
+  automatic retry after retired 409                   PASS — none
+  duplicate-click guard                               PASS — one active create
+
+Retained regression
+  active/stale/ambiguous recovery                      PASS
+  structured browser API errors                       PASS
+  P1-SAT-01 backend replay                            PASS
+  P1-SAT-02 page/result commit acknowledgement        PASS
+  P1-SAT-02 audit best effort                         PASS
+  P1-SAT-03 UTC credit                                PASS
+  P2-SAT-04 bounded streamed JSON/auth first          PASS
+  P1-01..P1-07 / P2-01..P2-05                        PASS
+  Provider A/B, create certainty, quota/credit        PASS
+  cleanup and P1-06 taxonomy                          PASS
+
+Validation
+  npm ci                                              PASS — 451 added, 452 audited, 0 vulnerabilities
+  typecheck / lint / build / diff                     PASS
+  default suite                                       PASS — 66 files/663 tests
+  focused authority suite                             PASS — 4 files/90 tests
+  PostgreSQL 17.9                                     PASS — 1 file/7 tests, migrations 1–8
+  Segment B 101 / OMR 101                             PASS
+  frozen/protected authority                          PASS — 2 files/7 tests, 0 path diff
+```
+
+```text
+P1_SAT_01_BROWSER_RECOVERY = CLOSED
+P1_SAT_02_COMMIT_ACK = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This closes only P1-SAT-01-B. Full re-saturation, Ultra, Step 11, real-provider integration, corpus calibration, production live PostgreSQL/S3, and physical-device verification were not started.

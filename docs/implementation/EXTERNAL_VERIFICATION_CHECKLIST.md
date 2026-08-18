@@ -315,3 +315,48 @@ ULTRA_AUDIT_READY = NO
 ```
 
 The ephemeral PostgreSQL 17 service and Vercel Preview are repository evidence, not production live PostgreSQL/S3 or real-provider certification. Provider selection/credentials, recognition accuracy, pricing/refund, retention/deletion/idempotency, rights-safe Dev `>=36` and sealed `>=24` corpora, physical iPhone Safari, and Kakao in-app browser remain external.
+
+## Browser explicit-fresh ambiguity closure checkpoint
+
+Use implementation-and-test checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529`, based additively on exact remote HEAD `ad0d8c5295a2a0fc0ed618d8473bedc38a4f71ab`. The final handoff-inclusive SHA is the documentation-only descendant containing this section and is reported with exact-SHA terminal evidence.
+
+Repository-controlled checks completed:
+
+1. Drive a stale recovery handle to `explicit-required`, click once, and require the state to become `normal` before any awaited request while the one call uses `forceFresh=true`.
+2. Let K1 create one logical server job and lose the response with `TypeError`. Require K1 to remain serialized, no recovery handle before response, and the next click to use `forceFresh=false`, post K1 again, return the original handle, and remove K1 only after success.
+3. Repeat with exact sanitized 503 `OMR_INTERNAL`. Require one random-key generation, one logical job, POST keys `[K1,K1]`, and no K2.
+4. Return exact `409 OMR_CREATE_REPLAY_UNAVAILABLE` for explicitly generated K1. Require K1/recovery removal, `retired-create-replay` re-arm, one create call, and no automatic retry or K2 in the same action.
+5. Hold the first start unresolved and issue same-tick and rapid repeated starts. Require the shared in-flight guard to admit one active create, then release after completion.
+6. Retain active-handle recovery, ambiguous recovery preservation, structured API errors, backend active/retired replay, page/result commit acknowledgement, audit best effort, UTC accounting, bounded streamed JSON, and prior P1/P2 authority.
+
+Verification result:
+
+```text
+explicit fresh success                                PASS
+explicit fresh response loss                          PASS
+explicit fresh 503                                    PASS
+second click same K1 / random generation count 1      PASS
+logical job count 1 / no K2                           PASS
+exact retired K1 re-arm / no automatic retry          PASS
+component state machine / duplicate-click guard       PASS
+focused residual and authority campaign               PASS — 4 files/90 tests
+npm ci / typecheck / lint / build / diff              PASS
+default suite                                          PASS — 66 files/663 tests
+actual ephemeral PostgreSQL 17.9                       PASS — 1 file/7 tests, migrations 1–8
+Segment B 101 / OMR 101                                PASS
+frozen authority                                       PASS — 2 files/7 tests, 0 protected-path diff
+```
+
+```text
+P1_SAT_01_BROWSER_RECOVERY = CLOSED
+P1_SAT_02_COMMIT_ACK = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+Do not infer provider or production certification from these checks. Full re-saturation, Ultra, Step 11, real-provider work, corpus calibration, production live PostgreSQL/S3, and physical-device verification remain outside this closure.

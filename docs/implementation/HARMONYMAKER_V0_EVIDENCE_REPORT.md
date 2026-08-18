@@ -463,3 +463,44 @@ protected path diff                                   PASS — 0
 ```
 
 `P1_SAT_01_BROWSER_RECOVERY=CLOSED`, `P1_SAT_02_COMMIT_ACK=CLOSED`, all additional and unresolved P0/P1/P2 counts are zero, `TARGETED_SATURATION_FINDINGS_CLOSED=YES`, and `SEGMENT_D_RESATURATION_AUDIT_READY=YES`. Procedural gates remain `SEGMENT_D_ACCEPTED=NO` and `ULTRA_AUDIT_READY=NO`; no full re-saturation audit or external provider/live-service/device work was performed.
+
+## Explicit fresh-start response-ambiguity evidence
+
+- Exact starting remote HEAD: `ad0d8c5295a2a0fc0ed618d8473bedc38a4f71ab`
+- Prior implementation checkpoint: `7e56e7e408f0a00aea50355943bc6c1b24bdd895`
+- New implementation-and-test checkpoint: `fc9ce7f930cf31f29a458b7d81f0306b26156529`
+- Migration: none; migrations 1–8 unchanged
+- Browser authority campaign: 1 file/11 tests
+- Focused browser/backend/commit-ack/UTC/streaming campaign: 4 files/90 tests
+- Default suite: 66 files/663 tests
+- Actual ephemeral PostgreSQL 17.9: 1 file/7 tests
+- Determinism: Segment B 101 and OMR 101 PASS
+- Frozen authority: 2 files/7 tests, zero protected-path diff
+- Final handoff-inclusive HEAD: the containing documentation-only commit, reported after exact-SHA Actions and Vercel verification
+
+Root-cause evidence shows that acquisition already persisted ambiguous K1 correctly; the defect was the component caller retaining `freshStartReason` until acquisition success. The next sequential click therefore forced another fresh branch, removed K1, and generated K2. The correction consumes the explicit state synchronously before network work and makes `forceFresh` an output of that one state transition. Generic exceptions cannot re-arm it. Exact retired replay remains the only create rejection that clears K1 and returns a new explicit-required state.
+
+The mandatory response-loss campaign first receives exact stale-handle authority, then creates a logical job under K1 and throws `TypeError` after that server-side effect. Before retry, storage contains the full original K1 request and no recovery handle. The second click uses normal mode, parses the stored request, posts the same key and metadata, receives the original handle, removes the create record, and stores the recovery handle. Observed force-fresh history is `[false,true,false]`, POST history `[K1,K1]`, fresh-request factory count 1, and logical job count 1. The 503 campaign proves the same result. The retired-K1 campaign observes one K1 request, exact re-arm, zero automatic K2, and bounded user-driven continuation.
+
+```text
+explicit fresh state consumed before request          PASS
+network response loss keeps K1                         PASS
+503 ambiguity keeps K1                                 PASS
+second click forceFresh=false / same K1                PASS
+same canonical capability/rights/page request          PASS
+random key generation count                            PASS — 1
+logical Vendor/local job count                         PASS — 1
+K2 generation                                          PASS — 0
+success removes create key / stores original handle    PASS
+exact retired K1 clears and re-arms                     PASS
+automatic request after retired 409                     PASS — none
+same-tick and rapid duplicate-click guard               PASS — one active create
+active/stale/ambiguous recovery regression              PASS
+structured API and backend replay regression            PASS
+page/result commit-ack and audit regression              PASS
+UTC/streaming and prior P1/P2 regression                PASS
+```
+
+Local validation used npm 11.6.2 and the committed lockfile: `npm ci` added 451 packages, audited 452, and found zero vulnerabilities; typecheck, lint, default tests, PostgreSQL integration, production build, and `git diff --check` passed. The PostgreSQL service was local, ephemeral, and removed after the test; it is not production evidence.
+
+`P1_SAT_01_BROWSER_RECOVERY=CLOSED`, `P1_SAT_02_COMMIT_ACK=CLOSED`, all additional and unresolved P0/P1/P2 counts are zero, `TARGETED_SATURATION_FINDINGS_CLOSED=YES`, and `SEGMENT_D_RESATURATION_AUDIT_READY=YES`. `SEGMENT_D_ACCEPTED=NO` and `ULTRA_AUDIT_READY=NO` remain unchanged pending a separately authorized full re-saturation audit. No out-of-scope external or Ultra work was performed.
