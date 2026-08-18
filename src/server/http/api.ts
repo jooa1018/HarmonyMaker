@@ -22,6 +22,7 @@ export async function mapApiFailure(error: unknown): Promise<NextResponse> {
   if (error instanceof RangeError) {
     if (error.message === "OMR_JOB_UNAVAILABLE" || error.message === "OMR_PAGE_UNAVAILABLE") return apiError("OMR_JOB_UNAVAILABLE", 404, "OMR 작업을 찾을 수 없습니다.");
     if (error.message === "OMR_QUOTA_EXCEEDED" || error.message === "OMR_GLOBAL_CREDIT_CEILING_EXCEEDED") return apiError(error.message, 429, "현재 OMR 사용 한도를 초과했습니다.");
+    if (error.message === "OMR_CREATE_REPLAY_UNAVAILABLE") return apiError(error.message, 409, "이 생성 요청의 이전 OMR 작업은 더 이상 사용할 수 없습니다. 새 요청 키로 다시 시작해 주세요.");
     if (error.message.includes("CONFLICT") || error.message.includes("PENDING") || error.message === "OMR_RESULT_UNAVAILABLE") return apiError(error.message, 409, "OMR 작업 상태가 요청과 맞지 않습니다.");
     if (error.message === "OMR_IMAGE_RETAKE_REQUIRED" || error.message === "OMR_IMAGE_WARNING_ACK_REQUIRED") return apiError(error.message, 422, "페이지 품질 확인이 필요합니다.");
     if (error.message === "SHARE_UNAVAILABLE") return apiError("SHARE_UNAVAILABLE", 404, "공유를 열 수 없습니다.");

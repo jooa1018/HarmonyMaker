@@ -60,6 +60,16 @@ describe("C2 production boundary security gate", () => {
     expect(authorization).toBeLessThan(put.indexOf("request.arrayBuffer()"));
   });
 
+  it("authorizes JSON OMR mutations before bounded stream consumption", async () => {
+    for (const segments of [["jobs", "route.ts"], ["jobs", "[handle]", "input", "route.ts"]]) {
+      const source = await readFile(path.join(process.cwd(), "src", "app", "api", "omr", ...segments), "utf8");
+      const authorization = source.indexOf("authorizeOmr(request, true)");
+      const bodyRead = source.indexOf("readBoundedJson(request)");
+      expect(authorization).toBeGreaterThan(0);
+      expect(bodyRead).toBeGreaterThan(authorization);
+    }
+  });
+
   it("runs bounded cleanup deterministically and repeat-safely", async () => {
     const store = new MemoryGovernanceStore();
     await store.createSession({ tokenHash: "expired", csrfNonce: "nonce", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });

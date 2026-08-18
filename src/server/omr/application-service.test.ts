@@ -1392,4 +1392,180 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(h.store.listJobs()[0]).toMatchObject({ state: "failed" });
     expect(h.store.listJobs()[0]).not.toHaveProperty("resultObjectReferenceId");
   });
+
+  it("rejects completed create replay after expiry without cleanup and creates no second Vendor effect", async () => {
+    const h = await harness();
+    const request = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "expired-replay" };
+    const handle = await createConsentedJob(h.service, request);
+    expect(await createConsentedJob(h.service, request)).toBe(handle);
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    await expect(createConsentedJob(h.service, request)).rejects.toThrow("OMR_CREATE_REPLAY_UNAVAILABLE");
+    expect(h.adapter.callCounts.create).toBe(1);
+    expect(h.store.listJobs()).toHaveLength(1);
+  });
+
+  it("rejects completed create replay after user deletion and final expiry cleanup", async () => {
+    for (const mode of ["user-delete", "expiry-cleanup"] as const) {
+      const h = await harness();
+      const request = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: `retired-${mode}` };
+      const handle = await createConsentedJob(h.service, request);
+      if (mode === "user-delete") await h.service.delete(handle);
+      else { h.advance(24 * 60 * 60 * 1_000 + 1); await h.service.cleanupExpiredJobs(); }
+      expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", handleActive: false });
+      await expect(createConsentedJob(h.service, request)).rejects.toThrow("OMR_CREATE_REPLAY_UNAVAILABLE");
+      expect(h.adapter.callCounts.create).toBe(1);
+      expect(h.store.listJobs()).toHaveLength(1);
+    }
+  });
+
+  it("rejects replay while deletion is pending and preserves its reconciliation authority", async () => {
+    const h = await harness();
+    const adapter = new ReferenceOmrVendorAdapter([{ ...h.fixture, deleteResult: { status: "failed", code: "REFERENCE_DELETE_PENDING", message: "retry" } }]);
+    const service = new DurableOmrApplicationService({ ...h.dependencies, adapter });
+    const request = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "delete-pending-replay" };
+    const handle = await createConsentedJob(service, request);
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "delete-pending-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await service.delete(handle);
+    const beforeReplay = structuredClone(h.store.listJobs()[0]);
+    expect(beforeReplay).toMatchObject({ state: "delete-pending", handleActive: false, vendorDeleteState: "failed" });
+    await expect(createConsentedJob(service, request)).rejects.toThrow("OMR_CREATE_REPLAY_UNAVAILABLE");
+    expect(h.store.listJobs()[0]).toEqual(beforeReplay);
+    expect(adapter.callCounts.create).toBe(1);
+  });
+
+  it("preserves active completed create replay and its result authority", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const request = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "active-completed-replay" };
+    const handle = await createConsentedJob(h.service, request);
+    await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "active-completed-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await h.service.start(handle);
+    await expect(h.service.synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    expect(await createConsentedJob(h.service, request)).toBe(handle);
+    await expect(h.service.getStatus(handle)).resolves.toEqual({ kind: "completed" });
+    await expect(h.service.exportResult(handle)).resolves.toMatchObject({ vendorId: "hm-reference" });
+    expect(h.adapter.callCounts.create).toBe(1);
+  });
+
+  it("preserves a durably uploaded page when its post-commit audit write fails", async () => {
+    const h = await harness();
+    let failPageAudit = true;
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "recordAudit") return async (...args: Parameters<OmrStore["recordAudit"]>) => {
+          if (failPageAudit && args[1] === "page-uploaded") { failPageAudit = false; throw new Error("audit unavailable"); }
+          return target.recordAudit(...args);
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const objectDelete = vi.spyOn(h.objects, "delete");
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "page-audit-commit" });
+    await expect(service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "page-audit-commit-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) })).resolves.toBeUndefined();
+    const uploaded = h.store.listJobs()[0].pages[0];
+    expect(uploaded).toMatchObject({ uploadState: "uploaded", objectReferenceId: expect.any(String) });
+    expect(objectDelete).not.toHaveBeenCalled();
+    await expect(service.getPageImage(handle, 0)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+    const restarted = new DurableOmrApplicationService(h.dependencies);
+    await expect(restarted.getPageImage(handle, 0)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+    await expect(service.start(handle)).resolves.toBeUndefined();
+    expect(errorLog).toHaveBeenCalledWith("OMR_AUDIT_WRITE_FAILED", { eventKind: "page-uploaded" });
+    errorLog.mockRestore();
+  });
+
+  it("keeps legitimate page compensation before durable completion", async () => {
+    const h = await harness();
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completePage") return async () => { throw new Error("page commit interrupted"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const objectDelete = vi.spyOn(h.objects, "delete");
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "page-precommit" });
+    await expect(service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "page-precommit-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) })).rejects.toThrow("OMR_PAGE_UPLOAD_PENDING");
+    expect(objectDelete).toHaveBeenCalledTimes(1);
+    expect(h.objects.buffers.size).toBe(0);
+    expect(h.store.listJobs()[0].pages[0]).not.toHaveProperty("objectReferenceId");
+  });
+
+  it("preserves a completed result when its post-commit audit write fails", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    let failResultAudit = true;
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "recordAudit") return async (...args: Parameters<OmrStore["recordAudit"]>) => {
+          if (failResultAudit && args[1] === "job-completed") { failResultAudit = false; throw new Error("audit unavailable"); }
+          return target.recordAudit(...args);
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const objectDelete = vi.spyOn(h.objects, "delete");
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "result-audit-commit" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "result-audit-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await expect(service.synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: expect.any(String) });
+    expect(objectDelete).not.toHaveBeenCalled();
+    await expect(service.exportResult(handle)).resolves.toMatchObject({ rawMusicXml: musicXml });
+    const restarted = new DurableOmrApplicationService(h.dependencies);
+    await expect(restarted.exportResult(handle)).resolves.toMatchObject({ rawMusicXml: musicXml });
+    expect(errorLog).toHaveBeenCalledWith("OMR_AUDIT_WRITE_FAILED", { eventKind: "job-completed" });
+    errorLog.mockRestore();
+  });
+
+  it("deletes an unreferenced result object when completion is superseded", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completeResultCapture") return async (input: Parameters<OmrStore["completeResultCapture"]>[0]) => {
+          await target.markHandleDeleted(input.jobId, input.now);
+          return target.completeResultCapture(input);
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "result-superseded" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "result-superseded-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    const objectDelete = vi.spyOn(h.objects, "delete");
+    await expect(service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "delete-pending", handleActive: false });
+    expect(h.store.listJobs()[0]).not.toHaveProperty("resultObjectReferenceId");
+    expect(objectDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps create, start, input, cancel, and delete decisions authoritative when every audit write fails", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const processing = await harness([{ kind: "needs-input", request: { kind: "select-instrument", requestId: "audit-input", choices: ["Voice"] } }]);
+    const alwaysFailingAuditStore = new Proxy(processing.store, {
+      get(target, property, receiver) {
+        if (property === "recordAudit") return async () => { throw new Error("audit unavailable"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...processing.dependencies, store: alwaysFailingAuditStore });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "all-audits-lower-authority" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: processing.pageDigest, mimeType: "image/png", idempotencyKey: "all-audits-page", bytes: new Blob([processing.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await expect(service.synchronizeStatus(handle)).resolves.toMatchObject({ kind: "needs-input" });
+    await expect(service.submitInput(handle, { kind: "select-instrument", requestId: "audit-input", choice: "Voice" })).resolves.toBeUndefined();
+    await expect(service.cancel(handle)).resolves.toBeUndefined();
+    await expect(service.delete(handle)).resolves.toMatchObject({ localHandleDeleted: true });
+    expect(processing.store.listJobs()[0]).toMatchObject({ state: "deleted", handleActive: false });
+    expect(errorLog).toHaveBeenCalled();
+    errorLog.mockRestore();
+  });
 });

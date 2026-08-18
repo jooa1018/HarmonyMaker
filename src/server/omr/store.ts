@@ -80,6 +80,27 @@ export function creditStateAfterHandleDeactivation(
   return "released";
 }
 
+type CreateReplayUsabilityRecord = Pick<DurableOmrJobRecord, "handleActive" | "handleExpiresAt" | "state">;
+
+/** Public create replay is valid only while the persisted handle remains lookup-usable. */
+export function isCreateReplayUsable(job: CreateReplayUsabilityRecord, now: string): boolean {
+  return job.handleActive
+    && job.handleExpiresAt > now
+    && job.state !== "expired"
+    && job.state !== "delete-pending"
+    && job.state !== "deleted";
+}
+
+export function utcAccountingWindow(now: string): { readonly dayStartUtc: string; readonly nextDayStartUtc: string } {
+  const instant = new Date(now);
+  if (!Number.isFinite(instant.getTime())) throw new RangeError("OMR_ACCOUNTING_TIME_INVALID");
+  const dayStartMs = Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), instant.getUTCDate());
+  return {
+    dayStartUtc: new Date(dayStartMs).toISOString(),
+    nextDayStartUtc: new Date(dayStartMs + 24 * 60 * 60 * 1_000).toISOString(),
+  };
+}
+
 export interface OmrPageRecord {
   readonly pageIndex: number;
   readonly pageDigest: BinaryDigest;
@@ -161,6 +182,7 @@ export interface DurableOmrJobRecord {
 export type OmrCreateClaim =
   | { readonly status: "claimed" | "resume"; readonly job: DurableOmrJobRecord }
   | { readonly status: "replay"; readonly handleReplayEnvelope: AeadEnvelopeV1 }
+  | { readonly status: "replay-unavailable" }
   | { readonly status: "rejected"; readonly code: string; readonly messageKo: string }
   | { readonly status: "pending" | "conflict" | "quota-denied" | "credit-denied" };
 
@@ -265,7 +287,11 @@ export class MemoryOmrStore implements OmrStore {
       if (!prior) return { status: "missing" };
       if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
       const job = this.jobs.get(prior.jobId)!;
-      if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
+      if (prior.complete) return prior.failure
+        ? { status: "rejected", ...prior.failure }
+        : isCreateReplayUsable(job, input.now)
+          ? { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) }
+          : { status: "replay-unavailable" };
       if (!job.handleActive || (job.state !== "created"
         && !(job.state === "reconciliation-required" && job.reconciliationKind === "create"))) return { status: "pending" };
       if (job.vendorCreateLeaseExpiresAt > input.now) return { status: "pending" };
@@ -282,7 +308,11 @@ export class MemoryOmrStore implements OmrStore {
       if (prior) {
         if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
         const job = this.jobs.get(prior.jobId)!;
-        if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
+        if (prior.complete) return prior.failure
+          ? { status: "rejected", ...prior.failure }
+          : isCreateReplayUsable(job, input.now)
+            ? { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) }
+            : { status: "replay-unavailable" };
         if (!job.handleActive || (job.state !== "created"
           && !(job.state === "reconciliation-required" && job.reconciliationKind === "create"))) return { status: "pending" };
         if (job.vendorCreateLeaseExpiresAt <= input.now) {
@@ -298,9 +328,9 @@ export class MemoryOmrStore implements OmrStore {
       const hourStart = new Date(new Date(input.now).getTime() - 60 * 60 * 1_000).toISOString();
       if ([...this.jobs.values()].filter((job) => job.ownerSessionId === input.ownerSessionId && job.createdAt > hourStart).length >= input.quota.maxJobsPerSessionPerHour
         || [...this.jobs.values()].filter((job) => job.ipOwnerHash === input.ipOwnerHash && job.createdAt > hourStart).length >= input.quota.maxJobsPerIpPerHour) return { status: "quota-denied" };
-      const day = input.now.slice(0, 10);
+      const { dayStartUtc, nextDayStartUtc } = utcAccountingWindow(input.now);
       const reserved = [...this.jobs.values()].filter((job) => job.creditState === "reserved"
-        || (job.createdAt.startsWith(day) && job.creditState !== "released"))
+        || (job.creditState === "settled" && job.createdAt >= dayStartUtc && job.createdAt < nextDayStartUtc))
         .reduce((sum, job) => sum + job.creditEstimate, 0);
       if (reserved + input.record.creditEstimate > input.quota.dailyGlobalCreditCeiling) return { status: "credit-denied" };
       const record = { ...structuredClone(input.record), id: this.id() } as DurableOmrJobRecord;

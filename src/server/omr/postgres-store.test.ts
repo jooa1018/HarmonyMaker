@@ -61,6 +61,17 @@ class LockedPoolFake {
     return {
       query: async (sql: string, values: readonly unknown[] = []) => {
         this.calls.push(sql);
+        if (sql.trimStart().startsWith("SELECT") && sql.includes("FROM omr_create_idempotency")) {
+          return { rows: [{
+            ...this.row,
+            request_digest: "a".repeat(64),
+            idempotency_state: this.createIdempotencyState,
+            job_id: this.row.id,
+            failure_code: null,
+            failure_message_ko: null,
+            job_state: this.row.state,
+          }], rowCount: 1 };
+        }
         if (sql.includes("FOR UPDATE")) {
           if (!releaseLock) releaseLock = await this.acquire();
           if (sql.startsWith("SELECT id FROM omr_jobs")) return { rows: this.cleanupCandidate ? [{ id: this.row.id }] : [], rowCount: this.cleanupCandidate ? 1 : 0 };
@@ -193,15 +204,15 @@ class QuotaPoolFake {
         this.calls.push({ sql, values });
         if (sql.includes("FROM omr_create_idempotency")) return { rows: [], rowCount: 0 };
         if (sql.includes("AS session_active")) {
-          const ownerSessionId = String(values[0]); const ipOwnerHash = String(values[1]); const now = String(values[2]);
+          const ownerSessionId = String(values[0]); const ipOwnerHash = String(values[1]);
           const active = this.exposures.filter(hasActiveOmrVendorExposure);
-          const day = now.slice(0, 10);
+          const dayStartUtc = String(values[5]); const nextDayStartUtc = String(values[6]);
           return { rows: [{
             session_active: active.filter((job) => job.ownerSessionId === ownerSessionId).length,
             ip_active: active.filter((job) => job.ipOwnerHash === ipOwnerHash).length,
             session_hour: 0, ip_hour: 0,
             day_credit: this.exposures.filter((job) => job.creditState === "reserved"
-              || (job.createdAt.startsWith(day) && job.creditState !== "released"))
+              || (job.creditState === "settled" && job.createdAt >= dayStartUtc && job.createdAt < nextDayStartUtc))
               .reduce((sum, job) => sum + job.creditEstimate, 0),
           }], rowCount: 1 };
         }
@@ -338,6 +349,9 @@ describe("PostgreSQL OMR transition fencing", () => {
     const sessionCount = sessionPool.calls.find((call) => call.sql.includes("AS session_active"));
     expect(sessionCount?.values[3]).toEqual(ACTIVE_OMR_LIFECYCLE_STATES);
     expect(sessionCount?.values[4]).toEqual(VENDOR_CLEANUP_EXPOSURE_STATES);
+    expect(sessionCount?.values.slice(5)).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
+    expect(sessionCount?.sql).not.toContain("date_trunc");
+    expect(sessionCount?.sql).toContain("created_at >= $6::timestamptz AND created_at < $7::timestamptz");
 
     const ipPool = new QuotaPoolFake([uncertain("session:1"), uncertain("session:2")]);
     await expect(claim(new PostgresOmrStore(ipPool as unknown as Pool), "session:3", "ip:shared")).resolves.toEqual({ status: "quota-denied" });
@@ -349,6 +363,37 @@ describe("PostgreSQL OMR transition fencing", () => {
     }]);
     await expect(claim(new PostgresOmrStore(settledPool as unknown as Pool), "session:new", "ip:new", 1))
       .resolves.toEqual({ status: "credit-denied" });
+
+    const priorDayReserved = new QuotaPoolFake([{
+      ownerSessionId: "session:old", ipOwnerHash: "ip:old", state: "completed",
+      vendorCreateOutcomeState: "confirmed", vendorDeleteState: "not-started",
+      createdAt: "2025-12-31T23:59:59.999Z", creditState: "reserved", creditEstimate: 1,
+    }]);
+    await expect(claim(new PostgresOmrStore(priorDayReserved as unknown as Pool), "session:new", "ip:new", 1))
+      .resolves.toEqual({ status: "credit-denied" });
+  });
+
+  it("locks completed idempotency and job authority while deciding replay usability", async () => {
+    const pool = new LockedPoolFake();
+    pool.createIdempotencyState = "complete";
+    pool.row.state = "completed";
+    pool.row.handle_active = true;
+    pool.row.expires_at = "2026-01-02T00:00:00.000Z";
+    const store = new PostgresOmrStore(pool as unknown as Pool);
+    const inspect = () => store.inspectCreate({
+      ownerSessionId: "1" as PrivateRowId,
+      idempotencyKeyHash: "key",
+      requestDigest: "a".repeat(64) as never,
+      vendorCreateLeaseExpiresAt: "2026-01-01T00:10:00.000Z",
+      now: "2026-01-01T00:01:00.000Z",
+    });
+    await expect(inspect()).resolves.toMatchObject({ status: "replay" });
+    pool.row.handle_active = false;
+    pool.row.state = "delete-pending";
+    await expect(inspect()).resolves.toEqual({ status: "replay-unavailable" });
+    const select = pool.calls.find((sql) => sql.includes("FROM omr_create_idempotency"));
+    expect(select).toContain("j.expires_at");
+    expect(select).toContain("FOR UPDATE OF i,j");
   });
 
   it("atomically restores created lifecycle and clears failure authority for PostgreSQL public recovery", async () => {

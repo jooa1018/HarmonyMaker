@@ -9,7 +9,8 @@ import type {
   DurableOmrJobRecord, OmrPageRecord,
 } from "./store";
 import {
-  ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES, isLegalOmrTransition,
+  ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES, isCreateReplayUsable,
+  isLegalOmrTransition, utcAccountingWindow,
 } from "./store";
 
 const ACTIVE_VENDOR_EXPOSURE_SQL = `(state = ANY($4::text[])
@@ -161,7 +162,7 @@ export class PostgresOmrStore implements OmrStore {
     try {
       await client.query("BEGIN");
       const existing = await client.query(
-         `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.reconciliation_kind,j.handle_active
+         `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.reconciliation_kind,j.handle_active,j.expires_at
          FROM omr_create_idempotency i JOIN omr_jobs j ON j.id=i.job_id
          WHERE i.owner_session_id=$1 AND i.key_hash=$2 FOR UPDATE OF i,j`,
         [input.ownerSessionId, input.idempotencyKeyHash],
@@ -170,10 +171,13 @@ export class PostgresOmrStore implements OmrStore {
       const row = existing.rows[0];
       if (row.request_digest !== input.requestDigest) { await client.query("ROLLBACK"); return { status: "conflict" as const }; }
       if (row.idempotency_state === "complete") {
-        await client.query("COMMIT");
-        return row.failure_code
+        const completed = row.failure_code
           ? { status: "rejected" as const, code: row.failure_code as string, messageKo: row.failure_message_ko as string }
-          : { status: "replay" as const, handleReplayEnvelope: json<AeadEnvelopeV1>(row.public_handle_replay_envelope) };
+          : isCreateReplayUsable({ handleActive: row.handle_active as boolean, handleExpiresAt: iso(row.expires_at), state: row.job_state }, input.now)
+            ? { status: "replay" as const, handleReplayEnvelope: json<AeadEnvelopeV1>(row.public_handle_replay_envelope) }
+            : { status: "replay-unavailable" as const };
+        await client.query("COMMIT");
+        return completed;
       }
        if (!row.handle_active || (row.job_state !== "created"
          && !(row.job_state === "reconciliation-required" && row.reconciliation_kind === "create"))) { await client.query("COMMIT"); return { status: "pending" as const }; }
@@ -192,7 +196,7 @@ export class PostgresOmrStore implements OmrStore {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(1214349646)");
       const existing = await client.query(
-         `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.reconciliation_kind,j.handle_active
+         `SELECT i.request_digest,i.state AS idempotency_state,i.job_id,i.failure_code,i.failure_message_ko,j.vendor_create_lease_expires_at,j.public_handle_replay_envelope,j.state AS job_state,j.reconciliation_kind,j.handle_active,j.expires_at
          FROM omr_create_idempotency i JOIN omr_jobs j ON j.id=i.job_id
          WHERE i.owner_session_id=$1 AND i.key_hash=$2 FOR UPDATE OF i,j`,
         [input.ownerSessionId, input.idempotencyKeyHash],
@@ -200,9 +204,15 @@ export class PostgresOmrStore implements OmrStore {
       if (existing.rows[0]) {
         const row = existing.rows[0];
         if (row.request_digest !== input.requestDigest) { await client.query("ROLLBACK"); return { status: "conflict" }; }
-        if (row.idempotency_state === "complete") { await client.query("COMMIT"); return row.failure_code
-          ? { status: "rejected", code: row.failure_code as string, messageKo: row.failure_message_ko as string }
-          : { status: "replay", handleReplayEnvelope: json(row.public_handle_replay_envelope) }; }
+        if (row.idempotency_state === "complete") {
+          const completed = row.failure_code
+            ? { status: "rejected" as const, code: row.failure_code as string, messageKo: row.failure_message_ko as string }
+            : isCreateReplayUsable({ handleActive: row.handle_active as boolean, handleExpiresAt: iso(row.expires_at), state: row.job_state }, input.now)
+              ? { status: "replay" as const, handleReplayEnvelope: json<AeadEnvelopeV1>(row.public_handle_replay_envelope) }
+              : { status: "replay-unavailable" as const };
+          await client.query("COMMIT");
+          return completed;
+        }
          if (!row.handle_active || (row.job_state !== "created"
            && !(row.job_state === "reconciliation-required" && row.reconciliation_kind === "create"))) { await client.query("COMMIT"); return { status: "pending" }; }
         if (iso(row.vendor_create_lease_expires_at) > input.now) { await client.query("COMMIT"); return { status: "pending" }; }
@@ -212,15 +222,16 @@ export class PostgresOmrStore implements OmrStore {
         await client.query("COMMIT");
         return { status: "resume", job };
       }
+      const { dayStartUtc, nextDayStartUtc } = utcAccountingWindow(input.now);
       const counts = await client.query(
         `SELECT
           count(*) FILTER (WHERE owner_session_id=$1 AND ${ACTIVE_VENDOR_EXPOSURE_SQL})::int AS session_active,
           count(*) FILTER (WHERE ip_owner_hash=$2 AND ${ACTIVE_VENDOR_EXPOSURE_SQL})::int AS ip_active,
           count(*) FILTER (WHERE owner_session_id=$1 AND created_at > $3::timestamptz - interval '1 hour')::int AS session_hour,
           count(*) FILTER (WHERE ip_owner_hash=$2 AND created_at > $3::timestamptz - interval '1 hour')::int AS ip_hour,
-          COALESCE(sum(credit_estimate) FILTER (WHERE credit_state = 'reserved' OR (created_at >= date_trunc('day',$3::timestamptz) AND credit_state <> 'released')),0)::int AS day_credit
+          COALESCE(sum(credit_estimate) FILTER (WHERE credit_state = 'reserved' OR (credit_state = 'settled' AND created_at >= $6::timestamptz AND created_at < $7::timestamptz)),0)::int AS day_credit
          FROM omr_jobs`,
-        [input.ownerSessionId, input.ipOwnerHash, input.now, ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES],
+        [input.ownerSessionId, input.ipOwnerHash, input.now, ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES, dayStartUtc, nextDayStartUtc],
       );
       const count = counts.rows[0];
       if (count.session_active >= input.quota.maxConcurrentJobsPerSession || count.ip_active >= input.quota.maxConcurrentJobsPerIp
