@@ -596,3 +596,80 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This is an implementation closure, not the required audit-only re-saturation. It supersedes earlier `SEGMENT_D_ACCEPTED=YES` or `ULTRA_AUDIT_READY=YES` text until that independent pass completes. Remaining external work is unchanged: real provider selection/credentials/accuracy/refund/retention/idempotency, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3-compatible storage, and physical iPhone Safari/Kakao verification. Ultra, Step 11, and real-provider integration were not started.
+
+## Browser replay recovery and authoritative commit-ack handoff
+
+- Exact starting remote HEAD: `bd0f95a4fa3dd7678cb1a2eaddc8140454b94223`
+- Prior implementation checkpoint: `456312527684d419cb3ee54c3e4f031d4c2cd613`
+- New implementation-and-test checkpoint: `7e56e7e408f0a00aea50355943bc6c1b24bdd895`
+- Migration: none required; migrations 1–8 unchanged
+- Final handoff-inclusive HEAD: the additive documentation commit containing this section, reported with final Actions/Vercel evidence
+
+The browser no longer collapses authoritative API rejection into message text. `OmrApiRequestError` carries status, sanitized code, and Korean message. The input-scoped acquisition policy distinguishes exact stale-handle 404, exact retired-create 409, and ambiguous network/5xx failures. Authoritative staleness stops without automatic create and exposes an explicit, consent-gated fresh-start action. Ambiguity retains the original handle/key. Fresh start clears both stale keys, generates one random key, performs one create, stores the new handle, and is guarded against repeated clicks.
+
+The durable-store contract now includes exact page/result completion inspection. Memory inspection is serialized. PostgreSQL inspection locks the exact job and relevant page/result row before classification and checks for any durable candidate-object reference. `committed-exact` preserves the object and authoritative business state. `not-committed` permits the pre-existing retry compensation. `superseded` permits deletion only when the candidate is unreferenced. `unknown` covers read failure or conflicting reference, forbids destructive compensation, retains the lease, and leaves later lease/expiry recovery authoritative.
+
+```text
+Browser recovery
+  structured HTTP status/code/message                 PASS
+  active handle continues                             PASS
+  stale handle repeated GET stopped                   PASS
+  explicit rights/transfer-gated fresh action         PASS
+  retired create key removed                          PASS
+  fresh random key / same canonical input             PASS
+  one fresh create / duplicate-click guard            PASS
+  network/5xx retains handle and key                   PASS
+
+Page commit acknowledgement
+  real commit then wrapper throw                      PASS
+  exact job/page/digest/idempotency/object read-back  PASS
+  referenced object and page GET preserved           PASS
+  start and upload replay                             PASS
+  precommit compensation                              PASS
+  superseded unreferenced loser cleanup               PASS
+  ambiguous inspection preserves object/lease         PASS
+
+Result commit acknowledgement
+  real commit then wrapper throw                      PASS
+  completed/settled/exact result authority            PASS
+  evidence/mapping/result digest read-back            PASS
+  object and export preserved                         PASS
+  no duplicate capture after committed read-back      PASS
+  precommit retry / superseded cleanup                PASS
+  ambiguous inspection preserves object/lease         PASS
+
+Regression
+  P1-SAT-01 backend replay                            PASS
+  P1-SAT-02 audit best effort                         PASS
+  P1-SAT-03 UTC credit                                PASS
+  P2-SAT-04 streamed JSON                             PASS
+  Provider A/B, create certainty, quota/credit        PASS
+  cleanup lease recovery and P1-06 taxonomy           PASS
+
+Validation
+  npm ci                                              PASS — 451 added, 452 audited, 0 vulnerabilities
+  typecheck / lint / build / diff                     PASS
+  default suite                                       PASS — 66 files/659 tests
+  PostgreSQL 17                                       PASS — 1 file/7 tests, migrations 1–8
+  Segment B 101 / OMR 101                             PASS
+  frozen/protected authority                          PASS — 2 files/7 tests, 0 path diff
+```
+
+Code-checkpoint remote evidence is GitHub Actions run `32194650587`, quality job `95896062793`, and Vercel deployment `AD1VqDimnC17Y8nSuN7oJd1j25sN` / GitHub deployment `5972714806`, all successful for `7e56e7e408f0a00aea50355943bc6c1b24bdd895`.
+
+```text
+P1_SAT_01_BROWSER_RECOVERY = CLOSED
+P1_SAT_02_COMMIT_ACK = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This closes only the two residual product/distributed-commit boundaries. Full re-saturation, Ultra, Step 11, real-provider integration, corpus calibration, production live PostgreSQL/S3, and physical-device verification were not started. External verification remains real provider selection/credentials/accuracy/pricing/refund/retention/idempotency, rights-safe Dev `>=36` and sealed `>=24`, production live services, physical iPhone Safari, and Kakao in-app browser.

@@ -285,3 +285,33 @@ ULTRA_AUDIT_READY = NO
 ```
 
 The ephemeral CI database is not production live PostgreSQL. Still required externally: real provider selection and credentials; provider accuracy, pricing/refund, retention/deletion, and idempotency certification; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL and S3-compatible storage; physical iPhone Safari and Kakao in-app browser. Do not mark these PASS from CI or Vercel success.
+
+## Browser replay recovery and commit-ack checkpoint
+
+Use code checkpoint `7e56e7e408f0a00aea50355943bc6c1b24bdd895` or its verified additive handoff descendant. Repository evidence closes the browser and distributed-commit residuals without changing migrations 1–8.
+
+Repository-controlled checks completed:
+
+1. Structured browser errors retain only HTTP status, sanitized code, and Korean message. Exact stale-handle 404 stops repeated GET and requires an explicit fresh start; network/5xx retains the handle.
+2. Exact retired-create 409 removes the stale input-scoped create/recovery keys. The explicit consent-gated action creates one fresh random key and one request. Timeout/response-loss retains the original key and cannot cause blind rotation.
+3. Page completion applied-then-throw uses exact durable inspection, preserves the referenced object, supports page GET/start, and makes no second Vendor upload. Precommit, unreferenced superseded, and read-back-unknown paths retain their distinct compensation/preservation rules.
+4. Result completion applied-then-throw preserves completed/settled authority, the exact object, export, and single capture. Precommit, superseded, and read-back-unknown paths retain retry, cleanup, and lease recovery semantics.
+5. PostgreSQL 17 Actions run `32194650587`, quality job `95896062793`, applied migrations 1–8 and passed 1 file/7 tests, including exact page/result commit inspection after an applied completion wrapper throws. The ordinary suite passed 66 files/659 tests. Code-checkpoint Vercel deployment `AD1VqDimnC17Y8nSuN7oJd1j25sN` succeeded.
+
+For a future separately authorized real-provider/live-service exercise:
+
+1. Lose a real create response, wait beyond handle expiry, and verify the browser presents the explicit fresh-start path without rotating the key during the ambiguous loss interval.
+2. Expire or revoke a real stored handle and verify one authoritative unavailable response stops automatic recovery, while 5xx/network outages retain recovery state.
+3. Inject PostgreSQL commit-ack loss after real page and result commits against production-like object storage. Require exact read-back, no referenced-object deletion, and later GET/export.
+4. Inject database read-back outage after an ambiguous completion. Require object retention, lease-based recovery, and lifecycle expiry cleanup of any orphan without cross-job adoption.
+
+```text
+P1_SAT_01_BROWSER_RECOVERY = CLOSED
+P1_SAT_02_COMMIT_ACK = CLOSED
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+The ephemeral PostgreSQL 17 service and Vercel Preview are repository evidence, not production live PostgreSQL/S3 or real-provider certification. Provider selection/credentials, recognition accuracy, pricing/refund, retention/deletion/idempotency, rights-safe Dev `>=36` and sealed `>=24` corpora, physical iPhone Safari, and Kakao in-app browser remain external.

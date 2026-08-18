@@ -216,3 +216,30 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This gate supersedes every earlier Segment D acceptance or Ultra-readiness statement. A separate audit-only re-saturation pass is still required. Real-provider selection/credentials/accuracy/refund authority, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3, and physical iPhone/Kakao verification remain external and incomplete. Re-saturation, Ultra, Step 11, and real-provider integration were not started here.
+
+## Browser replay recovery and durable commit-ack closure
+
+This residual closure starts from exact remote HEAD `bd0f95a4fa3dd7678cb1a2eaddc8140454b94223` and produces implementation-and-test checkpoint `7e56e7e408f0a00aea50355943bc6c1b24bdd895`. The additive documentation commit containing this section is reported as the final handoff-inclusive HEAD after exact-SHA CI and Vercel verification.
+
+The browser now retains HTTP status plus sanitized `error.code` and `error.messageKo` in `OmrApiRequestError`. A stored handle is removed from automatic recovery only for exact `404 OMR_JOB_UNAVAILABLE`; network and 5xx ambiguity retain it. A retired create key is removed only for exact `409 OMR_CREATE_REPLAY_UNAVAILABLE`; timeouts, response loss, and other errors retain the original key. Both authoritative cases stop without blind Vendor creation and expose an explicit `새 작업 시작` action. That action remains gated by the current rights and provider-transfer consent, clears the input-scoped stale keys, generates one fresh `crypto.randomUUID()` key, and performs one create attempt guarded against duplicate clicks.
+
+Durable page/result completion errors now trigger additive store inspections instead of unconditional object deletion. Memory performs the inspection inside its serialized atomic section. PostgreSQL locks the exact job and page/result rows transactionally. Page authority requires exact job, page ordinal, canonical page digest, upload idempotency hash, uploaded state, and candidate object reference. Result authority requires completed state, settled credit, exact result object and Vendor-result digest, provider-bundle digest, and normalization-mapping artifact digest. A candidate referenced by any conflicting durable row is never deleted or adopted. Exact commit preserves the object and returns the durable outcome; definitive noncommit retains existing retry compensation; an unreferenced superseded candidate is deleted; read failure or conflicting reference is `unknown`, preserves the object and lease, and permits later crash-safe recovery.
+
+Clean-install verification used npm 11.6.2: 451 packages added, 452 audited, zero vulnerabilities; typecheck, lint, 66 files/659 tests, production build, and `git diff --check` passed. Separate Segment B and OMR 101-run campaigns and the 2-file/7-test frozen-authority campaign passed; protected musical paths have zero diff. GitHub Actions run `32194650587`, quality job `95896062793`, passed the same gates plus PostgreSQL 17 migrations 1–8 and 1 file/7 actual PostgreSQL tests. Code-checkpoint Vercel deployment `AD1VqDimnC17Y8nSuN7oJd1j25sN` and GitHub deployment `5972714806` succeeded.
+
+```text
+P1_SAT_01_BROWSER_RECOVERY = CLOSED
+P1_SAT_02_COMMIT_ACK = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+TARGETED_SATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_RESATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This was not a full re-saturation audit. Real-provider selection/credentials/accuracy/pricing/refund/retention/idempotency evidence, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3, and physical iPhone Safari/Kakao verification remain external. Ultra, Step 11, real-provider integration, corpus calibration, and live-service/device verification were not started.

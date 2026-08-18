@@ -417,3 +417,49 @@ duplicate upload/provider payload limits            PASS
 Fresh local verification used npm 11.6.2: `npm ci` added 451 packages and audited 452 with zero vulnerabilities; typecheck, lint, 65 files/646 tests, production build, and diff check passed. Separate Segment B 101-run, OMR 101-run, and 2-file/7-test frozen authority campaigns passed. All six frozen SHA-256 values and the 99-code registry remain exact; protected WAG/Product Core musical paths have zero diff.
 
 No additional defect was found: `ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`. Targeted unresolved counts are zero. The authoritative post-closure gate is `TARGETED_SATURATION_FINDINGS_CLOSED=YES`, `SEGMENT_D_RESATURATION_AUDIT_READY=YES`, `SEGMENT_D_ACCEPTED=NO`, `ULTRA_AUDIT_READY=NO`. Earlier acceptance/Ultra-ready text is superseded until a separate audit-only re-saturation pass succeeds. No such audit, Ultra, Step 11, real provider, production live PostgreSQL/S3, corpus calibration, or physical-device verification was performed.
+
+## Browser replay recovery and commit-ack evidence
+
+- Exact baseline: `bd0f95a4fa3dd7678cb1a2eaddc8140454b94223`
+- Implementation-and-test checkpoint: `7e56e7e408f0a00aea50355943bc6c1b24bdd895`
+- Migration: none required; existing migrations 1–8 unchanged
+- Default suite: 66 files/659 tests
+- Actual PostgreSQL suite: 1 file/7 tests
+- Code-checkpoint Actions: run `32194650587`, quality job `95896062793`, success
+- Code-checkpoint Vercel: deployment `AD1VqDimnC17Y8nSuN7oJd1j25sN`, GitHub deployment `5972714806`, success
+- Final handoff-inclusive HEAD: the containing documentation-only commit, reported after terminal exact-SHA verification
+
+Browser evidence uses a pure storage/acquisition policy and structured API error class. An active recovery handle is reused with zero create calls. Exact unavailable removes that handle from automatic recovery and returns a fresh-start-required outcome without a create call. Network/5xx retains it. Exact retired create replay removes the stale create/recovery authority after one old-key request. The explicit fresh action preserves the same canonical page/capability input, generates one new key, creates one handle, removes the create record on success, and installs the new recovery handle. Ambiguous create timeout retains the old request/key. A component-level in-flight guard prevents duplicate clicks.
+
+Page evidence applies completion, throws after the real Memory commit, and observes exact durable read-back, preserved readable object, page replay, successful start, and one Vendor upload. A competing object authority deletes only the unreferenced losing object. A real precommit exception deletes the compensatable object and retains pending retry behavior. When both completion and inspection fail, the object is preserved, no success is claimed, the page lease remains pending, and later lease expiry reaches one exact uploaded authority.
+
+Result evidence applies completion and throws after the real Memory commit, then observes completed/settled state, exact result object, export, and one export/evidence/mapping capture. A precommit error deletes the result candidate and enters bounded capture retry. Explicit supersession deletes only the unreferenced loser. When inspection is unavailable, the result object and capture lease are preserved, completed is not claimed, and read restoration plus lease expiry reaches exact completed/exportable authority.
+
+Actual PostgreSQL 17 evidence applies migrations 1–8 to an isolated schema under both UTC and Asia/Seoul sessions. It retains all five UTC credit/replay tests and adds real page and result transactions whose wrapper throws after `COMMIT`; transactionally locked inspections return `committed-exact` with exact object/digest/evidence/mapping/settled authority. This is not a fake SQL substring claim.
+
+```text
+structured status/code/message                       PASS
+stale handle loop prevention / explicit fresh path  PASS
+retired key removal / one fresh random key           PASS
+network ambiguity preserves handle and key           PASS
+no infinite retry / no duplicate fresh create        PASS
+
+page applied-then-throw exact read-back               PASS
+page object GET/start/replay                          PASS
+page precommit and superseded compensation            PASS
+page unknown read-back object preservation            PASS
+
+result applied-then-throw exact read-back             PASS
+completed/settled/export/single capture               PASS
+result precommit and superseded compensation          PASS
+result unknown read-back object preservation          PASS
+
+npm ci / typecheck / lint / build / diff             PASS
+default tests                                         PASS — 66 files/659 tests
+actual PostgreSQL                                     PASS — 1 file/7 tests
+Segment B 101 / OMR 101                               PASS
+frozen authority                                      PASS — 2 files/7 tests
+protected path diff                                   PASS — 0
+```
+
+`P1_SAT_01_BROWSER_RECOVERY=CLOSED`, `P1_SAT_02_COMMIT_ACK=CLOSED`, all additional and unresolved P0/P1/P2 counts are zero, `TARGETED_SATURATION_FINDINGS_CLOSED=YES`, and `SEGMENT_D_RESATURATION_AUDIT_READY=YES`. Procedural gates remain `SEGMENT_D_ACCEPTED=NO` and `ULTRA_AUDIT_READY=NO`; no full re-saturation audit or external provider/live-service/device work was performed.
