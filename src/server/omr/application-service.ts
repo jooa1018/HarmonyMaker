@@ -33,6 +33,7 @@ const DELETE_RETRY_MS = 60 * 1_000;
 const CLEANUP_LEASE_MS = 5 * 60 * 1_000;
 const RETRY_BACKOFF_MS = Object.freeze([60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000, 12 * 60 * 60_000]);
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled", "deleted", "expired"]);
+const BINDING_UNAVAILABLE_DELETE_MESSAGE_KO = "생성 시점 인식 제공자 binding을 현재 사용할 수 없어 Vendor 삭제를 재시도합니다.";
 
 const GRANULARITY_RANK = Object.freeze({ none: 0, page: 1, staff: 2, measure: 3, symbol: 4 });
 export const PROVIDER_CAPTURE_LIMITS = Object.freeze({
@@ -111,6 +112,10 @@ export interface OmrApplicationDependencies {
   readonly now?: () => Date;
 }
 
+type ExistingJobAdapterResolution =
+  | { readonly status: "available"; readonly adapter: OmrVendorAdapter }
+  | { readonly status: "binding-unavailable"; readonly code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
+
 function sanitizeVendorFailure(): { readonly code: string; readonly messageKo: string } {
   return { code: "OMR_VENDOR_OPERATION_FAILED", messageKo: "악보 인식 서비스 작업을 완료하지 못했습니다." };
 }
@@ -180,6 +185,16 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     const currentContractVersion = this.dependencies.adapterContractVersion ?? OMR_VENDOR_ADAPTER_CONTRACT_VERSION;
     if (job.providerBindingId === currentBindingId && job.adapterContractVersion === currentContractVersion) return this.dependencies.adapter;
     throw new RangeError("OMR_PROVIDER_BINDING_UNAVAILABLE");
+  }
+
+  private resolveExistingJobAdapter(job: DurableOmrJobRecord): ExistingJobAdapterResolution {
+    try { return { status: "available", adapter: this.adapterFor(job) }; }
+    catch (error) {
+      if (error instanceof RangeError && error.message === "OMR_PROVIDER_BINDING_UNAVAILABLE") {
+        return { status: "binding-unavailable", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
+      }
+      throw error;
+    }
   }
 
   private async transitionUnlessSuperseded(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<boolean> {
@@ -658,26 +673,39 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     let vendorDeleteNextAttemptAt = job.vendorDeleteNextAttemptAt;
     const vendorDue = !vendorDeleteNextAttemptAt || vendorDeleteNextAttemptAt <= now.toISOString();
     if (vendorDeleteState !== "deleted" && vendorDue) {
-      try {
-        vendor = job.vendorJobIdEnvelope
-          ? await this.adapterFor(job).deleteVendorJob(this.vendorJobId(job), { idempotencyKey: keyedTokenHash(`${job.id}:delete`, this.dependencies.handleHmacKey, "omr-delete-v1") })
-          : { status: "deleted" };
-        if (vendor.status === "deleted") { vendorDeleteState = "deleted"; vendorDeleteNextAttemptAt = undefined; }
-        else if (vendor.status === "not-supported") {
-          retentionInfo = vendor.retentionInfo;
-          vendorDeleteState = "not-supported";
-          vendorDeleteNextAttemptAt = vendor.retentionInfo.vendorDeletesAt ?? new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString();
-        } else {
-          retentionInfo = job.vendorJobIdEnvelope ? await this.adapterFor(job).getRetentionInfo(this.vendorJobId(job)).catch(() => retentionInfo) : retentionInfo;
+      const resolution = job.vendorJobIdEnvelope ? this.resolveExistingJobAdapter(job) : undefined;
+      if (resolution?.status === "binding-unavailable") {
+        vendor = { status: "failed", code: resolution.code, message: BINDING_UNAVAILABLE_DELETE_MESSAGE_KO };
+        vendorDeleteState = "failed";
+        vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
+      } else {
+        let vendorJobId: VendorJobId | undefined;
+        try {
+          vendorJobId = job.vendorJobIdEnvelope ? this.vendorJobId(job) : undefined;
+          vendor = vendorJobId && resolution?.status === "available"
+            ? await resolution.adapter.deleteVendorJob(vendorJobId, { idempotencyKey: keyedTokenHash(`${job.id}:delete`, this.dependencies.handleHmacKey, "omr-delete-v1") })
+            : { status: "deleted" };
+          if (vendor.status === "deleted") { vendorDeleteState = "deleted"; vendorDeleteNextAttemptAt = undefined; }
+          else if (vendor.status === "not-supported") {
+            retentionInfo = vendor.retentionInfo;
+            vendorDeleteState = "not-supported";
+            vendorDeleteNextAttemptAt = vendor.retentionInfo.vendorDeletesAt ?? new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString();
+          } else {
+            retentionInfo = vendorJobId && resolution?.status === "available"
+              ? await resolution.adapter.getRetentionInfo(vendorJobId).catch(() => retentionInfo)
+              : retentionInfo;
+            vendor = { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." };
+            vendorDeleteState = "failed";
+            vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
+          }
+        } catch {
+          retentionInfo = vendorJobId && resolution?.status === "available"
+            ? await resolution.adapter.getRetentionInfo(vendorJobId).catch(() => retentionInfo)
+            : retentionInfo;
           vendor = { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." };
           vendorDeleteState = "failed";
           vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
         }
-      } catch {
-        retentionInfo = job.vendorJobIdEnvelope ? await this.adapterFor(job).getRetentionInfo(this.vendorJobId(job)).catch(() => retentionInfo) : retentionInfo;
-        vendor = { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." };
-        vendorDeleteState = "failed";
-        vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
       }
     }
     let localDeleteState = job.localDeleteState;
@@ -697,8 +725,12 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       ...(retentionInfo ? { retentionInfo } : {}),
       ...(state === "deleted" ? { vendorJobIdEnvelope: undefined } : {}),
       ...(localDeleteState === "deleted" ? { resultObjectReferenceId: undefined, evidence: undefined, normalizationMapping: undefined } : {}),
-      publicFailureCode: state === "delete-pending" ? "OMR_RETENTION_PENDING" : undefined,
-      publicFailureMessageKo: state === "delete-pending" ? "외부 보존 또는 로컬 정리를 계속 확인하고 있습니다." : undefined,
+      publicFailureCode: state === "delete-pending"
+        ? vendor.status === "failed" && vendor.code === "OMR_PROVIDER_BINDING_UNAVAILABLE" ? vendor.code : "OMR_RETENTION_PENDING"
+        : undefined,
+      publicFailureMessageKo: state === "delete-pending"
+        ? vendor.status === "failed" && vendor.code === "OMR_PROVIDER_BINDING_UNAVAILABLE" ? BINDING_UNAVAILABLE_DELETE_MESSAGE_KO : "외부 보존 또는 로컬 정리를 계속 확인하고 있습니다."
+        : undefined,
     } satisfies Partial<DurableOmrJobRecord>;
     const applied = cleanupLeaseToken
       ? await this.dependencies.store.completeCleanup({ jobId: job.id, leaseToken: cleanupLeaseToken, update, now: now.toISOString() })

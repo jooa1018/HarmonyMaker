@@ -83,7 +83,22 @@ describe("production OMR provider composition", () => {
         },
       };
     };
-    return { pageBytes, pageDigest, adapterA, adapterB, registrationA, registrationB, store, serviceFor, createRequest };
+    return {
+      pageBytes, pageDigest, adapterA, adapterB, registrationA, registrationB, store, objects, serviceFor, createRequest,
+      advance(ms: number) { clock = new Date(clock.getTime() + ms); },
+    };
+  }
+
+  async function createCompletedJob(h: Awaited<ReturnType<typeof setup>>, providers: ProductionOmrProviderRegistry, idempotencyKey: string) {
+    const prepared = await h.createRequest(providers, idempotencyKey);
+    const handle = await prepared.service.createJob(prepared.request);
+    await prepared.service.uploadPage(handle, {
+      pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: `${idempotencyKey}-upload`,
+      bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer], { type: "image/png" }),
+    });
+    await prepared.service.start(handle);
+    expect(await prepared.service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
+    return handle;
   }
 
   it("keeps old Provider A jobs on A after Provider B becomes active", async () => {
@@ -182,5 +197,128 @@ describe("production OMR provider composition", () => {
     expect(bCreate).not.toHaveBeenCalled();
     expect(h.adapterA.callCounts.create).toBe(1);
     expect(h.store.listJobs()[0]).toMatchObject({ providerBindingId: generation1.active.bindingId, state: "created" });
+  });
+
+  it("keeps local cleanup and Vendor retry durable when user delete cannot resolve historical A", async () => {
+    const h = await setup();
+    const generation1 = await createProductionOmrProviderRegistry({ active: h.registrationA });
+    const generation2 = await createProductionOmrProviderRegistry({ active: h.registrationB });
+    const generation3 = await createProductionOmrProviderRegistry({ active: h.registrationB, historical: [h.registrationA] });
+    let vendorJobIdA: string | undefined;
+    const originalCreateA = h.adapterA.createVendorJob.bind(h.adapterA);
+    vi.spyOn(h.adapterA, "createVendorJob").mockImplementation(async (request) => {
+      const id = await originalCreateA(request); vendorJobIdA = id; return id;
+    });
+    const aDelete = vi.spyOn(h.adapterA, "deleteVendorJob");
+    const bDelete = vi.spyOn(h.adapterB, "deleteVendorJob");
+    const bRetention = vi.spyOn(h.adapterB, "getRetentionInfo");
+    const handle = await createCompletedJob(h, generation1, "unavailable-a-user-delete");
+    const before = h.store.listJobs()[0];
+    const pageObjectId = before.pages[0].objectReferenceId;
+    const resultObjectId = before.resultObjectReferenceId;
+    expect(pageObjectId).toBeDefined(); expect(resultObjectId).toBeDefined();
+    await expect(h.objects.get(pageObjectId!, before.ownerSessionId)).resolves.toBeDefined();
+    await expect(h.objects.get(resultObjectId!, before.ownerSessionId)).resolves.toBeDefined();
+
+    await expect(h.serviceFor(generation2).delete(handle)).resolves.toMatchObject({
+      localHandleDeleted: true,
+      vendor: { status: "failed", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" },
+    });
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    expect(aDelete).not.toHaveBeenCalled();
+    const pending = h.store.listJobs()[0];
+    expect(pending).toMatchObject({
+      state: "delete-pending", handleActive: false,
+      vendorDeleteState: "failed", localDeleteState: "deleted",
+      vendorDeleteResult: { status: "failed", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" },
+      publicFailureCode: "OMR_PROVIDER_BINDING_UNAVAILABLE",
+      providerBindingId: generation1.active.bindingId,
+      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
+      vendorJobIdEnvelope: expect.any(Object),
+      resultObjectReferenceId: undefined, evidence: undefined, normalizationMapping: undefined,
+    });
+    expect(pending.vendorDeleteNextAttemptAt).toBeDefined();
+    await expect(h.objects.get(pageObjectId!, before.ownerSessionId)).rejects.toThrow("OBJECT_UNAVAILABLE");
+    await expect(h.objects.get(resultObjectId!, before.ownerSessionId)).rejects.toThrow("OBJECT_UNAVAILABLE");
+
+    h.advance(60_001);
+    await expect(h.serviceFor(generation3).cleanupExpiredJobs()).resolves.toHaveLength(1);
+    expect(aDelete).toHaveBeenCalledTimes(1);
+    expect(aDelete.mock.calls[0][0]).toBe(vendorJobIdA);
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted",
+      vendorJobIdEnvelope: undefined, cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+  });
+
+  it("completes cleanup leases and local deletion when expired-job historical A is unavailable", async () => {
+    const h = await setup();
+    const generation1 = await createProductionOmrProviderRegistry({ active: h.registrationA });
+    const generation2 = await createProductionOmrProviderRegistry({ active: h.registrationB });
+    const bDelete = vi.spyOn(h.adapterB, "deleteVendorJob");
+    const bRetention = vi.spyOn(h.adapterB, "getRetentionInfo");
+    await createCompletedJob(h, generation1, "unavailable-a-expired-cleanup");
+    const before = h.store.listJobs()[0];
+    const pageObjectId = before.pages[0].objectReferenceId;
+    const resultObjectId = before.resultObjectReferenceId;
+    expect(pageObjectId).toBeDefined(); expect(resultObjectId).toBeDefined();
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+
+    await expect(h.serviceFor(generation2).cleanupExpiredJobs()).resolves.toEqual([{
+      jobId: "1",
+      result: { localHandleDeleted: true, vendor: expect.objectContaining({ status: "failed", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" }) },
+    }]);
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    const pending = h.store.listJobs()[0];
+    expect(pending).toMatchObject({
+      state: "delete-pending", handleActive: false,
+      vendorDeleteState: "failed", localDeleteState: "deleted",
+      vendorDeleteResult: { status: "failed", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" },
+      publicFailureCode: "OMR_PROVIDER_BINDING_UNAVAILABLE",
+      providerBindingId: generation1.active.bindingId,
+      vendorJobIdEnvelope: expect.any(Object),
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+    expect(pending.vendorDeleteNextAttemptAt).toBeDefined();
+    await expect(h.objects.get(pageObjectId!, before.ownerSessionId)).rejects.toThrow("OBJECT_UNAVAILABLE");
+    await expect(h.objects.get(resultObjectId!, before.ownerSessionId)).rejects.toThrow("OBJECT_UNAVAILABLE");
+  });
+
+  it("uses the same historical A adapter for transient delete retention and retry", async () => {
+    const h = await setup();
+    const generation1 = await createProductionOmrProviderRegistry({ active: h.registrationA });
+    const generation2 = await createProductionOmrProviderRegistry({ active: h.registrationB, historical: [h.registrationA] });
+    let vendorJobIdA: string | undefined;
+    const originalCreateA = h.adapterA.createVendorJob.bind(h.adapterA);
+    vi.spyOn(h.adapterA, "createVendorJob").mockImplementation(async (request) => {
+      const id = await originalCreateA(request); vendorJobIdA = id; return id;
+    });
+    const originalDeleteA = h.adapterA.deleteVendorJob.bind(h.adapterA);
+    const aDelete = vi.spyOn(h.adapterA, "deleteVendorJob")
+      .mockRejectedValueOnce(new Error("temporary Provider A deletion failure"))
+      .mockImplementation(originalDeleteA);
+    const aRetention = vi.spyOn(h.adapterA, "getRetentionInfo");
+    const bDelete = vi.spyOn(h.adapterB, "deleteVendorJob");
+    const bRetention = vi.spyOn(h.adapterB, "getRetentionInfo");
+    const handle = await createCompletedJob(h, generation1, "historical-a-delete-retry");
+    const rotated = h.serviceFor(generation2);
+    const retentionCallsBeforeDelete = aRetention.mock.calls.length;
+
+    await expect(rotated.delete(handle)).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "failed", code: "OMR_VENDOR_DELETE_FAILED" } });
+    expect(aDelete).toHaveBeenCalledTimes(1); expect(aDelete.mock.calls[0][0]).toBe(vendorJobIdA);
+    expect(aRetention).toHaveBeenCalledTimes(retentionCallsBeforeDelete + 1);
+    expect(aRetention.mock.calls.at(-1)?.[0]).toBe(vendorJobIdA);
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+      vendorJobIdEnvelope: expect.any(Object), providerBindingId: generation1.active.bindingId,
+    });
+
+    h.advance(60_001);
+    await expect(rotated.cleanupExpiredJobs()).resolves.toHaveLength(1);
+    expect(aDelete).toHaveBeenCalledTimes(2); expect(aDelete.mock.calls[1][0]).toBe(vendorJobIdA);
+    expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", vendorJobIdEnvelope: undefined });
   });
 });

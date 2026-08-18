@@ -663,6 +663,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       if (failVendorOnce) { failVendorOnce = false; throw new Error("vendor delete transient"); }
       return originalVendorDelete(...args);
     });
+    const retentionSpy = vi.spyOn(h.adapter, "getRetentionInfo");
     const first = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "mixed-delete-first" });
     await h.service.uploadPage(first, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "mixed-delete-upload-first", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
     expect((await h.service.delete(first)).vendor.status).toBe("failed");
@@ -680,10 +681,15 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       { state: "delete-pending", vendor: "failed", local: "deleted" },
       { state: "delete-pending", vendor: "deleted", local: "failed" },
     ]);
+    expect(retentionSpy).toHaveBeenCalledTimes(1);
+    const [vendorPending, localPending] = h.store.listJobs();
+    expect(vendorPending).toMatchObject({ vendorDeleteNextAttemptAt: expect.any(String), localDeleteNextAttemptAt: undefined, vendorJobIdEnvelope: expect.any(Object) });
+    expect(localPending).toMatchObject({ vendorDeleteNextAttemptAt: undefined, localDeleteNextAttemptAt: expect.any(String), vendorJobIdEnvelope: expect.any(Object) });
     h.advance(60 * 1_000 + 1);
     const cleanup = await h.service.cleanupExpiredJobs();
     expect(cleanup).toHaveLength(2);
     expect(h.store.listJobs().map((job) => job.state)).toEqual(["deleted", "deleted"]);
+    expect(h.store.listJobs().map((job) => job.vendorJobIdEnvelope)).toEqual([undefined, undefined]);
   });
 
   it("fails safely on unknown status, evidence downgrade, and missing evidence", async () => {
