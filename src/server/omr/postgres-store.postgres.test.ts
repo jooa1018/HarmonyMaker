@@ -106,6 +106,16 @@ async function session(pool: Pool, key: string): Promise<PrivateRowId> {
   return String(result.rows[0].id) as PrivateRowId;
 }
 
+async function objectReference(pool: Pool, ownerSessionId: PrivateRowId, key: string): Promise<PrivateRowId> {
+  const result = await pool.query(
+    `INSERT INTO object_references
+      (owner_session_id,object_key,content_type,byte_size,binary_digest,lifecycle,created_at,expires_at)
+     VALUES ($1,$2,'application/octet-stream',1,$3,'active',$4,$5) RETURNING id`,
+    [ownerSessionId, `object:${key}`, "f".repeat(64), "2026-01-01T00:00:00.000Z", "2026-01-03T00:00:00.000Z"],
+  );
+  return String(result.rows[0].id) as PrivateRowId;
+}
+
 async function claim(
   store: PostgresOmrStore,
   ownerSessionId: PrivateRowId,
@@ -245,6 +255,71 @@ describe("actual PostgreSQL OMR authority", () => {
       await expect(store.inspectCreate(inspection)).resolves.toEqual({ status: "replay-unavailable" });
       const count = await pool.query("SELECT count(*)::int AS count FROM omr_jobs");
       expect(count.rows[0].count).toBe(1);
+    });
+  });
+
+  it("detects an exact page commit after the completion acknowledgement is lost", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, "page-commit-owner");
+      const now = "2026-01-01T00:00:00.000Z";
+      const created = await claim(store, ownerSessionId, now, "page-commit", 100);
+      if (created.status !== "claimed") throw new Error(`PAGE_COMMIT_SEED_FAILED:${created.status}`);
+      const page = {
+        pageIndex: 0, pageDigest: "b".repeat(64) as never, mimeType: "image/png",
+        idempotencyKeyHash: "page:idempotency", width: 100, height: 120,
+        quality: { blurBp: 0 as never, perspectiveBp: 0 as never, glareBp: 0 as never, cropRiskBp: 0 as never, estimatedStaffSpacePixels: 20, status: "pass" as const, reasons: [] },
+        warnAcknowledged: false, duplicateConfirmed: false, uploadState: "pending" as const, retryCount: 0,
+      };
+      const leaseToken = "page-lease";
+      await expect(store.claimPage(created.job.id, page, 3, leaseToken, "2026-01-01T00:05:00.000Z", true, now))
+        .resolves.toMatchObject({ status: "claimed" });
+      const objectId = await objectReference(pool, ownerSessionId, "page-commit");
+      await expect((async () => {
+        expect(await store.completePage(created.job.id, 0, leaseToken, objectId, now)).toBe(true);
+        throw new Error("page commit acknowledgement lost");
+      })()).rejects.toThrow("page commit acknowledgement lost");
+      await expect(store.inspectPageCompletion({
+        jobId: created.job.id, pageIndex: 0, leaseToken, pageDigest: page.pageDigest,
+        idempotencyKeyHash: page.idempotencyKeyHash, objectReferenceId: objectId,
+      })).resolves.toEqual({ status: "committed-exact" });
+      const durable = await pool.query("SELECT upload_state,processed_object_reference_id FROM omr_pages WHERE job_id=$1 AND page_ordinal=0", [created.job.id]);
+      expect(durable.rows[0]).toMatchObject({ upload_state: "uploaded", processed_object_reference_id: objectId });
+    });
+  });
+
+  it("detects an exact completed and settled result after acknowledgement loss", async () => {
+    await withStore("Asia/Seoul", async (pool, store) => {
+      const ownerSessionId = await session(pool, "result-commit-owner");
+      const now = "2026-01-01T00:00:00.000Z";
+      const created = await claim(store, ownerSessionId, now, "result-commit", 100);
+      if (created.status !== "claimed") throw new Error(`RESULT_COMMIT_SEED_FAILED:${created.status}`);
+      await pool.query("UPDATE omr_jobs SET state='queued' WHERE id=$1", [created.job.id]);
+      const leaseToken = "result-lease";
+      await expect(store.claimResultCapture({ jobId: created.job.id, leaseToken, leaseExpiresAt: "2026-01-01T00:05:00.000Z", now }))
+        .resolves.toMatchObject({ status: "claimed" });
+      const objectId = await objectReference(pool, ownerSessionId, "result-commit");
+      const vendorResultDigest = "1".repeat(64) as never;
+      const providerBundleDigest = "2".repeat(64) as never;
+      const normalizationMappingArtifactDigest = "3".repeat(64) as never;
+      const evidence = { granularity: "page" as const, frames: [], transforms: [], evidence: [], providerBundleDigest };
+      const normalizationMapping = {
+        version: "vendor-export-target-map-v2" as const, vendorResultDigest, providerBundleDigest,
+        mappings: [], artifactDigest: normalizationMappingArtifactDigest,
+      };
+      await expect((async () => {
+        expect(await store.completeResultCapture({
+          jobId: created.job.id, leaseToken,
+          update: { state: "completed", creditState: "settled", resultObjectReferenceId: objectId, vendorResultDigest, evidence, normalizationMapping, completedAt: now },
+          now,
+        })).toBe(true);
+        throw new Error("result commit acknowledgement lost");
+      })()).rejects.toThrow("result commit acknowledgement lost");
+      await expect(store.inspectResultCompletion({
+        jobId: created.job.id, leaseToken, objectReferenceId: objectId, vendorResultDigest,
+        providerBundleDigest, normalizationMappingArtifactDigest,
+      })).resolves.toEqual({ status: "committed-exact" });
+      const durable = await pool.query("SELECT state,credit_state,result_object_reference_id FROM omr_jobs WHERE id=$1", [created.job.id]);
+      expect(durable.rows[0]).toMatchObject({ state: "completed", credit_state: "settled", result_object_reference_id: objectId });
     });
   });
 });

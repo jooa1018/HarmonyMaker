@@ -10,6 +10,7 @@ import type { OmrProviderPreflight, OmrProviderResult, OmrPublicStatus } from ".
 import { analyzeImageQuality, type ImageQualityReport } from "../../domain/omr/image-quality";
 import { classifyInputSource, type InputSourceKind } from "../../domain/omr/input";
 import { mapEvidenceBoxToNormalizedOriginal, type BoundingBox } from "../../domain/omr/foundation";
+import { acquireOmrJob, readOmrApiJson as json } from "./browser-recovery";
 import styles from "./omr.module.css";
 
 interface PreparedPage {
@@ -24,8 +25,6 @@ interface PreparedPage {
   readonly clientQuality: ImageQualityReport;
   readonly quality: ImageQualityReport;
 }
-
-interface ApiErrorBody { readonly error?: { readonly messageKo?: string; readonly code?: string } }
 
 const statusLabels: Readonly<Record<OmrPublicStatus["kind"], string>> = {
   created: "작업 생성됨", uploading: "페이지 업로드 중", queued: "대기 중", processing: "인식 중",
@@ -68,12 +67,6 @@ async function prepareImage(bytes: Uint8Array, mimeType: "image/png" | "image/jp
   } finally { bitmap.close(); }
 }
 
-async function json<T>(response: Response): Promise<T> {
-  const body = await response.json() as T & ApiErrorBody;
-  if (!response.ok) throw new Error(body.error?.messageKo ?? body.error?.code ?? `HTTP ${response.status}`);
-  return body;
-}
-
 function evidenceStyle(box: BoundingBox): CSSProperties {
   return {
     left: `${Number(box.xMu) / 10_000}%`, top: `${Number(box.yMu) / 10_000}%`,
@@ -98,6 +91,8 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   const [preflight, setPreflight] = useState<OmrProviderPreflight>();
   const [handle, setHandle] = useState<string>();
   const [handleRecoveryStorageKey, setHandleRecoveryStorageKey] = useState<string>();
+  const [freshStartReason, setFreshStartReason] = useState<"stale-recovery-handle" | "retired-create-replay">();
+  const startInFlightRef = useRef(false);
   const [status, setStatus] = useState<OmrPublicStatus>();
   const [result, setResult] = useState<OmrProviderResult>();
   const [pageOrderInput, setPageOrderInput] = useState<readonly number[]>([]);
@@ -108,7 +103,8 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
 
   const replacePages = useCallback((next: readonly PreparedPage[]) => {
     for (const page of pagesRef.current) URL.revokeObjectURL(page.previewUrl);
-    pagesRef.current = next; setPages(next); setHandle(undefined); setStatus(undefined); setResult(undefined);
+    pagesRef.current = next; setPages(next); setHandle(undefined); setHandleRecoveryStorageKey(undefined);
+    setFreshStartReason(undefined); setStatus(undefined); setResult(undefined);
   }, []);
 
   useEffect(() => {
@@ -246,8 +242,9 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     throw new Error("인식 상태 확인 시간이 초과되었습니다. handle로 다시 조회할 수 있습니다.");
   }, [mutate]);
 
-  const start = async () => {
-    if (!ready) return;
+  const start = async (forceFresh = false) => {
+    if (!ready || startInFlightRef.current) return;
+    startInFlightRef.current = true;
     setBusy(true); setError(undefined); setResult(undefined);
     try {
       let csrfToken = csrf;
@@ -259,23 +256,27 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       if (!preflight) throw new RangeError("OMR_PROVIDER_CAPABILITY_MISSING");
       const createStorageKey = `harmonymaker:omr-create:v3:${preflight.capabilitySnapshotDigest}:${sourceKind}:${pages.map((page) => page.rawDigest).join(":")}`;
       const recoveryStorageKey = `${createStorageKey}:recovered-handle`;
-      let jobHandle = localStorage.getItem(recoveryStorageKey);
-      let recoveredStatus: OmrPublicStatus | undefined;
-      if (jobHandle) {
-        recoveredStatus = (await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}`, { cache: "no-store" }))).status;
-      } else {
-        const stored = localStorage.getItem(createStorageKey);
-        const createRequest = stored ? JSON.parse(stored) as Record<string, unknown> : {
+      const acquisition = await acquireOmrJob<OmrPublicStatus>({
+        storage: localStorage, createStorageKey, recoveryStorageKey, forceFresh,
+        createRequest: () => ({
           pageCount: pages.length, pages: pages.map((page, pageIndex) => ({ pageIndex, pageDigest: page.rawDigest, mimeType: page.mimeType })), sourceKind,
           rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() },
           providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: crypto.randomUUID(),
-        };
-        if (!stored) localStorage.setItem(createStorageKey, JSON.stringify(createRequest));
-        const created = await json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify(createRequest) }));
-        jobHandle = created.handle;
-        localStorage.setItem(recoveryStorageKey, jobHandle);
-        localStorage.removeItem(createStorageKey);
+        }),
+        recover: async (storedHandle) => (await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(storedHandle)}`, { cache: "no-store" }))).status,
+        create: async (request) => json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify(request) })),
+      });
+      if (acquisition.kind === "fresh-start-required") {
+        setFreshStartReason(acquisition.reason);
+        setHandleRecoveryStorageKey(undefined); setHandle(undefined); setStatus(undefined);
+        setError(acquisition.reason === "stale-recovery-handle"
+          ? "이전 작업을 복구할 수 없습니다. 권리와 제공자 전송 동의를 다시 확인한 뒤 ‘새 작업 시작’을 선택하세요."
+          : "이전 생성 요청은 만료되어 재사용할 수 없습니다. 권리와 제공자 전송 동의를 다시 확인한 뒤 ‘새 작업 시작’을 선택하세요.");
+        return;
       }
+      const jobHandle = acquisition.handle;
+      const recoveredStatus = acquisition.recoveredStatus;
+      setFreshStartReason(undefined);
       setHandleRecoveryStorageKey(recoveryStorageKey);
       setHandle(jobHandle); setStatus(recoveredStatus ?? { kind: "created" });
       if (!recoveredStatus || recoveredStatus.kind === "created" || recoveredStatus.kind === "uploading") {
@@ -290,7 +291,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       }
       await poll(jobHandle);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "OMR 작업을 시작하지 못했습니다."); }
-    finally { setBusy(false); }
+    finally { startInFlightRef.current = false; setBusy(false); }
   };
 
   const submitInput = async (response: import("../../domain/omr/contracts").VendorInputResponse) => {
@@ -387,7 +388,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
           <label><input type="checkbox" checked={transfer} disabled={!preflight} onChange={(event) => setTransfer(event.target.checked)} /> 위 capability snapshot과 외부 제공자 전송·보관 고지를 확인하고 명시적으로 동의합니다.</label>
         </div>
         {hasRetake ? <p className={`${styles.status} ${styles.error}`}>RETAKE 페이지는 업로드할 수 없습니다. 다시 촬영하거나 더 선명한 스캔을 선택하세요.</p> : null}
-        <div className={styles.actions}><button className="primary" type="button" onClick={() => void start()} disabled={!ready || busy || Boolean(handle)}>인식 시작</button>{handle && status && !["completed", "failed", "cancelled"].includes(status.kind) ? <button type="button" onClick={() => void cancel()} disabled={busy}>취소</button> : null}{handle ? <button type="button" onClick={() => void remove()} disabled={busy}>작업·보관 데이터 삭제</button> : null}</div>
+        <div className={styles.actions}><button className="primary" type="button" onClick={() => void start(Boolean(freshStartReason))} disabled={!ready || busy || Boolean(handle)}>{freshStartReason ? "새 작업 시작" : "인식 시작"}</button>{handle && status && !["completed", "failed", "cancelled"].includes(status.kind) ? <button type="button" onClick={() => void cancel()} disabled={busy}>취소</button> : null}{handle ? <button type="button" onClick={() => void remove()} disabled={busy}>작업·보관 데이터 삭제</button> : null}</div>
       </section> : null}
 
       {status ? <section className="panel" aria-labelledby="status-heading">

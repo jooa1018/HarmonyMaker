@@ -1447,6 +1447,156 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(h.adapter.callCounts.create).toBe(1);
   });
 
+  it("recovers an exact page commit when its acknowledgement is lost", async () => {
+    const h = await harness();
+    let loseAcknowledgement = true;
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completePage") return async (...args: Parameters<OmrStore["completePage"]>) => {
+          const applied = await target.completePage(...args);
+          if (applied && loseAcknowledgement) { loseAcknowledgement = false; throw new Error("page commit acknowledgement lost"); }
+          return applied;
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const objectDelete = vi.spyOn(h.objects, "delete");
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "page-commit-ack" });
+    const upload = { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "page-commit-ack-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) } as const;
+    await expect(service.uploadPage(handle, upload)).resolves.toBeUndefined();
+    const page = h.store.listJobs()[0].pages[0];
+    expect(page).toMatchObject({ uploadState: "uploaded", objectReferenceId: expect.any(String) });
+    await expect(h.objects.get(page.objectReferenceId!, "session:1" as PrivateRowId)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+    expect(objectDelete).not.toHaveBeenCalled();
+    await expect(service.getPageImage(handle, 0)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+    await expect(service.uploadPage(handle, upload)).resolves.toBeUndefined();
+    await expect(service.start(handle)).resolves.toBeUndefined();
+    expect(h.adapter.callCounts.upload).toBe(1);
+    expect(h.objects.buffers.size).toBe(1);
+  });
+
+  it("deletes only the losing page object when exact inspection finds a newer object authority", async () => {
+    const h = await harness();
+    const winningObject = await h.objects.put({ ownerSessionId: "session:1" as PrivateRowId, bytes: h.pageBytes, contentType: "image/png", expiresAt: "2026-01-02T00:00:00.000Z" });
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completePage") return async (jobId: PrivateRowId, pageIndex: number, leaseToken: string, _losingObjectId: PrivateRowId, now: string) => {
+          expect(await target.completePage(jobId, pageIndex, leaseToken, winningObject.id, now)).toBe(true);
+          throw new Error("losing worker completion acknowledgement lost");
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "page-newer-authority" });
+    await expect(service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "page-newer-authority-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) })).resolves.toBeUndefined();
+    expect(h.store.listJobs()[0].pages[0]).toMatchObject({ uploadState: "uploaded", objectReferenceId: winningObject.id });
+    expect(h.objects.buffers.size).toBe(1);
+    await expect(h.objects.get(winningObject.id, "session:1" as PrivateRowId)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+    await expect(service.getPageImage(handle, 0)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+  });
+
+  it("preserves a page object when completion and read-back are both ambiguous, then recovers after lease expiry", async () => {
+    const h = await harness();
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completePage") return async () => { throw new Error("page completion response lost"); };
+        if (property === "inspectPageCompletion") return async () => { throw new Error("page read-back unavailable"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "page-readback-unknown" });
+    const upload = { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "page-readback-unknown-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) } as const;
+    await expect(service.uploadPage(handle, upload)).rejects.toThrow("OMR_PAGE_UPLOAD_PENDING");
+    expect(h.objects.buffers.size).toBe(1);
+    expect(h.store.listJobs()[0].pages[0]).toMatchObject({ uploadState: "pending" });
+    expect(h.store.listJobs()[0].pages[0]).not.toHaveProperty("objectReferenceId");
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(h.service.uploadPage(handle, upload)).resolves.toBeUndefined();
+    const recoveredPage = h.store.listJobs()[0].pages[0];
+    expect(recoveredPage).toMatchObject({ uploadState: "uploaded", objectReferenceId: expect.any(String) });
+    await expect(h.objects.get(recoveredPage.objectReferenceId!, "session:1" as PrivateRowId)).resolves.toMatchObject({ binaryDigest: h.pageDigest });
+    expect(h.adapter.callCounts.upload).toBe(1);
+  });
+
+  it("recovers an exact completed result when its acknowledgement is lost", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    let loseAcknowledgement = true;
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completeResultCapture") return async (input: Parameters<OmrStore["completeResultCapture"]>[0]) => {
+          const applied = await target.completeResultCapture(input);
+          if (applied && loseAcknowledgement) { loseAcknowledgement = false; throw new Error("result commit acknowledgement lost"); }
+          return applied;
+        };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const objectDelete = vi.spyOn(h.objects, "delete");
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "result-commit-ack" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "result-commit-ack-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await expect(service.synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    const completed = h.store.listJobs()[0];
+    expect(completed).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: expect.any(String) });
+    await expect(h.objects.get(completed.resultObjectReferenceId!, "session:1" as PrivateRowId)).resolves.toMatchObject({ binaryDigest: completed.vendorResultDigest });
+    expect(objectDelete).not.toHaveBeenCalled();
+    await expect(service.exportResult(handle)).resolves.toMatchObject({ rawMusicXml: musicXml });
+    await expect(service.synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    expect(h.adapter.callCounts.export).toBe(1);
+    expect(h.adapter.callCounts.evidence).toBe(1);
+    expect(h.adapter.callCounts.mapping).toBe(1);
+  });
+
+  it("retains result precommit compensation and capture retry semantics", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completeResultCapture") return async () => { throw new Error("result completion failed before commit"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "result-precommit" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "result-precommit-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await expect(service.synchronizeStatus(handle)).resolves.toMatchObject({ kind: "retry-pending", operation: "capture" });
+    expect(h.store.listJobs()[0]).not.toHaveProperty("resultObjectReferenceId");
+    expect(h.objects.buffers.size).toBe(1);
+  });
+
+  it("preserves an ambiguous result object and recovers after capture lease expiry", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const store = new Proxy(h.store, {
+      get(target, property, receiver) {
+        if (property === "completeResultCapture") return async () => { throw new Error("result completion response lost"); };
+        if (property === "inspectResultCompletion") return async () => { throw new Error("result read-back unavailable"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const service = new DurableOmrApplicationService({ ...h.dependencies, store });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "result-readback-unknown" });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "result-readback-unknown-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle);
+    await expect(service.synchronizeStatus(handle)).resolves.toEqual({ kind: "queued" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "queued", resultCaptureLeaseToken: expect.any(String) });
+    expect(h.store.listJobs()[0]).not.toHaveProperty("resultObjectReferenceId");
+    expect(h.objects.buffers.size).toBe(2);
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(h.service.synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    await expect(h.service.exportResult(handle)).resolves.toMatchObject({ rawMusicXml: musicXml });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: expect.any(String) });
+  });
+
   it("preserves a durably uploaded page when its post-commit audit write fails", async () => {
     const h = await harness();
     let failPageAudit = true;

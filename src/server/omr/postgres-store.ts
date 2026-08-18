@@ -6,7 +6,8 @@ import type { AeadEnvelopeV1 } from "../security/crypto-core";
 import type { PrivateRowId } from "../persistence/store";
 import type {
   OmrCreateClaim, OmrOperationClaim, OmrPageClaim, OmrStore,
-  DurableOmrJobRecord, OmrPageRecord,
+  DurableOmrJobRecord, OmrDurableCompletionInspection, OmrPageCompletionExpectation,
+  OmrPageRecord, OmrResultCompletionExpectation,
 } from "./store";
 import {
   ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES, isCreateReplayUsable,
@@ -406,6 +407,36 @@ export class PostgresOmrStore implements OmrStore {
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 
+  async inspectPageCompletion(input: OmrPageCompletionExpectation): Promise<OmrDurableCompletionInspection> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const jobResult = await client.query("SELECT state FROM omr_jobs WHERE id=$1 FOR SHARE", [input.jobId]);
+      const pageResult = await client.query("SELECT * FROM omr_pages WHERE job_id=$1 AND page_ordinal=$2 FOR SHARE", [input.jobId, input.pageIndex]);
+      const referenceResult = await client.query(
+        `SELECT EXISTS (
+          SELECT 1 FROM omr_jobs WHERE result_object_reference_id=$1
+          UNION ALL
+          SELECT 1 FROM omr_pages WHERE processed_object_reference_id=$1
+        ) AS referenced`,
+        [input.objectReferenceId],
+      );
+      await client.query("COMMIT");
+      const page = pageResult.rows[0] ? pageRow(pageResult.rows[0]) : undefined;
+      if (page?.uploadState === "uploaded"
+        && page.objectReferenceId === input.objectReferenceId
+        && page.pageDigest === input.pageDigest
+        && page.idempotencyKeyHash === input.idempotencyKeyHash) return { status: "committed-exact" };
+      if (referenceResult.rows[0]?.referenced === true) return { status: "unknown" };
+      if (!jobResult.rows[0] || !page) return { status: "not-committed" };
+      if (page.uploadState === "pending"
+        && page.uploadLeaseToken === input.leaseToken
+        && page.pageDigest === input.pageDigest
+        && page.idempotencyKeyHash === input.idempotencyKeyHash) return { status: "not-committed" };
+      return { status: "superseded" };
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
   async failPage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, outcome: "failed" | "reconciliation-required", now: string): Promise<void> {
     await this.database.query("UPDATE omr_pages SET upload_state=$4,upload_lease_token=NULL,upload_lease_expires_at=NULL WHERE job_id=$1 AND page_ordinal=$2 AND upload_lease_token=$3", [jobId, pageIndex, leaseToken, outcome]);
     if (outcome === "reconciliation-required") await this.database.query("UPDATE omr_jobs SET state='reconciliation-required',reconciliation_kind='page-upload',updated_at=$2 WHERE id=$1 AND state IN ('created','uploading')", [jobId, now]);
@@ -499,6 +530,42 @@ export class PostgresOmrStore implements OmrStore {
       if (input.update.state !== undefined && !isLegalOmrTransition(selected.rows[0].state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
       await updateLockedJob(client, input.jobId, { ...input.update, resultCaptureLeaseToken: undefined, resultCaptureLeaseExpiresAt: undefined }, input.now);
       await client.query("COMMIT"); return true;
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async inspectResultCompletion(input: OmrResultCompletionExpectation): Promise<OmrDurableCompletionInspection> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const jobResult = await client.query(
+        `SELECT state,credit_state,result_object_reference_id,vendor_result_digest,evidence_bundle,
+                normalization_mapping,result_capture_lease_token
+         FROM omr_jobs WHERE id=$1 FOR SHARE`,
+        [input.jobId],
+      );
+      const referenceResult = await client.query(
+        `SELECT EXISTS (
+          SELECT 1 FROM omr_jobs WHERE result_object_reference_id=$1
+          UNION ALL
+          SELECT 1 FROM omr_pages WHERE processed_object_reference_id=$1
+        ) AS referenced`,
+        [input.objectReferenceId],
+      );
+      await client.query("COMMIT");
+      const row = jobResult.rows[0] as Record<string, unknown> | undefined;
+      const evidence = row?.evidence_bundle ? json<DurableOmrJobRecord["evidence"]>(row.evidence_bundle) : undefined;
+      const mapping = row?.normalization_mapping ? json<DurableOmrJobRecord["normalizationMapping"]>(row.normalization_mapping) : undefined;
+      if (row?.state === "completed"
+        && row.credit_state === "settled"
+        && id(row.result_object_reference_id) === input.objectReferenceId
+        && row.vendor_result_digest === input.vendorResultDigest
+        && evidence?.providerBundleDigest === input.providerBundleDigest
+        && mapping?.artifactDigest === input.normalizationMappingArtifactDigest) return { status: "committed-exact" };
+      if (referenceResult.rows[0]?.referenced === true) return { status: "unknown" };
+      if (!row) return { status: "not-committed" };
+      if (row.result_capture_lease_token === input.leaseToken
+        && ["queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending"].includes(String(row.state))) return { status: "not-committed" };
+      return { status: "superseded" };
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 

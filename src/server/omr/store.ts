@@ -201,6 +201,30 @@ export type OmrResultCaptureClaim =
   | { readonly status: "claimed"; readonly job: DurableOmrJobRecord }
   | { readonly status: "pending" | "invalid" | "replay" };
 
+export type OmrDurableCompletionInspection =
+  | { readonly status: "committed-exact" }
+  | { readonly status: "not-committed" }
+  | { readonly status: "superseded" }
+  | { readonly status: "unknown" };
+
+export interface OmrPageCompletionExpectation {
+  readonly jobId: PrivateRowId;
+  readonly pageIndex: number;
+  readonly leaseToken: string;
+  readonly pageDigest: BinaryDigest;
+  readonly idempotencyKeyHash: string;
+  readonly objectReferenceId: PrivateRowId;
+}
+
+export interface OmrResultCompletionExpectation {
+  readonly jobId: PrivateRowId;
+  readonly leaseToken: string;
+  readonly objectReferenceId: PrivateRowId;
+  readonly vendorResultDigest: BinaryDigest;
+  readonly providerBundleDigest: SemanticDigest;
+  readonly normalizationMappingArtifactDigest: SemanticDigest;
+}
+
 export interface OmrStore {
   inspectCreate(input: { readonly ownerSessionId: PrivateRowId; readonly idempotencyKeyHash: string; readonly requestDigest: SemanticDigest; readonly vendorCreateLeaseExpiresAt: string; readonly now: string }): Promise<OmrCreateInspection>;
   claimCreate(input: {
@@ -246,12 +270,14 @@ export interface OmrStore {
   findOwnedByHandleHash(handleHash: string, ownerSessionId: PrivateRowId, includeInactive?: boolean): Promise<DurableOmrJobRecord | undefined>;
   claimPage(jobId: PrivateRowId, page: OmrPageRecord, maxRetries: number, leaseToken: string, leaseExpiresAt: string, supportsIdempotency: boolean, now: string): Promise<OmrPageClaim>;
   completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<boolean>;
+  inspectPageCompletion(input: OmrPageCompletionExpectation): Promise<OmrDurableCompletionInspection>;
   failPage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, outcome: "failed" | "reconciliation-required", now: string): Promise<void>;
   claimOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly operationRequestDigest: SemanticDigest; readonly expectedStates: readonly OmrLifecycleState[]; readonly leaseToken: string; readonly leaseExpiresAt: string; readonly supportsIdempotency: boolean; readonly now: string }): Promise<OmrOperationClaim>;
   completeOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
   failOperation(input: { readonly jobId: PrivateRowId; readonly kind: OmrOperationKind; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
   claimResultCapture(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly leaseExpiresAt: string; readonly now: string }): Promise<OmrResultCaptureClaim>;
   completeResultCapture(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
+  inspectResultCompletion(input: OmrResultCompletionExpectation): Promise<OmrDurableCompletionInspection>;
   releaseResultCapture(jobId: PrivateRowId, leaseToken: string, now: string): Promise<void>;
   transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void>;
   markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void>;
@@ -475,6 +501,26 @@ export class MemoryOmrStore implements OmrStore {
     });
   }
 
+  async inspectPageCompletion(input: OmrPageCompletionExpectation): Promise<OmrDurableCompletionInspection> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      const page = job?.pages.find((candidate) => candidate.pageIndex === input.pageIndex);
+      if (page?.uploadState === "uploaded"
+        && page.objectReferenceId === input.objectReferenceId
+        && page.pageDigest === input.pageDigest
+        && page.idempotencyKeyHash === input.idempotencyKeyHash) return { status: "committed-exact" };
+      const referenced = [...this.jobs.values()].some((candidate) => candidate.resultObjectReferenceId === input.objectReferenceId
+        || candidate.pages.some((candidatePage) => candidatePage.objectReferenceId === input.objectReferenceId));
+      if (referenced) return { status: "unknown" };
+      if (!job || !page) return { status: "not-committed" };
+      if (page.uploadState === "pending"
+        && page.uploadLeaseToken === input.leaseToken
+        && page.pageDigest === input.pageDigest
+        && page.idempotencyKeyHash === input.idempotencyKeyHash) return { status: "not-committed" };
+      return { status: "superseded" };
+    });
+  }
+
   async failPage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, outcome: "failed" | "reconciliation-required", now: string): Promise<void> {
     await this.atomic(() => {
       const job = this.jobs.get(jobId); if (!job) return;
@@ -542,6 +588,25 @@ export class MemoryOmrStore implements OmrStore {
       if (input.update.state !== undefined && !isLegalOmrTransition(job.state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
       this.jobs.set(job.id, { ...job, ...structuredClone(input.update), id: job.id, ownerSessionId: job.ownerSessionId, resultCaptureLeaseToken: undefined, resultCaptureLeaseExpiresAt: undefined, updatedAt: input.now });
       return true;
+    });
+  }
+
+  async inspectResultCompletion(input: OmrResultCompletionExpectation): Promise<OmrDurableCompletionInspection> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      if (job?.state === "completed"
+        && job.creditState === "settled"
+        && job.resultObjectReferenceId === input.objectReferenceId
+        && job.vendorResultDigest === input.vendorResultDigest
+        && job.evidence?.providerBundleDigest === input.providerBundleDigest
+        && job.normalizationMapping?.artifactDigest === input.normalizationMappingArtifactDigest) return { status: "committed-exact" };
+      const referenced = [...this.jobs.values()].some((candidate) => candidate.resultObjectReferenceId === input.objectReferenceId
+        || candidate.pages.some((page) => page.objectReferenceId === input.objectReferenceId));
+      if (referenced) return { status: "unknown" };
+      if (!job) return { status: "not-committed" };
+      if (job.resultCaptureLeaseToken === input.leaseToken
+        && ["queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending"].includes(job.state)) return { status: "not-committed" };
+      return { status: "superseded" };
     });
   }
 

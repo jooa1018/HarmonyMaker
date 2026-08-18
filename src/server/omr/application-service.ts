@@ -453,12 +453,33 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     if (claim.status !== "claimed") throw new RangeError(claim.status === "conflict" ? "OMR_PAGE_UPLOAD_CONFLICT" : claim.status === "pending" ? "OMR_PAGE_UPLOAD_PENDING" : claim.status === "reconciliation-required" ? "OMR_JOB_RECONCILIATION_REQUIRED" : claim.status === "duplicate-confirmation-required" ? "OMR_DUPLICATE_PAGE_CONFIRMATION_REQUIRED" : "OMR_PAGE_RETRY_EXHAUSTED");
     let objectReferenceId: PrivateRowId | undefined;
     let vendorEffectCompleted = false;
+    let completionAuthorityUnknown = false;
     try {
       const object = await this.dependencies.objects.put({ ownerSessionId: job.ownerSessionId, bytes: inspected.bytes, contentType: inspected.mimeType, expiresAt: job.handleExpiresAt });
       objectReferenceId = object.id;
       await this.adapterFor(job).uploadPage(this.vendorJobId(job), { pageIndex: page.pageIndex, pageDigest: inspected.digest, mimeType: inspected.mimeType, idempotencyKey: idempotencyKeyHash, bytes: new Blob([inspected.bytes.slice().buffer as ArrayBuffer], { type: inspected.mimeType }) });
       vendorEffectCompleted = true;
-      const applied = await this.dependencies.store.completePage(job.id, page.pageIndex, leaseToken, object.id, now.toISOString());
+      let applied: boolean;
+      try {
+        applied = await this.dependencies.store.completePage(job.id, page.pageIndex, leaseToken, object.id, now.toISOString());
+      } catch (completionError) {
+        const inspection = await this.dependencies.store.inspectPageCompletion({
+          jobId: job.id, pageIndex: page.pageIndex, leaseToken,
+          pageDigest: inspected.digest, idempotencyKeyHash, objectReferenceId: object.id,
+        }).catch(() => ({ status: "unknown" as const }));
+        if (inspection.status === "committed-exact") {
+          await this.recordAuditBestEffort(job.id, "page-uploaded", `${page.pageIndex}:commit-ack-recovered`, now.toISOString());
+          return;
+        }
+        if (inspection.status === "superseded") {
+          await this.dependencies.objects.delete(object.id, job.ownerSessionId, now).catch(() => undefined);
+          objectReferenceId = undefined;
+          await this.recordAuditBestEffort(job.id, "page-upload-superseded", `${page.pageIndex}:commit-ack`, now.toISOString());
+          return;
+        }
+        if (inspection.status === "unknown") completionAuthorityUnknown = true;
+        throw completionError;
+      }
       if (!applied) {
         await this.dependencies.objects.delete(object.id, job.ownerSessionId, now);
         objectReferenceId = undefined;
@@ -467,6 +488,10 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       }
       await this.recordAuditBestEffort(job.id, "page-uploaded", String(page.pageIndex), now.toISOString());
     } catch {
+      if (completionAuthorityUnknown) {
+        await this.recordAuditBestEffort(job.id, "page-upload-commit-inspection-pending", String(page.pageIndex), now.toISOString());
+        throw new RangeError("OMR_PAGE_UPLOAD_PENDING");
+      }
       if (objectReferenceId) await this.dependencies.objects.delete(objectReferenceId, job.ownerSessionId, now).catch(() => undefined);
       if (!vendorEffectCompleted) {
         const outcome = job.capabilities.supportsIdempotency ? "failed" : "reconciliation-required";
@@ -563,7 +588,33 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       failureOrigin = "local";
       const resultObject = await this.dependencies.objects.put({ ownerSessionId: job.ownerSessionId, bytes: rawBytes, contentType: "application/vnd.recordare.musicxml+xml", expiresAt: job.handleExpiresAt });
       resultObjectId = resultObject.id;
-      if (!await this.dependencies.store.completeResultCapture({ jobId: job.id, leaseToken, update: { state: "completed", creditState: "settled", progressBp: 10_000, resultObjectReferenceId: resultObject.id, vendorResultDigest, evidence, normalizationMapping, retentionInfo, completedAt: now.toISOString(), currentInputRequest: undefined, ...this.clearRetry() }, now: now.toISOString() })) {
+      const completionInput = { jobId: job.id, leaseToken, update: { state: "completed" as const, creditState: "settled" as const, progressBp: 10_000, resultObjectReferenceId: resultObject.id, vendorResultDigest, evidence, normalizationMapping, retentionInfo, completedAt: now.toISOString(), currentInputRequest: undefined, ...this.clearRetry() }, now: now.toISOString() };
+      let applied: boolean;
+      try {
+        applied = await this.dependencies.store.completeResultCapture(completionInput);
+      } catch (completionError) {
+        const inspection = await this.dependencies.store.inspectResultCompletion({
+          jobId: job.id, leaseToken, objectReferenceId: resultObject.id, vendorResultDigest,
+          providerBundleDigest: evidence.providerBundleDigest,
+          normalizationMappingArtifactDigest: normalizationMapping.artifactDigest,
+        }).catch(() => ({ status: "unknown" as const }));
+        if (inspection.status === "committed-exact") {
+          await this.recordAuditBestEffort(job.id, "job-completed", "commit-ack-recovered", now.toISOString());
+          return;
+        }
+        if (inspection.status === "superseded") {
+          await this.dependencies.objects.delete(resultObject.id, job.ownerSessionId, now).catch(() => undefined);
+          resultObjectId = undefined;
+          await this.recordAuditBestEffort(job.id, "job-complete-superseded", "commit-ack-newer-state-preserved", now.toISOString());
+          return;
+        }
+        if (inspection.status === "unknown") {
+          await this.recordAuditBestEffort(job.id, "job-complete-commit-inspection-pending", "object-preserved", now.toISOString());
+          return;
+        }
+        throw completionError;
+      }
+      if (!applied) {
         await this.dependencies.objects.delete(resultObject.id, job.ownerSessionId, now).catch(() => undefined);
         await this.recordAuditBestEffort(job.id, "job-complete-superseded", "newer-state-preserved", now.toISOString());
         return;
