@@ -246,3 +246,15 @@ frozen authority          PASS — six pinned hashes, semantic/99-code tests, 0 
 ```
 
 No new finding was introduced: `NEW_P0=0`, `NEW_P1=0`, `NEW_P2=0`. Reopened P1-04 and P1-06 are closed, leaving `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`. Deterministic adapters establish routing and integrity behavior only; they do not establish real-provider recognition accuracy.
+
+## P1-04 delete/cleanup final closure evidence
+
+- Scope base: `193585008ddd00fc2ffef4a65bd7f5e5e7ac1674`
+- Code checkpoint: `f4dded0ea5ac80e0f50e730e0bc993c046e038ec`
+- Full suite: 64 files, 610 tests
+
+The production factory campaign creates and completes an A-bound job with live local page and result objects, deploys B without historical A, and calls user delete. Delete returns `localHandleDeleted=true` with sanitized `OMR_PROVIDER_BINDING_UNAVAILABLE`; B delete and retention calls remain zero. The job becomes `delete-pending`, retains the A binding/version/encrypted Vendor ID, persists a future Vendor retry, releases its public handle, deletes both local objects, and clears local result/evidence/mapping references.
+
+An expired-job cleanup campaign proves the same unavailable binding cannot escape the worker: local cleanup completes, a truthful Vendor retry result is returned, and both cleanup lease fields are cleared. After the retry deadline, restoring exact historical A causes one A deletion with the original A Vendor job ID, zero B calls, final `deleted`, and envelope removal. A separate transient campaign proves A deletion failure uses A—not active B—for retention, keeps local cleanup independent, and succeeds through A on the next due cleanup. The existing inverse sibling case—Vendor deletion succeeds while local object deletion retries—also remains green.
+
+Local gates passed `npm ci`, typecheck, lint, 64/610 tests, production build, and diff check. Segment B and OMR 101-run tests passed separately. All six frozen hashes and authority tests remain exact; the 99-code registry and accepted Segment B/C musical paths have zero diff. `NEW_P0=0`, `NEW_P1=0`, `NEW_P2=0`; all unresolved counts are zero. This deterministic evidence proves isolation and lifecycle correctness, not real-provider recognition accuracy or live S3 behavior.

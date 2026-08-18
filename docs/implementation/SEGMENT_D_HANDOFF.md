@@ -332,3 +332,39 @@ frozen-authority audit            PASS — six exact hashes, 99 codes, zero prot
 ```
 
 The reopened counts are closed: `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`. Repository acceptance is `SEGMENT_D_ACCEPTED=YES` and `ULTRA_AUDIT_READY=YES`. This section does not authorize or begin Ultra, Step 11, a real provider, corpus calibration, live-service testing, or device testing.
+
+## Final unavailable-binding delete/cleanup closure
+
+- Exact starting remote HEAD: `193585008ddd00fc2ffef4a65bd7f5e5e7ac1674`
+- Prior implementation checkpoint: `c53a2d7f1c7b7bbffbedcb5290cd4757cd4e1735`
+- New code checkpoint: `f4dded0ea5ac80e0f50e730e0bc993c046e038ec`
+- Final handoff-inclusive HEAD and terminal CI/Vercel identifiers: reported in the completion response for the additive documentation commit containing this section.
+
+Root cause: the initial unavailable-A resolution entered the Vendor-delete `catch`, where a second synchronous `adapterFor(job)` call was evaluated before `.catch()` could attach to `getRetentionInfo()`. The exception escaped, skipping the local sibling deletion loop and `completeCleanup()`.
+
+The final implementation resolves an existing-job adapter once into `available` or `binding-unavailable`. Delete and retention share the exact available adapter. Binding unavailability performs no retention lookup and persists `delete-pending`, failed Vendor deletion, future retry, sanitized `OMR_PROVIDER_BINDING_UNAVAILABLE`, and the original A binding/version/envelope. Local objects are still deleted and local-only result/evidence/mapping references are cleared. Cleanup completion releases the lease. Restoring the exact historical A registration allows the next due cleanup to delete through A, clear the envelope, and reach `deleted` when local deletion is already complete.
+
+```text
+unavailable A user delete          PASS — truthful result, zero B calls
+unavailable A expired cleanup      PASS — local cleanup and lease completion
+local page/result object cleanup   PASS
+durable Vendor retry               PASS
+A binding/version/envelope retain  PASS
+historical A restoration           PASS — original A job ID, final deleted
+normal A historical delete         PASS
+historical A transient retry       PASS — delete/retention share A
+local object-delete retry          PASS
+P1-06 taxonomy regression          PASS
+
+npm ci                             PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck                  PASS
+npm run lint                       PASS
+npm test                           PASS — 64 files, 610 tests
+npm run build                      PASS
+git diff --check                   PASS
+Segment B 101-run                  PASS
+OMR 101-run                        PASS
+frozen/protected authority         PASS — six hashes, 99 codes, 0 changed paths
+```
+
+The final in-repository result is `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`. External provider/corpus/database/object-store/device classifications remain open and unchanged.

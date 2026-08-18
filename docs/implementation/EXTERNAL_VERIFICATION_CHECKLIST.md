@@ -189,3 +189,16 @@ For a future separately authorized real-provider/live-service verification:
 5. Separately inject temporary provider transport/read failures and temporary S3 write failure. Verify persisted bounded retry across restart, binding/opaque ID/credit retention, successful recovery, and reconciliation only after transient exhaustion.
 
 These external runs remain unauthorized and incomplete here. Keep the existing provider/corpus/database/object-store/device classifications open; repository CI and deterministic adapters are not real-provider accuracy or live-service evidence. Ultra, Step 11, provider selection/integration, corpus calibration, and physical-device verification were not started by this checkpoint.
+
+## Final unavailable-binding delete/cleanup checkpoint
+
+Use code checkpoint `f4dded0ea5ac80e0f50e730e0bc993c046e038ec` or its verified additive handoff descendant. Repository tests prove that unavailable historical-provider deletion no longer blocks HarmonyMaker-owned cleanup or cleanup-lease completion.
+
+For a future separately authorized live provider/object-store exercise:
+
+1. Complete an A-bound job, deploy B without historical A, then delete it. Require zero B Vendor calls, a truthful `OMR_PROVIDER_BINDING_UNAVAILABLE` result, retained A binding/version/envelope, future Vendor retry, and independently deleted page/result objects.
+2. Repeat through an expired-job cleanup worker and verify the cleanup lease is cleared despite unavailable A.
+3. Restore the exact historical A registration after the retry deadline. Require deletion with the original A Vendor job ID, zero B calls, final `deleted`, and envelope removal.
+4. Fail A deletion transiently and verify retention uses the same A adapter while local deletion completes. Separately fail local S3 deletion after successful A deletion and verify only the local sibling retries.
+
+These live-service checks were not authorized or performed here. Retain the external provider selection/credentials, rights-safe corpus, live PostgreSQL/S3, and physical-device classifications. Repository CI and deterministic adapters do not replace those checks. Ultra and Step 11 were not started.
