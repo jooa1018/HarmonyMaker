@@ -55,6 +55,37 @@ export function isRetiredCreateReplay(error: unknown): boolean {
     && error.code === "OMR_CREATE_REPLAY_UNAVAILABLE";
 }
 
+export type OmrFreshStartReason = "stale-recovery-handle" | "retired-create-replay";
+
+export type OmrFreshStartState =
+  | { readonly mode: "normal" }
+  | { readonly mode: "explicit-required"; readonly reason: OmrFreshStartReason };
+
+export function requireExplicitOmrFreshStart(reason: OmrFreshStartReason): OmrFreshStartState {
+  return { mode: "explicit-required", reason };
+}
+
+export function consumeExplicitOmrFreshStart(state: OmrFreshStartState): {
+  readonly forceFresh: boolean;
+  readonly nextState: OmrFreshStartState;
+} {
+  return { forceFresh: state.mode === "explicit-required", nextState: { mode: "normal" } };
+}
+
+export interface OmrStartInFlightGuard {
+  current: boolean;
+}
+
+export function tryBeginOmrStart(guard: OmrStartInFlightGuard): boolean {
+  if (guard.current) return false;
+  guard.current = true;
+  return true;
+}
+
+export function finishOmrStart(guard: OmrStartInFlightGuard): void {
+  guard.current = false;
+}
+
 export interface OmrBrowserStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -69,7 +100,7 @@ export type OmrJobAcquisition<TStatus> =
   }
   | {
     readonly kind: "fresh-start-required";
-    readonly reason: "stale-recovery-handle" | "retired-create-replay";
+    readonly reason: OmrFreshStartReason;
   };
 
 export async function acquireOmrJob<TStatus>(input: {

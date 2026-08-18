@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  OmrApiRequestError, acquireOmrJob, readOmrApiJson, type OmrBrowserStorage,
+  OmrApiRequestError,
+  acquireOmrJob,
+  consumeExplicitOmrFreshStart,
+  finishOmrStart,
+  requireExplicitOmrFreshStart,
+  readOmrApiJson,
+  tryBeginOmrStart,
+  type OmrBrowserStorage,
+  type OmrFreshStartState,
 } from "./browser-recovery";
 
 function memoryStorage(initial: Readonly<Record<string, string>> = {}): OmrBrowserStorage & { readonly values: Map<string, string> } {
@@ -16,6 +24,81 @@ function memoryStorage(initial: Readonly<Record<string, string>> = {}): OmrBrows
 
 const createStorageKey = "create:input";
 const recoveryStorageKey = `${createStorageKey}:recovered-handle`;
+
+async function exerciseAmbiguousExplicitFreshRetry(failure: Error) {
+  const storage = memoryStorage({ [recoveryStorageKey]: "handle:stale" });
+  const freshRequest = {
+    pageCount: 1,
+    pages: [{ pageIndex: 0, pageDigest: "page:stable", mimeType: "image/png" }],
+    sourceKind: "camera-photo",
+    rights: {
+      basis: "user-confirmed-rights",
+      allowedUses: ["generation", "provider-transfer"],
+      confirmedAt: "2026-08-19T00:00:00.000Z",
+    },
+    providerTransferConsent: true,
+    consentCapabilitySnapshotDigest: "sha256:capability",
+    idempotencyKey: "K1",
+  } as const;
+  const createRequest = vi.fn(() => freshRequest);
+  const postedKeys: string[] = [];
+  const logicalJobs = new Map<string, string>();
+  let loseFirstResponse = true;
+  const create = vi.fn(async (request: Readonly<Record<string, unknown>>) => {
+    const key = String(request.idempotencyKey);
+    postedKeys.push(key);
+    if (!logicalJobs.has(key)) logicalJobs.set(key, `handle:${key}`);
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      throw failure;
+    }
+    return { handle: logicalJobs.get(key) as string };
+  });
+  const recover = vi.fn(async () => {
+    throw new OmrApiRequestError(404, "OMR_JOB_UNAVAILABLE", "복구할 수 없습니다.");
+  });
+  let freshState: OmrFreshStartState = { mode: "normal" };
+  const forceFreshHistory: boolean[] = [];
+  const click = async () => {
+    const intent = consumeExplicitOmrFreshStart(freshState);
+    freshState = intent.nextState;
+    forceFreshHistory.push(intent.forceFresh);
+    const acquisition = await acquireOmrJob({
+      storage,
+      createStorageKey,
+      recoveryStorageKey,
+      forceFresh: intent.forceFresh,
+      createRequest,
+      recover,
+      create,
+    });
+    if (acquisition.kind === "fresh-start-required") {
+      freshState = requireExplicitOmrFreshStart(acquisition.reason);
+    }
+    return acquisition;
+  };
+
+  await expect(click()).resolves.toEqual({ kind: "fresh-start-required", reason: "stale-recovery-handle" });
+  expect(freshState).toEqual({ mode: "explicit-required", reason: "stale-recovery-handle" });
+
+  await expect(click()).rejects.toBe(failure);
+  expect(freshState).toEqual({ mode: "normal" });
+  expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toEqual(freshRequest);
+  expect(storage.getItem(recoveryStorageKey)).toBeNull();
+
+  await expect(click()).resolves.toEqual({ kind: "acquired", handle: "handle:K1" });
+  expect(forceFreshHistory).toEqual([false, true, false]);
+  expect(createRequest).toHaveBeenCalledTimes(1);
+  expect(postedKeys).toEqual(["K1", "K1"]);
+  expect(logicalJobs).toEqual(new Map([["K1", "handle:K1"]]));
+  expect(create).toHaveBeenCalledTimes(2);
+  expect(create.mock.calls[0]?.[0]).toEqual(freshRequest);
+  expect(create.mock.calls[1]?.[0]).toEqual(freshRequest);
+  expect(storage.getItem(createStorageKey)).toBeNull();
+  expect(storage.getItem(recoveryStorageKey)).toBe("handle:K1");
+
+  return { createRequest, forceFreshHistory, logicalJobs, postedKeys };
+}
 
 describe("OMR browser recovery authority", () => {
   it("preserves structured HTTP status, code, and Korean message without raw payload exposure", async () => {
@@ -97,8 +180,10 @@ describe("OMR browser recovery authority", () => {
     const storage = memoryStorage({ [createStorageKey]: JSON.stringify({ pageCount: 1, idempotencyKey: "old-key" }) });
     const create = vi.fn(async (request: Readonly<Record<string, unknown>>) => ({ handle: `handle:${String(request.idempotencyKey)}` }));
     const freshRequest = vi.fn(() => ({ pageCount: 1, pageDigest: "same-input", idempotencyKey: "fresh-random-key" }));
+    const intent = consumeExplicitOmrFreshStart(requireExplicitOmrFreshStart("retired-create-replay"));
+    expect(intent).toEqual({ forceFresh: true, nextState: { mode: "normal" } });
     await expect(acquireOmrJob({
-      storage, createStorageKey, recoveryStorageKey, forceFresh: true,
+      storage, createStorageKey, recoveryStorageKey, forceFresh: intent.forceFresh,
       createRequest: freshRequest, recover: vi.fn(), create,
     })).resolves.toEqual({ kind: "acquired", handle: "handle:fresh-random-key" });
     expect(freshRequest).toHaveBeenCalledTimes(1);
@@ -106,6 +191,81 @@ describe("OMR browser recovery authority", () => {
     expect(create).toHaveBeenCalledWith({ pageCount: 1, pageDigest: "same-input", idempotencyKey: "fresh-random-key" });
     expect(storage.getItem(createStorageKey)).toBeNull();
     expect(storage.getItem(recoveryStorageKey)).toBe("handle:fresh-random-key");
+  });
+
+  it("consumes explicit fresh intent before a lost response and replays the same K1 on the second click", async () => {
+    const result = await exerciseAmbiguousExplicitFreshRetry(new TypeError("response lost"));
+    expect(result.createRequest).toHaveBeenCalledTimes(1);
+    expect(result.postedKeys).not.toContain("K2");
+    expect(result.logicalJobs.size).toBe(1);
+  });
+
+  it("consumes explicit fresh intent before a 503 and replays the same K1 on the second click", async () => {
+    const result = await exerciseAmbiguousExplicitFreshRetry(
+      new OmrApiRequestError(503, "OMR_INTERNAL", "temporary failure"),
+    );
+    expect(result.createRequest).toHaveBeenCalledTimes(1);
+    expect(result.postedKeys).not.toContain("K2");
+    expect(result.logicalJobs.size).toBe(1);
+  });
+
+  it("re-arms explicit fresh only for an exact retired K1 without automatically generating K2", async () => {
+    const storage = memoryStorage();
+    const createRequest = vi.fn(() => ({ pageCount: 1, idempotencyKey: "K1" }));
+    const create = vi.fn(async () => {
+      throw new OmrApiRequestError(409, "OMR_CREATE_REPLAY_UNAVAILABLE", "retired");
+    });
+    let freshState = requireExplicitOmrFreshStart("stale-recovery-handle");
+    const intent = consumeExplicitOmrFreshStart(freshState);
+    freshState = intent.nextState;
+    expect(freshState).toEqual({ mode: "normal" });
+
+    const acquisition = await acquireOmrJob({
+      storage,
+      createStorageKey,
+      recoveryStorageKey,
+      forceFresh: intent.forceFresh,
+      createRequest,
+      recover: vi.fn(),
+      create,
+    });
+    if (acquisition.kind === "fresh-start-required") {
+      freshState = requireExplicitOmrFreshStart(acquisition.reason);
+    }
+
+    expect(acquisition).toEqual({ kind: "fresh-start-required", reason: "retired-create-replay" });
+    expect(freshState).toEqual({ mode: "explicit-required", reason: "retired-create-replay" });
+    expect(createRequest).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({ pageCount: 1, idempotencyKey: "K1" });
+    expect(storage.getItem(createStorageKey)).toBeNull();
+    expect(storage.getItem(recoveryStorageKey)).toBeNull();
+  });
+
+  it("admits only one active create across same-tick and rapid repeated clicks", async () => {
+    const guard = { current: false };
+    let resolveCreate: (() => void) | undefined;
+    const create = vi.fn(() => new Promise<void>((resolve) => { resolveCreate = resolve; }));
+    const start = async () => {
+      if (!tryBeginOmrStart(guard)) return;
+      try {
+        await create();
+      } finally {
+        finishOmrStart(guard);
+      }
+    };
+
+    const first = start();
+    const second = start();
+    const third = start();
+    expect(guard.current).toBe(true);
+    expect(create).toHaveBeenCalledTimes(1);
+    await second;
+    await third;
+    resolveCreate?.();
+    await first;
+    expect(guard.current).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the old create key after an ambiguous timeout", async () => {
