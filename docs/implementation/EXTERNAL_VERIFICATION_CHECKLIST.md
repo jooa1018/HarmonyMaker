@@ -202,3 +202,17 @@ For a future separately authorized live provider/object-store exercise:
 4. Fail A deletion transiently and verify retention uses the same A adapter while local deletion completes. Separately fail local S3 deletion after successful A deletion and verify only the local sibling retries.
 
 These live-service checks were not authorized or performed here. Retain the external provider selection/credentials, rights-safe corpus, live PostgreSQL/S3, and physical-device classifications. Repository CI and deterministic adapters do not replace those checks. Ultra and Step 11 were not started.
+
+## Final create-outcome certainty checkpoint
+
+Use code checkpoint `e81c6b16d317ce00e37e3629aa57bd7461550bfb` or its verified additive handoff descendant. Repository tests and migration evidence close false expiry tombstoning for an uncertain Vendor create without selecting or integrating a real provider. Exact final-SHA GitHub Actions and Vercel identifiers are reported in the completion response.
+
+For a future separately authorized real-provider/live PostgreSQL/S3 exercise:
+
+1. With an idempotent Provider A, commit a create side effect and lose the response. Do not retry before expiry. Rotate active provider to B while retaining A historically, run cleanup, and prove exact A binding/version, canonical create request, and original Vendor idempotency key recover the same logical A job before A deletion. Provider B logs must show zero A create/delete/retention operations.
+2. Repeat with historical A absent. Require durable `outcome-uncertain`, reserved credit/cost exposure, retained A authority and create key, future reconciliation retry, independent S3 cleanup, and released cleanup lease. Restore exact A and require final reconciliation/deletion with zero B calls.
+3. With a non-idempotent A, commit the create effect and fail local Vendor-ID persistence. Expiry cleanup must perform no blind create replay, no false Vendor deletion, and no credit release; local S3 objects may delete independently. Reconcile only with provider-specific definitive authority supplied under a separate design/authorization.
+4. Return a definitive create rejection before side effect. Require `definitive-no-job`, released credit, no Vendor delete at expiry, local cleanup, and final tombstone. Contrast this with transport response loss and post-effect persistence failure.
+5. Restart between every transition and verify PostgreSQL `vendor_create_outcome_state`, encrypted envelope, create idempotency row, provider binding/version, cleanup lease, retry timestamp, and credit state remain mutually consistent. Verify unresolved reserved exposure remains in the global ceiling after the UTC day changes.
+
+These external checks remain unauthorized and incomplete here. Keep `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`. Ultra and Step 11 were not started.

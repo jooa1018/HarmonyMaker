@@ -368,3 +368,44 @@ frozen/protected authority         PASS — six hashes, 99 codes, 0 changed path
 ```
 
 The final in-repository result is `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`. External provider/corpus/database/object-store/device classifications remain open and unchanged.
+
+## Final create-outcome certainty / expiry cleanup reconciliation closure
+
+- Exact starting remote HEAD: `d943a0121913149c28fb8c3ebeee2519850c9899`
+- Prior code checkpoint: `f4dded0ea5ac80e0f50e730e0bc993c046e038ec`
+- New code checkpoint: `e81c6b16d317ce00e37e3629aa57bd7461550bfb`
+- Additive persistence migration: `008_omr_create_outcome_certainty.sql`
+- Final handoff-inclusive HEAD and terminal CI/Vercel identifiers: reported in the completion response.
+
+The root cause was an invalid equivalence between `vendorJobIdEnvelope === undefined` and “Vendor job does not exist.” A Vendor call may have committed its side effect while its response or the local envelope write failed. Cleanup then entered its no-envelope no-op branch, set Vendor deletion to deleted, released credit, and removed reconciliation authority even though the external job could still exist.
+
+The new orthogonal durable model records four states: `not-attempted`, `definitive-no-job`, `outcome-uncertain`, and `confirmed`. Memory and PostgreSQL creation, row mapping, updates, cleanup claims, and credit accounting share the model. Reserved exposure remains counted across day boundaries while unresolved. Definitive rejection remains a released-credit no-job case and can tombstone without a Vendor delete.
+
+Idempotent uncertainty replays only through the exact stored provider binding/version with the original canonical page count and Vendor create idempotency key, persists the recovered envelope and confirmed outcome, then deletes through the same adapter. Active B receives no A preflight/create/delete/retention operation. If historical A is unavailable, cleanup persists a future retry, retains A authority and reserved credit, deletes local objects, and clears the cleanup lease. Restoring A permits reconciliation and final deletion. Non-idempotent uncertainty performs no replay and cannot reach Vendor-deleted or final deleted.
+
+```text
+idempotent uncertain create expiry     PASS
+same key / same logical Vendor job     PASS
+active B A-operation count             PASS — 0
+historical A unavailable/restored      PASS
+non-idempotent no replay/no deletion   PASS
+uncertain credit through expiry/day    PASS
+definitive rejection/no-envelope       PASS
+local cleanup / cleanup lease          PASS
+P1-04 delete regression                PASS
+P1-06 taxonomy regression              PASS
+Vendor/local independent retry         PASS
+
+npm ci                                 PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck                      PASS
+npm run lint                           PASS
+npm test                               PASS — 64 files, 614 tests
+npm run build                          PASS
+git diff --check                       PASS
+focused campaign                       PASS — 4 files, 54 tests
+Segment B 101-run                      PASS
+OMR 101-run                            PASS
+frozen/protected authority             PASS — six hashes, 99 codes, 0 changed paths
+```
+
+The known new create-outcome P1 is closed with no additional P0/P1/P2. Final counts are zero and repository acceptance is restored. No Ultra, Step 11, real provider, corpus calibration, live PostgreSQL/S3, or physical-device work was begun.

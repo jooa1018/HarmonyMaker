@@ -258,3 +258,20 @@ The production factory campaign creates and completes an A-bound job with live l
 An expired-job cleanup campaign proves the same unavailable binding cannot escape the worker: local cleanup completes, a truthful Vendor retry result is returned, and both cleanup lease fields are cleared. After the retry deadline, restoring exact historical A causes one A deletion with the original A Vendor job ID, zero B calls, final `deleted`, and envelope removal. A separate transient campaign proves A deletion failure uses A—not active B—for retention, keeps local cleanup independent, and succeeds through A on the next due cleanup. The existing inverse sibling case—Vendor deletion succeeds while local object deletion retries—also remains green.
 
 Local gates passed `npm ci`, typecheck, lint, 64/610 tests, production build, and diff check. Segment B and OMR 101-run tests passed separately. All six frozen hashes and authority tests remain exact; the 99-code registry and accepted Segment B/C musical paths have zero diff. `NEW_P0=0`, `NEW_P1=0`, `NEW_P2=0`; all unresolved counts are zero. This deterministic evidence proves isolation and lifecycle correctness, not real-provider recognition accuracy or live S3 behavior.
+
+## Create-outcome certainty / expiry reconciliation closure evidence
+
+- Scope base: `d943a0121913149c28fb8c3ebeee2519850c9899`
+- Code checkpoint: `e81c6b16d317ce00e37e3629aa57bd7461550bfb`
+- Focused campaign: 4 files, 54 tests
+- Full suite: 64 files, 614 tests
+
+Production composition tests create a real deterministic side effect in Provider A, lose the response, withhold a usable local envelope, rotate active deployment to B, and advance directly past handle expiry. Cleanup resolves the persisted A binding, replays the exact original create input and idempotency key, receives the same logical A Vendor job, persists its encrypted ID/confirmed outcome, and deletes it through A. A single logical Vendor job exists, A receives the delete for the recovered ID, B receives zero capability/create/delete/retention calls, credit changes from reserved only after resolution/deletion, and the cleanup lease and envelope clear at final deletion.
+
+A separate deployment omits historical A. Cleanup makes zero B calls, retains `outcome-uncertain`, A binding/version/create key, absent envelope, reserved credit, and a future Vendor retry while completing local deletion and clearing the lease. Restoring exact A after the retry deadline replays the same key, deletes through A, and reaches final deleted. This also preserves the previously closed unavailable-binding P1-04 behavior for already-confirmed jobs.
+
+The non-idempotent post-Vendor/pre-persist crash test creates the Vendor side effect, forces `completeVendorCreation()` failure, attaches a live HarmonyMaker object, and advances through expiry. Cleanup does not call create/delete/retention, never marks Vendor or job deleted, exposes `OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN`, retains provider/create authority and reserved global credit across the day boundary, deletes the local object, persists a future retry, and clears the cleanup lease. A new request at the same global ceiling is denied, proving unresolved exposure remains accounted.
+
+Definitive rejection records `definitive-no-job`, releases credit, completes durable create idempotency, performs no Vendor delete at expiry, and permits local tombstone. PostgreSQL store evidence verifies uncertain cleanup claims retain reserved credit while definitive-no-job claims release it. Migration evidence verifies monotonic inventory 1–8 and the four-state CHECK/backfill authority.
+
+All required repository gates passed after exact `npm ci`: typecheck, lint, 64/614 tests, build, and diff check. Separate authority/determinism execution passed 3 files/12 tests including both 101-run campaigns and all 99 diagnostics. Six frozen byte hashes are exact and protected-path diff is zero. `KNOWN_NEW_P1_CREATE_OUTCOME=CLOSED`, `ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`; unresolved counts are all zero.
