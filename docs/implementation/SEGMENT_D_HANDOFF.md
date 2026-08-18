@@ -57,7 +57,7 @@ DELETE /api/omr/jobs/:handle
 - Runtime semantic readiness returns `validator-ready`, `review-required`, or `blocked`; blocking measure/timeline/tie errors never auto-ready.
 - Evidence uses integer microunits, nanounit homographies, sign-restored half-up decimal quantization, normalized matrices, deterministic frame/transform/evidence ordering, ID-invariant semantic projections, shortest transform path then transform-ID tie-break, exact provider digest recomputation, revision-scoped target mapping, and a durable unmapped archive.
 - The browser shows only the actual available page/staff/measure fallback and never invents symbol/measure alignment.
-- Review has deterministic per-item alternatives and auto-repair proposals; accepted/rejected/manual/auto resolution linkage; typed pitch, duration, accidental, chord, time/key, tie, note/rest replacement, and source-text patches; canonical before projections; Source revisions; one-to-one remaps; deletion markers; and repair history. Structural barline split/merge is explicitly deferred and rejected rather than represented by the false `SourceMeasure.implicit` toggle.
+- Review has deterministic per-item alternatives and auto-repair proposals; accepted/rejected/manual/auto resolution linkage; typed pitch, duration, accidental, chord, time/key, tie, note/rest replacement, source-text, and real barline split/merge patches; canonical before projections; Source revisions; complete one/many/deleted remaps; and repair history. Barline changes transform measures, events, performance occurrences, sections, phrases, IDs, evidence targets, and history rather than toggling `SourceMeasure.implicit`.
 - The browser carries the Vendor result and original page blobs through IndexedDB to the accepted importer, OMR evidence review, Quick Review, schema-v9 project creation, and the unchanged Product Core generation pipeline.
 
 ## Verification
@@ -261,3 +261,40 @@ Remote evidence for the exact code checkpoint:
 - Preview: `https://harmony-maker-3akfdt50a-ecctom1.vercel.app`.
 
 The containing handoff-only commit receives a separate final remote run and is reported as the handoff-inclusive remote HEAD after terminal CI/Vercel success. Real-provider accuracy, rights-safe real-corpus thresholds, live PostgreSQL/S3 behavior, and physical-device behavior remain external verification items. Step 11 and the separate Ultra audit were not begun.
+
+## Broad final P1/P2 closure handoff
+
+Scope base is exact remote HEAD `6d8f0d17d0758d7118e7895f300cd0bdca23fa84`; code checkpoint is `16421f532721dcd4843717658a21f709ffcd5b81`. The containing additive documentation commit is the final handoff-inclusive remote HEAD, with its immutable SHA and terminal GitHub Actions/Vercel identifiers reported in the completion response.
+
+The closure extends the existing architecture rather than adding a parallel OMR subsystem:
+
+1. `validatePersistedOmrContext()` now requires zero unresolved review items, zero pending repairs, valid runtime semantic readiness, persistent warning acknowledgements, and exact evidence-target bindings. `generateProjectVariant()` reuses full `validateHarmonyProject()` at the common generation boundary.
+2. MusicXML parsing emits an immutable identity inventory before Quick Review. `musicXmlSourceTargetMap` remaps original event/chord/text selectors across every Source revision, represents deletion explicitly, and is the only Vendor normalization route to current Source targets.
+3. Structural event moves are rejected. Auto repairs reject stale original projections. Barline insert/delete performs real overfull-measure split and adjacent-measure merge with canonical Source IDs and complete measure/event/chord/text/lyric/performance/section/phrase remaps; review evidence and correction history remain linked.
+4. Durable jobs persist provider binding and adapter-contract version. Old A-created jobs continue poll/export/evidence/mapping/retention/cancel/delete/recovery through A after B becomes active; create-response replay resolves A before fresh B preflight, while new jobs use B.
+5. `reconciliation-required`, `sync-retry-pending`, and `capture-retry-pending` retain concurrent session/IP and credit exposure. Transient operations use persisted bounded backoff and retry counts; exhaustion moves to reconciliation without discarding provider identity or credit.
+6. Provider transfer representation is always canonical PNG. JPEG-only providers fail preflight, PNG-capable providers receive an inspected `image/png` Blob, and capability sets are canonicalized before snapshot digesting.
+7. Evidence granularity, concurrent duplicates, provider payload sizes/counts/string lengths, authorization-before-body, and persisted warning acknowledgement are enforced at production boundaries.
+
+Verification truth:
+
+```text
+npm ci                            PASS — 451 packages installed, 452 audited, 0 vulnerabilities
+npm run typecheck                 PASS
+npm run lint                      PASS — zero warnings/errors
+npm test                          PASS — 63 files, 599 tests
+npm run build                     PASS — Next.js production build
+git diff --check                  PASS
+Segment B determinism             PASS — 101 complete executions
+OMR determinism                   PASS — 101 canonical permutations
+persisted readiness/generation    PASS
+identity/evidence remapping       PASS — insert/delete/reorder/multi-part/multi-staff/swap
+correction structural safety      PASS — replace-event, stale repair, split/merge/history
+provider rotation/replay          PASS
+quota/transient recovery          PASS
+JPEG to canonical PNG             PASS
+concurrent duplicate fencing      PASS
+frozen-authority audit            PASS — six exact hashes, 99 codes, zero protected-path diff
+```
+
+No new P0, P1, or P2 finding remains from this closure. Repository verdict is `SEGMENT_D_ACCEPTED=YES` and `ULTRA_AUDIT_READY=YES`; external real-provider/corpus/live-service/device classifications remain open and are not converted into PASS claims.

@@ -189,3 +189,34 @@ Remote evidence for the exact code checkpoint:
 - Vercel deployment `5944166770`, status `16912233530`, `success`; preview `https://harmony-maker-3akfdt50a-ecctom1.vercel.app`.
 
 The deterministic reference adapter remains plumbing/integrity evidence only. The six frozen artifacts, semantic authority digests, 99-code diagnostic registry, and accepted musical-selection path remain exact. All real-provider, rights-safe corpus, live PostgreSQL/S3, and physical-device external classifications remain open.
+
+## Broad final Segment D closure evidence
+
+- Exact scope base: `6d8f0d17d0758d7118e7895f300cd0bdca23fa84`
+- Code checkpoint: `16421f532721dcd4843717658a21f709ffcd5b81`
+- Final handoff-inclusive remote HEAD: the additive commit containing this section; exact SHA and terminal remote records are reported in the completion response because a commit cannot embed its own SHA.
+
+The new evidence matrix directly exercises every reported finding:
+
+- Persisted readiness rejects open or rejected-unresolved items, pending auto repair, invalid runtime state, and unacknowledged semantic warnings. A JSON-reloaded acknowledgement remains valid, while the generation boundary refuses an invalid OMR project.
+- Immutable import identity tests cover insertion, deletion, reorder, multi-part, and multi-staff selection. A separate mismatch fixture swaps an evidence target while keeping other digests internally consistent and is rejected.
+- Correction tests reject onset reorder and duration-gap `replace-event`, reject acceptance after a manual edit stales a proposal, and execute insert-barline then delete-barline as a structural round trip with canonical IDs, mapped-many/merge remaps, performance/section/phrase updates, evidence IDs, and replayable correction history.
+- Provider lifecycle tests create through A, rotate active configuration to B, complete every old-job operation through A, replay a lost create without B preflight, and create the next job through B. Capability-set order does not affect the snapshot digest.
+- Reconciliation counts against session, IP, and credit exposure. Status, XML export, evidence, mapping, retention, and object persistence transient failures enter durable retry and recover; bounded exhaustion enters reconciliation with credit and binding retained. Explicit provider/contract/integrity failures remain terminal.
+- A JPEG-only provider is rejected because it lacks actual PNG transfer support. A PNG-capable provider accepts a JPEG user input only after server canonicalization, and the adapter observes a real `image/png` Blob.
+- Evidence items cannot exceed declared granularity. Concurrent identical uploads to different page indices admit exactly one without explicit duplicate acknowledgement. Oversized XML, evidence, frame, transform, mapping, or string payloads fail before expensive canonicalization/storage. Static route evidence proves authorization precedes body reading.
+
+Fresh final local gates:
+
+```text
+npm ci                    PASS — added 451, audited 452, 0 vulnerabilities
+npm run typecheck         PASS
+npm run lint              PASS
+npm test                  PASS — 63 files, 599 tests
+npm run build             PASS
+git diff --check          PASS
+Segment B 101-run         PASS
+OMR 101-run               PASS
+```
+
+The six frozen artifacts match their pinned byte SHA-256 values and no protected grammar/diagnostic authority path differs from the scope base. The 99-code registry and accepted WAG v1.0.1 musical selection path are unchanged. The repository closure count is `P0=0`, `P1=0`, `P2=0`. Reference-adapter evidence remains plumbing/integrity evidence, not recognition accuracy.

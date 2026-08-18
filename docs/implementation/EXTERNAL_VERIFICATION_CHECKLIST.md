@@ -77,7 +77,7 @@ Procedure:
 
 1. Start the app with `DATABASE_URL`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, all Segment C keys, and all OMR keys/credit variables.
 2. Invoke `/api/substrate-compatibility`; require Node/pg/S3/PDF.js/Sharp readiness.
-3. Confirm migrations `1..6` apply transactionally; restart twice and require checksum/order repeat safety.
+3. Confirm migrations `1..7` apply transactionally; restart twice and require checksum/order repeat safety.
 4. Submit simultaneous create requests from the same session and same IP. Require exact session/IP quotas and daily credit ceiling under database concurrency.
 5. Interrupt after each provider effect and before persistence: create, page upload, start, submit-input, and cancel. With provider idempotency, recover under the stable key and fence; without it, require explicit reconciliation and no blind replay. Abandon a pending page claim and require lease recovery. Confirm `maxRetriesPerPage=2` permits the initial attempt plus exactly two retries.
 6. Complete a job; verify private object ownership, digest, type, size, expiry, and no public bucket/object URL.
@@ -158,3 +158,20 @@ For every future authorized real-provider/export sample, retain and verify the c
 5. Confirm deterministic reference and duplicate fixture controls are absent in production and whenever the selected provider is real, regardless of any development flag.
 
 Until external sections 1–5 are actually performed with authorization, retain `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`. Do not convert deterministic reference-adapter integrity evidence into provider-accuracy evidence.
+
+## Broad final Segment D closure checkpoint
+
+Use code checkpoint `16421f532721dcd4843717658a21f709ffcd5b81` or the verified additive handoff descendant containing this section. The exact final SHA and its GitHub Actions/Vercel identifiers are recorded in the completion response. Green repository CI/deployment proves build integrity only; it does not close a real-provider, corpus, live PostgreSQL/S3, or physical-device classification.
+
+For a future authorized real-provider/live-service run, additionally verify the new safety boundaries:
+
+1. Create through Provider A, rotate the active provider to B, restart the service, and complete poll/export/evidence/mapping/retention/cancel/delete/reconciliation through the persisted A binding and adapter contract version. A lost create response must resolve A before any fresh B preflight; a genuinely new job must use B.
+2. Confirm the capability/consent snapshot declares actual `image/png` transfer. Upload JPEG and PNG inputs and inspect the Vendor request bytes/MIME; reject a provider that supports JPEG but not PNG.
+3. Put a job into `reconciliation-required` and each retry-pending state. It must continue consuming session/IP concurrency and credit until definitive reconciliation, failure, or deletion. Restart between bounded retry attempts and verify persisted backoff/count/binding/credit.
+4. Inject transient status, XML, evidence, mapping, retention, and object-store failures separately. Require recovery without terminal failure; require retry exhaustion to enter reconciliation; require explicit Vendor terminal and contract/integrity failures to remain terminal.
+5. Race two canonically identical uploads at different page indices under PostgreSQL. Exactly one may commit without explicit duplicate acknowledgement. Repeat across process instances.
+6. Return payloads immediately below and above each hard limit for raw XML bytes, evidence items, frames, transforms, mappings, and strings. Above-limit data must fail before expensive canonicalization or object persistence.
+7. Persist a completed OMR Source with legitimate acknowledged warnings, reload it, and generate. Repeat with open/rejected-unresolved review, pending repair, altered acknowledgement, and swapped evidence target; every invalid case must fail the common persisted/generation boundary.
+8. Exercise structural barline split/merge on real provider evidence. Re-export/reload and verify measure/event/performance/section/phrase IDs, SourceIdRemap, evidence targets, and correction-history replay.
+
+Until these runs are actually authorized and performed, retain `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.

@@ -34,9 +34,9 @@ The final handoff-inclusive remote HEAD is the additive documentation commit con
 - Deterministic fixture/reference lifecycle that is explicitly prohibited in production and makes no recognition-accuracy claim.
 - Vendor MusicXML digest verification and normalization through the accepted importer; semantic readiness gate.
 - Fixed-point evidence frames/transforms, canonical digest, explicit mapping, fallback, archive, remap, and browser overlay.
-- Deterministic review alternatives/repairs, every implemented typed patch, explicit structural-barline deferral, Source revisions/remaps/history, Quick Review, workspace, and unchanged Product Core handoff.
+- Deterministic review alternatives/repairs, every v0 typed patch including structural barline split/merge, Source revisions/remaps/history, Quick Review, workspace, and unchanged Product Core handoff.
 - Versioned evaluation ground truth, corpus manifest, metric report, Dev/sealed leakage/category validation, threshold-freeze boundary, and sealed-report codec.
-- Per-item review authority, explicit noncanonical Vendor-target mapping, row-locked/fenced durable recovery and reconciliation, truthful independent deletion retry, pre-allocation raster bounds and original-scale quality parity, cross-measure tie validation, capability-snapshot consent, and explicit structural-barline deferral.
+- Per-item review authority, immutable import-target mapping, row-locked/fenced durable recovery and reconciliation, truthful independent deletion retry, pre-allocation raster bounds and original-scale quality parity, cross-measure tie validation, capability-snapshot consent, and structural barline Source remapping.
 
 ## Final verified implementation evidence
 
@@ -95,3 +95,22 @@ Local direct verification passed TypeScript, ESLint, 62 Vitest files/587 tests, 
 Remote code-checkpoint evidence is GitHub Actions run `32025713245`/quality job `95374571925` success and Vercel deployment `5944166770`/status `16912233530` success. Preview: `https://harmony-maker-3akfdt50a-ecctom1.vercel.app`.
 
 Campaign status remains `HARMONYMAKER_V0_COMPLETE_WITH_EXTERNAL_VERIFICATION_REMAINING`. The additive handoff-only descendant is reported after its own remote checks pass. No Step 11, Ultra audit, provider selection, accuracy claim, or frozen musical-authority change is included.
+
+## Broad final Segment D authority and provider-safety closure
+
+This additive closure starts exactly from accepted remote HEAD `6d8f0d17d0758d7118e7895f300cd0bdca23fa84` and produces code checkpoint `16421f532721dcd4843717658a21f709ffcd5b81`. The final handoff-inclusive remote HEAD is the additive documentation commit containing this section; because a commit cannot contain its own SHA, its immutable SHA and exact remote CI/Vercel records are reported in the completion response.
+
+All seven reported P1 findings are closed in repository code:
+
+- Persisted OMR Source/project validation requires complete review, runtime readiness, and durable warning acknowledgement; generation revalidates the whole project before entering the unchanged WAG path.
+- Parser-time immutable MusicXML identities survive Quick Review insertion, deletion, reordering, multi-part, and multi-staff selection. Every original identity is explicitly mapped-one, mapped-many, or deleted through Source revisions, and evidence-target swaps fail closed.
+- `replace-event` cannot move onset/duration; auto-repair acceptance compares the current remapped projection with its stored original; real insert/delete-barline transforms the complete structural graph and history.
+- Every durable job stores its creation-time `providerBindingId` and adapter contract version. Replay and every existing-job operation resolve that binding before any current-provider preflight; new jobs alone use the active provider.
+- Reconciliation and bounded retry states retain session/IP/credit exposure. Transient provider or object-store failures persist retry metadata and backoff; explicit Vendor failure and contract/integrity failure remain terminal.
+- Capability, consent, and snapshot semantics bind the actual canonical `image/png` Vendor transfer, not the user's raw JPEG/PNG encoding.
+
+All five reported P2 findings are also closed: per-item evidence granularity is bounded by the bundle declaration; duplicate page admission is transactionally fenced; provider XML/evidence/frame/transform/mapping/string payloads have pre-canonicalization hard limits; page authorization precedes body reading; and legitimate runtime-warning acknowledgement persists and is integrity-validated.
+
+Fresh verification at the code checkpoint used npm 11.6.2 against the committed lockfile: `npm ci` installed 451 packages and audited 452 with zero vulnerabilities; typecheck, ESLint, 63 Vitest files/599 tests, Next.js production build, and `git diff --check` all passed. Separate named execution passed the Segment B 101-complete-execution and OMR 101-permutation determinism campaigns. The six frozen files retain their exact SHA-256 values; frozen grammar/diagnostic authority paths have zero diff; the 99-code registry, WAG v1.0.1 selector/lifecycle/Solver/marginal/pair/Validator path, and accepted musical selection remain unchanged. The only Product Core production change is a common project-integrity precondition before generation.
+
+In-repository verdict: `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`. Overall campaign classification remains `HARMONYMAKER_V0_COMPLETE_WITH_EXTERNAL_VERIFICATION_REMAINING`: no real provider was selected, and no rights-safe Dev/sealed corpus, live PostgreSQL/S3 service, or physical iPhone/Kakao result is claimed. Step 11, the separate Ultra audit, and real-provider integration were not begun.
