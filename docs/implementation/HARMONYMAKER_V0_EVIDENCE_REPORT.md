@@ -275,3 +275,34 @@ The non-idempotent post-Vendor/pre-persist crash test creates the Vendor side ef
 Definitive rejection records `definitive-no-job`, releases credit, completes durable create idempotency, performs no Vendor delete at expiry, and permits local tombstone. PostgreSQL store evidence verifies uncertain cleanup claims retain reserved credit while definitive-no-job claims release it. Migration evidence verifies monotonic inventory 1–8 and the four-state CHECK/backfill authority.
 
 All required repository gates passed after exact `npm ci`: typecheck, lint, 64/614 tests, build, and diff check. Separate authority/determinism execution passed 3 files/12 tests including both 101-run campaigns and all 99 diagnostics. Six frozen byte hashes are exact and protected-path diff is zero. `KNOWN_NEW_P1_CREATE_OUTCOME=CLOSED`, `ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`; unresolved counts are all zero.
+
+## Replay-certainty and P1-05 authority evidence
+
+Scope base is exact remote HEAD `bd109fe552d193bfd9236c0b1403c544bbcafa0d`; implementation-and-test checkpoint is `a299ebb39d36d51396d0b7afcaa14b2e00d431ac`. No schema or migration changed.
+
+The historical-certainty production test commits a real deterministic reference-adapter side effect, loses the first response, advances directly to expiry cleanup, and returns a definitive rejection from the ordinary same-key replay. The persisted job remains `outcome-uncertain`, `delete-pending`, Vendor-delete failed, local-delete complete, credit reserved, and explicitly `OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN`. Provider binding, adapter contract, and create key remain exact; no Vendor delete is reported; the cleanup lease clears; and the due retry is claimed again. A separate create-endpoint resume test proves the same rejection cannot become definitive-no-job. The original first-attempt rejection fixture still records definitive-no-job, releases credit, and tombstones without a Vendor delete.
+
+Memory service tests place uncertain jobs into `delete-pending` and prove both same-session and same-IP creates fail `OMR_QUOTA_EXCEEDED`. PostgreSQL claim tests execute the store decision over semantic exposure fixtures and the shared lifecycle/cleanup-state parameters. The v0 rule counts ordinary active work, every uncertain create, and confirmed effects during unresolved expiry/delete cleanup; completed retained data is excluded until operational cleanup begins.
+
+Two charged-job campaigns reach `creditState=settled`, then perform user deletion or same-day expiry cleanup. Final deleted rows remain settled and a second session's create at ceiling one fails `OMR_GLOBAL_CREDIT_CEILING_EXCEEDED`. PostgreSQL cleanup, handle-delete, and daily-claim fixtures prove equivalent settled behavior. Existing uncertain cross-day and definitive-no-job release tests prevent overcorrection.
+
+Memory and PostgreSQL stale-completion tests reject deleted/definitive, wrong lifecycle, different/newer outcome, and stale cleanup-lease completion. Pre-call marking and first-attempt failure also require the current create lease. Pending idempotency cannot resume once cleanup made the handle inactive. The cleanup audit found and fixed one related defect: an `expired + handleActive=false` row left by a crashed worker was not formerly reclaimable. Both selectors now include lease-expired `expired` rows; the regression proves no early claim and successful post-expiry re-claim.
+
+Verification evidence:
+
+```text
+npm ci                            PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck                 PASS
+npm run lint                      PASS
+npm test                          PASS — 64 files, 622 tests
+npm run build                     PASS
+git diff --check                  PASS
+focused Memory/PostgreSQL         PASS — 2 files, 50 tests
+Segment B determinism             PASS — 101 complete executions
+OMR determinism                   PASS — 101 canonical permutations
+frozen WAG / 99-code authority    PASS — six exact SHA-256 values, 7 authority tests
+protected path diff               PASS — zero changed frozen/musical paths
+migration                         NONE REQUIRED
+```
+
+`CREATE_REPLAY_REJECTION_P1=CLOSED`, `P1_05_VENDOR_EXPOSURE_AND_CREDIT=CLOSED`, and the cleanup-lease audit finding is fixed. `ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`; all unresolved counts are zero. Repository acceptance and Ultra-audit readiness are restored, while external provider/corpus/live-service/device evidence remains unclaimed.

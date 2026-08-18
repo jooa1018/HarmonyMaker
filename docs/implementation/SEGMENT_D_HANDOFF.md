@@ -409,3 +409,54 @@ frozen/protected authority             PASS — six hashes, 99 codes, 0 changed 
 ```
 
 The known new create-outcome P1 is closed with no additional P0/P1/P2. Final counts are zero and repository acceptance is restored. No Ultra, Step 11, real provider, corpus calibration, live PostgreSQL/S3, or physical-device work was begun.
+
+## Final replay-certainty plus quota/credit closure
+
+- Exact starting remote HEAD: `bd109fe552d193bfd9236c0b1403c544bbcafa0d`
+- Prior code checkpoint: `e81c6b16d317ce00e37e3629aa57bd7461550bfb`
+- New code checkpoint: `a299ebb39d36d51396d0b7afcaa14b2e00d431ac`
+- Migration: none required
+- Final handoff-inclusive HEAD and exact terminal Actions/Vercel identifiers: reported in the completion response for the additive documentation commit containing this section.
+
+Historical create uncertainty is monotonic without explicit historical authority. A first-attempt definitive rejection remains a no-job authority; an ordinary rejection after response loss or persistence uncertainty does not. The replay path keeps uncertainty, reserved exposure, original provider authority, retry, explicit failure, truthful non-deletion, independent local cleanup, and a cleared lease. The obsolete general no-job completion mutation was removed.
+
+`hasActiveOmrVendorExposure()` defines Memory authority and supplies the PostgreSQL lifecycle-state parameters. It counts normal active states, any uncertain create, and confirmed effects during unresolved `expired`/`delete-pending` cleanup. Settled credit never becomes released merely because data is deleted; only an unused/no-charge reservation can release under the current contract. Daily accounting remains created-day based for settled use and cross-day conservative for unresolved reservations.
+
+Create begin/failure/completion now require expected outcome, lifecycle, create lease, cleanup lease where applicable, and absent superseding authority. Cleanup-reconciled confirmed authority is read back from the persisted envelope before deletion. Inactive cleanup rows cannot resume through create. Lease-expired `expired` rows are reclaimable after a worker crash.
+
+```text
+uncertain replay success                  PASS
+uncertain replay definitive rejection     PASS — remains uncertain
+false definitive-no-job/deleted prevention PASS
+initial definitive no-job                 PASS — reservation released
+historical A unavailable/restored         PASS
+active B A-operation count                PASS — 0
+uncertain reconciliation-required quota   PASS
+uncertain delete-pending session quota    PASS
+uncertain delete-pending IP quota          PASS
+Memory/PostgreSQL exposure parity          PASS
+uncertain reserved through cleanup/day    PASS
+completed result settled                   PASS
+settled after user delete                  PASS
+settled after expiry cleanup               PASS
+same-day capacity bypass prevention        PASS
+Memory/PostgreSQL credit parity            PASS
+stale create completion fencing            PASS
+cleanup crash/lease recovery               PASS
+Vendor/local independent cleanup           PASS
+P1-04 unavailable-binding delete           PASS
+P1-06 failure taxonomy                     PASS
+
+npm ci                                     PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck                          PASS
+npm run lint                               PASS
+npm test                                   PASS — 64 files, 622 tests
+npm run build                              PASS
+git diff --check                           PASS
+focused campaign                           PASS — 2 files, 50 tests
+Segment B 101-run                          PASS
+OMR 101-run                                PASS
+frozen/protected authority                  PASS — six hashes, 99 codes, 0 changed paths
+```
+
+Final repository verdict: `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`. Real-provider historical reconciliation/refund contracts, rights-safe corpus calibration, live PostgreSQL/S3, and physical-device checks remain external and incomplete. Ultra and Step 11 were not started.

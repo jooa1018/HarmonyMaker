@@ -216,3 +216,18 @@ For a future separately authorized real-provider/live PostgreSQL/S3 exercise:
 5. Restart between every transition and verify PostgreSQL `vendor_create_outcome_state`, encrypted envelope, create idempotency row, provider binding/version, cleanup lease, retry timestamp, and credit state remain mutually consistent. Verify unresolved reserved exposure remains in the global ceiling after the UTC day changes.
 
 These external checks remain unauthorized and incomplete here. Keep `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`. Ultra and Step 11 were not started.
+
+## Replay-certainty, exposure, and settled-credit follow-up
+
+Use code checkpoint `a299ebb39d36d51396d0b7afcaa14b2e00d431ac` or its verified additive handoff descendant. Repository tests close the ordinary-replay, concurrency, credit, stale-completion, and cleanup-lease defects without claiming a provider-specific historical reconciliation or refund contract.
+
+For a separately authorized provider/live-service exercise:
+
+1. Commit an idempotent Provider A create, lose its response, then make an ordinary same-key replay return a current definitive rejection. Require durable `outcome-uncertain`, reserved credit, retained A binding/version/key, no false Vendor deletion, no active-B call, independent local cleanup, released cleanup lease, and a due future retry.
+2. Exercise both same-session and same-IP quotas while those uncertain jobs are `delete-pending`. The live PostgreSQL decision must match the Memory semantic predicate and deny the new create at the configured limit.
+3. Complete and settle one charged job, delete it, and attempt another create in the same UTC accounting day at ceiling one. Require the original row to remain settled and the new request to fail the global credit ceiling. Repeat with expiry cleanup.
+4. Supply an explicit provider refund signal only under a separately reviewed contract. Without that authority, Vendor deletion must not convert settled cost to released. An initial authoritative no-job rejection must still release its unused reservation.
+5. Pause stale create workers before pre-call marking, after the Vendor response, and before durable completion. Advance create or cleanup leases and supersede the job. Require every stale write to fail its lifecycle/outcome/lease fence and never replace confirmed, definitive-no-job, cleanup-owned, or deleted authority.
+6. Crash a cleanup worker after claim. Before lease expiry, require no second claim; after expiry, require the `expired` row to be reclaimed and completed exactly once by the current lease.
+
+These live checks remain incomplete because no real provider contract, credentials, live PostgreSQL/S3 deployment, or authoritative refund API was supplied. The repository result does not authorize Ultra, Step 11, provider selection, corpus calibration, or physical-device verification.
