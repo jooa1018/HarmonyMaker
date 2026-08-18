@@ -51,6 +51,7 @@ export type ImportedLeadEventDraft =
   | {
       readonly kind: "note";
       readonly candidateKey: string;
+      readonly musicXmlEventOrdinal?: number;
       readonly onset: Fraction;
       readonly duration: Fraction;
       readonly pitch: SpelledPitch;
@@ -61,6 +62,7 @@ export type ImportedLeadEventDraft =
   | {
       readonly kind: "rest";
       readonly candidateKey: string;
+      readonly musicXmlEventOrdinal?: number;
       readonly onset: Fraction;
       readonly duration: Fraction;
     };
@@ -74,12 +76,14 @@ export interface ImportedChordDraft {
   readonly parseResult: ChordParseResult;
   readonly source: "musicxml" | "manual";
   readonly confirmation: "confirmed" | "unconfirmed";
+  readonly musicXmlEventOrdinal?: number;
 }
 
 export interface ImportedTextDraft {
   readonly onset: Fraction;
   readonly kind: "section-label" | "rehearsal-mark" | "other";
   readonly text: string;
+  readonly musicXmlEventOrdinal?: number;
 }
 
 export interface ImportedMeasureDraft {
@@ -152,6 +156,27 @@ export interface PerformerReviewSlot {
   readonly profile?: PerformerProfile;
 }
 
+export interface MusicXmlImportIdentityInventory {
+  readonly leadEvents: readonly {
+    readonly candidateKey: string;
+    readonly partOrdinal: number;
+    readonly staffNumber: number;
+    readonly voiceKey: string;
+    readonly measureOrdinal: number;
+    readonly eventOrdinal: number;
+  }[];
+  readonly chordEvents: readonly {
+    readonly partOrdinal: number;
+    readonly measureOrdinal: number;
+    readonly eventOrdinal: number;
+  }[];
+  readonly textEvents: readonly {
+    readonly partOrdinal: number;
+    readonly measureOrdinal: number;
+    readonly eventOrdinal: number;
+  }[];
+}
+
 export interface MusicXmlImportDraft {
   readonly importerVersion: typeof MUSICXML_IMPORTER_VERSION;
   readonly documentId: string;
@@ -162,6 +187,8 @@ export interface MusicXmlImportDraft {
   readonly composer?: string;
   readonly parts: readonly ImportedPartDraft[];
   readonly leadCandidates: readonly LeadVoiceCandidate[];
+  /** Immutable parser-time identities; Quick Review commands must preserve this inventory. */
+  readonly musicXmlIdentityInventory?: MusicXmlImportIdentityInventory;
   readonly selectedLeadStaffKey?: string;
   readonly sections: readonly ImportedSectionDraft[];
   readonly sectionOccurrences: readonly ImportedSectionOccurrenceReview[];

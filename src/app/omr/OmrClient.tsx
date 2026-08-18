@@ -31,6 +31,7 @@ const statusLabels: Readonly<Record<OmrPublicStatus["kind"], string>> = {
   created: "작업 생성됨", uploading: "페이지 업로드 중", queued: "대기 중", processing: "인식 중",
   "needs-input": "추가 입력 필요", completed: "인식 완료", failed: "인식 실패", cancelled: "취소됨",
   "cancel-pending": "제공자 취소 확인 중", "cancel-failed": "제공자 취소 실패", "reconciliation-required": "제공자 상태 조정 필요",
+  "retry-pending": "일시적 오류 재시도 대기",
 };
 
 function inferredMime(file: File): string {

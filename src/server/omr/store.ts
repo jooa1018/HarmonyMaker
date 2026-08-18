@@ -12,6 +12,7 @@ import type { VendorEvidenceBundle } from "../../domain/omr/foundation";
 
 export type OmrLifecycleState =
   | "created" | "uploading" | "queued" | "processing" | "needs-input"
+  | "sync-retry-pending" | "capture-retry-pending"
   | "completed" | "failed" | "cancel-pending" | "cancel-failed" | "cancelled"
   | "reconciliation-required" | "delete-pending" | "deleted" | "expired";
 
@@ -20,9 +21,11 @@ export type OmrOperationKind = "start" | "submit-input" | "cancel";
 const LEGAL_OMR_TRANSITIONS: Readonly<Record<OmrLifecycleState, readonly OmrLifecycleState[]>> = Object.freeze({
   created: ["uploading", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
   uploading: ["queued", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
-  queued: ["processing", "needs-input", "completed", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
-  processing: ["needs-input", "completed", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
-  "needs-input": ["processing", "completed", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
+  queued: ["processing", "needs-input", "completed", "failed", "sync-retry-pending", "capture-retry-pending", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
+  processing: ["needs-input", "completed", "failed", "sync-retry-pending", "capture-retry-pending", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
+  "needs-input": ["processing", "completed", "failed", "sync-retry-pending", "capture-retry-pending", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
+  "sync-retry-pending": ["queued", "processing", "needs-input", "completed", "capture-retry-pending", "failed", "cancelled", "reconciliation-required", "cancel-pending", "delete-pending", "expired"],
+  "capture-retry-pending": ["completed", "failed", "reconciliation-required", "cancel-pending", "delete-pending", "expired"],
   completed: ["delete-pending", "expired"],
   failed: ["delete-pending", "expired"],
   "cancel-pending": ["cancelled", "cancel-failed", "reconciliation-required", "delete-pending", "expired"],
@@ -71,6 +74,8 @@ export interface DurableOmrJobRecord {
   readonly providerConsentRecordedAt: string;
   readonly capabilities: OmrVendorCapabilities;
   readonly capabilitySnapshotDigest: SemanticDigest;
+  readonly providerBindingId: string;
+  readonly adapterContractVersion: string;
   readonly vendorCreateIdempotencyKey: string;
   readonly vendorCreateLeaseExpiresAt: string;
   readonly vendorJobIdEnvelope?: AeadEnvelopeV1;
@@ -98,7 +103,11 @@ export interface DurableOmrJobRecord {
   readonly resultCaptureLeaseExpiresAt?: string;
   readonly cleanupLeaseToken?: string;
   readonly cleanupLeaseExpiresAt?: string;
-  readonly reconciliationKind?: "create" | "page-upload" | OmrOperationKind;
+  readonly reconciliationKind?: "create" | "page-upload" | "sync" | "capture" | OmrOperationKind;
+  readonly retryKind?: "sync" | "capture";
+  readonly retryAttempt?: number;
+  readonly retryNextAttemptAt?: string;
+  readonly retryLastFailureCode?: string;
   readonly publicFailureCode?: string;
   readonly publicFailureMessageKo?: string;
   readonly handleActive: boolean;
@@ -115,10 +124,12 @@ export type OmrCreateClaim =
   | { readonly status: "rejected"; readonly code: string; readonly messageKo: string }
   | { readonly status: "pending" | "conflict" | "quota-denied" | "credit-denied" };
 
+export type OmrCreateInspection = OmrCreateClaim | { readonly status: "missing" };
+
 export type OmrPageClaim =
   | { readonly status: "claimed"; readonly page: OmrPageRecord }
   | { readonly status: "replay" }
-  | { readonly status: "pending" | "conflict" | "retry-exhausted" | "reconciliation-required" };
+  | { readonly status: "pending" | "conflict" | "retry-exhausted" | "reconciliation-required" | "duplicate-confirmation-required" };
 
 export type OmrOperationClaim =
   | { readonly status: "claimed" | "resume"; readonly job: DurableOmrJobRecord }
@@ -129,6 +140,7 @@ export type OmrResultCaptureClaim =
   | { readonly status: "pending" | "invalid" | "replay" };
 
 export interface OmrStore {
+  inspectCreate(input: { readonly ownerSessionId: PrivateRowId; readonly idempotencyKeyHash: string; readonly requestDigest: SemanticDigest; readonly vendorCreateLeaseExpiresAt: string; readonly now: string }): Promise<OmrCreateInspection>;
   claimCreate(input: {
     readonly ownerSessionId: PrivateRowId;
     readonly ipOwnerHash: string;
@@ -178,6 +190,20 @@ export class MemoryOmrStore implements OmrStore {
   private clone(record: DurableOmrJobRecord): DurableOmrJobRecord { return structuredClone(record); }
   private id(): PrivateRowId { this.sequence += 1; return String(this.sequence) as PrivateRowId; }
 
+  async inspectCreate(input: Parameters<OmrStore["inspectCreate"]>[0]): Promise<OmrCreateInspection> {
+    return this.atomic(() => {
+      const prior = this.idempotency.get(`${input.ownerSessionId}:${input.idempotencyKeyHash}`);
+      if (!prior) return { status: "missing" };
+      if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
+      const job = this.jobs.get(prior.jobId)!;
+      if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
+      if (job.vendorCreateLeaseExpiresAt > input.now) return { status: "pending" };
+      const resumed = { ...job, vendorCreateLeaseExpiresAt: input.vendorCreateLeaseExpiresAt, updatedAt: input.now };
+      this.jobs.set(job.id, resumed);
+      return { status: "resume", job: this.clone(resumed) };
+    });
+  }
+
   async claimCreate(input: Parameters<OmrStore["claimCreate"]>[0]): Promise<OmrCreateClaim> {
     return this.atomic(() => {
       const idempotencyKey = `${input.ownerSessionId}:${input.idempotencyKeyHash}`;
@@ -193,7 +219,7 @@ export class MemoryOmrStore implements OmrStore {
         }
         return { status: "pending" };
       }
-      const activeStates = new Set<OmrLifecycleState>(["created", "uploading", "queued", "processing", "needs-input", "cancel-pending", "cancel-failed"]);
+      const activeStates = new Set<OmrLifecycleState>(["created", "uploading", "queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending", "cancel-pending", "cancel-failed", "reconciliation-required"]);
       const active = [...this.jobs.values()].filter((job) => activeStates.has(job.state));
       if (active.filter((job) => job.ownerSessionId === input.ownerSessionId).length >= input.quota.maxConcurrentJobsPerSession
         || active.filter((job) => job.ipOwnerHash === input.ipOwnerHash).length >= input.quota.maxConcurrentJobsPerIp) return { status: "quota-denied" };
@@ -242,6 +268,8 @@ export class MemoryOmrStore implements OmrStore {
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
       if (!["created", "uploading"].includes(job.state)) return { status: "conflict" };
       const prior = job.pages.find((candidate) => candidate.pageIndex === page.pageIndex);
+      const duplicate = job.pages.find((candidate) => candidate.pageIndex !== page.pageIndex && candidate.pageDigest === page.pageDigest);
+      if (duplicate && page.duplicateConfirmed !== true) return { status: "duplicate-confirmation-required" };
       if (prior) {
         if (prior.pageDigest !== page.pageDigest || prior.idempotencyKeyHash !== page.idempotencyKeyHash) return { status: "conflict" };
         if (prior.uploadState === "uploaded") return { status: "replay" };
@@ -323,7 +351,7 @@ export class MemoryOmrStore implements OmrStore {
     return this.atomic(() => {
       const job = this.jobs.get(input.jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
       if (job.state === "completed") return { status: "replay" };
-      if (!["queued", "processing", "needs-input"].includes(job.state)) return { status: "invalid" };
+      if (!["queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending"].includes(job.state)) return { status: "invalid" };
       if (job.resultCaptureLeaseToken && (job.resultCaptureLeaseExpiresAt ?? "") > input.now) return { status: "pending" };
       const updated = { ...job, resultCaptureLeaseToken: input.leaseToken, resultCaptureLeaseExpiresAt: input.leaseExpiresAt, updatedAt: input.now };
       this.jobs.set(job.id, updated);
@@ -334,7 +362,7 @@ export class MemoryOmrStore implements OmrStore {
   async completeResultCapture(input: Parameters<OmrStore["completeResultCapture"]>[0]): Promise<boolean> {
     return this.atomic(() => {
       const job = this.jobs.get(input.jobId);
-      if (!job || job.resultCaptureLeaseToken !== input.leaseToken || !["queued", "processing", "needs-input"].includes(job.state)) return false;
+      if (!job || job.resultCaptureLeaseToken !== input.leaseToken || !["queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending"].includes(job.state)) return false;
       if (input.update.state !== undefined && !isLegalOmrTransition(job.state, input.update.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
       this.jobs.set(job.id, { ...job, ...structuredClone(input.update), id: job.id, ownerSessionId: job.ownerSessionId, resultCaptureLeaseToken: undefined, resultCaptureLeaseExpiresAt: undefined, updatedAt: input.now });
       return true;
@@ -395,6 +423,7 @@ export function publicStatusFromRecord(job: DurableOmrJobRecord): OmrPublicStatu
   if (job.state === "cancel-pending") return { kind: "cancel-pending", messageKo: "제공자 취소 확인을 기다리고 있습니다." };
   if (job.state === "cancel-failed") return { kind: "cancel-failed", code: job.publicFailureCode ?? "OMR_VENDOR_CANCEL_FAILED", messageKo: job.publicFailureMessageKo ?? "제공자 취소 요청이 완료되지 않았습니다." };
   if (job.state === "reconciliation-required") return { kind: "reconciliation-required", code: "OMR_JOB_RECONCILIATION_REQUIRED", messageKo: job.publicFailureMessageKo ?? "제공자 작업 상태를 확인해야 합니다." };
+  if ((job.state === "sync-retry-pending" || job.state === "capture-retry-pending") && job.retryNextAttemptAt && job.retryAttempt) return { kind: "retry-pending", operation: job.state === "sync-retry-pending" ? "sync" : "capture", attempt: job.retryAttempt, nextAttemptAt: job.retryNextAttemptAt, messageKo: "일시적 오류로 안전하게 재시도할 예정입니다." };
   if (job.state === "failed" || job.state === "expired" || job.state === "delete-pending" || job.state === "deleted") return { kind: "failed", code: job.publicFailureCode ?? "OMR_JOB_UNAVAILABLE", messageKo: job.publicFailureMessageKo ?? "OMR 작업을 사용할 수 없습니다." };
   if (job.state === "cancelled") return { kind: "cancelled" };
   if (job.state === "queued") return { kind: "queued" };

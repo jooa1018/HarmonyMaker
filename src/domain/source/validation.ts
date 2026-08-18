@@ -14,6 +14,7 @@ import {
   validateOmrEvidenceArchive, validateOmrReviewRecord, validateSourceEvidenceIndex,
 } from "../omr/foundation";
 import { validatePersistedOmrContext } from "../omr/persisted-context";
+import { validateMusicXmlSourceTargetMap } from "../omr/import-identity";
 import {
   hasExactKeys, hasUniqueStrings, isCanonicalFraction, isCanonicalId,
   isCanonicalKeySignature, isCanonicalSpelledPitch, isCanonicalTimeSignature,
@@ -56,7 +57,7 @@ function isRightsMetadata(value: unknown): value is RightsMetadata {
 
 function isImportInfo(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["sourceKind", "importerVersion"], ["originalFileName", "importedAt", "rawDigest", "providerMetadata", "omrReviewRecord", "omrEvidenceArchive"])
+    || !hasExactKeys(value, ["sourceKind", "importerVersion"], ["originalFileName", "importedAt", "rawDigest", "providerMetadata", "omrReviewRecord", "omrEvidenceArchive", "musicXmlSourceTargetMap", "omrRuntimeWarningAcknowledgements"])
     || !["manual", "musicxml", "omr"].includes(String(value.sourceKind))
     || typeof value.importerVersion !== "string" || value.importerVersion.length === 0
     || (value.originalFileName !== undefined && typeof value.originalFileName !== "string")
@@ -65,7 +66,15 @@ function isImportInfo(value: unknown): boolean {
     || (value.providerMetadata !== undefined && (!isPlainRecord(value.providerMetadata)
       || !Object.values(value.providerMetadata).every((item) => typeof item === "string")))
     || (value.omrReviewRecord !== undefined && validateOmrReviewRecord(value.omrReviewRecord).length > 0)
-    || (value.omrEvidenceArchive !== undefined && !validateOmrEvidenceArchive(value.omrEvidenceArchive))) return false;
+    || (value.omrEvidenceArchive !== undefined && !validateOmrEvidenceArchive(value.omrEvidenceArchive))
+    || (value.musicXmlSourceTargetMap !== undefined && !isPlainRecord(value.musicXmlSourceTargetMap))
+    || (value.omrRuntimeWarningAcknowledgements !== undefined && (!Array.isArray(value.omrRuntimeWarningAcknowledgements)
+      || !value.omrRuntimeWarningAcknowledgements.every((item) => isPlainRecord(item)
+        && hasExactKeys(item, ["diagnosticId", "sourceRevision", "acknowledgedAt"])
+        && isCanonicalId(item.diagnosticId)
+        && isSourceRevisionRef(item.sourceRevision)
+        && typeof item.acknowledgedAt === "string"
+        && Number.isFinite(Date.parse(item.acknowledgedAt as string)))))) return false;
   return true;
 }
 
@@ -404,6 +413,7 @@ export async function validateSongSourceDocumentIntegrity(
   expectation: string | Pick<AlgorithmExecutionRegistry, "versions">,
 ): Promise<boolean> {
   if (!isSongSourceDocument(value)) return false;
+  if (!await validateMusicXmlSourceTargetMap(value)) return false;
   if ((await validatePersistedOmrContext(value)).length > 0) return false;
   const expectedExpanderVersion = typeof expectation === "string"
     ? expectation

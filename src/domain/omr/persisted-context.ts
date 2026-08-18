@@ -4,9 +4,11 @@ import { revisionRefsEqual } from "../source/revision";
 import {
   computeProviderBundleDigest, mapVendorEvidenceToSource,
   validateOmrEvidenceArchive, validateOmrReviewRecord, validateSourceEvidenceIndex,
+  validateOmrReviewCompletion,
   type EvidenceGranularity, type VendorEvidenceBundle,
 } from "./foundation";
-import { validateOmrCorrectionHistory, validateReviewEvidenceReferences } from "./review";
+import { validateOmrCorrectionHistory, validateReviewEvidenceReferences, validateReviewEvidenceTargetBindings } from "./review";
+import { validateRuntimeOmrReadiness, validateRuntimeOmrWarningAcknowledgements } from "./readiness";
 
 const GRANULARITY_RANK: Readonly<Record<EvidenceGranularity, number>> = {
   none: 0, page: 1, staff: 2, measure: 3, symbol: 4,
@@ -74,7 +76,15 @@ export async function validatePersistedOmrContext(source: SongSourceDocument): P
     errors.push("OMR_PERSISTED_CONTEXT_INVALID:duplicate-evidence-id");
   }
   errors.push(...validateReviewEvidenceReferences(reviewRecord, index, archive));
+  errors.push(...validateReviewEvidenceTargetBindings(source, reviewRecord, index, archive));
   errors.push(...await validateOmrCorrectionHistory(source, reviewRecord));
+  const completionErrors = validateOmrReviewCompletion(reviewRecord);
+  if (completionErrors.length > 0) errors.push("OMR_PERSISTED_CONTEXT_INVALID:review-incomplete");
+  if (!await validateRuntimeOmrWarningAcknowledgements(source)) {
+    errors.push("OMR_PERSISTED_CONTEXT_INVALID:warning-acknowledgement");
+  }
+  const readiness = await validateRuntimeOmrReadiness(source);
+  if (readiness.readiness !== "validator-ready") errors.push("OMR_PERSISTED_CONTEXT_INVALID:runtime-not-ready");
 
   if (evidenceGranularity !== undefined && GRANULARITY_RANK[evidenceGranularity] !== undefined) {
     const evidence = [...index.evidence, ...archive.unmappedEvidence];

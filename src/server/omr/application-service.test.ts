@@ -4,14 +4,17 @@ import sharp from "sharp";
 vi.mock("server-only", () => ({}));
 
 import { binaryDigest, semanticDigest, type BinaryDigest } from "../../domain/digest/canonical";
-import { OmrVendorCallError } from "../../domain/omr/contracts";
+import { OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError } from "../../domain/omr/contracts";
 import { coordinateMicrounit } from "../../domain/omr/foundation";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
 import { basisPoints } from "../../domain/rates";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
-import { DurableOmrApplicationService, omrQuotaConfig } from "./application-service";
+import {
+  PROVIDER_CAPTURE_LIMITS, DurableOmrApplicationService, assertBoundedProviderValue,
+  omrQuotaConfig, validateEvidenceCaptureLimits, validateNormalizationMappingCaptureLimits,
+} from "./application-service";
 import { decodeOmrImagePage } from "./page-decoder";
 import { ReferenceOmrVendorAdapter, type ReferenceOmrFixture } from "./reference-adapter";
 import { MemoryOmrStore, type OmrStore } from "./store";
@@ -192,7 +195,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(retry.adapter.uploadPage).toHaveBeenCalledTimes(3);
   });
 
-  it("detects canonical duplicate JPEG pages despite distinct raw upload digests and uploads after acknowledgment", async () => {
+  it("checks PNG transfer capability, canonicalizes JPEG input, and detects canonical duplicates", async () => {
     const jpeg = Uint8Array.from(await sharp(referenceOmrPageBytes()).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer());
     if (jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) throw new Error("fixture JPEG lacks EOI marker");
     const comment = new TextEncoder().encode("HarmonyMaker canonical duplicate fixture");
@@ -207,7 +210,12 @@ describe("durable provider-neutral OMR application lifecycle", () => {
 
     const base = await harness();
     const fixture = { ...base.fixture, orderedPageDigests: [decoded0.pageDigest, decoded1.pageDigest] };
-    const adapter = new ReferenceOmrVendorAdapter([fixture], { supportedMimeTypes: ["image/jpeg"] });
+    const jpegOnlyAdapter = new ReferenceOmrVendorAdapter([fixture], { supportedMimeTypes: ["image/jpeg"] });
+    const jpegOnlyService = new DurableOmrApplicationService({ ...base.dependencies, adapter: jpegOnlyAdapter });
+    await expect(jpegOnlyService.getProviderPreflight()).rejects.toThrow("OMR_PROVIDER_CAPABILITY_MISSING");
+
+    const adapter = new ReferenceOmrVendorAdapter([fixture], { supportedMimeTypes: ["image/png"] });
+    const uploadSpy = vi.spyOn(adapter, "uploadPage");
     const service = new DurableOmrApplicationService({
       ...base.dependencies,
       adapter,
@@ -227,6 +235,27 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(service.uploadPage(handle, second)).rejects.toThrow("OMR_DUPLICATE_PAGE_CONFIRMATION_REQUIRED");
     await expect(service.uploadPage(handle, { ...second, duplicateConfirmed: true })).resolves.toBeUndefined();
     expect(base.store.listJobs()[0].pages.map((page) => page.pageDigest)).toEqual([decoded0.pageDigest, decoded1.pageDigest]);
+    expect(uploadSpy.mock.calls.map((call) => ({ mimeType: call[1].mimeType, blobType: call[1].bytes.type }))).toEqual([
+      { mimeType: "image/png", blobType: "image/png" },
+      { mimeType: "image/png", blobType: "image/png" },
+    ]);
+  });
+
+  it("transactionally fences concurrent canonical duplicate uploads on different page indices", async () => {
+    const h = await harness();
+    const fixture = { ...h.fixture, orderedPageDigests: [h.pageDigest, h.pageDigest] };
+    const adapter = new ReferenceOmrVendorAdapter([fixture]);
+    const service = new DurableOmrApplicationService({ ...h.dependencies, adapter });
+    const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 2, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "concurrent-duplicate" });
+    const attempts = await Promise.allSettled([0, 1].map((pageIndex) => service.uploadPage(handle, {
+      pageIndex, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: `concurrent-duplicate-${pageIndex}`,
+      bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer], { type: "image/png" }),
+    })));
+    expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = attempts.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: "OMR_DUPLICATE_PAGE_CONFIRMATION_REQUIRED" }) });
+    expect(adapter.callCounts.upload).toBe(1);
+    expect(h.store.listJobs()[0].pages).toHaveLength(1);
   });
 
   it("recovers post-Vendor page persistence failure through the stable page idempotency key", async () => {
@@ -303,6 +332,126 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     vi.spyOn(h.adapter, "getCapabilities").mockResolvedValue({ ...consented.capabilities, vendorDisplayName: "Changed provider disclosure" });
     await expect(h.service.createJob({ sessionId: "session:1", pageCount: 1, pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" }], sourceKind: "camera-photo", rights, providerTransferConsent: true, consentCapabilitySnapshotDigest: consented.capabilitySnapshotDigest, idempotencyKey: "stale-consent-key" })).rejects.toThrow("OMR_PROVIDER_CONSENT_STALE");
     expect(h.adapter.callCounts.create).toBe(0);
+  });
+
+  it("binds old jobs and response-loss replay to Provider A across an active Provider B rotation", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const fixtureFor = (vendorId: string): ReferenceOmrFixture => ({
+      ...h.fixture,
+      evidence: { ...h.fixture.evidence, evidence: h.fixture.evidence.evidence.map((item) => ({ ...item, vendorId })) },
+    });
+    const adapterA = new ReferenceOmrVendorAdapter([fixtureFor("provider-a")], { vendorId: "provider-a", vendorDisplayName: "Provider A" });
+    const adapterB = new ReferenceOmrVendorAdapter([fixtureFor("provider-b")], { vendorId: "provider-b", vendorDisplayName: "Provider B" });
+    const registry = new Map([
+      ["binding:a", adapterA],
+      ["binding:b", adapterB],
+    ]);
+    const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION ? registry.get(bindingId) : undefined;
+    const serviceA = new DurableOmrApplicationService({ ...h.dependencies, adapter: adapterA, providerBindingId: "binding:a", adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter });
+    const preflightA = await serviceA.getProviderPreflight();
+    const exactA = {
+      sessionId: "session:1", pageCount: 1, pages: [{ pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" as const }],
+      sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const,
+      consentCapabilitySnapshotDigest: preflightA.capabilitySnapshotDigest, idempotencyKey: "provider-a-job",
+    };
+    const handleA = await serviceA.createJob(exactA);
+    const providerBPreflight = vi.spyOn(adapterB, "getCapabilities");
+    const rotated = new DurableOmrApplicationService({ ...h.dependencies, adapter: adapterB, providerBindingId: "binding:b", adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter });
+    expect(await rotated.createJob(exactA)).toBe(handleA);
+    expect(providerBPreflight).not.toHaveBeenCalled();
+    await rotated.uploadPage(handleA, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "provider-a-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await rotated.start(handleA);
+    expect(await rotated.synchronizeStatus(handleA)).toEqual({ kind: "completed" });
+    expect((await rotated.exportResult(handleA)).vendorId).toBe("provider-a");
+    expect(adapterA.callCounts).toMatchObject({ upload: 1, start: 1, status: 1, export: 1, evidence: 1, mapping: 1, retention: 1 });
+    expect(adapterB.callCounts).toMatchObject({ create: 0, upload: 0, start: 0, status: 0, export: 0 });
+    await rotated.delete(handleA);
+    expect(adapterA.callCounts.delete).toBe(1);
+
+    const preflightB = await rotated.getProviderPreflight();
+    const handleB = await rotated.createJob({ ...exactA, consentCapabilitySnapshotDigest: preflightB.capabilitySnapshotDigest, idempotencyKey: "provider-b-job" });
+    expect(handleB).not.toBe(handleA);
+    expect(adapterB.callCounts.create).toBe(1);
+    expect(h.store.listJobs().map((job) => ({ binding: job.providerBindingId, contract: job.adapterContractVersion }))).toEqual([
+      { binding: "binding:a", contract: OMR_VENDOR_ADAPTER_CONTRACT_VERSION },
+      { binding: "binding:b", contract: OMR_VENDOR_ADAPTER_CONTRACT_VERSION },
+    ]);
+  });
+
+  it("canonicalizes set-like capability fields before consent snapshot hashing", async () => {
+    const h = await harness();
+    const capabilities = await h.adapter.getCapabilities();
+    const spy = vi.spyOn(h.adapter, "getCapabilities")
+      .mockResolvedValueOnce({ ...capabilities, supportedMimeTypes: ["image/png", "image/jpeg"] })
+      .mockResolvedValueOnce({ ...capabilities, supportedMimeTypes: ["image/jpeg", "image/png"] });
+    const first = await h.service.getProviderPreflight();
+    const second = await h.service.getProviderPreflight();
+    expect(first.capabilities.supportedMimeTypes).toEqual(["image/jpeg", "image/png"]);
+    expect(second.capabilities.supportedMimeTypes).toEqual(first.capabilities.supportedMimeTypes);
+    expect(second.capabilitySnapshotDigest).toBe(first.capabilitySnapshotDigest);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("durably retries transient status, result reads, retention, and local result persistence", async () => {
+    const stages = ["status", "export", "evidence", "mapping", "retention", "object-put"] as const;
+    for (const stage of stages) {
+      const h = await harness([{ kind: "completed" }]);
+      const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: `transient-${stage}` });
+      await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: `transient-${stage}-upload`, bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+      await h.service.start(handle);
+      if (stage === "status") vi.spyOn(h.adapter, "getVendorStatus").mockRejectedValueOnce(new Error("temporary status transport"));
+      if (stage === "export") vi.spyOn(h.adapter, "exportMusicXml").mockRejectedValueOnce(new Error("temporary export transport"));
+      if (stage === "evidence") vi.spyOn(h.adapter, "getEvidence").mockRejectedValueOnce(new Error("temporary evidence transport"));
+      if (stage === "mapping") vi.spyOn(h.adapter, "getNormalizationMapping").mockRejectedValueOnce(new Error("temporary mapping transport"));
+      if (stage === "retention") vi.spyOn(h.adapter, "getRetentionInfo").mockRejectedValueOnce(new Error("temporary retention transport"));
+      if (stage === "object-put") {
+        const originalPut = h.objects.put.bind(h.objects);
+        vi.spyOn(h.objects, "put").mockImplementationOnce(async () => { throw new Error("temporary object storage transport"); }).mockImplementation(originalPut);
+      }
+      const pending = await h.service.synchronizeStatus(handle);
+      expect(pending).toMatchObject({ kind: "retry-pending", operation: stage === "status" ? "sync" : "capture", attempt: 1 });
+      expect(h.store.listJobs()[0]).toMatchObject({ creditState: "reserved", providerBindingId: "hm-reference", retryAttempt: 1 });
+      h.advance(60_001);
+      expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
+      expect(h.store.listJobs()[0]).toMatchObject({ state: "completed", creditState: "settled", providerBindingId: "hm-reference", retryAttempt: undefined });
+    }
+  });
+
+  it("bounds transient retries without releasing credit or discarding provider binding", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "capture-retry-exhaustion" });
+    await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "capture-retry-exhaustion-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await h.service.start(handle);
+    vi.spyOn(h.adapter, "exportMusicXml").mockRejectedValue(new Error("persistent temporary transport"));
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "retry-pending", attempt: 1 });
+    for (const delay of [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000]) {
+      h.advance(delay + 1);
+      await h.service.synchronizeStatus(handle);
+    }
+    expect(await h.service.getStatus(handle)).toMatchObject({ kind: "retry-pending", operation: "capture", attempt: 5 });
+    h.advance(12 * 60 * 60_000 + 1);
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "reconciliation-required", code: "OMR_JOB_RECONCILIATION_REQUIRED" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "reconciliation-required", reconciliationKind: "capture", creditState: "reserved", providerBindingId: "hm-reference", vendorJobIdEnvelope: expect.any(Object) });
+  });
+
+  it("rejects oversized provider captures and inconsistent item granularity before authority or storage", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const evidence = h.fixture.evidence;
+    expect(() => validateEvidenceCaptureLimits({ ...evidence, evidence: Array.from({ length: PROVIDER_CAPTURE_LIMITS.evidenceItems + 1 }, () => evidence.evidence[0]) } as never)).toThrow("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
+    expect(() => validateEvidenceCaptureLimits({ ...evidence, frames: Array.from({ length: PROVIDER_CAPTURE_LIMITS.frames + 1 }, () => evidence.frames[0]) } as never)).toThrow("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
+    expect(() => validateEvidenceCaptureLimits({ ...evidence, transforms: Array.from({ length: PROVIDER_CAPTURE_LIMITS.transforms + 1 }, () => ({ id: "transform:x" })) } as never)).toThrow("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
+    expect(() => validateEvidenceCaptureLimits({ ...evidence, granularity: "symbol" } as never)).toThrow("OMR_PROVIDER_CAPABILITY_MISSING");
+    expect(() => validateNormalizationMappingCaptureLimits({ mappings: Array.from({ length: PROVIDER_CAPTURE_LIMITS.mappings + 1 }, () => ({})) } as never)).toThrow("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
+    expect(() => assertBoundedProviderValue({ value: "x".repeat(PROVIDER_CAPTURE_LIMITS.stringLength + 1) })).toThrow("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
+
+    const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "oversized-result" });
+    await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "oversized-result-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await h.service.start(handle);
+    vi.spyOn(h.adapter, "exportMusicXml").mockResolvedValue("x".repeat(PROVIDER_CAPTURE_LIMITS.musicXmlBytes + 1));
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED" });
+    expect(h.adapter.callCounts.evidence).toBe(0);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released" });
+    expect(h.store.listJobs()[0].resultObjectReferenceId).toBeUndefined();
   });
 
   it("persists cancel failure and recovers every idempotent post-effect crash window through fencing", async () => {
@@ -408,6 +557,16 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(createConsentedJob(createService, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "non-idempotent-create" })).rejects.toThrow("OMR_JOB_RECONCILIATION_REQUIRED");
     expect(createCrash.store.listJobs()[0]).toMatchObject({ state: "reconciliation-required", reconciliationKind: "create" });
     expect(createAdapter.callCounts.create).toBe(1);
+    await expect(createConsentedJob(createService, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "reconciliation-session-quota" })).rejects.toThrow("OMR_QUOTA_EXCEEDED");
+
+    const sharedIpService2 = new DurableOmrApplicationService({ ...createCrash.dependencies, store: createCrash.store, adapter: createCrash.adapter, actor: { sessionId: "session:2" as PrivateRowId, ipOwnerHash: "ip:hmac:1" } });
+    await expect(createConsentedJob(sharedIpService2, { sessionId: "session:2", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "reconciliation-ip-second" })).resolves.toMatch(/^v1\./u);
+    const sharedIpService3 = new DurableOmrApplicationService({ ...createCrash.dependencies, store: createCrash.store, adapter: createCrash.adapter, actor: { sessionId: "session:3" as PrivateRowId, ipOwnerHash: "ip:hmac:1" } });
+    await expect(createConsentedJob(sharedIpService3, { sessionId: "session:3", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "reconciliation-ip-third" })).rejects.toThrow("OMR_QUOTA_EXCEEDED");
+
+    const creditService = new DurableOmrApplicationService({ ...createCrash.dependencies, store: createCrash.store, adapter: createCrash.adapter, quota: omrQuotaConfig(1), actor: { sessionId: "session:credit" as PrivateRowId, ipOwnerHash: "ip:hmac:credit" } });
+    await expect(createConsentedJob(creditService, { sessionId: "session:credit", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "reconciliation-credit" })).rejects.toThrow("OMR_GLOBAL_CREDIT_CEILING_EXCEEDED");
+    expect(createCrash.store.listJobs()[0]).toMatchObject({ creditState: "reserved", creditEstimate: 1 });
   });
 
   it("retries Vendor and local object deletion independently for mixed delete-pending siblings", async () => {

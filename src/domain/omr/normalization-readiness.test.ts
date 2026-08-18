@@ -11,8 +11,9 @@ import { computeProviderBundleDigest, coordinateMicrounit, validateOmrEvidenceAr
 import { computeVendorNormalizationMappingDigest, validateVendorNormalizationMappingArtifact, type VendorExportEvidenceMapping } from "./contracts";
 import { attachOmrReviewContext, createInitialOmrReviewContext, prepareVendorMusicXml } from "./normalization";
 import { validateRuntimeOmrReadiness } from "./readiness";
-import { acceptOmrReviewAlternative } from "./review";
+import { acceptOmrReviewAlternative, validateReviewEvidenceTargetBindings } from "./review";
 import { parseChord } from "../chord/parser";
+import { computeMusicXmlSourceTargetMapDigest } from "./import-identity";
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Lead</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note></measure></part></score-partwise>`;
@@ -60,6 +61,15 @@ async function readinessSource(): Promise<SongSourceDocument> {
     phraseRegions: [], rights: { basis: "self-authored", allowedUses: ["generation"] }, importInfo: { sourceKind: "omr", importerVersion: "omr-normalizer-v1" },
   };
   source = { ...source, revisionDigest: await digestMusicalSource(source) };
+  const sourceRevision = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
+  const entries = [
+    { selector: { kind: "measure" as const, musicXmlPartOrdinal: 0, measureOrdinal: 0 }, status: "mapped-one" as const, targets: [{ kind: "measure" as const, sourceMeasureId: "sm:0" }] as const },
+    { selector: { kind: "measure-start" as const, musicXmlPartOrdinal: 0, measureOrdinal: 0 }, status: "mapped-one" as const, targets: [{ kind: "measure-start" as const, sourceMeasureId: "sm:0" }] as const },
+    { selector: { kind: "measure-end" as const, musicXmlPartOrdinal: 0, measureOrdinal: 0 }, status: "mapped-one" as const, targets: [{ kind: "measure-end" as const, sourceMeasureId: "sm:0" }] as const },
+    { selector: { kind: "voice-event" as const, musicXmlPartOrdinal: 0, musicXmlStaffNumber: 1, musicXmlVoiceKey: "1", measureOrdinal: 0, eventOrdinal: 0 }, status: "mapped-one" as const, targets: [{ kind: "voice-event" as const, eventId: "le:0:0" }] as const },
+  ];
+  const map = { version: "musicxml-source-target-map-v1" as const, sourceRevision, entries };
+  source = { ...source, importInfo: { ...source.importInfo!, musicXmlSourceTargetMap: { ...map, mapDigest: await computeMusicXmlSourceTargetMapDigest(map) } } };
   return source;
 }
 
@@ -127,7 +137,10 @@ describe("runtime OMR semantic readiness", () => {
 
   it("preserves real-style IDs and bridges only the selected MusicXML part/staff/voice identity", async () => {
     const base = await readinessSource();
-    const source = { ...base, sourceMeasures: [{ ...base.sourceMeasures[0], chordEvents: [{ id: "ch:0:0", sourceMeasureId: "sm:0", onset: fraction(0), sourceText: "C", parseResult: parseChord("C"), source: "omr" as const, confirmation: "unconfirmed" as const }] }] } as SongSourceDocument;
+    const chordEntry = { selector: { kind: "chord-event" as const, musicXmlPartOrdinal: 0, measureOrdinal: 0, eventOrdinal: 0 }, status: "mapped-one" as const, targets: [{ kind: "chord-event" as const, chordEventId: "ch:0:0" }] as const };
+    const entries = [...base.importInfo!.musicXmlSourceTargetMap!.entries, chordEntry];
+    const map = { version: "musicxml-source-target-map-v1" as const, sourceRevision: base.importInfo!.musicXmlSourceTargetMap!.sourceRevision, entries };
+    const source = { ...base, sourceMeasures: [{ ...base.sourceMeasures[0], chordEvents: [{ id: "ch:0:0", sourceMeasureId: "sm:0", onset: fraction(0), sourceText: "C", parseResult: parseChord("C"), source: "omr" as const, confirmation: "unconfirmed" as const }] }], importInfo: { ...base.importInfo!, musicXmlSourceTargetMap: { ...map, mapDigest: await computeMusicXmlSourceTargetMapDigest(map) } } } as SongSourceDocument;
     const vendorResultDigest = await binaryDigest(new TextEncoder().encode(xml));
     const frame = { id: "frame:vendor", pageIndex: 0, coordinateSpace: "normalized-original" as const, widthPixels: 100, heightPixels: 100, imageDigest: vendorResultDigest };
     const evidence = ["page_1", "staff_main", "measure_42", "symbol_abc", "symbol_other_part", "symbol_other_staff"].map((vendorTargetId, index) => ({ id: `evidence:vendor:${index}`, vendorTargetId, granularity: (["page", "staff", "measure", "symbol", "symbol", "symbol"] as const)[index], box: { frameId: frame.id, xMu: coordinateMicrounit(index * 10_000), yMu: coordinateMicrounit(index * 10_000), widthMu: coordinateMicrounit(100_000), heightMu: coordinateMicrounit(100_000) }, vendorId: "hm-reference" }));
@@ -151,6 +164,14 @@ describe("runtime OMR semantic readiness", () => {
     expect(context.sourceEvidence.targetMappings.map((mapping) => mapping.target.target.kind).sort()).toEqual(["chord-event", "measure", "measure-start", "voice-event"]);
     expect(context.reviewRecord.reviewItems.map((item) => item.target.target.kind).sort()).toEqual(["chord-event", "measure-start", "voice-event"]);
     expect(context.evidenceArchive.unmappedEvidence.map((item) => item.vendorTargetId).sort()).toEqual(["symbol_other_part", "symbol_other_staff"]);
+    const swappable = context.reviewRecord.reviewItems.filter((item) => item.evidenceIds.length === 1).slice(0, 2);
+    const swappedRecord = {
+      ...context.reviewRecord,
+      reviewItems: context.reviewRecord.reviewItems.map((item) => item.id === swappable[0].id
+        ? { ...item, evidenceIds: swappable[1].evidenceIds }
+        : item.id === swappable[1].id ? { ...item, evidenceIds: swappable[0].evidenceIds } : item),
+    };
+    expect(validateReviewEvidenceTargetBindings(source, swappedRecord, context.sourceEvidence, context.evidenceArchive)).toHaveLength(2);
   });
 
   it("rejects stale result and provider-bundle bindings in the normalization mapping artifact", async () => {

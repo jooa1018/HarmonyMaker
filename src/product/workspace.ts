@@ -4,7 +4,7 @@ import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version
 import { semanticDigest, type SemanticDigest } from "../domain/digest/canonical";
 import type { Diagnostic } from "../domain/diagnostics";
 import { SOURCE_LEAD_TRACK, type GeneratedHarmonyTrackPlan } from "../domain/performer";
-import type { ArrangementVariant, HarmonyProject } from "../domain/project";
+import { validateHarmonyProject, type ArrangementVariant, type HarmonyProject } from "../domain/project";
 import type { MusicXmlImportDraft } from "../import/musicxml/types";
 import type { QuickReviewAnalysis } from "../import/review/quick-review";
 import { loadFrozenWagAuthority } from "../grammar/authority";
@@ -13,6 +13,7 @@ import { assembleWagGeneration } from "../grammar/pipeline";
 import { buildWagRenderDocument, type WagSegmentBExecution, type WagSegmentBStage } from "../grammar/segment-b";
 import { solveWagLocally } from "../grammar/solver";
 import { validateWagAssembly } from "../grammar/validator";
+import { loadProductExecutionRegistry } from "./registry";
 
 const PRESETS: readonly ArrangementPresetId[] = ["simple", "standard", "full"];
 const noLocks = () => ({ intent: [], activity: [], anchor: [], solver: [] } as const);
@@ -73,6 +74,8 @@ export async function wagInputFromProject(project: HarmonyProject, presetId: Arr
 }
 
 export async function generateProjectVariant(project: HarmonyProject, presetId: ArrangementPresetId): Promise<ProductGenerationOutcome> {
+  const integrity = await validateHarmonyProject(project, await loadProductExecutionRegistry());
+  if (integrity.status !== "complete") throw new RangeError("PROJECT_INTEGRITY_INVALID");
   const input = await wagInputFromProject(project, presetId);
   const previous = project.variants[presetId] ?? { lifecycle: "empty" as const, presetId, diagnostics: [] };
   const boundary = previous.staleness?.staleFrom ?? "intent";

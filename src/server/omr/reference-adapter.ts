@@ -43,7 +43,7 @@ export class ReferenceOmrVendorAdapter implements OmrVendorAdapter {
   constructor(fixtures: readonly ReferenceOmrFixture[], capabilities: Partial<OmrVendorCapabilities> = {}) {
     const supportsDeletion = capabilities.supportsDeletion ?? true;
     this.capabilities = {
-    vendorId: "hm-reference", vendorDisplayName: "HarmonyMaker deterministic reference adapter", supportedMimeTypes: ["image/png"], maxPages: 12,
+    vendorId: "hm-reference", vendorDisplayName: "HarmonyMaker deterministic reference adapter", supportedMimeTypes: ["image/png"], transferMimeType: "image/png", maxPages: 12,
     evidenceGranularity: "page", retentionDisclosure: true,
     supportsIdempotency: true, supportsInteractiveInput: true,
     retentionPolicyReference: "in-repository-reference-fixture", externalTransfer: true, estimatedCreditPerPage: 1,

@@ -5,6 +5,7 @@ import type { SongSourceDocument } from "../source/model";
 import { materializeImportDiagnostics, type ImportDiagnosticInput } from "../../import/musicxml/diagnostics";
 import { validateOmrReviewCompletion } from "./foundation";
 import { validateOmrCorrectionHistory } from "./review";
+import { revisionRefsEqual } from "../source/revision";
 
 export type RuntimeOmrReadiness = "validator-ready" | "review-required" | "blocked";
 
@@ -13,7 +14,14 @@ export interface RuntimeOmrValidationResult {
   readonly diagnostics: readonly Diagnostic[];
 }
 
-export async function validateRuntimeOmrReadiness(source: SongSourceDocument): Promise<RuntimeOmrValidationResult> {
+function sourceRevision(source: SongSourceDocument) {
+  return { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
+}
+
+export async function validateRuntimeOmrReadiness(
+  source: SongSourceDocument,
+  options: { readonly includeAcknowledgedWarnings?: boolean } = {},
+): Promise<RuntimeOmrValidationResult> {
   const diagnostics: ImportDiagnosticInput[] = [];
   const omrReview = source.importInfo?.omrReviewRecord;
   if (omrReview) {
@@ -78,8 +86,46 @@ export async function validateRuntimeOmrReadiness(source: SongSourceDocument): P
     diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "선택된 주선율 성부가 없습니다.", details: { issue: "selected-melody-staff" } });
   }
   const materialized = await materializeImportDiagnostics(diagnostics);
-  const readiness: RuntimeOmrReadiness = materialized.some((diagnostic) => diagnostic.severity === "blocking" || diagnostic.severity === "error")
+  const acknowledged = options.includeAcknowledgedWarnings
+    ? new Set<string>()
+    : new Set((source.importInfo?.omrRuntimeWarningAcknowledgements ?? [])
+      .filter((item) => revisionRefsEqual(item.sourceRevision, sourceRevision(source)))
+      .map((item) => item.diagnosticId));
+  const visible = materialized.filter((diagnostic) => diagnostic.severity !== "warning" || !acknowledged.has(diagnostic.id));
+  const readiness: RuntimeOmrReadiness = visible.some((diagnostic) => diagnostic.severity === "blocking" || diagnostic.severity === "error")
     ? "blocked"
-    : materialized.length > 0 ? "review-required" : "validator-ready";
-  return { readiness, diagnostics: materialized };
+    : visible.length > 0 ? "review-required" : "validator-ready";
+  return { readiness, diagnostics: visible };
+}
+
+export async function acknowledgeRuntimeOmrWarnings(
+  source: SongSourceDocument,
+  input: { readonly diagnosticIds?: readonly string[]; readonly acknowledgedAt: string },
+): Promise<SongSourceDocument> {
+  if (!source.importInfo || !Number.isFinite(Date.parse(input.acknowledgedAt))) throw new RangeError("OMR_WARNING_ACKNOWLEDGEMENT_INVALID");
+  const raw = await validateRuntimeOmrReadiness(source, { includeAcknowledgedWarnings: true });
+  const warnings = raw.diagnostics.filter((diagnostic) => diagnostic.severity === "warning");
+  const requested = input.diagnosticIds ?? warnings.map((diagnostic) => diagnostic.id);
+  const available = new Set(warnings.map((diagnostic) => diagnostic.id));
+  if (requested.length === 0 || new Set(requested).size !== requested.length || requested.some((id) => !available.has(id))) {
+    throw new RangeError("OMR_WARNING_ACKNOWLEDGEMENT_INVALID");
+  }
+  const revision = sourceRevision(source);
+  const retained = (source.importInfo.omrRuntimeWarningAcknowledgements ?? [])
+    .filter((item) => revisionRefsEqual(item.sourceRevision, revision) && !requested.includes(item.diagnosticId));
+  const omrRuntimeWarningAcknowledgements = [
+    ...retained,
+    ...requested.map((diagnosticId) => ({ diagnosticId, sourceRevision: revision, acknowledgedAt: input.acknowledgedAt })),
+  ].sort((left, right) => left.diagnosticId.localeCompare(right.diagnosticId));
+  return { ...source, importInfo: { ...source.importInfo, omrRuntimeWarningAcknowledgements } };
+}
+
+export async function validateRuntimeOmrWarningAcknowledgements(source: SongSourceDocument): Promise<boolean> {
+  const acknowledgements = source.importInfo?.omrRuntimeWarningAcknowledgements ?? [];
+  if (new Set(acknowledgements.map((item) => item.diagnosticId)).size !== acknowledgements.length) return false;
+  const revision = sourceRevision(source);
+  if (acknowledgements.some((item) => !revisionRefsEqual(item.sourceRevision, revision))) return false;
+  const raw = await validateRuntimeOmrReadiness(source, { includeAcknowledgedWarnings: true });
+  const warningIds = new Set(raw.diagnostics.filter((diagnostic) => diagnostic.severity === "warning").map((diagnostic) => diagnostic.id));
+  return acknowledgements.every((item) => warningIds.has(item.diagnosticId));
 }

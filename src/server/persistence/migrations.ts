@@ -199,6 +199,26 @@ CREATE INDEX IF NOT EXISTS omr_jobs_cleanup_lease_idx ON omr_jobs (cleanup_lease
 ALTER TABLE omr_create_idempotency ADD COLUMN IF NOT EXISTS failure_code text, ADD COLUMN IF NOT EXISTS failure_message_ko text;
 `;
 
+export const OMR_PROVIDER_SAFETY_SQL = String.raw`
+ALTER TABLE omr_jobs
+  ADD COLUMN IF NOT EXISTS provider_binding_id text,
+  ADD COLUMN IF NOT EXISTS adapter_contract_version text,
+  ADD COLUMN IF NOT EXISTS retry_kind text,
+  ADD COLUMN IF NOT EXISTS retry_attempt integer,
+  ADD COLUMN IF NOT EXISTS retry_next_attempt_at timestamptz,
+  ADD COLUMN IF NOT EXISTS retry_last_failure_code text;
+UPDATE omr_jobs SET provider_binding_id = COALESCE(provider_binding_id, capability_snapshot->>'vendorId'), adapter_contract_version = COALESCE(adapter_contract_version, 'omr-vendor-adapter-v1') WHERE provider_binding_id IS NULL OR adapter_contract_version IS NULL;
+ALTER TABLE omr_jobs ALTER COLUMN provider_binding_id SET NOT NULL;
+ALTER TABLE omr_jobs ALTER COLUMN adapter_contract_version SET NOT NULL;
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_state_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_state_check CHECK (state IN ('created','uploading','queued','processing','needs-input','sync-retry-pending','capture-retry-pending','completed','failed','cancel-pending','cancel-failed','cancelled','reconciliation-required','delete-pending','deleted','expired'));
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_reconciliation_kind_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_reconciliation_kind_check CHECK (reconciliation_kind IS NULL OR reconciliation_kind IN ('create','page-upload','start','submit-input','cancel','sync','capture'));
+ALTER TABLE omr_jobs DROP CONSTRAINT IF EXISTS omr_jobs_retry_metadata_check;
+ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_retry_metadata_check CHECK ((retry_kind IS NULL AND retry_attempt IS NULL AND retry_next_attempt_at IS NULL AND retry_last_failure_code IS NULL) OR (retry_kind IN ('sync','capture') AND retry_attempt BETWEEN 1 AND 5 AND retry_next_attempt_at IS NOT NULL AND retry_last_failure_code IS NOT NULL));
+CREATE INDEX IF NOT EXISTS omr_jobs_retry_due_idx ON omr_jobs (retry_next_attempt_at, id) WHERE state IN ('sync-retry-pending','capture-retry-pending');
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
@@ -206,6 +226,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 4, name: "omr_core", sql: OMR_CORE_SQL },
   { version: 5, name: "omr_recovery", sql: OMR_RECOVERY_SQL },
   { version: 6, name: "omr_correctness_closure", sql: OMR_CORRECTNESS_CLOSURE_SQL },
+  { version: 7, name: "omr_provider_safety", sql: OMR_PROVIDER_SAFETY_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {

@@ -768,6 +768,7 @@ function parseMeasure(
     .map((chord, chordOrdinal): ImportedChordDraft => ({
       ...chord,
       key: `chord:p:${context.partOrdinal}:m:${ordinal}:c:${chordOrdinal}`,
+      musicXmlEventOrdinal: chordOrdinal,
     }));
   const dedupedText = textEvents
     .sort((left, right) => compareFractions(left.onset, right.onset)
@@ -776,7 +777,14 @@ function parseMeasure(
     .filter((event, index, values) => index === 0
       || compareFractions(event.onset, values[index - 1].onset) !== 0
       || event.kind !== values[index - 1].kind
-      || event.text !== values[index - 1].text);
+      || event.text !== values[index - 1].text)
+    .map((event, musicXmlEventOrdinal) => ({ ...event, musicXmlEventOrdinal }));
+  const eventOrdinalByCandidate = new Map<string, number>();
+  const identifiedLeadEvents = leadEvents.map((event) => {
+    const musicXmlEventOrdinal = eventOrdinalByCandidate.get(event.candidateKey) ?? 0;
+    eventOrdinalByCandidate.set(event.candidateKey, musicXmlEventOrdinal + 1);
+    return { ...event, musicXmlEventOrdinal };
+  });
   return {
     measure: {
       ordinal,
@@ -786,7 +794,7 @@ function parseMeasure(
       duration: actualDuration,
       ...(key ? { key } : {}),
       ...(importedFifths !== undefined ? { importedFifths } : {}),
-      leadEvents,
+      leadEvents: identifiedLeadEvents,
       chords: orderedChords,
       textEvents: dedupedText,
       repeat: {
@@ -1089,6 +1097,25 @@ export async function importMusicXml(
     ...(score.composer ? { composer: score.composer } : {}),
     parts: score.parts,
     leadCandidates: score.candidates,
+    musicXmlIdentityInventory: {
+      leadEvents: score.parts.flatMap((part) => part.measures.flatMap((measure) => measure.leadEvents.flatMap((event) => {
+        const candidate = score.candidates.find((item) => item.key === event.candidateKey);
+        return candidate && event.musicXmlEventOrdinal !== undefined ? [{
+          candidateKey: event.candidateKey,
+          partOrdinal: part.partOrdinal,
+          staffNumber: candidate.staffNumber,
+          voiceKey: candidate.voiceKey,
+          measureOrdinal: measure.ordinal,
+          eventOrdinal: event.musicXmlEventOrdinal,
+        }] : [];
+      }))),
+      chordEvents: score.parts.flatMap((part) => part.measures.flatMap((measure) => measure.chords.flatMap((chord) => chord.musicXmlEventOrdinal === undefined ? [] : [{
+        partOrdinal: part.partOrdinal, measureOrdinal: measure.ordinal, eventOrdinal: chord.musicXmlEventOrdinal,
+      }]))),
+      textEvents: score.parts.flatMap((part) => part.measures.flatMap((measure) => measure.textEvents.flatMap((event) => event.musicXmlEventOrdinal === undefined ? [] : [{
+        partOrdinal: part.partOrdinal, measureOrdinal: measure.ordinal, eventOrdinal: event.musicXmlEventOrdinal,
+      }]))),
+    },
     sections: score.sections,
     sectionOccurrences,
     unsupportedPerformanceFlows: score.flows,

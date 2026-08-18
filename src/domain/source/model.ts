@@ -8,6 +8,34 @@ import type { OmrEvidenceArchive, OmrReviewRecord, SourceEvidenceIndex } from ".
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SourceRevisionRecord, SourceRevisionRef } from "./revision";
 
+export type MusicXmlSourceTargetSelector =
+  | { readonly kind: "measure"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
+  | { readonly kind: "measure-start"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
+  | { readonly kind: "measure-end"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
+  | { readonly kind: "voice-event"; readonly musicXmlPartOrdinal: number; readonly musicXmlStaffNumber: number; readonly musicXmlVoiceKey: string; readonly measureOrdinal: number; readonly eventOrdinal: number }
+  | { readonly kind: "chord-event"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number; readonly eventOrdinal: number }
+  | { readonly kind: "section-text"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number; readonly eventOrdinal: number };
+export type MusicXmlCurrentSourceTarget =
+  | { readonly kind: "voice-event"; readonly eventId: string }
+  | { readonly kind: "chord-event"; readonly chordEventId: string }
+  | { readonly kind: "measure" | "measure-start" | "measure-end"; readonly sourceMeasureId: string }
+  | { readonly kind: "section-text"; readonly sourceTextId: string };
+export type MusicXmlSourceTargetMapEntry =
+  | { readonly selector: MusicXmlSourceTargetSelector; readonly status: "mapped-one"; readonly targets: readonly [MusicXmlCurrentSourceTarget] }
+  | { readonly selector: MusicXmlSourceTargetSelector; readonly status: "mapped-many"; readonly targets: readonly MusicXmlCurrentSourceTarget[] }
+  | { readonly selector: MusicXmlSourceTargetSelector; readonly status: "deleted" | "unresolved"; readonly targets: readonly [] };
+export interface MusicXmlSourceTargetMap {
+  readonly version: "musicxml-source-target-map-v1";
+  readonly sourceRevision: SourceRevisionRef;
+  readonly entries: readonly MusicXmlSourceTargetMapEntry[];
+  readonly mapDigest: SemanticDigest;
+}
+export interface OmrRuntimeWarningAcknowledgement {
+  readonly diagnosticId: string;
+  readonly sourceRevision: SourceRevisionRef;
+  readonly acknowledgedAt: string;
+}
+
 export type RightsBasis = "self-authored" | "public-domain" | "licensed" | "user-confirmed-rights";
 export type AllowedUse = "generation" | "evaluation" | "share" | "provider-transfer";
 export interface RightsMetadata {
@@ -122,6 +150,8 @@ export interface ImportInfo {
   readonly providerMetadata?: Readonly<Record<string, string>>;
   readonly omrReviewRecord?: OmrReviewRecord;
   readonly omrEvidenceArchive?: OmrEvidenceArchive;
+  readonly musicXmlSourceTargetMap?: MusicXmlSourceTargetMap;
+  readonly omrRuntimeWarningAcknowledgements?: readonly OmrRuntimeWarningAcknowledgement[];
 }
 export interface SongSourceDocument {
   readonly schemaVersion: 9;

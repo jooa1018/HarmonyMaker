@@ -313,12 +313,12 @@ function ManualOmrCorrectionEditor({ item, disabled, onApply }: {
   readonly disabled: boolean;
   readonly onApply: (patch: OmrCorrectionPatch) => void;
 }) {
-  const [mode, setMode] = useState("pitch");
+  const target = item.target.target;
+  const [mode, setMode] = useState(target.kind === "measure-end" ? "insert-barline" : "pitch");
   const [text, setText] = useState("");
   const [secondary, setSecondary] = useState("1/1");
   const [tieStart, setTieStart] = useState(false);
   const [tieStop, setTieStop] = useState(false);
-  const target = item.target.target;
   const apply = () => {
     let patch: OmrCorrectionPatch | undefined;
     if (target.kind === "voice-event") {
@@ -333,12 +333,15 @@ function ManualOmrCorrectionEditor({ item, disabled, onApply }: {
     } else if (target.kind === "measure-start") {
       if (mode === "time-signature") { const value = fractionText(text); if (value?.n && (value.d === 4 || value.d === 8)) patch = { kind: "time-signature", value: { numerator: value.n, denominator: value.d, beatGroups: value.d === 8 && value.n % 3 === 0 ? Array.from({ length: value.n / 3 }, () => 3) : Array.from({ length: value.n }, () => 1) } }; }
       if (mode === "key-signature") { const value = keyFromText(text); if (value) patch = { kind: "key-signature", value }; }
+    } else if (target.kind === "measure-end" && (mode === "insert-barline" || mode === "delete-barline")) {
+      patch = { kind: mode };
     } else if (target.kind === "section-text") patch = { kind: "replace-source-text", text };
     if (patch) onApply(patch);
   };
   const modes = target.kind === "voice-event" ? ["pitch", "duration", "accidental", "tie", "replace-rest", "replace-note"]
-    : target.kind === "measure-start" ? ["time-signature", "key-signature"] : [];
-  const supported = target.kind === "voice-event" || target.kind === "chord-event" || target.kind === "measure-start" || target.kind === "section-text";
+    : target.kind === "measure-start" ? ["time-signature", "key-signature"]
+      : target.kind === "measure-end" ? ["insert-barline", "delete-barline"] : [];
+  const supported = target.kind === "voice-event" || target.kind === "chord-event" || target.kind === "measure-start" || target.kind === "measure-end" || target.kind === "section-text";
   if (!supported) return <p className={styles.help}>이 target의 구조 변경 patch는 명시적으로 지원 보류되었습니다.</p>;
   return <div className={styles.omrManual}>
     {modes.length ? <label className={styles.field}><span>수정 유형</span><select value={mode} onChange={(event) => setMode(event.target.value)}>{modes.map((value) => <option value={value} key={value}>{value}</option>)}</select></label> : null}
@@ -364,6 +367,9 @@ export function ImportReviewClient() {
   const [omrItemIndex, setOmrItemIndex] = useState(0);
   const [omrPageIndex, setOmrPageIndex] = useState(0);
   const [unsupportedDiagnosticsAcknowledged, setUnsupportedDiagnosticsAcknowledged] = useState(false);
+  const [runtimeWarnings, setRuntimeWarnings] = useState<readonly Diagnostic[]>([]);
+  const [runtimeWarningsAcknowledged, setRuntimeWarningsAcknowledged] = useState(false);
+  const runtimeWarningSource = omrSession?.source;
 
   const updateDraft = useCallback((updater: DraftUpdater) => {
     setReviewing(true);
@@ -432,6 +438,18 @@ export function ImportReviewClient() {
   useEffect(() => () => { for (const url of omrHandoff?.pageUrls ?? []) URL.revokeObjectURL(url); }, [omrHandoff]);
 
   useEffect(() => {
+    let active = true;
+    if (!runtimeWarningSource) return () => { active = false; };
+    void validateRuntimeOmrReadiness(runtimeWarningSource, { includeAcknowledgedWarnings: true }).then((result) => {
+      if (active) {
+        setRuntimeWarnings(result.diagnostics.filter((diagnostic) => diagnostic.severity === "warning"));
+        setRuntimeWarningsAcknowledged(false);
+      }
+    });
+    return () => { active = false; };
+  }, [runtimeWarningSource]);
+
+  useEffect(() => {
     if (!draft || !analysis?.state.readyForPlanning || !omrHandoff) return;
     let active = true;
     void createProjectFromQuickReview(draft, analysis, "standard").then(async (project) => {
@@ -492,7 +510,13 @@ export function ImportReviewClient() {
         if (!omrSession || omrSession.baseRevisionDigest !== project.source.revisionDigest
           || validateOmrReviewCompletion(omrSession.reviewRecord).length > 0
           || (omrSession.reviewRecord.diagnostics?.some((diagnostic) => diagnostic.details?.unsupportedAutoRepair) && !unsupportedDiagnosticsAcknowledged)) throw new RangeError("OMR_REVIEW_REQUIRED");
-        const source = await attachOmrReviewContext({ source: omrSession.source, providerResult: omrHandoff.result, reviewRecord: omrSession.reviewRecord, selection: omrSession.selection });
+        const source = await attachOmrReviewContext({
+          source: omrSession.source,
+          providerResult: omrHandoff.result,
+          reviewRecord: omrSession.reviewRecord,
+          selection: omrSession.selection,
+          ...(runtimeWarnings.length > 0 && runtimeWarningsAcknowledged ? { acknowledgeRuntimeWarningsAt: new Date().toISOString() } : {}),
+        });
         const readiness = await validateRuntimeOmrReadiness(source);
         if (readiness.readiness !== "validator-ready") throw new RangeError("OMR_REVIEW_REQUIRED");
         project = await integrateReviewedOmrSource(project, source);
@@ -607,6 +631,7 @@ export function ImportReviewClient() {
             })}</ul> : null}
             {omrSession?.reviewRecord.autoRepairs.length ? <div><h3>Auto repair proposals</h3><ul className={styles.reviewList}>{omrSession.reviewRecord.autoRepairs.map((proposal) => <li className={styles.reviewItem} key={proposal.id}><code>{proposal.reason}</code> · {proposal.confidence} · {proposal.resolution.status}<pre>{JSON.stringify(proposal.patch)}</pre>{proposal.resolution.status === "pending" ? <div className={styles.presetRow}><button type="button" disabled={handoffBusy} onClick={() => void resolveAutoRepair(proposal.id, "accepted")}>repair 적용</button><button type="button" disabled={handoffBusy} onClick={() => void resolveAutoRepair(proposal.id, "rejected")}>repair 거절</button></div> : null}</li>)}</ul></div> : null}
             {omrSession?.reviewRecord.diagnostics?.some((diagnostic) => diagnostic.details?.unsupportedAutoRepair) ? <div className={styles.notice}><h3>지원되지 않는 자동 수리 진단</h3><ul>{omrSession.reviewRecord.diagnostics.filter((diagnostic) => diagnostic.details?.unsupportedAutoRepair).map((diagnostic) => <li key={diagnostic.id}><code>{String(diagnostic.details?.unsupportedAutoRepair)}</code> — {diagnostic.messageKo}</li>)}</ul><label><input type="checkbox" checked={unsupportedDiagnosticsAcknowledged} onChange={(event) => setUnsupportedDiagnosticsAcknowledged(event.target.checked)} /> 자동 수리가 적용되지 않았음을 확인했으며 원본/수동 검토 결과를 사용합니다.</label></div> : null}
+            {runtimeWarnings.length > 0 ? <div className={styles.notice}><h3>런타임 의미 경고 확인</h3><ul>{runtimeWarnings.map((diagnostic) => <li key={diagnostic.id}>{diagnostic.messageKo} <code>{diagnostic.id}</code></li>)}</ul><label><input type="checkbox" checked={runtimeWarningsAcknowledged} onChange={(event) => setRuntimeWarningsAcknowledged(event.target.checked)} /> 이 경고를 검토했으며 현재 Source revision에 acknowledgement를 저장합니다.</label></div> : null}
             <p className={styles.status}><strong>correction history:</strong> {omrSession?.reviewRecord.corrections.length ?? 0}개 · unresolved item/repair가 하나라도 있으면 workspace handoff가 차단됩니다.</p>
             <p className={styles.help}>stale/remapped target은 Source revision 연결이 정확히 한 개일 때만 적용되며, 그 외에는 archive로 남습니다.</p>
           </section> : null}
@@ -698,7 +723,7 @@ export function ImportReviewClient() {
               </ul>
             ) : null}
             <DiagnosticSummary diagnostics={diagnostics} />
-            {analysis?.state.readyForPlanning ? <button className="primary" type="button" disabled={handoffBusy || Boolean(omrHandoff && (!omrSession || validateOmrReviewCompletion(omrSession.reviewRecord).length > 0 || (omrSession.reviewRecord.diagnostics?.some((diagnostic) => diagnostic.details?.unsupportedAutoRepair) && !unsupportedDiagnosticsAcknowledged)))} onClick={() => void openWorkspace()}>{handoffBusy ? "워크스페이스 준비 중…" : "프로젝트 워크스페이스 열기 →"}</button> : null}
+            {analysis?.state.readyForPlanning ? <button className="primary" type="button" disabled={handoffBusy || Boolean(omrHandoff && (!omrSession || validateOmrReviewCompletion(omrSession.reviewRecord).length > 0 || (omrSession.reviewRecord.diagnostics?.some((diagnostic) => diagnostic.details?.unsupportedAutoRepair) && !unsupportedDiagnosticsAcknowledged) || (runtimeWarnings.length > 0 && !runtimeWarningsAcknowledged)))} onClick={() => void openWorkspace()}>{handoffBusy ? "워크스페이스 준비 중…" : "프로젝트 워크스페이스 열기 →"}</button> : null}
             <p className={styles.help}>여기서 확정한 Source, 코드, 구간, 가수 음역과 권리 정보가 그대로 프로젝트 authority가 됩니다.</p>
           </section>
         </>

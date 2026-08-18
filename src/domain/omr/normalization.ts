@@ -13,8 +13,10 @@ import { validateSongSourceDocumentIntegrity } from "../source/validation";
 import { importMusicXml } from "../../import/musicxml/parser";
 import { step3ImportVersionsFromRegistry, type MusicXmlImportDraft } from "../../import/musicxml/types";
 import { finalizeImportedSource } from "../../import/review/finalize";
-import { createOmrReviewItem, proposeOmrAutoRepairs, unsupportedOmrAutoRepairDiagnostics, validateOmrCorrectionHistory, validateReviewEvidenceReferences } from "./review";
+import { createOmrReviewItem, proposeOmrAutoRepairs, unsupportedOmrAutoRepairDiagnostics, validateOmrCorrectionHistory, validateReviewEvidenceReferences, validateReviewEvidenceTargetBindings } from "./review";
 import { validateOmrReviewCompletion } from "./foundation";
+import { resolveMusicXmlSourceTarget } from "./import-identity";
+import { acknowledgeRuntimeOmrWarnings } from "./readiness";
 
 export const OMR_NORMALIZER_VERSION = "omr-normalizer-v1" as const;
 const versions = step3ImportVersionsFromRegistry(APPLICATION_ALGORITHM_VERSION_REGISTRY);
@@ -62,21 +64,10 @@ function normalizedTarget(source: SongSourceDocument, mapping: VendorExportEvide
   } else if (selector.kind === "chord-event") {
     if (selector.musicXmlPartOrdinal !== selection.chordAuthorityPartOrdinal) return undefined;
   } else if (selector.musicXmlPartOrdinal !== selection.partOrdinal) return undefined;
-  const measure = source.sourceMeasures[selector.measureOrdinal];
-  if (!measure) return undefined;
-  if (selector.kind === "measure" || selector.kind === "measure-start" || selector.kind === "measure-end") {
-    return { sourceRevision, target: { kind: selector.kind, sourceMeasureId: measure.id } };
-  }
-  if (selector.kind === "voice-event") {
-    const event = measure.leadEvents[selector.eventOrdinal];
-    return event ? { sourceRevision, target: { kind: "voice-event", eventId: event.id } } : undefined;
-  }
-  if (selector.kind === "chord-event") {
-    const event = measure.chordEvents[selector.eventOrdinal];
-    return event ? { sourceRevision, target: { kind: "chord-event", chordEventId: event.id } } : undefined;
-  }
-  const event = measure.textEvents[selector.eventOrdinal];
-  return event ? { sourceRevision, target: { kind: "section-text", sourceTextId: event.id } } : undefined;
+  const importMap = source.importInfo?.musicXmlSourceTargetMap;
+  if (!importMap) throw new RangeError("OMR_IMPORT_IDENTITY_INVALID");
+  const target = resolveMusicXmlSourceTarget(importMap, selector);
+  return target ? { sourceRevision, target } : undefined;
 }
 
 function alternativeForTarget(source: SongSourceDocument, target: RevisionScopedTarget): { readonly labelKo: string; readonly patch: import("./foundation").OmrCorrectionPatch } | undefined {
@@ -148,13 +139,15 @@ export async function attachOmrReviewContext(input: {
   readonly providerResult: OmrProviderResult;
   readonly reviewRecord: OmrReviewRecord;
   readonly selection: OmrSelectedMusicXmlIdentity;
+  readonly acknowledgeRuntimeWarningsAt?: string;
 }): Promise<SongSourceDocument> {
   if (input.reviewRecord.vendorId !== input.providerResult.vendorId || input.reviewRecord.vendorResultDigest !== input.providerResult.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
   if (validateOmrReviewCompletion(input.reviewRecord).length > 0) throw new RangeError("OMR_REVIEW_REQUIRED");
   if ((await validateOmrCorrectionHistory(input.source, input.reviewRecord)).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   const context = await createInitialOmrReviewContext(input.source, input.providerResult, input.selection);
   if (validateReviewEvidenceReferences(input.reviewRecord, context.sourceEvidence, context.evidenceArchive).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
-  const source = normalizeSongSourceDocument({
+  if (validateReviewEvidenceTargetBindings(input.source, input.reviewRecord, context.sourceEvidence, context.evidenceArchive).length > 0) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+  let source = normalizeSongSourceDocument({
     ...input.source,
     importInfo: {
       ...input.source.importInfo, sourceKind: "omr", rawDigest: input.providerResult.vendorResultDigest,
@@ -164,6 +157,9 @@ export async function attachOmrReviewContext(input: {
     },
     sourceEvidence: context.sourceEvidence,
   });
+  if (input.acknowledgeRuntimeWarningsAt) {
+    source = await acknowledgeRuntimeOmrWarnings(source, { acknowledgedAt: input.acknowledgeRuntimeWarningsAt });
+  }
   if (await digestMusicalSource(source) !== source.revisionDigest) throw new RangeError("SOURCE_REVISION_INVALID");
   if (!await validateSongSourceDocumentIntegrity(source, versions.performanceExpanderVersion)) throw new RangeError("SOURCE_REVISION_INVALID");
   return source;

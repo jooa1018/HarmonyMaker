@@ -8,6 +8,7 @@ import { DurableOmrApplicationService, omrQuotaConfig } from "./application-serv
 import { ReferenceOmrVendorAdapter } from "./reference-adapter";
 import { REFERENCE_OMR_FIXTURES } from "./reference-fixtures";
 import { createOmrVendorAdapter } from "./vendor-factory";
+import { OMR_VENDOR_ADAPTER_CONTRACT_VERSION } from "../../domain/omr/contracts";
 
 let referenceAdapter: ReferenceOmrVendorAdapter | undefined;
 
@@ -25,8 +26,12 @@ export async function getProductionOmrApplicationService(input: {
     nodeEnvironment: process.env.NODE_ENV,
     ...(referenceAdapter ? { referenceAdapter } : {}),
   });
+  const providerBindingId = config.providerMode === "reference" ? "hm-reference" : `configured-${config.providerMode}`;
   return new DurableOmrApplicationService({
     store: services.omrStore, objects: services.objects, adapter,
+    providerBindingId,
+    adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
+    resolveAdapter: (bindingId, contractVersion) => bindingId === providerBindingId && contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION ? adapter : undefined,
     handleHmacKey: config.handleHmacKey, vendorJobEncryptionKey: config.vendorJobEncryptionKey,
     quota: omrQuotaConfig(config.dailyGlobalCreditCeiling),
     actor: { sessionId: input.sessionId, ipOwnerHash: services.quota.ipHash(input.clientIp) },

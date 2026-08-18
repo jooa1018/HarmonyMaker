@@ -57,6 +57,28 @@ async function generatedProject(inputOverride?: WagLifecycleInput): Promise<{ re
 }
 
 describe("Product Core workspace, render, playback, and state", () => {
+  it("rejects an unresolved or incomplete persisted OMR context at the generation boundary", async () => {
+    const { project } = await generatedProject();
+    const unresolved = {
+      ...project,
+      source: {
+        ...project.source,
+        importInfo: {
+          sourceKind: "omr" as const,
+          importerVersion: "omr-normalizer-v1",
+          omrReviewRecord: {
+            vendorId: "provider:test", vendorResultDigest: "a".repeat(64) as never, autoRepairs: [], corrections: [],
+            reviewItems: [{
+              id: "review:open", target: { sourceRevision: { documentId: project.source.documentId, revisionOrdinal: project.source.revisionOrdinal, revisionDigest: project.source.revisionDigest }, target: { kind: "measure" as const, sourceMeasureId: project.source.sourceMeasures[0].id } },
+              reasonCode: "OMR_REVIEW_REQUIRED" as const, alternatives: [{ id: "alternative:open", labelKo: "검토", patch: { kind: "insert-barline" as const } }], evidenceIds: [], resolution: { status: "open" as const },
+            }],
+          },
+        },
+      },
+    } as HarmonyProject;
+    await expect(generateProjectVariant(unresolved, "standard")).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+  });
+
   it("persists canonical generation and switches candidate/projection without state leakage", async () => {
     const { project, generated } = await generatedProject();
     const variant = project.variants.standard;

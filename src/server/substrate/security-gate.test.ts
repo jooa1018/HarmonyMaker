@@ -51,6 +51,15 @@ describe("C2 production boundary security gate", () => {
     for (const route of apiRoutes) expect(await readFile(route, "utf8")).toContain('export const runtime = "nodejs"');
   });
 
+  it("authorizes OMR page PUT before content-length validation or body consumption", async () => {
+    const source = await readFile(path.join(process.cwd(), "src", "app", "api", "omr", "jobs", "[handle]", "pages", "[pageIndex]", "route.ts"), "utf8");
+    const put = source.slice(source.indexOf("export async function PUT"), source.indexOf("export async function GET"));
+    const authorization = put.indexOf("authorizeOmr(request, true)");
+    expect(authorization).toBeGreaterThan(0);
+    expect(authorization).toBeLessThan(put.indexOf('request.headers.get("content-length")'));
+    expect(authorization).toBeLessThan(put.indexOf("request.arrayBuffer()"));
+  });
+
   it("runs bounded cleanup deterministically and repeat-safely", async () => {
     const store = new MemoryGovernanceStore();
     await store.createSession({ tokenHash: "expired", csrfNonce: "nonce", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });

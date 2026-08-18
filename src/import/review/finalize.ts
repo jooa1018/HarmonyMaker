@@ -1,6 +1,7 @@
 import { chordSemanticProjection } from "../../domain/chord/parser";
 import { semanticDigest, compareCanonicalValues } from "../../domain/digest/canonical";
 import { digestMusicalSource, digestMusicalSourceComponents } from "../../domain/digest/source";
+import { buildMusicXmlSourceTargetMap } from "../../domain/omr/import-identity";
 import type { Diagnostic } from "../../domain/diagnostics";
 import { fraction } from "../../domain/fraction";
 import {
@@ -710,6 +711,13 @@ async function finalizeNormalization(
       },
     });
     source = { ...source, revisionDigest: normalized.musicalSourceDigest ?? await digestMusicalSource(source) };
+    source = normalizeSongSourceDocument({
+      ...source,
+      importInfo: {
+        ...source.importInfo!,
+        musicXmlSourceTargetMap: await buildMusicXmlSourceTargetMap(draft, source),
+      },
+    });
     const valid = isSongSourceDocument(source)
       && await validateSongSourceDocumentIntegrity(source, versions.performanceExpanderVersion);
     if (!valid) {

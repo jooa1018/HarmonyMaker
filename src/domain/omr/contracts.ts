@@ -1,5 +1,5 @@
 import { compareCanonicalValues, semanticDigest, type BinaryDigest, type SemanticDigest } from "../digest/canonical";
-import type { RightsMetadata } from "../source/model";
+import type { MusicXmlSourceTargetSelector, RightsMetadata } from "../source/model";
 import type { BasisPoints } from "../rates";
 import type { EvidenceGranularity, VendorEvidenceBundle } from "./foundation";
 import type { InputSourceKind } from "./input";
@@ -9,6 +9,8 @@ export interface OmrVendorCapabilities {
   readonly vendorId: string;
   readonly vendorDisplayName: string;
   readonly supportedMimeTypes: readonly string[];
+  /** Actual bytes transferred to the provider after server canonicalization. */
+  readonly transferMimeType: "image/png";
   readonly maxPages: number;
   readonly evidenceGranularity: EvidenceGranularity;
   readonly supportsDeletion: boolean;
@@ -26,13 +28,7 @@ export interface OmrProviderPreflight {
   readonly capabilitySnapshotDigest: SemanticDigest;
 }
 
-export type VendorExportTargetSelector =
-  | { readonly kind: "measure"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
-  | { readonly kind: "measure-start"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
-  | { readonly kind: "measure-end"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
-  | { readonly kind: "voice-event"; readonly musicXmlPartOrdinal: number; readonly musicXmlStaffNumber: number; readonly musicXmlVoiceKey: string; readonly measureOrdinal: number; readonly eventOrdinal: number }
-  | { readonly kind: "chord-event"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number; readonly eventOrdinal: number }
-  | { readonly kind: "section-text"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number; readonly eventOrdinal: number };
+export type VendorExportTargetSelector = MusicXmlSourceTargetSelector;
 
 export interface VendorExportEvidenceMapping {
   readonly vendorTargetId: string;
@@ -192,6 +188,7 @@ export type OmrPublicStatus =
   | { readonly kind: "cancel-pending"; readonly messageKo: string }
   | { readonly kind: "cancel-failed"; readonly code: string; readonly messageKo: string }
   | { readonly kind: "reconciliation-required"; readonly code: string; readonly messageKo: string }
+  | { readonly kind: "retry-pending"; readonly operation: "sync" | "capture"; readonly attempt: number; readonly nextAttemptAt: string; readonly messageKo: string }
   | { readonly kind: "cancelled" };
 
 export interface OmrApplicationService {
@@ -236,6 +233,12 @@ export const CORE_OMR_QUOTA_DEFAULTS = Object.freeze({
   maxRetriesPerPage: 2,
 } as const);
 
+export const OMR_VENDOR_ADAPTER_CONTRACT_VERSION = "omr-vendor-adapter-v1" as const;
+
+export function canonicalizeVendorCapabilities(capabilities: OmrVendorCapabilities): OmrVendorCapabilities {
+  return { ...capabilities, supportedMimeTypes: [...new Set(capabilities.supportedMimeTypes)].sort() };
+}
+
 export function validateVendorCapabilities(capabilities: OmrVendorCapabilities): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/u.test(capabilities.vendorId)
     || typeof capabilities.vendorDisplayName !== "string" || capabilities.vendorDisplayName.trim().length === 0 || capabilities.vendorDisplayName.length > 128
@@ -247,6 +250,8 @@ export function validateVendorCapabilities(capabilities: OmrVendorCapabilities):
     || (capabilities.canDeleteImmediately && !capabilities.supportsDeletion)
     || typeof capabilities.retentionPolicyReference !== "string" || capabilities.retentionPolicyReference.trim().length === 0 || capabilities.retentionPolicyReference.length > 512
     || capabilities.supportedMimeTypes.length === 0
+    || capabilities.transferMimeType !== "image/png"
+    || !capabilities.supportedMimeTypes.includes(capabilities.transferMimeType)
     || new Set(capabilities.supportedMimeTypes).size !== capabilities.supportedMimeTypes.length
     || (capabilities.estimatedCreditPerPage !== undefined
       && (!Number.isSafeInteger(capabilities.estimatedCreditPerPage) || capabilities.estimatedCreditPerPage <= 0))) {

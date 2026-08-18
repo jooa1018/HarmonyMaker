@@ -76,9 +76,7 @@ export function isCorrectionPatchCompatible(target: OmrCorrectionTarget, patch: 
   if (["pitch", "duration", "accidental", "tie", "replace-event"].includes(patch.kind)) return target.kind === "voice-event";
   if (patch.kind === "chord") return target.kind === "chord-event";
   if (patch.kind === "time-signature" || patch.kind === "key-signature") return target.kind === "measure-start";
-  // Structural split/merge semantics are intentionally deferred. Never treat the legacy
-  // implicit-flag toggle as a completed barline correction.
-  if (patch.kind === "insert-barline" || patch.kind === "delete-barline") return false;
+  if (patch.kind === "insert-barline" || patch.kind === "delete-barline") return target.kind === "measure-end";
   return patch.kind === "replace-source-text" && target.kind === "section-text";
 }
 function isCorrectionTarget(value: unknown): value is OmrCorrectionTarget {

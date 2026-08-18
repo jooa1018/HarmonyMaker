@@ -20,6 +20,10 @@ import {
 } from "./foundation";
 import type { DiagnosticCode } from "../diagnostics";
 import { isPlainRecord } from "../validation";
+import { remapMusicXmlSourceTargetMap } from "./import-identity";
+import {
+  applyBarlinePatchToProjection, applyBarlineStructuralPatch,
+} from "./barline-structure";
 
 function currentRevision(source: SongSourceDocument): SourceRevisionRef {
   return { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
@@ -52,6 +56,9 @@ function targetProjection(source: SongSourceDocument, target: RevisionScopedTarg
 
 function applyVoicePatch(event: LeadEvent, patch: OmrCorrectionPatch): LeadEvent {
   if (patch.kind === "replace-event") {
+    if (compareFractions(event.onset, patch.event.onset) !== 0 || compareFractions(event.duration, patch.event.duration) !== 0) {
+      throw new RangeError("OMR_CORRECTION_STRUCTURAL_MOVE_UNSUPPORTED");
+    }
     if (patch.event.kind === "rest") return { kind: "rest", id: event.id, sourceMeasureId: event.sourceMeasureId, onset: patch.event.onset, duration: patch.event.duration };
     return { kind: "note", id: event.id, sourceMeasureId: event.sourceMeasureId, onset: patch.event.onset, duration: patch.event.duration, pitch: patch.event.pitch, tieStart: patch.event.tieStart, tieStop: patch.event.tieStop, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] };
   }
@@ -64,6 +71,10 @@ function applyVoicePatch(event: LeadEvent, patch: OmrCorrectionPatch): LeadEvent
 }
 
 function applyPatchToProjection(target: RevisionScopedTarget["target"], before: unknown, patch: OmrCorrectionPatch): unknown {
+  if (patch.kind === "insert-barline" || patch.kind === "delete-barline") {
+    if (target.kind !== "measure-end") throw new RangeError("OMR_CORRECTION_TARGET_INCOMPATIBLE");
+    return applyBarlinePatchToProjection(before, patch);
+  }
   if (!isPlainRecord(before)) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   if (target.kind === "voice-event") return applyVoicePatch(before as unknown as LeadEvent, patch);
   if (target.kind === "chord-event" && patch.kind === "chord") {
@@ -173,14 +184,19 @@ export async function applyOmrCorrection(input: {
   const target = resolveTarget(input.target, input.source, input.remaps ?? []);
   if (!isCorrectionPatchCompatible(target.target, input.patch)) throw new RangeError("OMR_CORRECTION_TARGET_INCOMPATIBLE");
   if (!Number.isFinite(Date.parse(input.appliedAt)) || (input.reviewItemId !== undefined && input.autoRepairProposalId !== undefined)) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
-  const beforeProjection = canonicalJson(targetProjection(input.source, target.target));
-  const patched = applyPatch(input.source, target.target, input.patch);
+  const structuralPatch = input.patch.kind === "insert-barline" || input.patch.kind === "delete-barline";
+  const structural = structuralPatch ? applyBarlineStructuralPatch(input.source, target.target, input.patch) : undefined;
+  const beforeProjectionValue = structural
+    ? structural.beforeProjection
+    : targetProjection(input.source, target.target);
+  const beforeProjection = canonicalJson(beforeProjectionValue);
+  const patched = structural?.source ?? applyPatch(input.source, target.target, input.patch);
   const fromRevision = currentRevision(input.source);
   const pending: SongSourceDocument = { ...patched, revisionOrdinal: input.source.revisionOrdinal + 1, previousRevision: fromRevision };
   const revisionDigest = await digestMusicalSource(pending);
   const toRevision = { documentId: input.source.documentId, revisionOrdinal: pending.revisionOrdinal, revisionDigest };
-  const idRemap = await createSourceIdRemap(fromRevision, toRevision, identityRemapEntries(input.source, pending));
-  const afterProjectionValue = targetProjection(pending, target.target);
+  const idRemap = await createSourceIdRemap(fromRevision, toRevision, structural?.remapEntries ?? identityRemapEntries(input.source, pending));
+  const afterProjectionValue = structural?.afterProjection ?? targetProjection(pending, target.target);
   const revisionRecord: SourceRevisionRecord = {
     id: sourceRevisionRecordId(fromRevision.revisionOrdinal, toRevision.revisionOrdinal, 0), editOrdinal: 0,
     fromRevision, toRevision, commandKind: "omr-correction",
@@ -189,7 +205,21 @@ export async function applyOmrCorrection(input: {
     idRemap,
   };
   const history = [...input.source.revisionHistory, revisionRecord];
-  const source = normalizeSongSourceDocument({ ...pending, revisionDigest, revisionHistory: history, revisionHistoryDigest: await computeRevisionHistoryDigest(history) });
+  const musicXmlSourceTargetMap = input.source.importInfo?.musicXmlSourceTargetMap
+    ? await remapMusicXmlSourceTargetMap(input.source.importInfo.musicXmlSourceTargetMap, idRemap)
+    : undefined;
+  const importInfo = pending.importInfo ? (() => {
+    const { omrRuntimeWarningAcknowledgements: _discarded, ...withoutAcknowledgements } = pending.importInfo;
+    void _discarded;
+    return { ...withoutAcknowledgements, ...(musicXmlSourceTargetMap ? { musicXmlSourceTargetMap } : {}) };
+  })() : undefined;
+  const source = normalizeSongSourceDocument({
+    ...pending,
+    revisionDigest,
+    revisionHistory: history,
+    revisionHistoryDigest: await computeRevisionHistoryDigest(history),
+    ...(importInfo ? { importInfo } : {}),
+  });
   const correctionDigest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v2", target, beforeProjection, patch: input.patch, correctionSource: input.correctionSource, reviewItemId: input.reviewItemId ?? null, autoRepairProposalId: input.autoRepairProposalId ?? null });
   const correction: OmrCorrectionRecord = {
     id: `omr-correction:${correctionDigest.slice(0, 32)}`,
@@ -364,7 +394,11 @@ export async function resolveOmrAutoRepair(input: {
 }): Promise<{ readonly source: SongSourceDocument; readonly proposal: OmrAutoRepairProposal; readonly correction?: OmrCorrectionRecord; readonly idRemap?: SourceIdRemap }> {
   if (input.proposal.resolution.status !== "pending") throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   if (input.resolution === "rejected") return { source: input.source, proposal: { ...input.proposal, resolution: { status: "rejected" } } };
-  const applied = await applyOmrCorrection({ source: input.source, target: input.proposal.target, patch: input.proposal.patch, correctionSource: "auto-accepted", appliedAt: input.appliedAt, autoRepairProposalId: input.proposal.id, remaps: input.remaps });
+  const resolvedTarget = resolveTarget(input.proposal.target, input.source, input.remaps ?? []);
+  if (canonicalJson(targetProjection(input.source, resolvedTarget.target)) !== input.proposal.originalProjection) {
+    throw new RangeError("OMR_AUTO_REPAIR_STALE");
+  }
+  const applied = await applyOmrCorrection({ source: input.source, target: resolvedTarget, patch: input.proposal.patch, correctionSource: "auto-accepted", appliedAt: input.appliedAt, autoRepairProposalId: input.proposal.id, remaps: input.remaps });
   return { source: applied.source, correction: applied.correction, idRemap: applied.idRemap, proposal: { ...input.proposal, resolution: { status: "accepted", correctionRecordId: applied.correction.id } } };
 }
 
@@ -405,4 +439,35 @@ export function validateReviewEvidenceReferences(record: OmrReviewRecord, index:
   const indexed = new Set(index.evidence.map((item) => item.id));
   const archived = new Set(archive.unmappedEvidence.map((item) => item.id));
   return record.reviewItems.flatMap((item) => item.evidenceIds.flatMap((evidenceId) => Number(indexed.has(evidenceId)) + Number(archived.has(evidenceId)) === 1 ? [] : [`OMR_REVIEW_RESOLUTION_INVALID:${item.id}:evidence:${evidenceId}`]));
+}
+
+/** Ensures indexed evidence still names the current remap of its original review target. */
+export function validateReviewEvidenceTargetBindings(
+  source: SongSourceDocument,
+  record: OmrReviewRecord,
+  index: SourceEvidenceIndex,
+  archive: OmrEvidenceArchive,
+): readonly string[] {
+  const archived = new Set(archive.unmappedEvidence.map((item) => item.id));
+  const evidenceById = new Map(index.evidence.map((item) => [item.id, item]));
+  const mappingByVendorTarget = new Map(index.targetMappings.map((mapping) => [mapping.vendorTargetId, mapping]));
+  const resolveCurrent = (original: RevisionScopedTarget): RevisionScopedTarget | undefined => {
+    let resolved = original;
+    for (const revision of source.revisionHistory) {
+      if (!revisionRefsEqual(resolved.sourceRevision, revision.fromRevision)) continue;
+      const next = remapRevisionScopedTarget(resolved, revision.idRemap);
+      if (!next) return undefined;
+      resolved = next;
+    }
+    return revisionRefsEqual(resolved.sourceRevision, index.sourceRevision) ? resolved : undefined;
+  };
+  return record.reviewItems.flatMap((item) => item.evidenceIds.flatMap((evidenceId) => {
+    if (archived.has(evidenceId)) return [];
+    const evidence = evidenceById.get(evidenceId);
+    const mapping = evidence?.vendorTargetId ? mappingByVendorTarget.get(evidence.vendorTargetId) : undefined;
+    const resolved = resolveCurrent(item.target);
+    return evidence && mapping && resolved && canonicalJson(resolved) === canonicalJson(mapping.target)
+      ? []
+      : [`OMR_REVIEW_RESOLUTION_INVALID:${item.id}:evidence-target:${evidenceId}`];
+  }));
 }
