@@ -220,3 +220,29 @@ OMR 101-run               PASS
 ```
 
 The six frozen artifacts match their pinned byte SHA-256 values and no protected grammar/diagnostic authority path differs from the scope base. The 99-code registry and accepted WAG v1.0.1 musical selection path are unchanged. The repository closure count is `P0=0`, `P1=0`, `P2=0`. Reference-adapter evidence remains plumbing/integrity evidence, not recognition accuracy.
+
+## Targeted P1-04 / P1-06 closure evidence
+
+- Scope base: `782e0b39dc9c0172acce82de240210407acb1fc5`
+- Code checkpoint: `c53a2d7f1c7b7bbffbedcb5290cd4757cd4e1735`
+- Full suite: 64 files, 607 tests
+
+The production-factory evidence constructs deployment generation 1 with active Provider A, persists the derived A binding, then reconstructs the service over the same durable store with active Provider B and historical A. The old A job replays create, uploads, starts, polls, captures XML/evidence/mapping/retention, exports, and deletes through A only. A new job stores the B binding. A separate generation without historical A produces reconciliation and makes zero B status calls. A response-lost A create resumes through A after lease expiry and makes zero B preflight/create calls. Different configuration generations produce distinct bindings, and no production path uses `configured-real`.
+
+Lifecycle taxonomy evidence proves malformed mapping schema, invalid mapping digest, malformed evidence graph, result-binding mismatch, payload limit, and explicit Vendor failed status are terminal with `creditState=released`, absent retry metadata, and no second capture/status attempt. Temporary status, XML export, evidence, mapping transport, retention read, and object-store write failures remain retryable and recover with binding/credit retained. Persistent transient export failures exhaust the bounded schedule into reconciliation while preserving the provider identity, encrypted Vendor job ID, and reserved credit.
+
+Fresh gate evidence:
+
+```text
+npm ci                    PASS — 451 packages added, 452 audited, 0 vulnerabilities
+npm run typecheck         PASS
+npm run lint              PASS
+npm test                  PASS — 64 files, 607 tests
+npm run build             PASS
+git diff --check          PASS
+Segment B 101-run         PASS
+OMR 101-run               PASS
+frozen authority          PASS — six pinned hashes, semantic/99-code tests, 0 protected changes
+```
+
+No new finding was introduced: `NEW_P0=0`, `NEW_P1=0`, `NEW_P2=0`. Reopened P1-04 and P1-06 are closed, leaving `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`. Deterministic adapters establish routing and integrity behavior only; they do not establish real-provider recognition accuracy.

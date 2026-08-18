@@ -175,3 +175,17 @@ For a future authorized real-provider/live-service run, additionally verify the 
 8. Exercise structural barline split/merge on real provider evidence. Re-export/reload and verify measure/event/performance/section/phrase IDs, SourceIdRemap, evidence targets, and correction-history replay.
 
 Until these runs are actually authorized and performed, retain `EXTERNAL_PROVIDER_SELECTION_OR_CREDENTIAL_REQUIRED`, `EXTERNAL_OMR_CALIBRATION_CORPUS_REQUIRED`, `EXTERNAL_DATABASE_VERIFICATION_UNAVAILABLE`, `EXTERNAL_OBJECT_STORE_VERIFICATION_UNAVAILABLE`, and `EXTERNAL_DEVICE_VERIFICATION_UNAVAILABLE`.
+
+## Targeted provider-binding and failure-taxonomy closure checkpoint
+
+Use code checkpoint `c53a2d7f1c7b7bbffbedcb5290cd4757cd4e1735` or its verified additive handoff descendant. Repository tests now close the production-composition and terminal/transient classification invariants without selecting or integrating a real provider.
+
+For a future separately authorized real-provider/live-service verification:
+
+1. Register Provider A with a stable non-secret configuration generation, create a job, deploy active Provider B while retaining A historically, and verify every old-job operation uses the exact persisted A binding/version/vendor identity. Capture provider-side request logs proving B received zero A opaque job IDs.
+2. Remove historical A in a later deployment and verify old A work fails closed into reconciliation without a B call. Restore the exact A binding and perform the authorized reconciliation recovery.
+3. Lose an idempotent A create response, rotate active to B, and retry the identical canonical request after restart. Verify A replay occurs before any B capability or create request.
+4. Inject malformed mapping schema/digest, malformed evidence graph, result/bundle/page binding mismatch, payload overflow, and explicit Vendor terminal status. Each must end failed with credit released, no retry metadata, and no repeated malformed capture.
+5. Separately inject temporary provider transport/read failures and temporary S3 write failure. Verify persisted bounded retry across restart, binding/opaque ID/credit retention, successful recovery, and reconciliation only after transient exhaustion.
+
+These external runs remain unauthorized and incomplete here. Keep the existing provider/corpus/database/object-store/device classifications open; repository CI and deterministic adapters are not real-provider accuracy or live-service evidence. Ultra, Step 11, provider selection/integration, corpus calibration, and physical-device verification were not started by this checkpoint.

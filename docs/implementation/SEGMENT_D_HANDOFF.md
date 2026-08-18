@@ -298,3 +298,37 @@ frozen-authority audit            PASS — six exact hashes, 99 codes, zero prot
 ```
 
 No new P0, P1, or P2 finding remains from this closure. Repository verdict is `SEGMENT_D_ACCEPTED=YES` and `ULTRA_AUDIT_READY=YES`; external real-provider/corpus/live-service/device classifications remain open and are not converted into PASS claims.
+
+## Targeted reopened P1-04 / P1-06 closure
+
+- Exact starting remote HEAD: `782e0b39dc9c0172acce82de240210407acb1fc5`
+- Prior code checkpoint below the documentation-only start: `16421f532721dcd4843717658a21f709ffcd5b81`
+- New implementation-and-test checkpoint: `c53a2d7f1c7b7bbffbedcb5290cd4757cd4e1735`
+- Final handoff-inclusive remote HEAD: the additive documentation commit containing this section; its SHA and terminal remote identifiers are recorded in the completion response.
+
+Production composition now materializes exact provider bindings from `providerId + configurationGeneration + adapterContractVersion`, exposes active and historical registrations separately, and passes that registry through the real production service factory. Every existing-job Vendor operation uses the persisted binding/version/vendor triple. Generation 2 can keep A available while B is active; generation 3 without A moves an old A job to reconciliation without invoking B. Lost-response create replay uses A before B preflight/create. The focused factory campaign also asserts zero A Vendor-job-ID calls into adapter B.
+
+The centralized failure taxonomy distinguishes `vendor-terminal`, `contract-integrity`, `transient-provider`, `transient-local`, and binding unavailability. Contract/integrity and explicit Vendor terminal outcomes release credit, clear retry metadata, and do not capture twice. Transient status/export/evidence/mapping/retention/object-store failures retain credit and binding, persist bounded retry, and can recover; exhaustion alone enters reconciliation.
+
+Verification truth at the code checkpoint:
+
+```text
+npm ci                            PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck                 PASS
+npm run lint                      PASS — zero warnings/errors
+npm test                          PASS — 64 files, 607 tests
+npm run build                     PASS — Next.js production build
+git diff --check                  PASS
+Segment B determinism             PASS — 101 complete executions
+OMR determinism                   PASS — 101 canonical permutations
+production A -> B composition     PASS
+historical A unavailable          PASS — reconciliation, zero B status calls
+lost A create response replay     PASS — zero B preflight/create calls
+mapping schema/digest terminal    PASS — no retry, one capture attempt
+evidence/integrity terminal       PASS — no retry, one capture attempt
+payload/Vendor terminal           PASS — no retry
+transient matrix and exhaustion   PASS
+frozen-authority audit            PASS — six exact hashes, 99 codes, zero protected-path diff
+```
+
+The reopened counts are closed: `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`. Repository acceptance is `SEGMENT_D_ACCEPTED=YES` and `ULTRA_AUDIT_READY=YES`. This section does not authorize or begin Ultra, Step 11, a real provider, corpus calibration, live-service testing, or device testing.
