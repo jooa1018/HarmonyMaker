@@ -5,6 +5,9 @@ vi.mock("server-only", () => ({}));
 import type { Pool } from "pg";
 import type { PrivateRowId } from "../persistence/store";
 import { PostgresOmrStore } from "./postgres-store";
+import {
+  ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES, hasActiveOmrVendorExposure,
+} from "./store";
 
 interface FakeJobRow extends Record<string, unknown> {
   state: string;
@@ -16,6 +19,7 @@ interface FakeJobRow extends Record<string, unknown> {
   cleanup_lease_token: string | null;
   cleanup_lease_expires_at: string | null;
   vendor_create_outcome_state: string;
+  vendor_job_id_envelope: Record<string, unknown> | null;
   upload_state: string | null;
   upload_lease_token: string | null;
 }
@@ -30,7 +34,7 @@ class LockedPoolFake {
     canonical_create_request: { pageCount: 1, pages: [], sourceKind: "camera-photo", rights: { basis: "user-confirmed-rights", allowedUses: ["provider-transfer"] }, providerTransferConsent: true, consentCapabilitySnapshotDigest: "a".repeat(64), idempotencyKey: "fixture" },
     rights_json: { basis: "user-confirmed-rights", allowedUses: ["provider-transfer"] }, provider_consent_recorded_at: "2026-01-01T00:00:00.000Z",
     capability_snapshot: { vendorId: "fixture" }, capability_snapshot_digest: "a".repeat(64), vendor_create_idempotency_key: "vendor-key",
-    vendor_create_lease_expires_at: "2026-01-01T00:00:00.000Z", vendor_create_outcome_state: "confirmed", credit_estimate: 1, credit_state: "reserved",
+    vendor_create_lease_expires_at: "2026-01-01T00:00:00.000Z", vendor_create_outcome_state: "confirmed", vendor_job_id_envelope: null, credit_estimate: 1, credit_state: "reserved",
     vendor_delete_state: "not-started", local_delete_state: "not-started", handle_active: true,
     created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
     state: "processing", operation_kind: null, operation_request_digest: null, operation_lease_token: null, operation_lease_expires_at: null,
@@ -58,14 +62,40 @@ class LockedPoolFake {
         }
         if (sql.startsWith("SELECT * FROM omr_jobs")) return { rows: [{ ...this.row }], rowCount: 1 };
         if (sql.startsWith("SELECT * FROM omr_pages")) return { rows: [], rowCount: 0 };
+        if (sql === "SELECT id FROM omr_jobs WHERE id=$1") return { rows: [{ id: this.row.id }], rowCount: 1 };
         if (sql.startsWith("UPDATE omr_jobs SET")) {
+          if (sql.includes("vendor_job_id_envelope=$2")) {
+            const leaseToken = values[4] === null ? null : String(values[4]);
+            const matches = this.row.state === values[3]
+              && this.row.vendor_create_outcome_state === "outcome-uncertain"
+              && this.row.vendor_job_id_envelope === null
+              && (leaseToken === null ? this.row.cleanup_lease_token === null : this.row.cleanup_lease_token === leaseToken);
+            if (!matches) return { rows: [], rowCount: 0 };
+            this.row.vendor_job_id_envelope = JSON.parse(String(values[1])) as Record<string, unknown>;
+            this.row.vendor_create_outcome_state = "confirmed";
+            return { rows: [{ id: this.row.id }], rowCount: 1 };
+          }
+          if (sql.includes("handle_active=false,state='delete-pending'")) {
+            if (!this.row.handle_active) return { rows: [], rowCount: 0 };
+            this.row.handle_active = false;
+            this.row.state = "delete-pending";
+            if (this.row.credit_state !== "settled") {
+              const preserve = this.row.credit_state === "reserved"
+                && (this.row.vendor_create_outcome_state === "outcome-uncertain"
+                  || (this.row.vendor_create_outcome_state === "confirmed" && this.row.vendor_delete_state !== "deleted"));
+              this.row.credit_state = preserve ? "reserved" : "released";
+            }
+            return { rows: [], rowCount: 1 };
+          }
           if (sql.includes("state=CASE WHEN state='delete-pending'")) {
             if (this.row.state !== "delete-pending") this.row.state = "expired";
             this.row.handle_active = false;
-            const preserve = this.row.credit_state === "reserved"
-              && (this.row.vendor_create_outcome_state === "outcome-uncertain"
-                || (this.row.vendor_create_outcome_state === "confirmed" && this.row.vendor_delete_state !== "deleted"));
-            this.row.credit_state = preserve ? "reserved" : "released";
+            if (this.row.credit_state !== "settled") {
+              const preserve = this.row.credit_state === "reserved"
+                && (this.row.vendor_create_outcome_state === "outcome-uncertain"
+                  || (this.row.vendor_create_outcome_state === "confirmed" && this.row.vendor_delete_state !== "deleted"));
+              this.row.credit_state = preserve ? "reserved" : "released";
+            }
             this.row.cleanup_lease_token = String(values[2]);
             this.row.cleanup_lease_expires_at = String(values[3]);
             return { rows: [], rowCount: 1 };
@@ -89,6 +119,51 @@ class LockedPoolFake {
         return { rows: [], rowCount: 0 };
       },
       release: () => { const release = releaseLock; releaseLock = undefined; release?.(); },
+    };
+  }
+
+  async query(sql: string, values: readonly unknown[] = []) {
+    const client = await this.connect();
+    try { return await client.query(sql, values); } finally { client.release(); }
+  }
+}
+
+interface QuotaExposure {
+  readonly ownerSessionId: string;
+  readonly ipOwnerHash: string;
+  readonly state: Parameters<typeof hasActiveOmrVendorExposure>[0]["state"];
+  readonly vendorCreateOutcomeState: Parameters<typeof hasActiveOmrVendorExposure>[0]["vendorCreateOutcomeState"];
+  readonly vendorDeleteState: Parameters<typeof hasActiveOmrVendorExposure>[0]["vendorDeleteState"];
+  readonly createdAt: string;
+  readonly creditState: "reserved" | "settled" | "released";
+  readonly creditEstimate: number;
+}
+
+class QuotaPoolFake {
+  readonly calls: Array<{ readonly sql: string; readonly values: readonly unknown[] }> = [];
+  constructor(private readonly exposures: readonly QuotaExposure[]) {}
+
+  async connect() {
+    return {
+      query: async (sql: string, values: readonly unknown[] = []) => {
+        this.calls.push({ sql, values });
+        if (sql.includes("FROM omr_create_idempotency")) return { rows: [], rowCount: 0 };
+        if (sql.includes("AS session_active")) {
+          const ownerSessionId = String(values[0]); const ipOwnerHash = String(values[1]); const now = String(values[2]);
+          const active = this.exposures.filter(hasActiveOmrVendorExposure);
+          const day = now.slice(0, 10);
+          return { rows: [{
+            session_active: active.filter((job) => job.ownerSessionId === ownerSessionId).length,
+            ip_active: active.filter((job) => job.ipOwnerHash === ipOwnerHash).length,
+            session_hour: 0, ip_hour: 0,
+            day_credit: this.exposures.filter((job) => job.creditState === "reserved"
+              || (job.createdAt.startsWith(day) && job.creditState !== "released"))
+              .reduce((sum, job) => sum + job.creditEstimate, 0),
+          }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release: () => undefined,
     };
   }
 }
@@ -157,6 +232,7 @@ describe("PostgreSQL OMR transition fencing", () => {
     await expect(store.claimCleanup({ now: "2026-01-01T00:00:00.000Z", limit: 10, leaseToken: "cleanup:1", leaseExpiresAt: "2026-01-01T00:05:00.000Z" })).resolves.toEqual([]);
     const sql = pool.calls.find((call) => call.includes("FOR UPDATE SKIP LOCKED"));
     expect(sql).toContain("handle_active=true AND expires_at <= $1");
+    expect(sql).toContain("OR state='expired'");
     expect(sql).toContain("state='delete-pending'");
     expect(sql).toContain("vendor_delete_next_attempt_at");
     expect(sql).toContain("local_delete_next_attempt_at");
@@ -182,5 +258,79 @@ describe("PostgreSQL OMR transition fencing", () => {
       now: "2026-01-03T00:00:00.000Z", limit: 10,
       leaseToken: "cleanup:no-job", leaseExpiresAt: "2026-01-03T00:05:00.000Z",
     })).resolves.toMatchObject([{ creditState: "released", vendorCreateOutcomeState: "definitive-no-job" }]);
+
+    const settledPool = new LockedPoolFake(); settledPool.cleanupCandidate = true;
+    settledPool.row.state = "completed"; settledPool.row.credit_state = "settled";
+    const settledStore = new PostgresOmrStore(settledPool as unknown as Pool);
+    await expect(settledStore.claimCleanup({
+      now: "2026-01-01T12:00:00.000Z", limit: 10,
+      leaseToken: "cleanup:settled", leaseExpiresAt: "2026-01-01T12:05:00.000Z",
+    })).resolves.toMatchObject([{ creditState: "settled" }]);
+    settledPool.row.state = "completed"; settledPool.row.handle_active = true; settledPool.row.credit_state = "settled";
+    await expect(settledStore.markHandleDeleted("1" as PrivateRowId, "2026-01-01T12:01:00.000Z")).resolves.toBeUndefined();
+    expect(settledPool.row).toMatchObject({ state: "delete-pending", credit_state: "settled" });
+  });
+
+  it("semantically applies the shared exposure predicate and settled daily credit in PostgreSQL claims", async () => {
+    const quota = {
+      maxConcurrentJobsPerSession: 1, maxConcurrentJobsPerIp: 2,
+      maxJobsPerSessionPerHour: 100, maxJobsPerIpPerHour: 100, dailyGlobalCreditCeiling: 100,
+      maxPagesPerJob: 12, maxRetriesPerPage: 3,
+    };
+    const claim = (store: PostgresOmrStore, ownerSessionId: string, ipOwnerHash: string, dailyGlobalCreditCeiling = 100) => store.claimCreate({
+      ownerSessionId: ownerSessionId as PrivateRowId, ipOwnerHash,
+      idempotencyKeyHash: `key:${ownerSessionId}`, requestDigest: "a".repeat(64) as never,
+      record: { creditEstimate: 1 } as never,
+      quota: { ...quota, dailyGlobalCreditCeiling }, now: "2026-01-01T12:00:00.000Z",
+    });
+    const uncertain = (ownerSessionId: string): QuotaExposure => ({
+      ownerSessionId, ipOwnerHash: "ip:shared", state: "delete-pending",
+      vendorCreateOutcomeState: "outcome-uncertain", vendorDeleteState: "failed",
+      createdAt: "2025-12-31T23:00:00.000Z", creditState: "reserved", creditEstimate: 1,
+    });
+
+    const sessionPool = new QuotaPoolFake([uncertain("session:1")]);
+    await expect(claim(new PostgresOmrStore(sessionPool as unknown as Pool), "session:1", "ip:new")).resolves.toEqual({ status: "quota-denied" });
+    const sessionCount = sessionPool.calls.find((call) => call.sql.includes("AS session_active"));
+    expect(sessionCount?.values[3]).toEqual(ACTIVE_OMR_LIFECYCLE_STATES);
+    expect(sessionCount?.values[4]).toEqual(VENDOR_CLEANUP_EXPOSURE_STATES);
+
+    const ipPool = new QuotaPoolFake([uncertain("session:1"), uncertain("session:2")]);
+    await expect(claim(new PostgresOmrStore(ipPool as unknown as Pool), "session:3", "ip:shared")).resolves.toEqual({ status: "quota-denied" });
+
+    const settledPool = new QuotaPoolFake([{
+      ownerSessionId: "session:old", ipOwnerHash: "ip:old", state: "deleted",
+      vendorCreateOutcomeState: "confirmed", vendorDeleteState: "deleted",
+      createdAt: "2026-01-01T01:00:00.000Z", creditState: "settled", creditEstimate: 1,
+    }]);
+    await expect(claim(new PostgresOmrStore(settledPool as unknown as Pool), "session:new", "ip:new", 1))
+      .resolves.toEqual({ status: "credit-denied" });
+  });
+
+  it("fences stale and cleanup-lease-losing PostgreSQL create completions", async () => {
+    const pool = new LockedPoolFake();
+    const store = new PostgresOmrStore(pool as unknown as Pool);
+    const envelope = {
+      version: 1 as const, algorithm: "aes-256-gcm" as const, nonce: "nonce",
+      ciphertext: "ciphertext", authenticationTag: "tag", associatedDataVersion: "omr-vendor-job-id-v1",
+    };
+    pool.row.state = "deleted"; pool.row.vendor_create_outcome_state = "definitive-no-job";
+    await expect(store.completeVendorCreation({
+      jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: "created",
+      now: "2026-01-01T00:00:00.000Z",
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+    expect(pool.row.vendor_job_id_envelope).toBeNull();
+
+    pool.row.state = "delete-pending"; pool.row.vendor_create_outcome_state = "outcome-uncertain";
+    pool.row.cleanup_lease_token = "cleanup:current";
+    await expect(store.completeVendorCreation({
+      jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
+      cleanupLeaseToken: "cleanup:stale", now: "2026-01-01T00:01:00.000Z",
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+    await expect(store.completeVendorCreation({
+      jobId: "1" as PrivateRowId, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
+      cleanupLeaseToken: "cleanup:current", now: "2026-01-01T00:02:00.000Z",
+    })).resolves.toBeUndefined();
+    expect(pool.row).toMatchObject({ vendor_create_outcome_state: "confirmed", vendor_job_id_envelope: envelope });
   });
 });

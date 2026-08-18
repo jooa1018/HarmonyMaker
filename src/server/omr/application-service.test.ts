@@ -722,6 +722,204 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     })).rejects.toThrow("OMR_GLOBAL_CREDIT_CEILING_EXCEEDED");
   });
 
+  it("keeps historical create uncertainty after a definitive replay rejection and retries with its original authority", async () => {
+    const h = await harness();
+    const originalCreate = h.adapter.createVendorJob.bind(h.adapter);
+    let adapterInvocations = 0;
+    vi.spyOn(h.adapter, "createVendorJob").mockImplementation(async (input) => {
+      adapterInvocations += 1;
+      if (adapterInvocations === 1) {
+        await originalCreate(input);
+        throw new OmrVendorCallError("response lost after create", "outcome-uncertain");
+      }
+      throw new OmrVendorCallError("ordinary replay rejected", "definitive-rejection");
+    });
+    const deleteSpy = vi.spyOn(h.adapter, "deleteVendorJob");
+    const request = {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights,
+      providerTransferConsent: true as const, idempotencyKey: "uncertain-then-replay-rejected",
+    };
+    await expect(createConsentedJob(h.service, request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    const beforeCleanup = h.store.listJobs()[0];
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    await expect(h.service.cleanupExpiredJobs()).resolves.toMatchObject([{
+      jobId: beforeCleanup.id,
+      result: { vendor: { status: "failed", code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN" } },
+    }]);
+    const pending = h.store.listJobs()[0];
+    expect(pending).toMatchObject({
+      state: "delete-pending", vendorCreateOutcomeState: "outcome-uncertain",
+      vendorDeleteState: "failed", localDeleteState: "deleted", creditState: "reserved",
+      providerBindingId: beforeCleanup.providerBindingId,
+      adapterContractVersion: beforeCleanup.adapterContractVersion,
+      vendorCreateIdempotencyKey: beforeCleanup.vendorCreateIdempotencyKey,
+      publicFailureCode: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN",
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+    expect(pending.vendorJobIdEnvelope).toBeUndefined();
+    expect(deleteSpy).not.toHaveBeenCalled();
+    await expect(createConsentedJob(h.service, request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    expect(adapterInvocations).toBe(2);
+    await expect(createConsentedJob(h.service, { ...request, idempotencyKey: "blocked-by-delete-pending-uncertainty" }))
+      .rejects.toThrow("OMR_QUOTA_EXCEEDED");
+    h.advance(60 * 1_000 + 1);
+    await expect(h.service.cleanupExpiredJobs()).resolves.toHaveLength(1);
+    expect(adapterInvocations).toBe(3);
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "delete-pending", vendorCreateOutcomeState: "outcome-uncertain", creditState: "reserved",
+      cleanupLeaseToken: undefined, cleanupLeaseExpiresAt: undefined,
+    });
+  });
+
+  it("does not treat a resumed create rejection as historical no-job proof", async () => {
+    const h = await harness();
+    const originalCreate = h.adapter.createVendorJob.bind(h.adapter);
+    let invocation = 0;
+    vi.spyOn(h.adapter, "createVendorJob").mockImplementation(async (input) => {
+      invocation += 1;
+      if (invocation === 1) {
+        await originalCreate(input);
+        throw new OmrVendorCallError("response lost", "outcome-uncertain");
+      }
+      throw new OmrVendorCallError("replay rejected", "definitive-rejection");
+    });
+    const request = {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights,
+      providerTransferConsent: true as const, idempotencyKey: "resumed-replay-rejected",
+    };
+    await expect(createConsentedJob(h.service, request)).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(createConsentedJob(h.service, request)).rejects.toThrow("OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN");
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "reconciliation-required", vendorCreateOutcomeState: "outcome-uncertain",
+      creditState: "reserved", publicFailureCode: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN",
+    });
+    expect(h.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
+  });
+
+  it("counts outcome-uncertain delete-pending exposure against the shared IP limit", async () => {
+    const h = await harness();
+    const originalCreate = h.adapter.createVendorJob.bind(h.adapter);
+    vi.spyOn(h.adapter, "createVendorJob").mockImplementation(async (input) => {
+      await originalCreate(input);
+      throw new OmrVendorCallError("response lost", "outcome-uncertain");
+    });
+    const serviceFor = (session: string) => new DurableOmrApplicationService({
+      ...h.dependencies,
+      actor: { sessionId: session as PrivateRowId, ipOwnerHash: "ip:hmac:shared-uncertain" },
+    });
+    for (const session of ["session:ip-1", "session:ip-2"]) {
+      await expect(createConsentedJob(serviceFor(session), {
+        sessionId: session as PrivateRowId, pageCount: 1, sourceKind: "camera-photo", rights,
+        providerTransferConsent: true, idempotencyKey: `${session}-uncertain`,
+      })).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    }
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    await expect(h.service.cleanupExpiredJobs()).resolves.toHaveLength(2);
+    expect(h.store.listJobs()).toHaveLength(2);
+    expect(h.store.listJobs().every((job) => job.state === "delete-pending" && job.vendorCreateOutcomeState === "outcome-uncertain")).toBe(true);
+    await expect(createConsentedJob(serviceFor("session:ip-3"), {
+      sessionId: "session:ip-3" as PrivateRowId, pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "shared-ip-over-limit",
+    })).rejects.toThrow("OMR_QUOTA_EXCEEDED");
+  });
+
+  it("keeps settled credit accounted after user deletion and blocks same-day reuse", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const service = new DurableOmrApplicationService({ ...h.dependencies, quota: omrQuotaConfig(1) });
+    const handle = await createConsentedJob(service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "settled-user-delete",
+    });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "settled-user-delete-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle); await service.synchronizeStatus(handle);
+    expect(h.store.listJobs()[0].creditState).toBe("settled");
+    await service.delete(handle);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", creditState: "settled" });
+    const second = new DurableOmrApplicationService({
+      ...h.dependencies, quota: omrQuotaConfig(1),
+      actor: { sessionId: "session:settled-second" as PrivateRowId, ipOwnerHash: "ip:hmac:settled-second" },
+    });
+    await expect(createConsentedJob(second, {
+      sessionId: "session:settled-second", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "settled-user-delete-reuse",
+    })).rejects.toThrow("OMR_GLOBAL_CREDIT_CEILING_EXCEEDED");
+  });
+
+  it("keeps settled credit accounted through same-day expiry cleanup", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const service = new DurableOmrApplicationService({ ...h.dependencies, quota: omrQuotaConfig(1) });
+    const handle = await createConsentedJob(service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "settled-expiry-cleanup",
+    });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "settled-expiry-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle); await service.synchronizeStatus(handle);
+    const completed = h.store.listJobs()[0];
+    expect(completed.creditState).toBe("settled");
+    await h.store.transition(completed.id, { handleExpiresAt: "2026-01-01T00:01:00.000Z" }, completed.updatedAt);
+    h.advance(2 * 60 * 1_000);
+    await expect(service.cleanupExpiredJobs()).resolves.toHaveLength(1);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", creditState: "settled" });
+    const second = new DurableOmrApplicationService({
+      ...h.dependencies, quota: omrQuotaConfig(1),
+      actor: { sessionId: "session:settled-cleanup-second" as PrivateRowId, ipOwnerHash: "ip:hmac:settled-cleanup-second" },
+    });
+    await expect(createConsentedJob(second, {
+      sessionId: "session:settled-cleanup-second", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "settled-cleanup-reuse",
+    })).rejects.toThrow("OMR_GLOBAL_CREDIT_CEILING_EXCEEDED");
+  });
+
+  it("fences stale create authority and reclaims cleanup work after a crashed lease", async () => {
+    const stale = await harness();
+    const unstableStore = new Proxy(stale.store, {
+      get(target, property, receiver) {
+        if (property === "completeVendorCreation") return async () => { throw new Error("post-create persistence interruption"); };
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as OmrStore;
+    const unstableService = new DurableOmrApplicationService({ ...stale.dependencies, store: unstableStore });
+    await expect(createConsentedJob(unstableService, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "stale-create-completion",
+    })).rejects.toThrow("OMR_IDEMPOTENCY_PENDING");
+    const uncertain = stale.store.listJobs()[0];
+    await stale.store.markHandleDeleted(uncertain.id, uncertain.updatedAt);
+    await stale.store.transition(uncertain.id, {
+      state: "deleted", vendorCreateOutcomeState: "definitive-no-job", vendorDeleteState: "deleted",
+      localDeleteState: "deleted", creditState: "released",
+    }, uncertain.updatedAt);
+    await expect(stale.store.completeVendorCreation({
+      jobId: uncertain.id, vendorJobIdEnvelope: uncertain.publicHandleReplayEnvelope,
+      expectedState: "created", now: uncertain.updatedAt,
+    })).rejects.toThrow("OMR_CREATE_COMPLETION_SUPERSEDED");
+    expect(stale.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorCreateOutcomeState: "definitive-no-job",
+    });
+    expect(stale.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
+
+    const recovery = await harness();
+    await createConsentedJob(recovery.service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "crashed-cleanup-lease",
+    });
+    recovery.advance(24 * 60 * 60 * 1_000 + 1);
+    await expect(recovery.store.claimCleanup({
+      now: "2026-01-02T00:00:00.001Z", limit: 10, leaseToken: "crashed-worker",
+      leaseExpiresAt: "2026-01-02T00:05:00.001Z",
+    })).resolves.toHaveLength(1);
+    await expect(recovery.store.claimCleanup({
+      now: "2026-01-02T00:04:59.001Z", limit: 10, leaseToken: "too-early",
+      leaseExpiresAt: "2026-01-02T00:09:59.001Z",
+    })).resolves.toEqual([]);
+    await expect(recovery.store.claimCleanup({
+      now: "2026-01-02T00:05:00.002Z", limit: 10, leaseToken: "recovered-worker",
+      leaseExpiresAt: "2026-01-02T00:10:00.002Z",
+    })).resolves.toMatchObject([{ state: "expired", cleanupLeaseToken: "recovered-worker" }]);
+  });
+
   it("retries Vendor and local object deletion independently for mixed delete-pending siblings", async () => {
     const h = await harness();
     const originalVendorDelete = h.adapter.deleteVendorJob.bind(h.adapter);
@@ -735,15 +933,18 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await h.service.uploadPage(first, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "mixed-delete-upload-first", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
     expect((await h.service.delete(first)).vendor.status).toBe("failed");
 
-    const second = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "mixed-delete-second" });
-    await h.service.uploadPage(second, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "mixed-delete-upload-second", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    const secondService = new DurableOmrApplicationService({
+      ...h.dependencies, actor: { sessionId: "session:2" as PrivateRowId, ipOwnerHash: "ip:hmac:2" },
+    });
+    const second = await createConsentedJob(secondService, { sessionId: "session:2", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "mixed-delete-second" });
+    await secondService.uploadPage(second, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "mixed-delete-upload-second", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
     const originalObjectDelete = h.objects.delete.bind(h.objects);
     let failObjectOnce = true;
     vi.spyOn(h.objects, "delete").mockImplementation(async (...args) => {
       if (failObjectOnce) { failObjectOnce = false; throw new Error("S3 delete transient"); }
       return originalObjectDelete(...args);
     });
-    expect((await h.service.delete(second)).vendor.status).toBe("deleted");
+    expect((await secondService.delete(second)).vendor.status).toBe("deleted");
     expect(h.store.listJobs().map((job) => ({ state: job.state, vendor: job.vendorDeleteState, local: job.localDeleteState }))).toEqual([
       { state: "delete-pending", vendor: "failed", local: "deleted" },
       { state: "delete-pending", vendor: "deleted", local: "failed" },
@@ -787,8 +988,11 @@ describe("durable provider-neutral OMR application lifecycle", () => {
   it("preserves truthful unsupported and failed Vendor retention outcomes", async () => {
     const base = await harness([{ kind: "completed" }]);
     const runDelete = async (adapter: ReferenceOmrVendorAdapter, key: string) => {
-      const service = new DurableOmrApplicationService({ ...base.dependencies, adapter });
-      const handle = await createConsentedJob(service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: key });
+      const sessionId = `session:${key}` as PrivateRowId;
+      const service = new DurableOmrApplicationService({
+        ...base.dependencies, adapter, actor: { sessionId, ipOwnerHash: `ip:hmac:${key}` },
+      });
+      const handle = await createConsentedJob(service, { sessionId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: key });
       await service.uploadPage(handle, { pageIndex: 0, pageDigest: base.pageDigest, mimeType: "image/png", idempotencyKey: `${key}-upload`, bytes: new Blob([base.pageBytes.slice().buffer as ArrayBuffer]) });
       await service.start(handle); await service.synchronizeStatus(handle);
       return service.delete(handle);

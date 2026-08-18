@@ -21,7 +21,8 @@ import {
 import type { OwnedObjectStore } from "../storage/owned-object-store";
 import type { OwnedObjectRead } from "../storage/owned-object-store";
 import {
-  publicStatusFromRecord, type DurableOmrJobRecord, type OmrPageRecord, type OmrStore,
+  creditStateAfterHandleDeactivation, publicStatusFromRecord,
+  type DurableOmrJobRecord, type OmrPageRecord, type OmrStore,
 } from "./store";
 import { asOmrProviderContractError, classifyOmrProviderFailure, type OmrProviderFailureOrigin } from "./provider-failure";
 
@@ -329,23 +330,49 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     }
     let vendorJobId: VendorJobId;
     const adapter = this.adapterFor(claimedJob);
-    await this.dependencies.store.transition(claimedJob.id, { vendorCreateOutcomeState: "outcome-uncertain" }, now.toISOString());
+    try {
+      await this.dependencies.store.beginVendorCreation({
+        jobId: claimedJob.id, expectedState: claimedJob.state,
+        expectedOutcomeState: claimedJob.vendorCreateOutcomeState === "not-attempted" ? "not-attempted" : "outcome-uncertain",
+        expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt, now: now.toISOString(),
+      });
+    } catch {
+      await this.dependencies.store.recordAudit(claimedJob.id, "job-create-superseded", "create-lease-or-state-fence", now.toISOString());
+      throw new RangeError(claimedJob.capabilities.supportsIdempotency ? "OMR_IDEMPOTENCY_PENDING" : "OMR_JOB_RECONCILIATION_REQUIRED");
+    }
     try {
       vendorJobId = await adapter.createVendorJob({ pageCount: claimedJob.canonicalCreateRequest.pageCount, idempotencyKey: claimedJob.vendorCreateIdempotencyKey });
     } catch (error) {
       const outcome = vendorCallOutcome(error);
-      if (outcome === "definitive-rejection") {
-        await this.dependencies.store.failVendorCreation(claimedJob.id, "OMR_VENDOR_OPERATION_FAILED", sanitizeVendorFailure().messageKo, now.toISOString());
+      if (outcome === "definitive-rejection" && claimedJob.vendorCreateOutcomeState === "not-attempted") {
+        try {
+          await this.dependencies.store.failVendorCreation({
+            jobId: claimedJob.id, expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt,
+            code: "OMR_VENDOR_OPERATION_FAILED", messageKo: sanitizeVendorFailure().messageKo, now: now.toISOString(),
+          });
+        } catch {
+          await this.dependencies.store.recordAudit(claimedJob.id, "job-create-superseded", "definitive-rejection-fence", now.toISOString());
+          throw new RangeError("OMR_IDEMPOTENCY_PENDING");
+        }
         await this.dependencies.store.recordAudit(claimedJob.id, "job-create-failed", "definitive-vendor-rejection", now.toISOString());
         throw new RangeError("OMR_VENDOR_OPERATION_FAILED");
       }
-      if (!claimedJob.capabilities.supportsIdempotency) await this.dependencies.store.transition(claimedJob.id, { state: "reconciliation-required", reconciliationKind: "create", publicFailureCode: "OMR_JOB_RECONCILIATION_REQUIRED", publicFailureMessageKo: "인식 작업 생성 상태를 확인해야 합니다." }, now.toISOString());
+      if (!claimedJob.capabilities.supportsIdempotency || outcome === "definitive-rejection") await this.dependencies.store.transition(claimedJob.id, {
+        state: "reconciliation-required", reconciliationKind: "create",
+        publicFailureCode: outcome === "definitive-rejection" ? CREATE_OUTCOME_UNCERTAIN_CODE : "OMR_JOB_RECONCILIATION_REQUIRED",
+        publicFailureMessageKo: outcome === "definitive-rejection" ? CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO : "인식 작업 생성 상태를 확인해야 합니다.",
+      }, now.toISOString());
       await this.dependencies.store.recordAudit(claimedJob.id, "job-create-uncertain", claimedJob.capabilities.supportsIdempotency ? "resumable" : "reconciliation-required", now.toISOString());
-      throw new RangeError(claimedJob.capabilities.supportsIdempotency ? "OMR_IDEMPOTENCY_PENDING" : "OMR_JOB_RECONCILIATION_REQUIRED");
+      throw new RangeError(outcome === "definitive-rejection"
+        ? CREATE_OUTCOME_UNCERTAIN_CODE
+        : claimedJob.capabilities.supportsIdempotency ? "OMR_IDEMPOTENCY_PENDING" : "OMR_JOB_RECONCILIATION_REQUIRED");
     }
     try {
       const envelope = encryptAeadV1(new TextEncoder().encode(vendorJobId), this.dependencies.vendorJobEncryptionKey, { associatedDataVersion: "omr-vendor-job-id-v1" });
-      await this.dependencies.store.completeVendorCreation(claimedJob.id, envelope, now.toISOString());
+      await this.dependencies.store.completeVendorCreation({
+        jobId: claimedJob.id, vendorJobIdEnvelope: envelope, expectedState: claimedJob.state,
+        expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt, now: now.toISOString(),
+      });
       await this.dependencies.store.recordAudit(claimedJob.id, "job-created", claim.status, now.toISOString());
       return claim.status === "resume"
         ? new TextDecoder().decode(decryptAeadV1(claimedJob.publicHandleReplayEnvelope, this.dependencies.vendorJobEncryptionKey)) as OmrJobHandle
@@ -701,30 +728,27 @@ export class DurableOmrApplicationService implements OmrApplicationService {
               });
               const envelope = encryptAeadV1(new TextEncoder().encode(vendorJobId), this.dependencies.vendorJobEncryptionKey, { associatedDataVersion: "omr-vendor-job-id-v1" });
               try {
-                await this.dependencies.store.completeVendorCreation(job.id, envelope, now.toISOString());
+                await this.dependencies.store.completeVendorCreation({
+                  jobId: job.id, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
+                  ...(cleanupLeaseToken
+                    ? { cleanupLeaseToken }
+                    : { expectedVendorCreateLeaseExpiresAt: job.vendorCreateLeaseExpiresAt }),
+                  now: now.toISOString(),
+                });
                 vendorCreateOutcomeState = "confirmed";
               } catch {
                 const persisted = await this.dependencies.store.findOwnedByHandleHash(job.publicHandleHash, job.ownerSessionId, true).catch(() => undefined);
-                if (persisted?.vendorCreateOutcomeState === "confirmed" && persisted.vendorJobIdEnvelope) vendorCreateOutcomeState = "confirmed";
+                if (persisted?.vendorCreateOutcomeState === "confirmed" && persisted.vendorJobIdEnvelope) {
+                  vendorCreateOutcomeState = "confirmed";
+                  vendorJobId = this.vendorJobId(persisted);
+                }
                 else {
                   vendorJobId = undefined;
                   failVendorResolution(CREATE_RECONCILIATION_PERSIST_CODE, "복구한 Vendor 작업 식별자를 안전하게 저장하지 못해 외부 삭제를 재시도합니다.");
                 }
               }
-            } catch (error) {
-              if (vendorCallOutcome(error) === "definitive-rejection") {
-                try {
-                  await this.dependencies.store.completeVendorCreationNoJob(job.id, "OMR_VENDOR_OPERATION_FAILED", sanitizeVendorFailure().messageKo, now.toISOString());
-                  vendorCreateOutcomeState = "definitive-no-job";
-                  vendor = { status: "deleted" };
-                  vendorDeleteState = "deleted";
-                  vendorDeleteNextAttemptAt = undefined;
-                } catch {
-                  failVendorResolution(CREATE_RECONCILIATION_PERSIST_CODE, "Vendor no-job 결과를 안전하게 저장하지 못해 외부 삭제 확인을 재시도합니다.");
-                }
-              } else {
-                failVendorResolution(CREATE_OUTCOME_UNCERTAIN_CODE, CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO);
-              }
+            } catch {
+              failVendorResolution(CREATE_OUTCOME_UNCERTAIN_CODE, CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO);
             }
           }
         }
@@ -734,7 +758,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         vendor = { status: "deleted" };
         vendorDeleteState = "deleted";
         vendorDeleteNextAttemptAt = undefined;
-      } else if (vendorCreateOutcomeState === "confirmed" && vendorDeleteState !== "deleted") {
+      } else if (vendorCreateOutcomeState === "confirmed") {
         resolution ??= this.resolveExistingJobAdapter(job);
         if (resolution.status === "binding-unavailable") {
           failVendorResolution(resolution.code, BINDING_UNAVAILABLE_DELETE_MESSAGE_KO);
@@ -783,11 +807,9 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       "OMR_PROVIDER_BINDING_UNAVAILABLE", CREATE_OUTCOME_UNCERTAIN_CODE,
       CREATE_RECONCILIATION_PERSIST_CODE, "OMR_VENDOR_JOB_ID_UNAVAILABLE",
     ].includes(vendor.code) ? vendor.code : undefined;
-    const creditState = vendorCreateOutcomeState === "outcome-uncertain"
-      ? "reserved"
-      : vendorCreateOutcomeState === "confirmed" && vendorDeleteState !== "deleted" && job.creditState === "reserved"
-        ? "reserved"
-        : "released";
+    const creditState = creditStateAfterHandleDeactivation({
+      ...job, state, vendorCreateOutcomeState, vendorDeleteState,
+    });
     const update = {
       state, vendorCreateOutcomeState, vendorDeleteResult: vendor, vendorDeleteState, localDeleteState, creditState,
       vendorDeleteNextAttemptAt, localDeleteNextAttemptAt,

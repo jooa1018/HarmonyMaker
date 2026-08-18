@@ -47,6 +47,39 @@ export function isLegalOmrTransition(from: OmrLifecycleState, to: OmrLifecycleSt
   return from === to || LEGAL_OMR_TRANSITIONS[from].includes(to);
 }
 
+export const ACTIVE_OMR_LIFECYCLE_STATES: readonly OmrLifecycleState[] = Object.freeze([
+  "created", "uploading", "queued", "processing", "needs-input",
+  "sync-retry-pending", "capture-retry-pending", "cancel-pending", "cancel-failed", "reconciliation-required",
+]);
+
+export const VENDOR_CLEANUP_EXPOSURE_STATES: readonly OmrLifecycleState[] = Object.freeze([
+  "delete-pending", "expired",
+]);
+
+type VendorExposureRecord = Pick<DurableOmrJobRecord, "state" | "vendorCreateOutcomeState" | "vendorDeleteState">;
+
+/**
+ * v0 concurrency authority: ordinary active work counts, all historically
+ * uncertain creates count, and confirmed effects count while cleanup is
+ * operationally unresolved. Completed-but-retained results do not count until
+ * deletion/expiry enters cleanup.
+ */
+export function hasActiveOmrVendorExposure(job: VendorExposureRecord): boolean {
+  return ACTIVE_OMR_LIFECYCLE_STATES.includes(job.state)
+    || job.vendorCreateOutcomeState === "outcome-uncertain"
+    || (job.vendorCreateOutcomeState === "confirmed"
+      && VENDOR_CLEANUP_EXPOSURE_STATES.includes(job.state)
+      && job.vendorDeleteState !== "deleted");
+}
+
+export function creditStateAfterHandleDeactivation(
+  job: Pick<DurableOmrJobRecord, "creditState" | "state" | "vendorCreateOutcomeState" | "vendorDeleteState">,
+): DurableOmrJobRecord["creditState"] {
+  if (job.creditState === "settled") return "settled";
+  if (job.creditState === "reserved" && hasActiveOmrVendorExposure(job)) return "reserved";
+  return "released";
+}
+
 export interface OmrPageRecord {
   readonly pageIndex: number;
   readonly pageDigest: BinaryDigest;
@@ -157,9 +190,28 @@ export interface OmrStore {
     readonly quota: OmrQuotaConfig;
     readonly now: string;
   }): Promise<OmrCreateClaim>;
-  completeVendorCreation(jobId: PrivateRowId, vendorJobIdEnvelope: AeadEnvelopeV1, now: string): Promise<void>;
-  completeVendorCreationNoJob(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void>;
-  failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void>;
+  beginVendorCreation(input: {
+    readonly jobId: PrivateRowId;
+    readonly expectedState: OmrLifecycleState;
+    readonly expectedOutcomeState: "not-attempted" | "outcome-uncertain";
+    readonly expectedVendorCreateLeaseExpiresAt: string;
+    readonly now: string;
+  }): Promise<void>;
+  completeVendorCreation(input: {
+    readonly jobId: PrivateRowId;
+    readonly vendorJobIdEnvelope: AeadEnvelopeV1;
+    readonly expectedState: OmrLifecycleState;
+    readonly expectedVendorCreateLeaseExpiresAt?: string;
+    readonly cleanupLeaseToken?: string;
+    readonly now: string;
+  }): Promise<void>;
+  failVendorCreation(input: {
+    readonly jobId: PrivateRowId;
+    readonly expectedVendorCreateLeaseExpiresAt: string;
+    readonly code: string;
+    readonly messageKo: string;
+    readonly now: string;
+  }): Promise<void>;
   findOwnedByHandleHash(handleHash: string, ownerSessionId: PrivateRowId, includeInactive?: boolean): Promise<DurableOmrJobRecord | undefined>;
   claimPage(jobId: PrivateRowId, page: OmrPageRecord, maxRetries: number, leaseToken: string, leaseExpiresAt: string, supportsIdempotency: boolean, now: string): Promise<OmrPageClaim>;
   completePage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, objectReferenceId: PrivateRowId, now: string): Promise<boolean>;
@@ -205,6 +257,7 @@ export class MemoryOmrStore implements OmrStore {
       if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
       const job = this.jobs.get(prior.jobId)!;
       if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
+      if (!job.handleActive || !["created", "reconciliation-required"].includes(job.state)) return { status: "pending" };
       if (job.vendorCreateLeaseExpiresAt > input.now) return { status: "pending" };
       const resumed = { ...job, vendorCreateLeaseExpiresAt: input.vendorCreateLeaseExpiresAt, updatedAt: input.now };
       this.jobs.set(job.id, resumed);
@@ -220,6 +273,7 @@ export class MemoryOmrStore implements OmrStore {
         if (prior.requestDigest !== input.requestDigest) return { status: "conflict" };
         const job = this.jobs.get(prior.jobId)!;
         if (prior.complete) return prior.failure ? { status: "rejected", ...prior.failure } : { status: "replay", handleReplayEnvelope: structuredClone(job.publicHandleReplayEnvelope) };
+        if (!job.handleActive || !["created", "reconciliation-required"].includes(job.state)) return { status: "pending" };
         if (job.vendorCreateLeaseExpiresAt <= input.now) {
           const resumed = { ...job, vendorCreateLeaseExpiresAt: input.record.vendorCreateLeaseExpiresAt, updatedAt: input.now };
           this.jobs.set(job.id, resumed);
@@ -227,8 +281,7 @@ export class MemoryOmrStore implements OmrStore {
         }
         return { status: "pending" };
       }
-      const activeStates = new Set<OmrLifecycleState>(["created", "uploading", "queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending", "cancel-pending", "cancel-failed", "reconciliation-required"]);
-      const active = [...this.jobs.values()].filter((job) => activeStates.has(job.state));
+      const active = [...this.jobs.values()].filter(hasActiveOmrVendorExposure);
       if (active.filter((job) => job.ownerSessionId === input.ownerSessionId).length >= input.quota.maxConcurrentJobsPerSession
         || active.filter((job) => job.ipOwnerHash === input.ipOwnerHash).length >= input.quota.maxConcurrentJobsPerIp) return { status: "quota-denied" };
       const hourStart = new Date(new Date(input.now).getTime() - 60 * 60 * 1_000).toISOString();
@@ -246,33 +299,51 @@ export class MemoryOmrStore implements OmrStore {
     });
   }
 
-  async completeVendorCreation(jobId: PrivateRowId, vendorJobIdEnvelope: AeadEnvelopeV1, now: string): Promise<void> {
+  async beginVendorCreation(input: Parameters<OmrStore["beginVendorCreation"]>[0]): Promise<void> {
     await this.atomic(() => {
-      const job = this.jobs.get(jobId);
+      const job = this.jobs.get(input.jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
-      const updated = { ...job, vendorCreateOutcomeState: "confirmed" as const, vendorJobIdEnvelope: structuredClone(vendorJobIdEnvelope), updatedAt: now };
-      this.jobs.set(jobId, updated);
-      const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
+      if (!job.handleActive || job.state !== input.expectedState
+        || job.vendorCreateOutcomeState !== input.expectedOutcomeState
+        || job.vendorCreateLeaseExpiresAt !== input.expectedVendorCreateLeaseExpiresAt
+        || job.vendorJobIdEnvelope !== undefined || job.cleanupLeaseToken !== undefined) {
+        throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
+      }
+      this.jobs.set(job.id, { ...job, vendorCreateOutcomeState: "outcome-uncertain", updatedAt: input.now });
+    });
+  }
+
+  async completeVendorCreation(input: Parameters<OmrStore["completeVendorCreation"]>[0]): Promise<void> {
+    await this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      const fenceMatches = job.state === input.expectedState
+        && job.vendorCreateOutcomeState === "outcome-uncertain"
+        && job.vendorJobIdEnvelope === undefined
+        && (input.cleanupLeaseToken === undefined
+          ? job.cleanupLeaseToken === undefined
+            && input.expectedVendorCreateLeaseExpiresAt !== undefined
+            && job.vendorCreateLeaseExpiresAt === input.expectedVendorCreateLeaseExpiresAt
+          : job.cleanupLeaseToken === input.cleanupLeaseToken);
+      if (!fenceMatches) throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
+      const updated = { ...job, vendorCreateOutcomeState: "confirmed" as const, vendorJobIdEnvelope: structuredClone(input.vendorJobIdEnvelope), updatedAt: input.now };
+      this.jobs.set(input.jobId, updated);
+      const entry = [...this.idempotency.values()].find((value) => value.jobId === input.jobId);
       if (entry) entry.complete = true;
     });
   }
 
-  async completeVendorCreationNoJob(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
+  async failVendorCreation(input: Parameters<OmrStore["failVendorCreation"]>[0]): Promise<void> {
     await this.atomic(() => {
-      const job = this.jobs.get(jobId);
-      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
-      this.jobs.set(jobId, { ...job, vendorCreateOutcomeState: "definitive-no-job", updatedAt: now });
-      const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
-      if (entry) { entry.complete = true; entry.failure = { code, messageKo }; }
-    });
-  }
-
-  async failVendorCreation(jobId: PrivateRowId, code: string, messageKo: string, now: string): Promise<void> {
-    await this.atomic(() => {
-      const job = this.jobs.get(jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
-      this.jobs.set(jobId, { ...job, state: "failed", vendorCreateOutcomeState: "definitive-no-job", creditState: "released", publicFailureCode: code, publicFailureMessageKo: messageKo, updatedAt: now });
-      const entry = [...this.idempotency.values()].find((value) => value.jobId === jobId);
-      if (entry) { entry.complete = true; entry.failure = { code, messageKo }; }
+      const job = this.jobs.get(input.jobId); if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (job.state !== "created" || job.vendorCreateOutcomeState !== "outcome-uncertain"
+        || job.vendorCreateLeaseExpiresAt !== input.expectedVendorCreateLeaseExpiresAt
+        || job.vendorJobIdEnvelope !== undefined || job.cleanupLeaseToken !== undefined) {
+        throw new RangeError("OMR_CREATE_COMPLETION_SUPERSEDED");
+      }
+      this.jobs.set(input.jobId, { ...job, state: "failed", vendorCreateOutcomeState: "definitive-no-job", creditState: "released", publicFailureCode: input.code, publicFailureMessageKo: input.messageKo, updatedAt: input.now });
+      const entry = [...this.idempotency.values()].find((value) => value.jobId === input.jobId);
+      if (entry) { entry.complete = true; entry.failure = { code: input.code, messageKo: input.messageKo }; }
     });
   }
 
@@ -405,10 +476,7 @@ export class MemoryOmrStore implements OmrStore {
       const job = this.jobs.get(jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
       if (!isLegalOmrTransition(job.state, "delete-pending")) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
-      const creditState = job.creditState === "reserved"
-        && (job.vendorCreateOutcomeState === "outcome-uncertain" || (job.vendorCreateOutcomeState === "confirmed" && job.vendorDeleteState !== "deleted"))
-        ? "reserved"
-        : "released";
+      const creditState = creditStateAfterHandleDeactivation({ ...job, state: "delete-pending" });
       this.jobs.set(jobId, { ...job, handleActive: false, state: "delete-pending", deletedAt: now, creditState, updatedAt: now });
     });
   }
@@ -421,18 +489,18 @@ export class MemoryOmrStore implements OmrStore {
     return this.atomic(() => {
       const selected = [...this.jobs.values()].filter((job) => job.state !== "deleted" && (!job.cleanupLeaseToken || (job.cleanupLeaseExpiresAt ?? "") <= now) && (
         (job.handleActive && job.handleExpiresAt <= now)
+        || job.state === "expired"
         || (job.state === "delete-pending" && (
           (job.vendorDeleteState !== "deleted" && (job.vendorDeleteNextAttemptAt ?? now) <= now)
           || (job.localDeleteState !== "deleted" && (job.localDeleteNextAttemptAt ?? now) <= now)
         ))
       )).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
       return selected.map((job) => {
-        const preserveReservedExposure = job.creditState === "reserved"
-          && (job.vendorCreateOutcomeState === "outcome-uncertain" || (job.vendorCreateOutcomeState === "confirmed" && job.vendorDeleteState !== "deleted"));
         const base = job.state === "delete-pending"
           ? job
-          : { ...job, state: "expired" as const, handleActive: false, creditState: preserveReservedExposure ? "reserved" as const : "released" as const, updatedAt: now };
-        const updated = { ...base, cleanupLeaseToken: input.leaseToken, cleanupLeaseExpiresAt: input.leaseExpiresAt };
+          : { ...job, state: "expired" as const, handleActive: false, updatedAt: now };
+        const creditState = creditStateAfterHandleDeactivation(base);
+        const updated = { ...base, creditState, cleanupLeaseToken: input.leaseToken, cleanupLeaseExpiresAt: input.leaseExpiresAt };
         this.jobs.set(job.id, updated);
         return this.clone(updated);
       });
