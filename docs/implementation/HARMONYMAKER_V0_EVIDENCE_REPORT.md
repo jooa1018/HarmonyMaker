@@ -306,3 +306,67 @@ migration                         NONE REQUIRED
 ```
 
 `CREATE_REPLAY_REJECTION_P1=CLOSED`, `P1_05_VENDOR_EXPOSURE_AND_CREDIT=CLOSED`, and the cleanup-lease audit finding is fixed. `ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`; all unresolved counts are zero. Repository acceptance and Ultra-audit readiness are restored, while external provider/corpus/live-service/device evidence remains unclaimed.
+
+## Residual create-reconciliation lifecycle/fencing evidence
+
+- Scope base: `f73f53bf53ac2ae25a098e51f1d903a0218d4c44`
+- Prior code checkpoint: `a299ebb39d36d51396d0b7afcaa14b2e00d431ac`
+- New code checkpoint: `61dbe29e93d7a8a9857becb342090c61ff2a8981`
+- Focused campaign: 2 files, 55 tests
+- Full suite: 64 files, 627 tests
+- Migration: none required
+
+The sequential service evidence commits one logical Provider A create, loses the response, receives an ordinary same-key definitive rejection after the first lease expiry, and preserves `outcome-uncertain`, create reconciliation, reserved credit, and public uncertainty. After the next lease expiry, the same key returns the original A Vendor job ID. One atomic public-recovery operation records `created`, `confirmed`, the encrypted envelope, cleared `reconciliationKind`, cleared public failure code/message, and completed idempotency. The returned handle reports created, uploads its page, starts A, enters normal queued status, and is returned unchanged by the identical post-recovery create. Provider A has one logical job; active Provider B receives zero create/upload/start/status calls.
+
+The delayed-worker evidence lets Worker A hold an expired create lease while waiting on the replay response. Worker B claims the next lease, obtains the original Vendor ID, and confirms the usable handle. A's later rejection is routed through fenced `markVendorCreationUnresolved()` and returns pending/superseded. Direct stale completion and first-attempt failure writes also fail. The durable record remains exactly the newer `created`/`confirmed` record with its envelope, cleared reconciliation/failure metadata, active handle, and completed idempotency.
+
+The cleanup evidence replays an uncertain expired A create under the current cleanup lease, observes `delete-pending`, inactive handle, confirmed envelope, and retained cleanup lease immediately before completion, deletes the exact A job, performs local cleanup, clears the lease/envelope, and reaches `deleted`. Provider B create/delete counts remain zero. PostgreSQL semantic fakes apply the same public recovery from both `created` and `reconciliation-required/create`, the same cleanup lifecycle/lease preservation, current/stale unresolved fences, metadata clearing, and idempotency decisions.
+
+Bounded matrix evidence:
+
+```text
+uncertain -> rejection -> later success          PASS
+created public recovery                          PASS
+create-reconciliation public recovery            PASS
+lifecycle/reconciliation/failure clearing        PASS
+usable upload/start/status handle                PASS
+identical post-recovery handle replay            PASS
+one logical Vendor job / zero Provider B calls   PASS
+stale rejection after newer confirmation         PASS
+stale completion/failure after newer authority   PASS
+current/stale create lease fencing               PASS
+delete-pending cleanup recovery                  PASS
+inactive handle / retained cleanup lease         PASS
+current/stale cleanup lease fencing              PASS
+first-attempt definitive-no-job                  PASS
+historical replay rejection remains uncertain    PASS
+P1-05 session/IP exposure and settled credit     PASS
+P1-04 / P1-06 / Vendor-local cleanup              PASS
+Memory/PostgreSQL parity                          PASS
+```
+
+Fresh gate evidence:
+
+```text
+npm ci                    PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck         PASS
+npm run lint              PASS
+npm test                  PASS — 64 files, 627 tests
+npm run build             PASS
+git diff --check          PASS
+Segment B 101-run         PASS
+OMR 101-run               PASS
+frozen authority          PASS — six exact hashes, unchanged 99-code authority
+protected path diff       PASS — zero changed frozen/musical paths
+```
+
+`ADDITIONAL_NEW_P0=0`, `ADDITIONAL_NEW_P1=0`, `ADDITIONAL_NEW_P2=0`, and all unresolved counts are zero. The current authoritative gate is:
+
+```text
+TARGETED_CREATE_RECONCILIATION_P1 = CLOSED
+SEGMENT_D_SATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+This deliberately supersedes earlier readiness statements until the separately planned Segment D saturation audit is performed. That audit and all external provider/corpus/live-service/device work remain outside this closure.

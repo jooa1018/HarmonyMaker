@@ -460,3 +460,72 @@ frozen/protected authority                  PASS — six hashes, 99 codes, 0 cha
 ```
 
 Final repository verdict: `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`. Real-provider historical reconciliation/refund contracts, rights-safe corpus calibration, live PostgreSQL/S3, and physical-device checks remain external and incomplete. Ultra and Step 11 were not started.
+
+## Residual create-reconciliation lifecycle/fencing targeted closure
+
+- Exact starting remote HEAD: `f73f53bf53ac2ae25a098e51f1d903a0218d4c44`
+- Prior implementation checkpoint: `a299ebb39d36d51396d0b7afcaa14b2e00d431ac`
+- New implementation-and-test checkpoint: `61dbe29e93d7a8a9857becb342090c61ff2a8981`
+- Migration: none required
+- Final handoff-inclusive HEAD and exact terminal Actions/Vercel identifiers: reported in the completion response for the additive documentation commit containing this section.
+
+Root cause: public replay success completed the Vendor outcome, envelope, and create-idempotency row without restoring the lifecycle or clearing create-reconciliation failure authority. It returned a handle that upload rejected, and completed idempotency replayed that same unusable handle. In parallel, replay rejection used unfenced `store.transition()`, so a delayed worker could restore uncertainty metadata after a newer worker confirmed the job.
+
+`completeVendorCreation()` now takes an explicit completion mode. `public-handle-recovery` accepts only active `created` or `reconciliation-required/create` authority with an exact current create lease, uncertain outcome, absent envelope/cleanup lease, and pending idempotency. In one Memory critical section or PostgreSQL transaction it writes `created`, `confirmed`, the encrypted Vendor ID, clears reconciliation/public failure metadata, and completes idempotency. `cleanup-reconciliation` accepts inactive `delete-pending` authority with the exact cleanup or direct-delete lease, persists confirmation without restoring `created` or reactivating the handle, and retains cleanup ownership until `completeCleanup()`.
+
+`markVendorCreationUnresolved()` is the only replay-rejection mutation. It fences job ID, expected public create lifecycle, uncertain outcome, exact create lease, absent Vendor envelope, active handle, absent cleanup lease, and pending create idempotency. Confirmed envelope, definitive-no-job, completed idempotency, cleanup ownership, inactive handle, different state/lease, or deletion wins and produces superseded/pending behavior without mutation. Create inspection/begin also restrict reconciliation resume to `reconciliationKind=create`.
+
+```text
+uncertain -> replay rejection -> later success   PASS
+later success restores created lifecycle         PASS
+later success clears reconciliationKind          PASS
+later success clears public failure metadata     PASS
+later success returns usable handle              PASS
+recovered handle upload/start/status              PASS
+identical create returns same usable handle      PASS
+one logical Vendor job / original key            PASS
+Provider B operation count                       PASS — 0
+
+stale replay rejection after newer success       PASS
+confirmed outcome/envelope preserved             PASS
+reconciliation/failure not restored              PASS
+stale complete/fail rejected                     PASS
+current/stale create lease fencing               PASS
+
+cleanup remains delete-pending during recovery   PASS
+cleanup never reactivates public handle          PASS
+current/stale cleanup lease fencing              PASS
+cleanup crash recovery                           PASS
+exact Provider A deletion / zero B calls         PASS
+
+first-attempt definitive rejection               PASS
+historical replay rejection remains uncertain    PASS
+P1-05 session and IP exposure                    PASS
+settled credit delete and expiry                 PASS
+P1-04 unavailable binding                        PASS
+P1-06 taxonomy                                   PASS
+Vendor/local independent cleanup                 PASS
+Memory/PostgreSQL semantic parity                PASS
+
+npm ci                                           PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck                                PASS
+npm run lint                                     PASS
+npm test                                         PASS — 64 files, 627 tests
+npm run build                                    PASS
+git diff --check                                 PASS
+focused campaign                                 PASS — 2 files, 55 tests
+Segment B 101-run                                PASS
+OMR 101-run                                      PASS
+frozen/protected authority                       PASS — six exact hashes, 99 codes, zero path diff
+```
+
+No additional P0/P1/P2 was found; `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, and `UNRESOLVED_P2=0`. The current authoritative gate deliberately supersedes the preceding acceptance/readiness statement:
+
+```text
+TARGETED_CREATE_RECONCILIATION_P1 = CLOSED
+SEGMENT_D_SATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+The reason is procedural and explicit: a separate full Segment D saturation audit is planned after this targeted code closure. This work did not perform that audit and did not begin Ultra, Step 11, a real provider, corpus calibration, live PostgreSQL/S3, or physical-device verification.

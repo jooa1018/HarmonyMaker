@@ -162,3 +162,26 @@ Create pre-call, definitive failure, and completion writes are fenced by expecte
 No migration is required: the existing four-state create-outcome and three-state credit model expresses the corrected authority. Fresh npm 11.6.2 verification passed `npm ci` (451 added, 452 audited, zero vulnerabilities), typecheck, lint, 64 Vitest files/622 tests, production build, and `git diff --check`. The focused Memory/PostgreSQL campaign passed 2 files/50 tests; separate Segment B and OMR 101-run campaigns passed; all six frozen hashes and the 99-code authority remain exact with zero protected-path change.
 
 Final in-repository counts are `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, and `UNRESOLVED_P2=0`; `SEGMENT_D_ACCEPTED=YES` and `ULTRA_AUDIT_READY=YES`. Real-provider historical-reconciliation capability, authoritative refund evidence, rights-safe corpus work, live PostgreSQL/S3, and physical-device verification remain external. Ultra and Step 11 were not begun.
+
+## Residual create-reconciliation lifecycle and fencing closure
+
+This targeted additive closure starts from exact remote HEAD `f73f53bf53ac2ae25a098e51f1d903a0218d4c44`, retains prior implementation checkpoint `a299ebb39d36d51396d0b7afcaa14b2e00d431ac` in its ancestry, and produces implementation-and-test checkpoint `61dbe29e93d7a8a9857becb342090c61ff2a8981`. The documentation-only descendant and its exact terminal GitHub Actions/Vercel evidence are identified in the completion response.
+
+The residual defect had two parts. A successful same-key create replay persisted `confirmed`, the encrypted Vendor job ID, and completed idempotency, but left a create-reconciliation job in `reconciliation-required` with stale public failure metadata, so the returned and subsequently replayed handle was unusable. Separately, a delayed replay rejection used a general lifecycle transition and could overwrite a newer worker's confirmed authority.
+
+Vendor creation completion now has explicit `public-handle-recovery` and `cleanup-reconciliation` modes. Public recovery atomically requires the current active create authority and pending idempotency, then commits `created`, `confirmed`, the envelope, cleared reconciliation/failure metadata, and completed idempotency. Cleanup recovery requires inactive `delete-pending` cleanup authority, preserves that lifecycle and the cleanup lease, and lets the worker delete the exact recovered Provider A job before final local/Vendor cleanup. `markVendorCreationUnresolved()` replaces the general replay-rejection transition and fences job, expected create lifecycle, uncertain outcome, exact create lease, absent envelope, active handle, absent cleanup lease, and pending idempotency. Any newer confirmation, no-job authority, cleanup ownership, completed idempotency, or deletion supersedes the stale write.
+
+Fresh npm 11.6.2 verification passed `npm ci` (451 packages added, 452 audited, zero vulnerabilities), typecheck, lint, 64 Vitest files/627 tests, production build, and `git diff --check`. The focused Memory/PostgreSQL campaign passed 2 files/55 tests. Separate Segment B and OMR 101-run campaigns passed. The six frozen hashes remain exact, the 99-code authority remains unchanged, and protected WAG/diagnostic/Segment B/C musical paths have zero diff. No migration is required.
+
+The required sequential campaign proves actual Provider A side effect plus response loss, later same-key replay rejection, a still-later same-key success returning the original Vendor job ID, atomic restoration to a usable `created` handle, normal upload/start/status progression, and identical post-recovery handle replay with one logical job and zero Provider B calls. The delayed-worker race proves a newer lease can confirm the handle while the earlier rejection, completion, and failure writes are all rejected without changing the confirmed envelope, cleared metadata, or completed idempotency. The expiry-cleanup campaign proves successful reconciliation remains `delete-pending` and inactive with its lease until exact A deletion and final cleanup.
+
+Current authoritative gate status, superseding earlier acceptance/readiness declarations for the present handoff, is:
+
+```text
+TARGETED_CREATE_RECONCILIATION_P1 = CLOSED
+SEGMENT_D_SATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+`UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, and no additional P0/P1/P2 was found. Acceptance remains deliberately withheld because a separate full Segment D saturation audit is the next authorized stage. That audit, Ultra, Step 11, real-provider integration, corpus calibration, live PostgreSQL/S3, and physical-device verification were not started.

@@ -231,3 +231,28 @@ For a separately authorized provider/live-service exercise:
 6. Crash a cleanup worker after claim. Before lease expiry, require no second claim; after expiry, require the `expired` row to be reclaimed and completed exactly once by the current lease.
 
 These live checks remain incomplete because no real provider contract, credentials, live PostgreSQL/S3 deployment, or authoritative refund API was supplied. The repository result does not authorize Ultra, Step 11, provider selection, corpus calibration, or physical-device verification.
+
+## Residual create-reconciliation lifecycle/fencing follow-up
+
+Use implementation-and-test checkpoint `61dbe29e93d7a8a9857becb342090c61ff2a8981` or its verified additive documentation descendant. Repository Memory/PostgreSQL and deterministic Provider A/B campaigns close the targeted lifecycle/fencing defect. They do not replace the separately planned Segment D saturation audit or any real-provider/live-service check.
+
+For a separately authorized provider/live-service exercise:
+
+1. Commit an idempotent Provider A create, lose its response, make the first expired-lease replay return an ordinary definitive rejection, then make the next expired-lease replay return the original A Vendor job ID. Require an active `created` handle, `confirmed`, a durable envelope, cleared reconciliation and public failure fields, completed create idempotency, normal upload/start/status, identical handle replay, one logical Vendor job, and zero B calls.
+2. Delay an earlier replay worker beyond lease expiry. Let a newer worker confirm the same A job and usable handle, then release the earlier worker with a rejection. Require the stale unresolved/completion/failure writes to report pending or superseded and preserve the newer state, envelope, cleared metadata, and completed idempotency byte-for-byte.
+3. Repeat the uncertain replay through expired cleanup. Require inactive `delete-pending`, the current cleanup lease retained during recovered-ID persistence, exact A deletion, independent local deletion, no public-handle reactivation, zero B calls, and final `deleted` or truthful due `delete-pending`.
+4. Exercise created, create-reconciliation, delete-pending, current/stale create lease, current/stale cleanup lease, absent/present envelope, pending/complete idempotency, definitive-no-job, and deleted authority. Require Memory and live PostgreSQL to make the same bounded decisions.
+5. Preserve the first-attempt authoritative rejection case as `definitive-no-job` with released unused credit and rejected idempotency. Preserve historical replay rejection as `outcome-uncertain` with reserved credit.
+
+Repository evidence is `npm ci`, typecheck, lint, 64 files/627 tests, build, diff check, focused 2 files/55 tests, both independent 101-run campaigns, six exact frozen hashes, and zero protected-path diff. `MIGRATION = NONE REQUIRED`.
+
+Current gate:
+
+```text
+TARGETED_CREATE_RECONCILIATION_P1 = CLOSED
+SEGMENT_D_SATURATION_AUDIT_READY = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
+
+The separate Segment D saturation audit remains unperformed. Real-provider selection/credentials, provider accuracy/refund authority, rights-safe corpus calibration, live PostgreSQL/S3, and physical iPhone/Kakao verification remain external and incomplete. Ultra and Step 11 were not started.
