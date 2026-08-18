@@ -3,8 +3,8 @@ import sharp from "sharp";
 
 vi.mock("server-only", () => ({}));
 
-import { binaryDigest, semanticDigest, type BinaryDigest } from "../../domain/digest/canonical";
-import { OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError } from "../../domain/omr/contracts";
+import { binaryDigest, semanticDigest, type BinaryDigest, type SemanticDigest } from "../../domain/digest/canonical";
+import { computeVendorNormalizationMappingDigest, OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError } from "../../domain/omr/contracts";
 import { coordinateMicrounit } from "../../domain/omr/foundation";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
 import { basisPoints } from "../../domain/rates";
@@ -61,6 +61,19 @@ async function createConsentedJob(service: DurableOmrApplicationService, request
   const pageDigest = await binaryDigest(new TextEncoder().encode("reference-page-fixture"));
   const pages = request.pages ?? Array.from({ length: request.pageCount }, (_, pageIndex) => ({ pageIndex, pageDigest, mimeType: "image/png" as const }));
   return service.createJob({ ...request, pages, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest });
+}
+
+async function createStartedJob(h: Awaited<ReturnType<typeof harness>>, idempotencyKey: string) {
+  const handle = await createConsentedJob(h.service, {
+    sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+    providerTransferConsent: true, idempotencyKey,
+  });
+  await h.service.uploadPage(handle, {
+    pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: `${idempotencyKey}-upload`,
+    bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]),
+  });
+  await h.service.start(handle);
+  return handle;
 }
 
 describe("durable provider-neutral OMR application lifecycle", () => {
@@ -434,6 +447,77 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(h.store.listJobs()[0]).toMatchObject({ state: "reconciliation-required", reconciliationKind: "capture", creditState: "reserved", providerBindingId: "hm-reference", vendorJobIdEnvelope: expect.any(Object) });
   });
 
+  it("treats a malformed normalization mapping as terminal without a second capture", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "malformed-normalization-mapping");
+    const original = h.adapter.getNormalizationMapping.bind(h.adapter);
+    const mapping = vi.spyOn(h.adapter, "getNormalizationMapping").mockImplementation(async (vendorJobId) => {
+      const artifact = await original(vendorJobId);
+      return {
+        ...artifact,
+        mappings: [{ vendorTargetId: "", target: { kind: "measure", musicXmlPartOrdinal: 0, measureOrdinal: 0 } }],
+      };
+    });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_EVIDENCE_TARGET_UNMAPPED" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released", retryKind: undefined, retryAttempt: undefined });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_EVIDENCE_TARGET_UNMAPPED" });
+    expect(mapping).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an invalid normalization mapping digest as terminal without retry", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "invalid-normalization-mapping-digest");
+    const original = h.adapter.getNormalizationMapping.bind(h.adapter);
+    const mapping = vi.spyOn(h.adapter, "getNormalizationMapping").mockImplementation(async (vendorJobId) => ({
+      ...await original(vendorJobId), artifactDigest: "f".repeat(64) as SemanticDigest,
+    }));
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_EVIDENCE_TARGET_UNMAPPED" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released", retryKind: undefined, retryAttempt: undefined });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed" });
+    expect(mapping).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a malformed evidence graph as a terminal codec failure without retry", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "malformed-evidence-graph");
+    const original = h.adapter.getEvidence.bind(h.adapter);
+    const evidence = vi.spyOn(h.adapter, "getEvidence").mockImplementation(async (vendorJobId) => {
+      const bundle = await original(vendorJobId);
+      return {
+        ...bundle,
+        evidence: bundle.evidence.map((item) => ({ ...item, box: { ...item.box, frameId: "frame:missing" } })),
+      };
+    });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_EVIDENCE_CODEC_FAILED" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released", retryKind: undefined, retryAttempt: undefined });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed" });
+    expect(evidence).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a valid mapping with a mismatched result binding as terminal integrity failure", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "mapping-result-integrity-mismatch");
+    const original = h.adapter.getNormalizationMapping.bind(h.adapter);
+    const mapping = vi.spyOn(h.adapter, "getNormalizationMapping").mockImplementation(async (vendorJobId) => {
+      const artifact = await original(vendorJobId);
+      const mismatched = { ...artifact, vendorResultDigest: "f".repeat(64) as BinaryDigest };
+      return { ...mismatched, artifactDigest: await computeVendorNormalizationMappingDigest(mismatched) };
+    });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_RESULT_INTEGRITY_FAILED" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released", retryKind: undefined, retryAttempt: undefined });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed" });
+    expect(mapping).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps explicit Vendor failed status terminal and clears retry metadata", async () => {
+    const h = await harness([{ kind: "failed", code: "PROVIDER_TERMINAL", message: "provider rejected the score" }]);
+    const handle = await createStartedJob(h, "explicit-vendor-terminal-status");
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_VENDOR_OPERATION_FAILED" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released", retryKind: undefined, retryAttempt: undefined });
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed" });
+    expect(h.adapter.callCounts.status).toBe(1);
+  });
+
   it("rejects oversized provider captures and inconsistent item granularity before authority or storage", async () => {
     const h = await harness([{ kind: "completed" }]);
     const evidence = h.fixture.evidence;
@@ -447,11 +531,13 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "oversized-result" });
     await h.service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "oversized-result-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
     await h.service.start(handle);
-    vi.spyOn(h.adapter, "exportMusicXml").mockResolvedValue("x".repeat(PROVIDER_CAPTURE_LIMITS.musicXmlBytes + 1));
+    const exportResult = vi.spyOn(h.adapter, "exportMusicXml").mockResolvedValue("x".repeat(PROVIDER_CAPTURE_LIMITS.musicXmlBytes + 1));
     expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED" });
     expect(h.adapter.callCounts.evidence).toBe(0);
-    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "failed", creditState: "released", retryKind: undefined, retryAttempt: undefined });
     expect(h.store.listJobs()[0].resultObjectReferenceId).toBeUndefined();
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED" });
+    expect(exportResult).toHaveBeenCalledTimes(1);
   });
 
   it("persists cancel failure and recovers every idempotent post-effect crash window through fencing", async () => {
