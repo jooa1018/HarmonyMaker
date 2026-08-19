@@ -73,7 +73,7 @@ describe("C2 production boundary security gate", () => {
   it("runs bounded cleanup deterministically and repeat-safely", async () => {
     const store = new MemoryGovernanceStore();
     await store.createSession({ tokenHash: "expired", csrfNonce: "nonce", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });
-    await store.createObjectReference({ ownerSessionId: "1" as PrivateRowId, objectKey: "objects/opaque", contentType: "application/octet-stream", byteSize: 0, binaryDigest: "0".repeat(64), lifecycle: "active", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });
+    await store.createObjectReference({ ownerSessionId: "1" as PrivateRowId, logicalPublicationKey: "objects/opaque", objectKey: "objects/opaque", contentType: "application/octet-stream", byteSize: 0, binaryDigest: "0".repeat(64), lifecycle: "active", createdAt: "2025-01-01T00:00:00.000Z", expiresAt: "2025-02-01T00:00:00.000Z" });
     const cleanup = new CleanupService(store, new MemoryOwnedObjectStore(store));
     const dry = await cleanup.run({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: 10, dryRun: true });
     expect(dry.expiredSessionIds).toHaveLength(1);

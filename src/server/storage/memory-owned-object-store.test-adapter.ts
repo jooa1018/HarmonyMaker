@@ -9,16 +9,18 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
   constructor(private readonly records: GovernanceStore) {}
   async put(input: OwnedObjectPut) {
     if (input.publicationId.length < 1 || input.publicationId.length > 256) throw new RangeError("OBJECT_PUBLICATION_ID_INVALID");
-    const objectKey = `objects/${await semanticDigest({ projectionSchema: "hm-owned-object-publication-v1", ownerSessionId: input.ownerSessionId, publicationId: input.publicationId })}`;
+    const logicalPublicationKey = `objects/${await semanticDigest({ projectionSchema: "hm-owned-object-publication-v1", ownerSessionId: input.ownerSessionId, publicationId: input.publicationId })}`;
     const bytes = Uint8Array.from(input.bytes);
     const digest = await binaryDigest(bytes);
-    const existing = await this.records.findObjectReferenceByKey(objectKey, input.ownerSessionId);
+    const existing = await this.records.findObjectReferenceByLogicalKey(logicalPublicationKey, input.ownerSessionId);
     if (existing) {
       if (existing.lifecycle === "active" && existing.binaryDigest === digest && existing.byteSize === bytes.byteLength && existing.contentType === input.contentType) return existing;
       if (existing.lifecycle === "deleted" && existing.binaryDigest === digest && existing.byteSize === bytes.byteLength && existing.contentType === input.contentType) {
         const publicationToken = generateOpaqueToken();
+        const publicationGeneration = (existing.publicationGeneration ?? 0) + 1;
+        const objectKey = `${logicalPublicationKey}/generations/${publicationGeneration}-${await semanticDigest({ projectionSchema: "hm-memory-object-generation-v1", publicationToken, publicationGeneration })}`;
         const restarted = await this.records.restartObjectPublication({
-          id: existing.id, ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,
+          id: existing.id, ownerSessionId: input.ownerSessionId, logicalPublicationKey, objectKey, contentType: input.contentType,
           byteSize: bytes.byteLength, binaryDigest: digest, publicationToken,
           publicationLeaseExpiresAt: "2026-01-01T00:05:00.000Z", at: "2026-01-01T00:00:00.000Z",
         });
@@ -26,7 +28,7 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
         this.buffers.set(objectKey, bytes);
         const disposition = await this.records.completeObjectPublication({
           id: existing.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken,
-          publicationGeneration: (existing.publicationGeneration ?? 0) + 1, at: "2026-01-01T00:00:00.000Z",
+          publicationGeneration, materialized: true, at: "2026-01-01T00:00:00.000Z",
         });
         if (disposition !== "active") throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
         const active = await this.records.findObjectReference(existing.id, input.ownerSessionId);
@@ -34,9 +36,10 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
       }
       throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
     }
+    const objectKey = logicalPublicationKey;
     this.buffers.set(objectKey, bytes);
     return this.records.createObjectReference({
-      ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,
+      ownerSessionId: input.ownerSessionId, logicalPublicationKey, objectKey, contentType: input.contentType,
       byteSize: bytes.byteLength, binaryDigest: digest, lifecycle: "active",
       createdAt: "2026-01-01T00:00:00.000Z", ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
     });

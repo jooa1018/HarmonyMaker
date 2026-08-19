@@ -112,6 +112,69 @@ class RejectedDeferredGenerationS3 {
   }
 }
 
+class AmbiguousDeleteGenerationS3 {
+  readonly objects = new Map<string, FakeMaterializedObject>();
+  readonly putStarted = [deferred(), deferred(), deferred()];
+  readonly putGates = [deferred(), deferred(), deferred()];
+  readonly putKeys: string[] = [];
+  readonly keyGenerations = new Map<string, string>();
+  readonly deleteTargets: string[] = [];
+  readonly delayedDeleteGate = deferred();
+  readonly delayedDeleteApplied = deferred();
+  ambiguousDeleteGeneration?: string;
+  applyAmbiguousDelete = true;
+  failRetryGeneration?: string;
+  private putCalls = 0;
+  private ambiguousDeleteIssued = false;
+  private retryFailureIssued = false;
+
+  async send(command: { readonly constructor: { readonly name: string }; readonly input: Record<string, unknown> }): Promise<Record<string, unknown>> {
+    const key = String(command.input.Key);
+    if (command.constructor.name === "PutObjectCommand") {
+      const index = this.putCalls++;
+      const metadata = command.input.Metadata as Record<string, string>;
+      this.putKeys.push(key);
+      this.keyGenerations.set(key, metadata["hm-publication-generation"]);
+      this.putStarted[index]?.resolve();
+      await this.putGates[index]?.promise;
+      this.objects.set(key, {
+        bytes: Uint8Array.from(command.input.Body as Uint8Array),
+        contentType: String(command.input.ContentType),
+        metadata,
+      });
+      return {};
+    }
+    if (command.constructor.name === "HeadObjectCommand") {
+      const object = this.objects.get(key);
+      if (!object) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+      return { ContentLength: object.bytes.byteLength, ContentType: object.contentType, Metadata: object.metadata };
+    }
+    if (command.constructor.name === "GetObjectCommand") {
+      const object = this.objects.get(key);
+      if (!object) throw Object.assign(new Error("not found"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      return { ContentType: object.contentType, Body: { transformToByteArray: async () => object.bytes } };
+    }
+    if (command.constructor.name === "DeleteObjectCommand") {
+      const generation = this.keyGenerations.get(key);
+      this.deleteTargets.push(key);
+      if (!this.ambiguousDeleteIssued && generation === this.ambiguousDeleteGeneration && this.objects.has(key)) {
+        this.ambiguousDeleteIssued = true;
+        void this.delayedDeleteGate.promise.then(() => {
+          if (this.applyAmbiguousDelete) this.objects.delete(key);
+          this.delayedDeleteApplied.resolve();
+        });
+        throw new TypeError(`delete response lost for generation ${generation}`);
+      }
+      if (!this.retryFailureIssued && generation === this.failRetryGeneration) {
+        this.retryFailureIssued = true;
+        throw new Error(`delete retry failed for generation ${generation}`);
+      }
+      this.objects.delete(key);
+    }
+    return {};
+  }
+}
+
 describe("production S3-compatible request construction", () => {
   it("uses private point operations only and verifies metadata", async () => {
     const commands: Array<{ constructor: { name: string }; input: Record<string, unknown> }> = [];
@@ -132,10 +195,12 @@ describe("production S3-compatible request construction", () => {
     await expect(store.head(created.id, owner)).resolves.toMatchObject({ byteSize: bytes.byteLength });
     await expect(store.get(created.id, owner)).resolves.toMatchObject({ bytes });
     await store.delete(created.id, owner);
-    expect(commands.map((command) => command.constructor.name)).toEqual(["PutObjectCommand", "HeadObjectCommand", "GetObjectCommand", "DeleteObjectCommand"]);
+    expect(commands.map((command) => command.constructor.name)).toEqual([
+      "PutObjectCommand", "HeadObjectCommand", "HeadObjectCommand", "GetObjectCommand", "HeadObjectCommand", "DeleteObjectCommand",
+    ]);
     expect(commands.some((command) => command.constructor.name.includes("List"))).toBe(false);
     const put = commands[0].input;
-    expect(put.Key).toMatch(/^objects\/[A-Za-z0-9_-]+$/u);
+    expect(put.Key).toMatch(/^objects\/[0-9a-f]{64}\/generations\/1-[0-9a-f]{64}$/u);
     expect(put).toMatchObject({ Bucket: "private-bucket", ContentType: "application/octet-stream" });
     expect(put.Metadata).toMatchObject({
       "hm-publication-generation": "1",
@@ -166,7 +231,8 @@ describe("production S3-compatible request construction", () => {
     expect(deleteAttempts).toBe(2);
     expect(records.audits).toHaveLength(1);
     const republished = await store.put(publication);
-    expect(republished).toMatchObject({ id: created.id, objectKey: created.objectKey, lifecycle: "active" });
+    expect(republished).toMatchObject({ id: created.id, logicalPublicationKey: created.logicalPublicationKey, lifecycle: "active" });
+    expect(republished.objectKey).not.toBe(created.objectKey);
   });
 
   it("keeps Put acknowledgement loss discoverable and resumes the exact key after restart", async () => {
@@ -433,7 +499,7 @@ describe("production S3-compatible request construction", () => {
 
     await cleanupAfterRestart.run({ now: new Date("2030-01-01T00:01:00.000Z") });
     expect(records.objects.get(staged.id)).toMatchObject({ lifecycle: "tombstone-pending", publicationToken: token, publicationPutMayStillComplete: true });
-    expect(s3.deletes).toHaveLength(1);
+    expect(s3.deletes).toHaveLength(2);
 
     s3.materializationGates[0].resolve();
     await s3.materialized[0].promise;
@@ -751,7 +817,7 @@ describe("production S3-compatible request construction", () => {
     delete object.metadata["hm-publication-authority-digest"];
 
     await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records)).run({ now: new Date("2030-01-01T00:01:00.000Z") });
-    expect(s3.objects.size).toBe(1);
+    expect(s3.objects.size).toBe(0);
     expect([...records.objects.values()][0]).toMatchObject({ lifecycle: "tombstone-pending", publicationPutMayStillComplete: true });
   });
 
@@ -785,6 +851,123 @@ describe("production S3-compatible request construction", () => {
     await expect(first).resolves.toMatchObject({ id: second.id, lifecycle: "active" });
     expect(objects).toEqual(new Map([[second.objectKey, publication.bytes]]));
     expect(records.objects.get(second.id)).toMatchObject({ lifecycle: "active", publicationPredecessorToken: undefined });
-    expect(commands.filter((name) => name === "DeleteObjectCommand")).toHaveLength(1);
+    expect(commands.filter((name) => name === "DeleteObjectCommand")).toHaveLength(2);
+  });
+
+  it("isolates generation C from an ambiguous generation A delete that applies after C becomes active", async () => {
+    const s3 = new AmbiguousDeleteGenerationS3();
+    s3.ambiguousDeleteGeneration = "1";
+    const fake = s3 as unknown as S3Client;
+    const records = new MemoryGovernanceStore();
+    const owner = "ambiguous-delete-isolation-owner" as PrivateRowId;
+    const publication = { ownerSessionId: owner, publicationId: "ambiguous-delete-isolation", bytes: Uint8Array.of(9, 1), contentType: "application/octet-stream" } as const;
+
+    const first = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await s3.putStarted[0].promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    const second = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await s3.putStarted[1].promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2031-01-01T00:00:00.000Z") });
+
+    s3.putGates[0].resolve();
+    await expect(first).rejects.toThrow("delete response lost for generation 1");
+    const referenceId = [...records.objects.values()][0].id;
+    expect((await records.findObjectPublicationGeneration({ id: referenceId, ownerSessionId: owner, publicationGeneration: 1 }))?.deleteOutcome)
+      .toBe("outcome-uncertain");
+
+    const third = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await s3.putStarted[2].promise;
+    s3.putGates[2].resolve();
+    const activeC = await third;
+    expect(activeC).toMatchObject({ lifecycle: "active", publicationGeneration: 3 });
+    expect(new Set(s3.putKeys).size).toBe(3);
+    expect(s3.putKeys[0]).not.toBe(s3.putKeys[1]);
+    expect(s3.putKeys[0]).not.toBe(s3.putKeys[2]);
+    expect(s3.putKeys[1]).not.toBe(s3.putKeys[2]);
+    await expect(new S3OwnedObjectStore(fake, "private-bucket", records).get(activeC.id, owner)).resolves.toMatchObject({ bytes: publication.bytes });
+
+    s3.delayedDeleteGate.resolve();
+    await s3.delayedDeleteApplied.promise;
+    expect(s3.objects.has(s3.putKeys[0])).toBe(false);
+    expect(s3.objects.has(activeC.objectKey)).toBe(true);
+    await expect(new S3OwnedObjectStore(fake, "private-bucket", records).head(activeC.id, owner)).resolves.toMatchObject({ byteSize: 2 });
+
+    s3.putGates[1].resolve();
+    await expect(second).resolves.toMatchObject({ id: activeC.id, objectKey: activeC.objectKey, lifecycle: "active" });
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2032-01-01T00:00:00.000Z") });
+    expect(s3.objects).toEqual(new Map([[activeC.objectKey, expect.objectContaining({ bytes: publication.bytes })]]));
+    expect(s3.deleteTargets).not.toContain(activeC.objectKey);
+    const generations = await records.listObjectPublicationGenerations({ id: activeC.id, ownerSessionId: owner });
+    expect(generations.map((generation) => ({ generation: generation.publicationGeneration, deleted: Boolean(generation.deletedAt) })))
+      .toEqual([{ generation: 1, deleted: true }, { generation: 2, deleted: true }, { generation: 3, deleted: false }]);
+  });
+
+  it("recovers both applied and non-applied single-generation Delete acknowledgement loss", async () => {
+    for (const remoteApplies of [true, false]) {
+      const s3 = new AmbiguousDeleteGenerationS3();
+      s3.ambiguousDeleteGeneration = "1";
+      s3.applyAmbiguousDelete = remoteApplies;
+      s3.putGates[0].resolve();
+      const fake = s3 as unknown as S3Client;
+      const records = new MemoryGovernanceStore();
+      const owner = `single-delete-${remoteApplies}` as PrivateRowId;
+      const store = new S3OwnedObjectStore(fake, "private-bucket", records);
+      const created = await store.put({ ownerSessionId: owner, publicationId: "single-delete", bytes: Uint8Array.of(5), contentType: "application/octet-stream" });
+      await expect(store.delete(created.id, owner, new Date("2030-01-01T00:00:00.000Z")))
+        .rejects.toThrow("delete response lost for generation 1");
+      expect((await records.findObjectPublicationGeneration({ id: created.id, ownerSessionId: owner, publicationGeneration: 1 }))?.deleteOutcome)
+        .toBe("outcome-uncertain");
+      s3.delayedDeleteGate.resolve();
+      await s3.delayedDeleteApplied.promise;
+      expect(s3.objects.has(created.objectKey)).toBe(!remoteApplies);
+
+      await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+        .run({ now: new Date("2030-01-01T00:01:00.000Z") });
+      expect(s3.objects.size).toBe(0);
+      expect(records.objects.get(created.id)?.lifecycle).toBe("deleted");
+      expect((await records.findObjectPublicationGeneration({ id: created.id, ownerSessionId: owner, publicationGeneration: 1 })))
+        .toMatchObject({ deleteOutcome: "acknowledged", deletedAt: expect.any(String) });
+    }
+  });
+
+  it("reclaims a three-generation old-key delete retry after process replacement without touching active C", async () => {
+    const s3 = new AmbiguousDeleteGenerationS3();
+    s3.ambiguousDeleteGeneration = "1";
+    const fake = s3 as unknown as S3Client;
+    const records = new MemoryGovernanceStore();
+    const owner = "three-generation-restart-owner" as PrivateRowId;
+    const publication = { ownerSessionId: owner, publicationId: "three-generation-restart", bytes: Uint8Array.of(3, 3), contentType: "application/octet-stream" } as const;
+
+    const first = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await s3.putStarted[0].promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records)).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    const second = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await s3.putStarted[1].promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records)).run({ now: new Date("2031-01-01T00:00:00.000Z") });
+    s3.putGates[0].resolve();
+    await expect(first).rejects.toThrow("delete response lost for generation 1");
+
+    const third = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await s3.putStarted[2].promise;
+    s3.putGates[2].resolve();
+    const activeC = await third;
+    s3.delayedDeleteGate.resolve();
+    await s3.delayedDeleteApplied.promise;
+    s3.failRetryGeneration = "2";
+    s3.putGates[1].resolve();
+    await expect(second).rejects.toThrow("delete retry failed for generation 2");
+    expect((await records.findObjectPublicationGeneration({ id: activeC.id, ownerSessionId: owner, publicationGeneration: 2 }))?.deleteOutcome)
+      .toBe("outcome-uncertain");
+
+    const restartedCleanup = new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records));
+    await expect(restartedCleanup.run({ now: new Date("2032-01-01T00:00:00.000Z") })).resolves.toMatchObject({ failures: [] });
+    expect(s3.objects.size).toBe(1);
+    expect(s3.objects.has(activeC.objectKey)).toBe(true);
+    expect(s3.deleteTargets).not.toContain(activeC.objectKey);
+    expect(records.objects.get(activeC.id)).toMatchObject({ lifecycle: "active", objectKey: activeC.objectKey, publicationGeneration: 3 });
+    await expect(new S3OwnedObjectStore(fake, "private-bucket", records).get(activeC.id, owner)).resolves.toMatchObject({ bytes: publication.bytes });
   });
 });

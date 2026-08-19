@@ -17,7 +17,8 @@ export class CleanupService {
     if (!dryRun) {
       for (const record of result.pendingObjectReferences) {
         try {
-          await this.objects.delete(record.id, record.ownerSessionId, now);
+          if (this.objects.cleanup) await this.objects.cleanup(record.id, record.ownerSessionId, now);
+          else await this.objects.delete(record.id, record.ownerSessionId, now);
         } catch (error) {
           failures.push({ scope: `object:${record.id}`, message: error instanceof Error ? error.message : "OBJECT_DELETE_FAILED" });
         }

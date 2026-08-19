@@ -55,6 +55,7 @@ export interface AbuseReportInput {
 export interface ObjectReferenceRecord {
   readonly id: PrivateRowId;
   readonly ownerSessionId: PrivateRowId;
+  readonly logicalPublicationKey: string;
   readonly objectKey: string;
   readonly contentType: string;
   readonly byteSize: number;
@@ -71,6 +72,24 @@ export interface ObjectReferenceRecord {
   readonly publicationCleanupLeaseExpiresAt?: string;
   readonly createdAt: string;
   readonly expiresAt?: string;
+  readonly deletedAt?: string;
+}
+
+export type ObjectDeleteOutcome = "not-started" | "acknowledged" | "outcome-uncertain" | "definitive-not-dispatched";
+
+export interface ObjectPublicationGenerationRecord {
+  readonly objectReferenceId: PrivateRowId;
+  readonly publicationGeneration: number;
+  readonly physicalObjectKey: string;
+  readonly publicationToken: string;
+  readonly publicationPutMayStillComplete: boolean;
+  readonly publicationLeaseExpiresAt?: string;
+  readonly deleteOutcome: ObjectDeleteOutcome;
+  readonly deleteConfirmedAt?: string;
+  readonly cleanupToken?: string;
+  readonly cleanupLeaseExpiresAt?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
   readonly deletedAt?: string;
 }
 
@@ -136,12 +155,23 @@ export interface GovernanceStore {
   createObjectReference(input: Omit<ObjectReferenceRecord, "id">): Promise<ObjectReferenceRecord>;
   findObjectReference(id: PrivateRowId, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined>;
   findObjectReferenceByKey(objectKey: string, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined>;
+  findObjectReferenceByLogicalKey(logicalPublicationKey: string, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined>;
+  findObjectPublicationGeneration(input: {
+    readonly id: PrivateRowId;
+    readonly ownerSessionId: PrivateRowId;
+    readonly publicationGeneration: number;
+  }): Promise<ObjectPublicationGenerationRecord | undefined>;
+  listObjectPublicationGenerations(input: {
+    readonly id: PrivateRowId;
+    readonly ownerSessionId: PrivateRowId;
+  }): Promise<readonly ObjectPublicationGenerationRecord[]>;
   completeObjectPublication(input: {
     readonly id: PrivateRowId;
     readonly ownerSessionId: PrivateRowId;
     readonly objectKey: string;
     readonly publicationToken: string;
     readonly publicationGeneration: number;
+    readonly materialized: boolean;
     readonly at: string;
   }): Promise<"active" | "delete-required" | "superseded">;
   beginObjectPublicationAttempt(input: {
@@ -155,6 +185,7 @@ export interface GovernanceStore {
   restartObjectPublication(input: {
     readonly id: PrivateRowId;
     readonly ownerSessionId: PrivateRowId;
+    readonly logicalPublicationKey: string;
     readonly objectKey: string;
     readonly contentType: string;
     readonly byteSize: number;
@@ -169,6 +200,8 @@ export interface GovernanceStore {
     readonly objectKey: string;
     readonly publicationToken: string;
     readonly publicationGeneration: number;
+    /** True only when an attributed Head observation proved that this generation materialized. */
+    readonly materialized: boolean;
     readonly at: string;
   }): Promise<"active" | "delete-required" | "settled" | "superseded">;
   claimObjectPublicationCleanup(input: {
@@ -187,7 +220,15 @@ export interface GovernanceStore {
     readonly publicationGeneration: number;
     readonly publicationCleanupToken: string;
     readonly at: string;
-  }): Promise<"deleted" | "tombstone" | "superseded">;
+  }): Promise<"reference-deleted" | "generation-deleted" | "tombstone" | "superseded">;
+  markObjectPublicationDeleteUncertain(input: {
+    readonly id: PrivateRowId;
+    readonly ownerSessionId: PrivateRowId;
+    readonly objectKey: string;
+    readonly publicationGeneration: number;
+    readonly publicationCleanupToken: string;
+    readonly at: string;
+  }): Promise<boolean>;
   releaseObjectPublicationCleanup(input: {
     readonly id: PrivateRowId;
     readonly ownerSessionId: PrivateRowId;
