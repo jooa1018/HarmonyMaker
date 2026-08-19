@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } fro
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { PracticeSharePayload } from "../../domain/share";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
-import { buildPlaybackPlan } from "../../product/playback-plan";
+import { buildPlaybackPlanSafely } from "../../product/playback-plan";
 import { arrangementRenderDocumentToAbcSafely } from "../../product/score-adapter";
 import { decodeProductUrlShare } from "../../product/share-url";
 import { displayedShareLocatorState, reduceShareLocatorLoad, resolveShareLocator } from "../../product/share-locator";
@@ -41,15 +41,6 @@ export function SharedPracticeClient() {
 
   const locatorLoading = locatorResult?.status === "valid"
     && (loadState.status !== "loaded" || loadState.key !== locatorResult.key);
-  const presentedMessage = locatorResult?.status === "invalid"
-    ? locatorResult.code === "SHARE_LOCATOR_CONFLICT" ? "저장형 token과 inline payload를 동시에 사용할 수 없습니다." : "공유 위치 정보가 올바르지 않습니다."
-    : locatorLoading
-      ? "공유 payload를 검증하는 중…"
-      : payload && materialization?.status === "unavailable"
-      ? "이 공유의 연습 자료를 안전하게 구성할 수 없습니다."
-      : payload && abcSerialization?.status === "unavailable"
-      ? "이 공유의 ABC 악보를 안전하게 직렬화할 수 없습니다."
-      : message;
 
   useLayoutEffect(() => {
     const next = displayedLoadState?.locator.kind === "stored"
@@ -100,7 +91,21 @@ export function SharedPracticeClient() {
   }, [document]);
   const accompaniment = document && accompanimentState?.digest === document.effectiveChordTimeline.digest ? accompanimentState.value : undefined;
 
-  const plan = useMemo(() => materialized ? buildPlaybackPlan(materialized.document, materialized.trackRoles, accompaniment) : undefined, [accompaniment, materialized]);
+  const playbackConstruction = useMemo(() => materialized
+    ? buildPlaybackPlanSafely(materialized.document, materialized.trackRoles, accompaniment)
+    : undefined, [accompaniment, materialized]);
+  const plan = playbackConstruction?.status === "available" ? playbackConstruction.value : undefined;
+  const presentedMessage = locatorResult?.status === "invalid"
+    ? locatorResult.code === "SHARE_LOCATOR_CONFLICT" ? "저장형 token과 inline payload를 동시에 사용할 수 없습니다." : "공유 위치 정보가 올바르지 않습니다."
+    : locatorLoading
+      ? "공유 payload를 검증하는 중…"
+      : payload && materialization?.status === "unavailable"
+      ? "이 공유의 연습 자료를 안전하게 구성할 수 없습니다."
+      : payload && abcSerialization?.status === "unavailable"
+      ? "이 공유의 ABC 악보를 안전하게 직렬화할 수 없습니다."
+      : payload && playbackConstruction?.status === "unavailable"
+      ? "이 공유의 재생 계획을 안전하게 구성할 수 없습니다."
+      : message;
 
   const report = async () => {
     if (!displayedLoadState || displayedLoadState.locator.kind !== "stored") return;

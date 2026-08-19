@@ -62,14 +62,23 @@ describe("Step 2 edit and PracticeShare foundation", () => {
       },
     })).toBe(false);
     expect(isPracticeSharePayload({ ...validSharePayload, injectedAuthority: "forbidden" })).toBe(false);
-    const withMeter = (timeSignature: readonly [number, number]) => ({
+    const withMeter = (timeSignature: readonly [number, number], duration: readonly [number, number]) => ({
       ...validSharePayload,
-      arrangement: { ...validSharePayload.arrangement, measures: [{ ...validSharePayload.arrangement.measures[0], timeSignature }] },
+      arrangement: {
+        measures: [{ ...validSharePayload.arrangement.measures[0], timeSignature, duration }],
+        tracks: [{ ...validSharePayload.arrangement.tracks[0], events: [] }],
+      },
     });
-    expect(isPracticeSharePayload(withMeter([6, 8]))).toBe(true);
-    expect(isPracticeSharePayload(withMeter([3, 4]))).toBe(false);
-    expect(isPracticeSharePayload(withMeter([4, 8]))).toBe(false);
-    expect(isPracticeSharePayload(withMeter([Number.MAX_SAFE_INTEGER, 8]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([4, 4], [1, 1]))).toBe(true); // pickup
+    expect(isPracticeSharePayload(withMeter([4, 4], [4, 1]))).toBe(true); // full measure
+    expect(isPracticeSharePayload(withMeter([6, 8], [1, 1]))).toBe(true); // pickup
+    expect(isPracticeSharePayload(withMeter([6, 8], [3, 1]))).toBe(true); // full measure
+    expect(isPracticeSharePayload(withMeter([4, 4], [9, 2]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([6, 8], [7, 2]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([4, 4], [10_000_000, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([3, 4], [3, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([4, 8], [2, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([Number.MAX_SAFE_INTEGER, 8], [1, 1]))).toBe(false);
     const withPitch = (pitch: readonly [string, number, number]) => ({
       ...validSharePayload,
       arrangement: {

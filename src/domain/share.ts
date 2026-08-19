@@ -60,6 +60,17 @@ function isPositiveCompactFraction(value: unknown): value is CompactFraction {
   return isCompactFraction(value) && value[0] > 0;
 }
 
+function isSupportedMeasureDuration(timeSignature: unknown, duration: unknown): duration is CompactFraction {
+  if (!Array.isArray(timeSignature) || timeSignature.length !== 2 || !isPositiveCompactFraction(duration)) return false;
+  const nominalQuarterUnits = timeSignature[0] === 4 && timeSignature[1] === 4
+    ? BigInt(4)
+    : timeSignature[0] === 6 && timeSignature[1] === 8
+      ? BigInt(3)
+      : undefined;
+  if (nominalQuarterUnits === undefined) return false;
+  return BigInt(duration[0]) <= nominalQuarterUnits * BigInt(duration[1]);
+}
+
 function compactFraction(value: CompactFraction) {
   return fraction(value[0], value[1]);
 }
@@ -160,11 +171,7 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
     && (measure.sourceMeasureNumber === undefined || Number.isSafeInteger(measure.sourceMeasureNumber))
     && Number.isSafeInteger(measure.lyricVerseIndex)
     && (measure.lyricVerseIndex as number) > 0
-    && Array.isArray(measure.timeSignature)
-    && measure.timeSignature.length === 2
-    && ((measure.timeSignature[0] === 4 && measure.timeSignature[1] === 4)
-      || (measure.timeSignature[0] === 6 && measure.timeSignature[1] === 8))
-    && isPositiveCompactFraction(measure.duration))) return false;
+    && isSupportedMeasureDuration(measure.timeSignature, measure.duration))) return false;
   const lyrics = value.lyrics;
   if (lyrics.length > PRACTICE_SHARE_LIMITS.maxLyrics || !lyrics.every((token) => isPlainRecord(token)
     && hasExactKeys(token, ["id", "text", "verse", "syllabic", "extend"])
