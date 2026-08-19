@@ -1249,12 +1249,12 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
       ? bindingId === "binding:a" ? h.adapter : adapterB
       : undefined;
-    let beforeCompleteCleanup: ReturnType<MemoryOmrStore["listJobs"]>[number] | undefined;
+    let beforeDeleteFinalization: ReturnType<MemoryOmrStore["listJobs"]>[number] | undefined;
     const cleanupStore = new Proxy(h.store, {
       get(target, property, receiver) {
-        if (property === "completeCleanup") return async (...args: Parameters<OmrStore["completeCleanup"]>) => {
-          beforeCompleteCleanup = structuredClone(target.listJobs()[0]);
-          return target.completeCleanup(...args);
+        if (property === "finalizeJobDelete") return async (...args: Parameters<OmrStore["finalizeJobDelete"]>) => {
+          beforeDeleteFinalization = structuredClone(target.listJobs()[0]);
+          return target.finalizeJobDelete(...args);
         };
         const value = Reflect.get(target, property, receiver) as unknown;
         return typeof value === "function" ? value.bind(target) : value;
@@ -1291,7 +1291,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(rotated.cleanupExpiredJobs()).resolves.toEqual([{
       jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" },
     }]);
-    expect(beforeCompleteCleanup).toMatchObject({
+    expect(beforeDeleteFinalization).toMatchObject({
       state: "delete-pending", handleActive: false, vendorCreateOutcomeState: "confirmed",
       vendorJobIdEnvelope: expect.any(Object), cleanupLeaseToken: expect.any(String),
     });
@@ -1511,7 +1511,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(runDelete(failed, "failed-delete-key")).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." }, cleanupState: "pending", nextAttemptAt: expect.any(String) });
   });
 
-  it("shares one provider DELETE claimant across direct delete and cleanup overlap", async () => {
+  it("shares one provider DELETE claimant and fences cleanup finalization that completes after direct delete", async () => {
     const h = await harness([{ kind: "completed" }]);
     const handle = await createStartedJob(h, "overlapping-provider-delete");
     await h.service.synchronizeStatus(handle);
@@ -1521,16 +1521,61 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       await deleteGate;
       return { status: "deleted" };
     });
+    const originalObjectDelete = h.objects.delete.bind(h.objects);
+    let releaseStaleCleanup!: () => void;
+    const staleCleanupGate = new Promise<void>((resolve) => { releaseStaleCleanup = resolve; });
+    let localDeleteCalls = 0;
+    const localDelete = vi.spyOn(h.objects, "delete").mockImplementation(async (...args) => {
+      localDeleteCalls += 1;
+      if (localDeleteCalls === 1) await staleCleanupGate;
+      return originalObjectDelete(...args);
+    });
     const direct = h.service.delete(handle);
-    while (providerDelete.mock.calls.length === 0) await Promise.resolve();
-    const cleanup = await h.service.cleanupExpiredJobs();
+    await vi.waitFor(() => expect(providerDelete).toHaveBeenCalledTimes(1));
+    const cleanup = h.service.cleanupExpiredJobs();
+    await vi.waitFor(() => expect(localDelete).toHaveBeenCalledTimes(1));
     expect(providerDelete).toHaveBeenCalledTimes(1);
-    expect(cleanup).toHaveLength(1);
     releaseDelete();
-    await expect(direct).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "deleted" } });
+    await expect(direct).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted" });
+    releaseStaleCleanup();
+    await expect(cleanup).resolves.toMatchObject([{ result: { cleanupState: "resolved", vendor: { status: "deleted" } } }]);
     expect(providerDelete).toHaveBeenCalledTimes(1);
     expect(h.store.listProviderDeleteOperations()).toHaveLength(1);
     expect(h.store.listProviderDeleteOperations()[0]).toMatchObject({ dispatchOutcome: "acknowledged-deleted", claimToken: undefined });
+  });
+
+  it("makes two direct DELETE finalizers idempotent when the pending observer completes last", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "overlapping-direct-provider-delete");
+    await h.service.synchronizeStatus(handle);
+    let releaseDelete!: () => void;
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    const providerDelete = vi.spyOn(h.adapter, "deleteVendorJob").mockImplementation(async () => {
+      await deleteGate;
+      return { status: "deleted" };
+    });
+    const originalObjectDelete = h.objects.delete.bind(h.objects);
+    let releaseStaleDirect!: () => void;
+    const staleDirectGate = new Promise<void>((resolve) => { releaseStaleDirect = resolve; });
+    let localDeleteCalls = 0;
+    const localDelete = vi.spyOn(h.objects, "delete").mockImplementation(async (...args) => {
+      localDeleteCalls += 1;
+      if (localDeleteCalls === 1) await staleDirectGate;
+      return originalObjectDelete(...args);
+    });
+    const first = h.service.delete(handle);
+    await vi.waitFor(() => expect(providerDelete).toHaveBeenCalledTimes(1));
+    const second = h.service.delete(handle);
+    await vi.waitFor(() => expect(localDelete).toHaveBeenCalledTimes(1));
+    releaseDelete();
+    await expect(first).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+    releaseStaleDirect();
+    await expect(second).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+    expect(providerDelete).toHaveBeenCalledTimes(1);
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted", cleanupLeaseToken: undefined,
+    });
   });
 
   it("replays an uncertain idempotent DELETE with the exact durable key after restart", async () => {

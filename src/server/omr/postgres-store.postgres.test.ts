@@ -452,6 +452,37 @@ describe("actual PostgreSQL OMR authority", () => {
       await expect(store.getProviderDeleteOperation(authority.jobId)).resolves.toMatchObject({
         claimToken: undefined, dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
       });
+      await expect(store.markHandleDeleted(authority.jobId, "2026-01-01T00:00:20.000Z")).resolves.toBeUndefined();
+      await expect(store.markHandleDeleted(authority.jobId, "2026-01-01T00:00:20.001Z")).resolves.toBeUndefined();
+      await expect(store.finalizeJobDelete({
+        jobId: authority.jobId,
+        providerDeleteAuthority: { operationId: authority.operationId, operationGeneration: 2 },
+        update: {
+          state: "delete-pending", vendorDeleteState: "pending", localDeleteState: "deleted",
+          vendorDeleteResult: { status: "failed", code: "STALE", message: "stale pending observation" },
+        },
+        now: "2026-01-01T00:00:20.002Z",
+      })).resolves.toMatchObject({ status: "superseded", job: { state: "delete-pending" } });
+      await expect(store.finalizeJobDelete({
+        jobId: authority.jobId,
+        providerDeleteAuthority: { operationId: authority.operationId, operationGeneration: 1 },
+        update: {
+          state: "delete-pending", vendorDeleteState: "pending", localDeleteState: "deleted",
+          vendorDeleteResult: { status: "failed", code: "STALE", message: "stale pending observation" },
+        },
+        now: "2026-01-01T00:00:20.003Z",
+      })).resolves.toMatchObject({
+        status: "applied",
+        job: { state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted", vendorDeleteResult: { status: "deleted" } },
+      });
+      await expect(store.finalizeJobDelete({
+        jobId: authority.jobId,
+        providerDeleteAuthority: { operationId: authority.operationId, operationGeneration: 1 },
+        update: { state: "delete-pending", vendorDeleteState: "pending", localDeleteState: "failed" },
+        now: "2026-01-01T00:00:20.004Z",
+      })).resolves.toMatchObject({
+        status: "terminal", job: { state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted" },
+      });
     });
   });
 
@@ -599,18 +630,72 @@ describe("actual PostgreSQL OMR authority", () => {
 
       const overlapAdapter = new ReferenceOmrVendorAdapter([fixture]);
       const overlap = await make("overlap", overlapAdapter);
+      await overlap.service.uploadPage(overlap.handle, {
+        pageIndex: 0, pageDigest, mimeType: "image/png", idempotencyKey: "delete-app:overlap-page",
+        bytes: new Blob([pageBytes]),
+      });
       const gate = deferred();
       const overlapDelete = vi.spyOn(overlapAdapter, "deleteVendorJob").mockImplementation(async () => {
         await gate.promise;
         return { status: "deleted" };
       });
+      const originalOverlapObjectDelete = objects.delete.bind(objects);
+      const staleCleanupGate = deferred();
+      let overlapLocalDeleteCalls = 0;
+      const overlapLocalDelete = vi.spyOn(objects, "delete").mockImplementation(async (...args) => {
+        overlapLocalDeleteCalls += 1;
+        if (overlapLocalDeleteCalls === 1) await staleCleanupGate.promise;
+        return originalOverlapObjectDelete(...args);
+      });
       const direct = overlap.service.delete(overlap.handle);
       await vi.waitFor(() => expect(overlapDelete).toHaveBeenCalledTimes(1));
-      await expect(overlap.service.cleanupExpiredJobs()).resolves.toMatchObject([{ result: { cleanupState: "pending" } }]);
+      const staleCleanup = overlap.service.cleanupExpiredJobs();
+      await vi.waitFor(() => expect(overlapLocalDelete).toHaveBeenCalledTimes(1));
       expect(overlapDelete).toHaveBeenCalledTimes(1);
       gate.resolve();
       await expect(direct).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+      staleCleanupGate.resolve();
+      await expect(staleCleanup).resolves.toMatchObject([{ result: { cleanupState: "resolved", vendor: { status: "deleted" } } }]);
       expect(overlapDelete).toHaveBeenCalledTimes(1);
+      await expect(pool.query(
+        "SELECT state,vendor_delete_state,local_delete_state,cleanup_lease_token FROM omr_jobs WHERE owner_session_id=$1",
+        [overlap.dependencies.actor.sessionId],
+      )).resolves.toMatchObject({ rows: [{ state: "deleted", vendor_delete_state: "deleted", local_delete_state: "deleted", cleanup_lease_token: null }] });
+      overlapLocalDelete.mockRestore();
+
+      const twoDirectAdapter = new ReferenceOmrVendorAdapter([fixture]);
+      const twoDirect = await make("two-direct", twoDirectAdapter);
+      await twoDirect.service.uploadPage(twoDirect.handle, {
+        pageIndex: 0, pageDigest, mimeType: "image/png", idempotencyKey: "delete-app:two-direct-page",
+        bytes: new Blob([pageBytes]),
+      });
+      const twoDirectProviderGate = deferred();
+      const twoDirectProviderDelete = vi.spyOn(twoDirectAdapter, "deleteVendorJob").mockImplementation(async () => {
+        await twoDirectProviderGate.promise;
+        return { status: "deleted" };
+      });
+      const originalTwoDirectObjectDelete = objects.delete.bind(objects);
+      const staleDirectGate = deferred();
+      let twoDirectLocalDeleteCalls = 0;
+      const twoDirectLocalDelete = vi.spyOn(objects, "delete").mockImplementation(async (...args) => {
+        twoDirectLocalDeleteCalls += 1;
+        if (twoDirectLocalDeleteCalls === 1) await staleDirectGate.promise;
+        return originalTwoDirectObjectDelete(...args);
+      });
+      const firstDirect = twoDirect.service.delete(twoDirect.handle);
+      await vi.waitFor(() => expect(twoDirectProviderDelete).toHaveBeenCalledTimes(1));
+      const secondDirect = twoDirect.service.delete(twoDirect.handle);
+      await vi.waitFor(() => expect(twoDirectLocalDelete).toHaveBeenCalledTimes(1));
+      twoDirectProviderGate.resolve();
+      await expect(firstDirect).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+      staleDirectGate.resolve();
+      await expect(secondDirect).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+      expect(twoDirectProviderDelete).toHaveBeenCalledTimes(1);
+      await expect(pool.query(
+        "SELECT state,vendor_delete_state,local_delete_state,cleanup_lease_token FROM omr_jobs WHERE owner_session_id=$1",
+        [twoDirect.dependencies.actor.sessionId],
+      )).resolves.toMatchObject({ rows: [{ state: "deleted", vendor_delete_state: "deleted", local_delete_state: "deleted", cleanup_lease_token: null }] });
+      twoDirectLocalDelete.mockRestore();
 
       const idempotentAdapter = new ReferenceOmrVendorAdapter([fixture]);
       const idempotent = await make("idempotent-loss", idempotentAdapter);

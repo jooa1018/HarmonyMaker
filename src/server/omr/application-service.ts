@@ -1044,8 +1044,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     if (job.state === "deleted" && job.vendorDeleteResult) {
       return { localHandleDeleted: true, vendor: structuredClone(job.vendorDeleteResult), cleanupState: "resolved" };
     }
-    if (job.handleActive) await this.dependencies.store.markHandleDeleted(job.id, now.toISOString());
-    else if (job.state === "expired") await this.dependencies.store.transition(job.id, { state: "delete-pending" }, now.toISOString());
+    await this.dependencies.store.markHandleDeleted(job.id, now.toISOString());
     job = await this.dependencies.store.findOwnedByHandleHash(job.publicHandleHash, job.ownerSessionId, true) ?? job;
     let vendor: VendorDeleteResult = job.vendorDeleteResult ?? { status: "failed", code: "OMR_VENDOR_DELETE_PENDING", message: "Vendor 삭제 확인을 기다리고 있습니다." };
     let retentionInfo = job.retentionInfo;
@@ -1139,18 +1138,39 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         ? explicitPendingCode && vendor.status === "failed" ? vendor.message : "외부 보존 또는 로컬 정리를 계속 확인하고 있습니다."
         : undefined,
     } satisfies Partial<DurableOmrJobRecord>;
-    const applied = cleanupLeaseToken
-      ? await this.dependencies.store.completeCleanup({ jobId: job.id, leaseToken: cleanupLeaseToken, update, now: now.toISOString() })
-      : (await this.dependencies.store.transition(job.id, update, now.toISOString()), true);
-    if (!applied) await this.recordAuditBestEffort(job.id, "job-delete-superseded", "cleanup-fence-lost", now.toISOString());
-    await this.recordAuditBestEffort(job.id, "job-delete", `${vendorDeleteState}:${localDeleteState}`, now.toISOString());
-    if (state === "deleted") return { localHandleDeleted: true, vendor, cleanupState: "resolved" };
-    const nextAttemptAt = [vendorDeleteNextAttemptAt, localDeleteNextAttemptAt]
+    const providerDeleteOperation = await this.dependencies.store.getProviderDeleteOperation(job.id);
+    const finalized = await this.dependencies.store.finalizeJobDelete({
+      jobId: job.id,
+      ...(cleanupLeaseToken ? { cleanupLeaseToken } : {}),
+      ...(providerDeleteOperation ? {
+        providerDeleteAuthority: {
+          operationId: providerDeleteOperation.operationId,
+          operationGeneration: providerDeleteOperation.operationGeneration,
+        },
+      } : {}),
+      update,
+      now: now.toISOString(),
+    });
+    if (finalized.status === "superseded") {
+      await this.recordAuditBestEffort(job.id, "job-delete-superseded", "aggregate-fence-lost", now.toISOString());
+    }
+    const persisted = finalized.job;
+    const persistedVendor: VendorDeleteResult = persisted.vendorDeleteResult
+      ?? (persisted.vendorDeleteState === "deleted"
+        ? { status: "deleted" }
+        : finalized.status === "applied"
+          ? vendor
+          : { status: "failed", code: "OMR_VENDOR_DELETE_PENDING", message: "Vendor 삭제 확인을 기다리고 있습니다." });
+    await this.recordAuditBestEffort(job.id, "job-delete", `${persisted.vendorDeleteState}:${persisted.localDeleteState}`, now.toISOString());
+    if (persisted.state === "deleted") {
+      return { localHandleDeleted: true, vendor: structuredClone(persistedVendor), cleanupState: "resolved" };
+    }
+    const nextAttemptAt = [persisted.vendorDeleteNextAttemptAt, persisted.localDeleteNextAttemptAt]
       .filter((candidate): candidate is string => candidate !== undefined)
       .sort()[0];
     return {
       localHandleDeleted: true,
-      vendor,
+      vendor: structuredClone(persistedVendor),
       cleanupState: "pending",
       ...(nextAttemptAt ? { nextAttemptAt } : {}),
     };

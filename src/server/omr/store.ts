@@ -220,6 +220,108 @@ export interface DurableOmrJobRecord {
   readonly deletedAt?: string;
 }
 
+export interface OmrProviderDeleteFinalizationAuthority {
+  readonly operationId: string;
+  readonly operationGeneration: number;
+}
+
+export type OmrJobDeleteFinalizationResult = {
+  readonly status: "applied" | "terminal" | "superseded";
+  readonly job: DurableOmrJobRecord;
+};
+
+/**
+ * Merge a delete worker's observation into the current locked aggregate.
+ * Deletion is monotonic: an acknowledged provider deletion or completed local
+ * deletion can never be regressed by a slower direct/cleanup worker.
+ */
+export function mergeOmrJobDeleteFinalization(
+  current: DurableOmrJobRecord,
+  update: Partial<DurableOmrJobRecord>,
+  providerOperation: DurableOmrProviderDeleteOperation | undefined,
+  now: string,
+  callerOwnsCleanupLease: boolean,
+): DurableOmrJobRecord {
+  let vendorDeleteState = current.vendorDeleteState === "deleted"
+    ? "deleted"
+    : update.vendorDeleteState ?? current.vendorDeleteState;
+  let vendorDeleteResult = Object.prototype.hasOwnProperty.call(update, "vendorDeleteResult")
+    ? update.vendorDeleteResult
+    : current.vendorDeleteResult;
+  let vendorDeleteNextAttemptAt = Object.prototype.hasOwnProperty.call(update, "vendorDeleteNextAttemptAt")
+    ? update.vendorDeleteNextAttemptAt
+    : current.vendorDeleteNextAttemptAt;
+
+  if (providerOperation?.dispatchOutcome === "acknowledged-deleted") {
+    vendorDeleteState = "deleted";
+    vendorDeleteResult = { status: "deleted" };
+    vendorDeleteNextAttemptAt = undefined;
+  } else if (vendorDeleteState !== "deleted"
+    && providerOperation?.dispatchOutcome === "acknowledged-not-supported"
+    && providerOperation.result?.status === "not-supported") {
+    const vendorDeletesAt = providerOperation.result.retentionInfo.vendorDeletesAt;
+    if (vendorDeletesAt && vendorDeletesAt <= now) {
+      vendorDeleteState = "deleted";
+      vendorDeleteResult = { status: "deleted" };
+      vendorDeleteNextAttemptAt = undefined;
+    } else {
+      vendorDeleteState = "not-supported";
+      vendorDeleteResult = structuredClone(providerOperation.result);
+      vendorDeleteNextAttemptAt = vendorDeletesAt ?? vendorDeleteNextAttemptAt;
+    }
+  }
+
+  const localDeleteState = current.localDeleteState === "deleted"
+    ? "deleted"
+    : update.localDeleteState ?? current.localDeleteState;
+  const localDeleteNextAttemptAt = localDeleteState === "deleted"
+    ? undefined
+    : Object.prototype.hasOwnProperty.call(update, "localDeleteNextAttemptAt")
+      ? update.localDeleteNextAttemptAt
+      : current.localDeleteNextAttemptAt;
+  if (vendorDeleteState === "deleted") vendorDeleteNextAttemptAt = undefined;
+  const state: OmrLifecycleState = vendorDeleteState === "deleted" && localDeleteState === "deleted"
+    ? "deleted"
+    : "delete-pending";
+  const vendorCreateOutcomeState = update.vendorCreateOutcomeState ?? current.vendorCreateOutcomeState;
+  const creditState = creditStateAfterHandleDeactivation({
+    ...current,
+    state,
+    vendorCreateOutcomeState,
+    vendorDeleteState,
+  });
+  const merged: DurableOmrJobRecord = {
+    ...current,
+    ...structuredClone(update),
+    id: current.id,
+    ownerSessionId: current.ownerSessionId,
+    handleActive: false,
+    state,
+    vendorCreateOutcomeState,
+    vendorDeleteState,
+    localDeleteState,
+    vendorDeleteResult: vendorDeleteResult === undefined ? undefined : structuredClone(vendorDeleteResult),
+    vendorDeleteNextAttemptAt,
+    localDeleteNextAttemptAt,
+    creditState,
+    cleanupLeaseToken: state === "deleted" || callerOwnsCleanupLease ? undefined : current.cleanupLeaseToken,
+    cleanupLeaseExpiresAt: state === "deleted" || callerOwnsCleanupLease ? undefined : current.cleanupLeaseExpiresAt,
+    deletedAt: current.deletedAt ?? now,
+    updatedAt: now,
+    ...(state === "deleted" ? {
+      vendorJobIdEnvelope: undefined,
+      publicFailureCode: undefined,
+      publicFailureMessageKo: undefined,
+    } : {}),
+    ...(localDeleteState === "deleted" ? {
+      resultObjectReferenceId: undefined,
+      evidence: undefined,
+      normalizationMapping: undefined,
+    } : {}),
+  };
+  return merged;
+}
+
 export type OmrCreateClaim =
   | { readonly status: "claimed" | "resume"; readonly job: DurableOmrJobRecord }
   | { readonly status: "replay"; readonly handleReplayEnvelope: AeadEnvelopeV1 }
@@ -367,6 +469,13 @@ export interface OmrStore {
   }): Promise<boolean>;
   transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void>;
   markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void>;
+  finalizeJobDelete(input: {
+    readonly jobId: PrivateRowId;
+    readonly cleanupLeaseToken?: string;
+    readonly providerDeleteAuthority?: OmrProviderDeleteFinalizationAuthority;
+    readonly update: Partial<DurableOmrJobRecord>;
+    readonly now: string;
+  }): Promise<OmrJobDeleteFinalizationResult>;
   recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void>;
   claimCleanup(input: { readonly now: string; readonly limit: number; readonly leaseToken: string; readonly leaseExpiresAt: string }): Promise<readonly DurableOmrJobRecord[]>;
   completeCleanup(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
@@ -753,9 +862,42 @@ export class MemoryOmrStore implements OmrStore {
     await this.atomic(() => {
       const job = this.jobs.get(jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (job.state === "deleted" || (!job.handleActive && job.state === "delete-pending")) return;
       if (!isLegalOmrTransition(job.state, "delete-pending")) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
       const creditState = creditStateAfterHandleDeactivation({ ...job, state: "delete-pending" });
-      this.jobs.set(jobId, { ...job, handleActive: false, state: "delete-pending", deletedAt: now, creditState, updatedAt: now });
+      this.jobs.set(jobId, { ...job, handleActive: false, state: "delete-pending", deletedAt: job.deletedAt ?? now, creditState, updatedAt: now });
+    });
+  }
+
+  async finalizeJobDelete(input: Parameters<OmrStore["finalizeJobDelete"]>[0]): Promise<OmrJobDeleteFinalizationResult> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (job.state === "deleted") return { status: "terminal", job: this.clone(job) };
+      if (input.cleanupLeaseToken !== undefined) {
+        if (job.cleanupLeaseToken !== input.cleanupLeaseToken
+          || (job.cleanupLeaseExpiresAt ?? "") <= input.now) {
+          return { status: "superseded", job: this.clone(job) };
+        }
+      }
+      const operation = this.providerDeleteOperations.get(input.jobId);
+      if (input.providerDeleteAuthority === undefined) {
+        if (operation) return { status: "superseded", job: this.clone(job) };
+      } else if (!operation
+        || operation.operationId !== input.providerDeleteAuthority.operationId
+        || operation.operationGeneration !== input.providerDeleteAuthority.operationGeneration) {
+        return { status: "superseded", job: this.clone(job) };
+      }
+      const merged = mergeOmrJobDeleteFinalization(
+        job,
+        input.update,
+        operation,
+        input.now,
+        input.cleanupLeaseToken !== undefined,
+      );
+      if (!isLegalOmrTransition(job.state, merged.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      this.jobs.set(job.id, merged);
+      return { status: "applied", job: this.clone(merged) };
     });
   }
 
