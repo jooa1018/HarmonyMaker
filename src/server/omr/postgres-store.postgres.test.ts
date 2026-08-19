@@ -445,7 +445,8 @@ describe("actual PostgreSQL OMR authority", () => {
       const cleanup = new CleanupService(new PostgresGovernanceStore(pool), restarted);
       await expect(cleanup.run({ now: new Date("2030-01-01T00:00:00.000Z") })).resolves.toMatchObject({ failures: [expect.objectContaining({ scope: expect.stringMatching(/^object:/u), message: "delete failed" })] });
       expect(keys.size).toBe(1);
-      expect((await pool.query("SELECT lifecycle FROM object_references")).rows[0].lifecycle).toBe("delete-pending");
+      expect((await pool.query("SELECT lifecycle,publication_put_may_still_complete,publication_predecessor_token,publication_cleanup_token FROM object_references")).rows[0])
+        .toEqual({ lifecycle: "tombstone-pending", publication_put_may_still_complete: false, publication_predecessor_token: null, publication_cleanup_token: null });
       await expect(cleanup.run({ now: new Date("2030-01-01T00:01:00.000Z") })).resolves.toMatchObject({ failures: [] });
       expect(keys.size).toBe(0);
       expect((await pool.query("SELECT lifecycle FROM object_references")).rows[0].lifecycle).toBe("deleted");
@@ -482,6 +483,140 @@ describe("actual PostgreSQL OMR authority", () => {
           .toEqual([{ lifecycle: "active", publication_token: null, publication_lease_expires_at: null }]);
         expect(commands).toEqual(["PutObjectCommand"]);
       }
+    });
+  });
+
+  it("fences late PostgreSQL Put generations across cleanup, restart, retry, and newer adoption", async () => {
+    await withStore("UTC", async (pool) => {
+      const defer = () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((done) => { resolve = done; });
+        return { promise, resolve };
+      };
+
+      // A process disappears after the first delete and after its delayed Put
+      // materializes. A restarted process rediscovers the exact tombstone/key.
+      let owner = await session(pool, "postgres-late-put-restart");
+      let gate = defer();
+      let started = defer();
+      let processReplaced = false;
+      let objects = new Map<string, Uint8Array>();
+      const deletes: string[] = [];
+      const governance = new PostgresGovernanceStore(pool);
+      const unstable = new Proxy(governance, {
+        get(target, property, receiver) {
+          if (processReplaced && (property === "completeObjectPublication" || property === "settleObjectPublicationPut")) {
+            return async () => { throw new Error("process replaced"); };
+          }
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }) as PostgresGovernanceStore;
+      let fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const key = String(command.input.Key);
+        if (command.constructor.name === "PutObjectCommand") { started.resolve(); await gate.promise; objects.set(key, Uint8Array.from(command.input.Body as Uint8Array)); }
+        if (command.constructor.name === "HeadObjectCommand" && !objects.has(key)) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+        if (command.constructor.name === "DeleteObjectCommand") { deletes.push(key); objects.delete(key); }
+        return {};
+      } } as unknown as S3Client;
+      let store = new S3OwnedObjectStore(fake, "integration-bucket", unstable);
+      let pending = store.put({ ownerSessionId: owner, publicationId: "postgres-late-restart", bytes: Uint8Array.of(1, 4), contentType: "application/octet-stream" });
+      await started.promise;
+      await new CleanupService(governance, store).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+      let row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "tombstone-pending", publication_generation: "1", publication_put_may_still_complete: true, publication_token: expect.any(String) });
+      expect(row.publication_delete_confirmed_at).not.toBeNull();
+      processReplaced = true;
+      gate.resolve();
+      await expect(pending).rejects.toThrow("process replaced");
+      expect(objects.size).toBe(1);
+      const restarted = new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool));
+      await new CleanupService(new PostgresGovernanceStore(pool), restarted).run({ now: new Date("2030-01-01T00:01:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "deleted", publication_generation: "1", publication_put_may_still_complete: false });
+      expect(row.publication_token).toBeNull();
+      expect(objects.size).toBe(0);
+      expect(new Set(deletes)).toEqual(new Set([row.object_key]));
+
+      // A late second delete fails after the Put continuation settles its exact
+      // generation. The durable tombstone survives and a new process retries it.
+      await pool.query("TRUNCATE TABLE anonymous_sessions RESTART IDENTITY CASCADE");
+      owner = await session(pool, "postgres-late-put-delete-retry");
+      gate = defer();
+      started = defer();
+      objects = new Map<string, Uint8Array>();
+      let deleteCount = 0;
+      let failSecond = true;
+      fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const key = String(command.input.Key);
+        if (command.constructor.name === "PutObjectCommand") { started.resolve(); await gate.promise; objects.set(key, Uint8Array.from(command.input.Body as Uint8Array)); }
+        if (command.constructor.name === "DeleteObjectCommand") {
+          deleteCount += 1;
+          if (deleteCount > 1 && failSecond) throw new Error("postgres late second delete failed");
+          objects.delete(key);
+        }
+        return {};
+      } } as unknown as S3Client;
+      store = new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool));
+      pending = store.put({ ownerSessionId: owner, publicationId: "postgres-late-delete-retry", bytes: Uint8Array.of(2, 5), contentType: "application/octet-stream" });
+      await started.promise;
+      const claimStore = new PostgresGovernanceStore(pool);
+      const selected = await claimStore.cleanup({ now: "2030-01-01T00:00:00.000Z", batchSize: 10, dryRun: false });
+      const selectedPublication = selected.pendingObjectReferences[0];
+      const cleanupClaims = await Promise.all(["cleanup-claim-a", "cleanup-claim-b"].map((publicationCleanupToken) => claimStore.claimObjectPublicationCleanup({
+        id: selectedPublication.id, ownerSessionId: owner, objectKey: selectedPublication.objectKey,
+        publicationGeneration: selectedPublication.publicationGeneration!, publicationCleanupToken,
+        publicationCleanupLeaseExpiresAt: "2030-01-01T00:05:00.000Z", now: "2030-01-01T00:00:00.000Z",
+      })));
+      const claimedToken = cleanupClaims[0] ? "cleanup-claim-a" : "cleanup-claim-b";
+      expect([...cleanupClaims].sort()).toEqual([false, true]);
+      await claimStore.releaseObjectPublicationCleanup({
+        id: selectedPublication.id, ownerSessionId: owner, publicationGeneration: selectedPublication.publicationGeneration!, publicationCleanupToken: claimedToken,
+      });
+      await new CleanupService(new PostgresGovernanceStore(pool), store).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+      gate.resolve();
+      await expect(pending).rejects.toThrow("postgres late second delete failed");
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "tombstone-pending", publication_generation: "1", publication_put_may_still_complete: false, publication_token: expect.any(String) });
+      expect(row.publication_cleanup_token).toBeNull();
+      failSecond = false;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:01:00.000Z") });
+      expect(objects.size).toBe(0);
+      expect((await pool.query("SELECT lifecycle FROM object_references")).rows[0].lifecycle).toBe("deleted");
+
+      // Generation B starts only after A's first delete is confirmed. B adopts
+      // the stable logical key; delayed A can neither activate over nor delete B.
+      await pool.query("TRUNCATE TABLE anonymous_sessions RESTART IDENTITY CASCADE");
+      owner = await session(pool, "postgres-generation-adoption");
+      gate = defer();
+      started = defer();
+      objects = new Map<string, Uint8Array>();
+      let putCount = 0;
+      deleteCount = 0;
+      fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const key = String(command.input.Key);
+        if (command.constructor.name === "PutObjectCommand") {
+          putCount += 1;
+          if (putCount === 1) { started.resolve(); await gate.promise; }
+          objects.set(key, Uint8Array.from(command.input.Body as Uint8Array));
+        }
+        if (command.constructor.name === "DeleteObjectCommand") { deleteCount += 1; objects.delete(key); }
+        return {};
+      } } as unknown as S3Client;
+      const publication = { ownerSessionId: owner, publicationId: "postgres-generation-adoption", bytes: Uint8Array.of(7, 7), contentType: "application/octet-stream" } as const;
+      const first = new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)).put(publication);
+      await started.promise;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+      const second = await new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)).put(publication);
+      expect(second).toMatchObject({ lifecycle: "active", publicationGeneration: 2, publicationPredecessorToken: expect.any(String) });
+      gate.resolve();
+      await expect(first).resolves.toMatchObject({ id: second.id, lifecycle: "active" });
+      row = (await pool.query("SELECT lifecycle,publication_generation,publication_predecessor_token FROM object_references")).rows[0];
+      expect(row).toEqual({ lifecycle: "active", publication_generation: "2", publication_predecessor_token: null });
+      expect(objects).toEqual(new Map([[second.objectKey, publication.bytes]]));
+      expect(deleteCount).toBe(1);
     });
   });
 });

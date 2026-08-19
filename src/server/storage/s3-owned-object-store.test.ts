@@ -3,10 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import type { S3Client } from "@aws-sdk/client-s3";
+import { CleanupService } from "../cleanup/cleanup-service";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import type { PrivateRowId } from "../persistence/store";
 import { S3OwnedObjectStore } from "./s3-owned-object-store";
 import type { GovernanceStore } from "../persistence/store";
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 describe("production S3-compatible request construction", () => {
   it("uses private point operations only and verifies metadata", async () => {
@@ -133,5 +140,153 @@ describe("production S3-compatible request construction", () => {
     }) as GovernanceStore;
     await expect(new S3OwnedObjectStore(fake, "private-bucket", unavailable).put({ ownerSessionId: "owner:db" as PrivateRowId, publicationId: "db-unavailable", bytes: Uint8Array.of(1), contentType: "application/octet-stream" })).rejects.toThrow("database unavailable");
     expect(fake.send).not.toHaveBeenCalled();
+  });
+
+  it("keeps a tombstone until a blocked Put materializes and completes the exact second delete", async () => {
+    const gate = deferred();
+    const putStarted = deferred();
+    const objects = new Map<string, Uint8Array>();
+    const deletes: string[] = [];
+    const records = new MemoryGovernanceStore();
+    const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const key = String(command.input.Key);
+      if (command.constructor.name === "PutObjectCommand") {
+        putStarted.resolve();
+        await gate.promise;
+        objects.set(key, Uint8Array.from(command.input.Body as Uint8Array));
+      }
+      if (command.constructor.name === "DeleteObjectCommand") { deletes.push(key); objects.delete(key); }
+      return {};
+    } } as unknown as S3Client;
+    const owner = "late-put-owner" as PrivateRowId;
+    const store = new S3OwnedObjectStore(fake, "private-bucket", records);
+    const publication = { ownerSessionId: owner, publicationId: "late-put-cleanup", bytes: Uint8Array.of(9, 8, 7), contentType: "application/octet-stream" } as const;
+    const pending = store.put(publication);
+    await putStarted.promise;
+    const staged = [...records.objects.values()][0];
+    expect(staged).toMatchObject({ lifecycle: "upload-pending", publicationGeneration: 1, publicationPutMayStillComplete: true });
+
+    await new CleanupService(records, store).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    const tombstone = records.objects.get(staged.id);
+    expect(tombstone).toMatchObject({ lifecycle: "tombstone-pending", publicationToken: staged.publicationToken, publicationDeleteConfirmedAt: expect.any(String) });
+    expect(objects.size).toBe(0);
+    expect(deletes).toEqual([staged.objectKey]);
+
+    gate.resolve();
+    await expect(pending).rejects.toThrow("OBJECT_PUBLICATION_DELETED");
+    expect(objects.size).toBe(0);
+    expect(deletes).toEqual([staged.objectKey, staged.objectKey]);
+    expect(records.objects.get(staged.id)).toMatchObject({ lifecycle: "deleted", publicationPutMayStillComplete: false });
+  });
+
+  it("reclaims a late materialized Put after process replacement by inspecting the durable tombstone", async () => {
+    const gate = deferred();
+    const putStarted = deferred();
+    const objects = new Map<string, Uint8Array>();
+    const records = new MemoryGovernanceStore();
+    let processReplaced = false;
+    const unstable = new Proxy(records, {
+      get(target, property, receiver) {
+        if (processReplaced && (property === "completeObjectPublication" || property === "settleObjectPublicationPut")) {
+          return async () => { throw new Error("process replaced"); };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as GovernanceStore;
+    const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const key = String(command.input.Key);
+      if (command.constructor.name === "PutObjectCommand") {
+        putStarted.resolve();
+        await gate.promise;
+        objects.set(key, Uint8Array.from(command.input.Body as Uint8Array));
+      }
+      if (command.constructor.name === "HeadObjectCommand") {
+        if (!objects.has(key)) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+      }
+      if (command.constructor.name === "DeleteObjectCommand") objects.delete(key);
+      return {};
+    } } as unknown as S3Client;
+    const owner = "restart-late-put-owner" as PrivateRowId;
+    const firstProcess = new S3OwnedObjectStore(fake, "private-bucket", unstable);
+    const pending = firstProcess.put({ ownerSessionId: owner, publicationId: "restart-late-put", bytes: Uint8Array.of(1, 2), contentType: "application/octet-stream" });
+    await putStarted.promise;
+    await new CleanupService(records, firstProcess).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    processReplaced = true;
+    gate.resolve();
+    await expect(pending).rejects.toThrow("process replaced");
+    expect(objects.size).toBe(1);
+    expect([...records.objects.values()][0]).toMatchObject({ lifecycle: "tombstone-pending", publicationPutMayStillComplete: true });
+
+    const restarted = new S3OwnedObjectStore(fake, "private-bucket", records);
+    await new CleanupService(records, restarted).run({ now: new Date("2030-01-01T00:01:00.000Z") });
+    expect(objects.size).toBe(0);
+    expect([...records.objects.values()][0]).toMatchObject({ lifecycle: "deleted", publicationPutMayStillComplete: false });
+  });
+
+  it("retains second-delete failure authority and retries the exact key after restart", async () => {
+    const gate = deferred();
+    const putStarted = deferred();
+    const objects = new Map<string, Uint8Array>();
+    let deleteCalls = 0;
+    let failLateDelete = true;
+    const records = new MemoryGovernanceStore();
+    const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const key = String(command.input.Key);
+      if (command.constructor.name === "PutObjectCommand") { putStarted.resolve(); await gate.promise; objects.set(key, Uint8Array.from(command.input.Body as Uint8Array)); }
+      if (command.constructor.name === "DeleteObjectCommand") {
+        deleteCalls += 1;
+        if (deleteCalls > 1 && failLateDelete) throw new Error("late second delete failed");
+        objects.delete(key);
+      }
+      return {};
+    } } as unknown as S3Client;
+    const owner = "late-delete-retry-owner" as PrivateRowId;
+    const store = new S3OwnedObjectStore(fake, "private-bucket", records);
+    const pending = store.put({ ownerSessionId: owner, publicationId: "late-delete-retry", bytes: Uint8Array.of(3), contentType: "application/octet-stream" });
+    await putStarted.promise;
+    await new CleanupService(records, store).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    gate.resolve();
+    await expect(pending).rejects.toThrow("late second delete failed");
+    expect(objects.size).toBe(1);
+    expect([...records.objects.values()][0]).toMatchObject({ lifecycle: "tombstone-pending", publicationToken: expect.any(String), publicationPutMayStillComplete: false });
+
+    failLateDelete = false;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records)).run({ now: new Date("2030-01-01T00:01:00.000Z") });
+    expect(objects.size).toBe(0);
+    expect([...records.objects.values()][0].lifecycle).toBe("deleted");
+  });
+
+  it("adopts a newer generation without allowing the delayed predecessor to delete it", async () => {
+    const gate = deferred();
+    const firstPutStarted = deferred();
+    const objects = new Map<string, Uint8Array>();
+    const commands: string[] = [];
+    let putCalls = 0;
+    const records = new MemoryGovernanceStore();
+    const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const key = String(command.input.Key);
+      commands.push(command.constructor.name);
+      if (command.constructor.name === "PutObjectCommand") {
+        putCalls += 1;
+        if (putCalls === 1) { firstPutStarted.resolve(); await gate.promise; }
+        objects.set(key, Uint8Array.from(command.input.Body as Uint8Array));
+      }
+      if (command.constructor.name === "DeleteObjectCommand") objects.delete(key);
+      return {};
+    } } as unknown as S3Client;
+    const owner = "generation-fence-owner" as PrivateRowId;
+    const publication = { ownerSessionId: owner, publicationId: "generation-fence", bytes: Uint8Array.of(5, 5), contentType: "application/octet-stream" } as const;
+    const first = new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    await firstPutStarted.promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records)).run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    const second = await new S3OwnedObjectStore(fake, "private-bucket", records).put(publication);
+    expect(second).toMatchObject({ lifecycle: "active", publicationGeneration: 2, publicationPredecessorToken: expect.any(String) });
+
+    gate.resolve();
+    await expect(first).resolves.toMatchObject({ id: second.id, lifecycle: "active" });
+    expect(objects).toEqual(new Map([[second.objectKey, publication.bytes]]));
+    expect(records.objects.get(second.id)).toMatchObject({ lifecycle: "active", publicationPredecessorToken: undefined });
+    expect(commands.filter((name) => name === "DeleteObjectCommand")).toHaveLength(1);
   });
 });

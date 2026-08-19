@@ -24,7 +24,11 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
         });
         if (!restarted) throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
         this.buffers.set(objectKey, bytes);
-        if (!await this.records.completeObjectPublication({ id: existing.id, ownerSessionId: input.ownerSessionId, publicationToken, at: "2026-01-01T00:00:00.000Z" })) throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
+        const disposition = await this.records.completeObjectPublication({
+          id: existing.id, ownerSessionId: input.ownerSessionId, publicationToken,
+          publicationGeneration: (existing.publicationGeneration ?? 0) + 1, at: "2026-01-01T00:00:00.000Z",
+        });
+        if (disposition !== "active") throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
         const active = await this.records.findObjectReference(existing.id, input.ownerSessionId);
         if (active?.lifecycle === "active") return active;
       }

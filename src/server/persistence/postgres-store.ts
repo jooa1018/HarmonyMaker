@@ -39,6 +39,13 @@ function objectRow(row: Record<string, unknown>): ObjectReferenceRecord {
     lifecycle: row.lifecycle as ObjectReferenceRecord["lifecycle"], createdAt: iso(row.created_at as Date),
     ...(row.publication_token ? { publicationToken: row.publication_token as string } : {}),
     ...(row.publication_lease_expires_at ? { publicationLeaseExpiresAt: iso(row.publication_lease_expires_at as Date) } : {}),
+    ...(row.publication_generation !== undefined ? { publicationGeneration: Number(row.publication_generation) } : {}),
+    ...(row.publication_put_may_still_complete !== undefined ? { publicationPutMayStillComplete: row.publication_put_may_still_complete as boolean } : {}),
+    ...(row.publication_predecessor_token ? { publicationPredecessorToken: row.publication_predecessor_token as string } : {}),
+    ...(row.publication_predecessor_generation !== null && row.publication_predecessor_generation !== undefined ? { publicationPredecessorGeneration: Number(row.publication_predecessor_generation) } : {}),
+    ...(row.publication_delete_confirmed_at ? { publicationDeleteConfirmedAt: iso(row.publication_delete_confirmed_at as Date) } : {}),
+    ...(row.publication_cleanup_token ? { publicationCleanupToken: row.publication_cleanup_token as string } : {}),
+    ...(row.publication_cleanup_lease_expires_at ? { publicationCleanupLeaseExpiresAt: iso(row.publication_cleanup_lease_expires_at as Date) } : {}),
     ...(row.expires_at ? { expiresAt: iso(row.expires_at as Date) } : {}),
     ...(row.deleted_at ? { deletedAt: iso(row.deleted_at as Date) } : {}),
   };
@@ -165,10 +172,12 @@ export class PostgresGovernanceStore implements GovernanceStore {
   }
   async createObjectReference(input: Omit<ObjectReferenceRecord, "id">): Promise<ObjectReferenceRecord> {
     const result = await this.database.query(
-      `INSERT INTO object_references (owner_session_id,object_key,content_type,byte_size,binary_digest,lifecycle,created_at,expires_at,deleted_at,publication_token,publication_lease_expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      `INSERT INTO object_references (owner_session_id,object_key,content_type,byte_size,binary_digest,lifecycle,created_at,expires_at,deleted_at,publication_token,publication_lease_expires_at,publication_generation,publication_put_may_still_complete,publication_predecessor_token,publication_predecessor_generation,publication_delete_confirmed_at,publication_cleanup_token,publication_cleanup_lease_expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
       [input.ownerSessionId, input.objectKey, input.contentType, input.byteSize, input.binaryDigest, input.lifecycle, input.createdAt, input.expiresAt ?? null, input.deletedAt ?? null,
-        input.publicationToken ?? null, input.publicationLeaseExpiresAt ?? null],
+        input.publicationToken ?? null, input.publicationLeaseExpiresAt ?? null, input.publicationGeneration ?? 0, input.publicationPutMayStillComplete ?? false,
+        input.publicationPredecessorToken ?? null, input.publicationPredecessorGeneration ?? null, input.publicationDeleteConfirmedAt ?? null,
+        input.publicationCleanupToken ?? null, input.publicationCleanupLeaseExpiresAt ?? null],
     );
     return objectRow(result.rows[0]);
   }
@@ -180,42 +189,133 @@ export class PostgresGovernanceStore implements GovernanceStore {
     const result = await this.database.query("SELECT * FROM object_references WHERE object_key=$1 AND owner_session_id=$2", [objectKey, ownerSessionId]);
     return result.rows[0] ? objectRow(result.rows[0]) : undefined;
   }
-  async completeObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<boolean> {
+  async completeObjectPublication(input: Parameters<GovernanceStore["completeObjectPublication"]>[0]): Promise<"active" | "delete-required" | "superseded"> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT * FROM object_references WHERE id=$1 AND owner_session_id=$2 FOR UPDATE", [input.id, input.ownerSessionId]);
+      const row = selected.rows[0];
+      if (!row) { await client.query("COMMIT"); return "superseded"; }
+      const current = row.publication_token === input.publicationToken && Number(row.publication_generation) === input.publicationGeneration;
+      const predecessor = row.publication_predecessor_token === input.publicationToken && Number(row.publication_predecessor_generation) === input.publicationGeneration;
+      if (row.lifecycle === "active") {
+        if (predecessor) await client.query("UPDATE object_references SET publication_predecessor_token=NULL,publication_predecessor_generation=NULL WHERE id=$1", [input.id]);
+        await client.query("COMMIT");
+        return "active";
+      }
+      if (predecessor) {
+        await client.query("UPDATE object_references SET publication_predecessor_token=NULL,publication_predecessor_generation=NULL WHERE id=$1", [input.id]);
+        await client.query("COMMIT");
+        return row.lifecycle === "tombstone-pending" ? "delete-required" : "superseded";
+      }
+      if (!current) { await client.query("COMMIT"); return "superseded"; }
+      if (row.lifecycle === "tombstone-pending") {
+        await client.query("UPDATE object_references SET publication_put_may_still_complete=false,publication_lease_expires_at=NULL WHERE id=$1", [input.id]);
+        await client.query("COMMIT");
+        return "delete-required";
+      }
+      if (row.lifecycle !== "upload-pending") { await client.query("COMMIT"); return "superseded"; }
+      await client.query(
+        `UPDATE object_references SET lifecycle='active',publication_token=NULL,publication_lease_expires_at=NULL,
+         publication_put_may_still_complete=false,publication_delete_confirmed_at=NULL,
+         publication_cleanup_token=NULL,publication_cleanup_lease_expires_at=NULL WHERE id=$1`,
+        [input.id],
+      );
+      await client.query("COMMIT");
+      return "active";
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async beginObjectPublicationAttempt(input: Parameters<GovernanceStore["beginObjectPublicationAttempt"]>[0]): Promise<boolean> {
     const result = await this.database.query(
-      `UPDATE object_references SET lifecycle='active',publication_token=NULL,publication_lease_expires_at=NULL
-       WHERE id=$1 AND owner_session_id=$2 AND lifecycle='upload-pending' AND publication_token=$3`,
-      [input.id, input.ownerSessionId, input.publicationToken],
+      `UPDATE object_references SET publication_put_may_still_complete=true,publication_lease_expires_at=$5
+       WHERE id=$1 AND owner_session_id=$2 AND lifecycle='upload-pending' AND publication_token=$3
+         AND publication_generation=$4 AND publication_put_may_still_complete=false`,
+      [input.id, input.ownerSessionId, input.publicationToken, input.publicationGeneration, input.publicationLeaseExpiresAt],
     );
     return (result.rowCount ?? 0) === 1;
   }
   async restartObjectPublication(input: Parameters<GovernanceStore["restartObjectPublication"]>[0]): Promise<boolean> {
     const result = await this.database.query(
       `UPDATE object_references
-       SET lifecycle='upload-pending',publication_token=$7,publication_lease_expires_at=$8,deleted_at=NULL
-       WHERE id=$1 AND owner_session_id=$2 AND lifecycle='deleted'
+       SET lifecycle='upload-pending',publication_token=$7,publication_lease_expires_at=$8,
+         publication_generation=publication_generation+1,publication_put_may_still_complete=true,
+         publication_predecessor_token=CASE WHEN lifecycle='tombstone-pending' THEN publication_token ELSE NULL END,
+         publication_predecessor_generation=CASE WHEN lifecycle='tombstone-pending' THEN publication_generation ELSE NULL END,
+         publication_delete_confirmed_at=NULL,publication_cleanup_token=NULL,publication_cleanup_lease_expires_at=NULL,deleted_at=NULL
+       WHERE id=$1 AND owner_session_id=$2
+         AND (lifecycle='deleted' OR (lifecycle='tombstone-pending' AND publication_delete_confirmed_at IS NOT NULL
+           AND publication_put_may_still_complete=true AND publication_predecessor_token IS NULL AND publication_cleanup_token IS NULL))
          AND object_key=$3 AND content_type=$4 AND byte_size=$5 AND binary_digest=$6`,
       [input.id, input.ownerSessionId, input.objectKey, input.contentType, input.byteSize, input.binaryDigest, input.publicationToken, input.publicationLeaseExpiresAt],
     );
     return (result.rowCount ?? 0) === 1;
   }
-  async failObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<"active" | "cleanup-required" | "superseded"> {
+  async settleObjectPublicationPut(input: Parameters<GovernanceStore["settleObjectPublicationPut"]>[0]): Promise<"active" | "delete-required" | "settled" | "superseded"> {
     const client = await this.database.connect();
     try {
       await client.query("BEGIN");
-      const selected = await client.query("SELECT lifecycle,publication_token FROM object_references WHERE id=$1 AND owner_session_id=$2 FOR UPDATE", [input.id, input.ownerSessionId]);
+      const selected = await client.query("SELECT lifecycle,publication_token,publication_generation,publication_predecessor_token,publication_predecessor_generation FROM object_references WHERE id=$1 AND owner_session_id=$2 FOR UPDATE", [input.id, input.ownerSessionId]);
       const row = selected.rows[0];
       if (!row) { await client.query("COMMIT"); return "superseded"; }
-      if (row.lifecycle === "active") { await client.query("COMMIT"); return "active"; }
-      if (row.publication_token !== input.publicationToken || !["upload-pending", "delete-pending", "deleted"].includes(String(row.lifecycle))) {
-        await client.query("COMMIT"); return "superseded";
+      const current = row.publication_token === input.publicationToken && Number(row.publication_generation) === input.publicationGeneration;
+      const predecessor = row.publication_predecessor_token === input.publicationToken && Number(row.publication_predecessor_generation) === input.publicationGeneration;
+      if (row.lifecycle === "active") {
+        if (predecessor) await client.query("UPDATE object_references SET publication_predecessor_token=NULL,publication_predecessor_generation=NULL WHERE id=$1", [input.id]);
+        await client.query("COMMIT"); return "active";
       }
-      await client.query("UPDATE object_references SET lifecycle='delete-pending' WHERE id=$1", [input.id]);
+      if (!current && !predecessor) { await client.query("COMMIT"); return "superseded"; }
+      if (current) await client.query("UPDATE object_references SET publication_put_may_still_complete=false,publication_lease_expires_at=NULL WHERE id=$1", [input.id]);
+      else await client.query("UPDATE object_references SET publication_predecessor_token=NULL,publication_predecessor_generation=NULL WHERE id=$1", [input.id]);
       await client.query("COMMIT");
-      return "cleanup-required";
+      return row.lifecycle === "tombstone-pending" ? "delete-required" : "settled";
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
+  async claimObjectPublicationCleanup(input: Parameters<GovernanceStore["claimObjectPublicationCleanup"]>[0]): Promise<boolean> {
+    const result = await this.database.query(
+      `UPDATE object_references SET lifecycle='tombstone-pending',publication_cleanup_token=$5,publication_cleanup_lease_expires_at=$6
+       WHERE id=$1 AND owner_session_id=$2 AND object_key=$3 AND publication_generation=$4
+         AND (lifecycle IN ('upload-pending','tombstone-pending') OR (lifecycle='active' AND publication_predecessor_token IS NOT NULL))
+         AND (publication_cleanup_token IS NULL OR publication_cleanup_lease_expires_at <= $7)`,
+      [input.id, input.ownerSessionId, input.objectKey, input.publicationGeneration, input.publicationCleanupToken, input.publicationCleanupLeaseExpiresAt, input.now],
+    );
+    return (result.rowCount ?? 0) === 1;
+  }
+  async completeObjectPublicationCleanup(input: Parameters<GovernanceStore["completeObjectPublicationCleanup"]>[0]): Promise<"deleted" | "tombstone" | "superseded"> {
+    const result = await this.database.query(
+      `UPDATE object_references SET
+         lifecycle=CASE WHEN publication_put_may_still_complete=false AND publication_predecessor_token IS NULL THEN 'deleted' ELSE 'tombstone-pending' END,
+         deleted_at=CASE WHEN publication_put_may_still_complete=false AND publication_predecessor_token IS NULL THEN COALESCE(deleted_at,$6::timestamptz) ELSE deleted_at END,
+         publication_token=CASE WHEN publication_put_may_still_complete=false AND publication_predecessor_token IS NULL THEN NULL ELSE publication_token END,
+         publication_lease_expires_at=CASE WHEN publication_put_may_still_complete=false AND publication_predecessor_token IS NULL THEN NULL ELSE publication_lease_expires_at END,
+         publication_delete_confirmed_at=$6,publication_cleanup_token=NULL,publication_cleanup_lease_expires_at=NULL
+       WHERE id=$1 AND owner_session_id=$2 AND object_key=$3 AND publication_generation=$4
+         AND lifecycle='tombstone-pending' AND publication_cleanup_token=$5 RETURNING lifecycle`,
+      [input.id, input.ownerSessionId, input.objectKey, input.publicationGeneration, input.publicationCleanupToken, input.at],
+    );
+    if (result.rowCount !== 1) return "superseded";
+    return result.rows[0].lifecycle === "deleted" ? "deleted" : "tombstone";
+  }
+  async releaseObjectPublicationCleanup(input: Parameters<GovernanceStore["releaseObjectPublicationCleanup"]>[0]): Promise<void> {
+    await this.database.query(
+      `UPDATE object_references SET publication_cleanup_token=NULL,publication_cleanup_lease_expires_at=NULL
+       WHERE id=$1 AND owner_session_id=$2 AND publication_generation=$3 AND publication_cleanup_token=$4`,
+      [input.id, input.ownerSessionId, input.publicationGeneration, input.publicationCleanupToken],
+    );
+  }
   async transitionObjectReference(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly lifecycle: ObjectReferenceRecord["lifecycle"]; readonly at: string }): Promise<void> {
-    await this.database.query("UPDATE object_references SET lifecycle=$3,deleted_at=CASE WHEN $3='deleted' THEN COALESCE(deleted_at,$4::timestamptz) ELSE deleted_at END,publication_token=CASE WHEN $3='deleted' THEN NULL ELSE publication_token END,publication_lease_expires_at=CASE WHEN $3='deleted' THEN NULL ELSE publication_lease_expires_at END WHERE id=$1 AND owner_session_id=$2", [input.id, input.ownerSessionId, input.lifecycle, input.at]);
+    await this.database.query(
+      `UPDATE object_references SET lifecycle=$3,
+       deleted_at=CASE WHEN $3='deleted' THEN COALESCE(deleted_at,$4::timestamptz) ELSE deleted_at END,
+       publication_token=CASE WHEN $3='deleted' THEN NULL ELSE publication_token END,
+       publication_lease_expires_at=CASE WHEN $3='deleted' THEN NULL ELSE publication_lease_expires_at END,
+       publication_put_may_still_complete=CASE WHEN $3='deleted' THEN false ELSE publication_put_may_still_complete END,
+       publication_predecessor_token=CASE WHEN $3='deleted' THEN NULL ELSE publication_predecessor_token END,
+       publication_predecessor_generation=CASE WHEN $3='deleted' THEN NULL ELSE publication_predecessor_generation END,
+       publication_cleanup_token=CASE WHEN $3='deleted' THEN NULL ELSE publication_cleanup_token END,
+       publication_cleanup_lease_expires_at=CASE WHEN $3='deleted' THEN NULL ELSE publication_cleanup_lease_expires_at END
+       WHERE id=$1 AND owner_session_id=$2`,
+      [input.id, input.ownerSessionId, input.lifecycle, input.at],
+    );
   }
   async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
     const client = await this.database.connect();
@@ -224,21 +324,30 @@ export class PostgresGovernanceStore implements GovernanceStore {
       const sessions = await this.cleanupIds(client, "anonymous_sessions", "expires_at <= $1 AND revoked_at IS NULL", input, "revoked_at=$1");
       const shares = await this.cleanupIds(client, "share_records", "expires_at <= $1 AND lifecycle='active'", input, "lifecycle='expired',deleted_at=$1");
       const pendingObjects = await client.query(
-        `SELECT * FROM object_references WHERE lifecycle='delete-pending'
-          OR (lifecycle='upload-pending' AND publication_lease_expires_at <= $1)
+        `SELECT * FROM object_references WHERE lifecycle IN ('delete-pending','tombstone-pending')
+          OR (lifecycle='upload-pending' AND (publication_put_may_still_complete=false OR publication_lease_expires_at <= $1))
           OR (lifecycle='active' AND expires_at <= $1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`,
         [input.now, input.batchSize],
       );
       const objects = pendingObjects.rows.map(objectRow);
       if (!input.dryRun && objects.length > 0) {
-        await client.query("UPDATE object_references SET lifecycle='delete-pending' WHERE id = ANY($1::bigint[]) AND lifecycle IN ('active','upload-pending')", [objects.map((record) => record.id)]);
+        await client.query(
+          `UPDATE object_references SET lifecycle=CASE
+             WHEN lifecycle='upload-pending' OR (lifecycle='active' AND publication_predecessor_token IS NOT NULL) THEN 'tombstone-pending'
+             ELSE 'delete-pending' END
+           WHERE id = ANY($1::bigint[]) AND lifecycle IN ('active','upload-pending')`,
+          [objects.map((record) => record.id)],
+        );
       }
       const idempotency = await this.deleteExpired(client, "idempotency_records", input);
       const quota = await this.deleteExpired(client, "quota_windows", input);
       if (input.dryRun) await client.query("ROLLBACK"); else await client.query("COMMIT");
       return {
         expiredSessionIds: sessions, expiredShareIds: shares, expiredObjectIds: objects.map((record) => record.id),
-        pendingObjectReferences: objects.map((record) => ({ ...record, lifecycle: input.dryRun ? record.lifecycle : "delete-pending" })),
+        pendingObjectReferences: objects.map((record) => {
+          if (input.dryRun || record.lifecycle === "delete-pending" || record.lifecycle === "tombstone-pending") return record;
+          return { ...record, lifecycle: record.lifecycle === "upload-pending" || record.publicationPredecessorToken !== undefined ? "tombstone-pending" as const : "delete-pending" as const };
+        }),
         removedIdempotencyCount: idempotency, removedQuotaCount: quota,
       };
     } catch (error) {

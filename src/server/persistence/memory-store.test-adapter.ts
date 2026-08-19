@@ -139,37 +139,141 @@ export class MemoryGovernanceStore implements GovernanceStore {
     return [...this.objects.values()].find((record) => record.objectKey === objectKey && record.ownerSessionId === ownerSessionId);
   }
 
-  async completeObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<boolean> {
+  private publicationAuthority(record: ObjectReferenceRecord, publicationToken: string, publicationGeneration: number): "current" | "predecessor" | undefined {
+    if (record.publicationToken === publicationToken && record.publicationGeneration === publicationGeneration) return "current";
+    if (record.publicationPredecessorToken === publicationToken && record.publicationPredecessorGeneration === publicationGeneration) return "predecessor";
+    return undefined;
+  }
+
+  async completeObjectPublication(input: Parameters<GovernanceStore["completeObjectPublication"]>[0]): Promise<"active" | "delete-required" | "superseded"> {
     const record = await this.findObjectReference(input.id, input.ownerSessionId);
-    if (!record || record.lifecycle !== "upload-pending" || record.publicationToken !== input.publicationToken) return false;
-    this.objects.set(record.id, { ...record, lifecycle: "active", publicationToken: undefined, publicationLeaseExpiresAt: undefined });
+    if (!record) return "superseded";
+    const authority = this.publicationAuthority(record, input.publicationToken, input.publicationGeneration);
+    if (record.lifecycle === "active") {
+      if (authority === "predecessor") this.objects.set(record.id, { ...record, publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined });
+      return "active";
+    }
+    if (authority === "predecessor") {
+      this.objects.set(record.id, { ...record, publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined });
+      return record.lifecycle === "tombstone-pending" ? "delete-required" : "superseded";
+    }
+    if (authority !== "current") return "superseded";
+    if (record.lifecycle === "tombstone-pending") {
+      this.objects.set(record.id, { ...record, publicationPutMayStillComplete: false, publicationLeaseExpiresAt: undefined });
+      return "delete-required";
+    }
+    if (record.lifecycle !== "upload-pending") return "superseded";
+    this.objects.set(record.id, {
+      ...record,
+      lifecycle: "active",
+      publicationToken: undefined,
+      publicationLeaseExpiresAt: undefined,
+      publicationPutMayStillComplete: false,
+      publicationDeleteConfirmedAt: undefined,
+      publicationCleanupToken: undefined,
+      publicationCleanupLeaseExpiresAt: undefined,
+    });
+    return "active";
+  }
+
+  async beginObjectPublicationAttempt(input: Parameters<GovernanceStore["beginObjectPublicationAttempt"]>[0]): Promise<boolean> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (!record || record.lifecycle !== "upload-pending" || record.publicationToken !== input.publicationToken
+      || record.publicationGeneration !== input.publicationGeneration || record.publicationPutMayStillComplete !== false) return false;
+    this.objects.set(record.id, { ...record, publicationPutMayStillComplete: true, publicationLeaseExpiresAt: input.publicationLeaseExpiresAt });
     return true;
   }
 
   async restartObjectPublication(input: Parameters<GovernanceStore["restartObjectPublication"]>[0]): Promise<boolean> {
     const record = await this.findObjectReference(input.id, input.ownerSessionId);
-    if (!record || record.lifecycle !== "deleted" || record.objectKey !== input.objectKey || record.contentType !== input.contentType
+    const restartableTombstone = record?.lifecycle === "tombstone-pending"
+      && record.publicationDeleteConfirmedAt !== undefined
+      && record.publicationPutMayStillComplete === true
+      && record.publicationPredecessorToken === undefined
+      && record.publicationCleanupToken === undefined;
+    if (!record || (record.lifecycle !== "deleted" && !restartableTombstone) || record.objectKey !== input.objectKey || record.contentType !== input.contentType
       || record.byteSize !== input.byteSize || record.binaryDigest !== input.binaryDigest) return false;
     this.objects.set(record.id, {
       ...record,
       lifecycle: "upload-pending",
       publicationToken: input.publicationToken,
       publicationLeaseExpiresAt: input.publicationLeaseExpiresAt,
+      publicationGeneration: (record.publicationGeneration ?? 0) + 1,
+      publicationPutMayStillComplete: true,
+      ...(restartableTombstone ? {
+        publicationPredecessorToken: record.publicationToken,
+        publicationPredecessorGeneration: record.publicationGeneration,
+      } : { publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined }),
+      publicationDeleteConfirmedAt: undefined,
+      publicationCleanupToken: undefined,
+      publicationCleanupLeaseExpiresAt: undefined,
       deletedAt: undefined,
     });
     return true;
   }
 
-  async failObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<"active" | "cleanup-required" | "superseded"> {
+  async settleObjectPublicationPut(input: Parameters<GovernanceStore["settleObjectPublicationPut"]>[0]): Promise<"active" | "delete-required" | "settled" | "superseded"> {
     const record = await this.findObjectReference(input.id, input.ownerSessionId);
     if (!record) return "superseded";
-    if (record.lifecycle === "active") return "active";
-    if (record.publicationToken !== input.publicationToken) return "superseded";
-    if (record.lifecycle === "upload-pending" || record.lifecycle === "deleted" || record.lifecycle === "delete-pending") {
-      this.objects.set(record.id, { ...record, lifecycle: "delete-pending" });
-      return "cleanup-required";
+    const authority = this.publicationAuthority(record, input.publicationToken, input.publicationGeneration);
+    if (record.lifecycle === "active") {
+      if (authority === "predecessor") this.objects.set(record.id, { ...record, publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined });
+      return "active";
     }
-    return "superseded";
+    if (!authority) return "superseded";
+    const settled = authority === "current"
+      ? { ...record, publicationPutMayStillComplete: false, publicationLeaseExpiresAt: undefined }
+      : { ...record, publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined };
+    this.objects.set(record.id, settled);
+    return record.lifecycle === "tombstone-pending" ? "delete-required" : "settled";
+  }
+
+  async claimObjectPublicationCleanup(input: Parameters<GovernanceStore["claimObjectPublicationCleanup"]>[0]): Promise<boolean> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (!record || record.objectKey !== input.objectKey || record.publicationGeneration !== input.publicationGeneration
+      || !["upload-pending", "tombstone-pending", "active"].includes(record.lifecycle)
+      || (record.lifecycle === "active" && record.publicationPredecessorToken === undefined)
+      || (record.publicationCleanupToken !== undefined && (record.publicationCleanupLeaseExpiresAt ?? input.now) > input.now)) return false;
+    this.objects.set(record.id, {
+      ...record,
+      lifecycle: "tombstone-pending",
+      publicationCleanupToken: input.publicationCleanupToken,
+      publicationCleanupLeaseExpiresAt: input.publicationCleanupLeaseExpiresAt,
+    });
+    return true;
+  }
+
+  async completeObjectPublicationCleanup(input: Parameters<GovernanceStore["completeObjectPublicationCleanup"]>[0]): Promise<"deleted" | "tombstone" | "superseded"> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (!record || record.lifecycle !== "tombstone-pending" || record.objectKey !== input.objectKey
+      || record.publicationGeneration !== input.publicationGeneration || record.publicationCleanupToken !== input.publicationCleanupToken) return "superseded";
+    const terminal = record.publicationPutMayStillComplete === false && record.publicationPredecessorToken === undefined;
+    this.objects.set(record.id, terminal ? {
+      ...record,
+      lifecycle: "deleted",
+      publicationToken: undefined,
+      publicationLeaseExpiresAt: undefined,
+      publicationPutMayStillComplete: false,
+      publicationPredecessorToken: undefined,
+      publicationPredecessorGeneration: undefined,
+      publicationDeleteConfirmedAt: input.at,
+      publicationCleanupToken: undefined,
+      publicationCleanupLeaseExpiresAt: undefined,
+      deletedAt: input.at,
+    } : {
+      ...record,
+      publicationDeleteConfirmedAt: input.at,
+      publicationCleanupToken: undefined,
+      publicationCleanupLeaseExpiresAt: undefined,
+    });
+    return terminal ? "deleted" : "tombstone";
+  }
+
+  async releaseObjectPublicationCleanup(input: Parameters<GovernanceStore["releaseObjectPublicationCleanup"]>[0]): Promise<void> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (record?.publicationGeneration === input.publicationGeneration && record.publicationCleanupToken === input.publicationCleanupToken) {
+      this.objects.set(record.id, { ...record, publicationCleanupToken: undefined, publicationCleanupLeaseExpiresAt: undefined });
+    }
   }
 
   async transitionObjectReference(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly lifecycle: ObjectReferenceRecord["lifecycle"]; readonly at: string }): Promise<void> {
@@ -180,8 +284,9 @@ export class MemoryGovernanceStore implements GovernanceStore {
   async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
     const expiredSessionIds = [...this.sessions.values()].filter((record) => record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
     const expiredShareIds = [...this.shares.values()].filter((record) => record.lifecycle === "active" && record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
-    const pendingObjectReferences = [...this.objects.values()].filter((record) => record.lifecycle === "delete-pending"
-      || (record.lifecycle === "upload-pending" && record.publicationLeaseExpiresAt !== undefined && record.publicationLeaseExpiresAt <= input.now)
+    const pendingObjectReferences = [...this.objects.values()].filter((record) => record.lifecycle === "delete-pending" || record.lifecycle === "tombstone-pending"
+      || (record.lifecycle === "upload-pending" && (record.publicationPutMayStillComplete === false
+        || (record.publicationLeaseExpiresAt !== undefined && record.publicationLeaseExpiresAt <= input.now)))
       || (record.lifecycle === "active" && record.expiresAt !== undefined && record.expiresAt <= input.now)).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize);
     const expiredObjectIds = pendingObjectReferences.map((record) => record.id);
     const expiredIdempotency = [...this.idempotency.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
@@ -189,13 +294,21 @@ export class MemoryGovernanceStore implements GovernanceStore {
     if (!input.dryRun) {
       expiredSessionIds.forEach((id) => this.sessions.delete(id));
       expiredShareIds.forEach((id) => { const record = this.shares.get(id); if (record) this.shares.set(id, { ...record, lifecycle: "expired", deletedAt: input.now }); });
-      expiredObjectIds.forEach((id) => { const record = this.objects.get(id); if (record?.lifecycle === "active" || record?.lifecycle === "upload-pending") this.objects.set(id, { ...record, lifecycle: "delete-pending" }); });
+      expiredObjectIds.forEach((id) => {
+        const record = this.objects.get(id);
+        if (record?.lifecycle === "upload-pending" || (record?.lifecycle === "active" && record.publicationPredecessorToken !== undefined)) {
+          this.objects.set(id, { ...record, lifecycle: "tombstone-pending" });
+        } else if (record?.lifecycle === "active") this.objects.set(id, { ...record, lifecycle: "delete-pending" });
+      });
       expiredIdempotency.forEach(([key]) => this.idempotency.delete(key));
       expiredQuota.forEach(([key]) => this.quota.delete(key));
     }
     return {
       expiredSessionIds, expiredShareIds, expiredObjectIds,
-      pendingObjectReferences: pendingObjectReferences.map((record) => ({ ...record, lifecycle: input.dryRun ? record.lifecycle : "delete-pending" })),
+      pendingObjectReferences: pendingObjectReferences.map((record) => {
+        if (input.dryRun || record.lifecycle === "delete-pending" || record.lifecycle === "tombstone-pending") return record;
+        return { ...record, lifecycle: record.lifecycle === "upload-pending" || record.publicationPredecessorToken !== undefined ? "tombstone-pending" as const : "delete-pending" as const };
+      }),
       removedIdempotencyCount: expiredIdempotency.length, removedQuotaCount: expiredQuota.length,
     };
   }

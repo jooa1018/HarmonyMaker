@@ -274,6 +274,47 @@ ALTER TABLE omr_jobs ADD CONSTRAINT omr_jobs_credit_check CHECK (
 );
 `;
 
+export const OBJECT_PUBLICATION_LATE_PUT_FENCING_SQL = String.raw`
+ALTER TABLE object_references
+  ADD COLUMN IF NOT EXISTS publication_generation bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS publication_put_may_still_complete boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS publication_predecessor_token text,
+  ADD COLUMN IF NOT EXISTS publication_predecessor_generation bigint,
+  ADD COLUMN IF NOT EXISTS publication_delete_confirmed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS publication_cleanup_token text,
+  ADD COLUMN IF NOT EXISTS publication_cleanup_lease_expires_at timestamptz;
+
+UPDATE object_references
+SET publication_generation = CASE WHEN publication_generation = 0 THEN 1 ELSE publication_generation END,
+    publication_put_may_still_complete = true
+WHERE lifecycle = 'upload-pending';
+
+UPDATE object_references
+SET lifecycle = 'tombstone-pending',
+    publication_generation = CASE WHEN publication_generation = 0 THEN 1 ELSE publication_generation END,
+    publication_put_may_still_complete = true
+WHERE lifecycle = 'delete-pending' AND publication_token IS NOT NULL;
+
+ALTER TABLE object_references DROP CONSTRAINT IF EXISTS object_references_lifecycle_check;
+ALTER TABLE object_references ADD CONSTRAINT object_references_lifecycle_check CHECK (
+  lifecycle IN ('upload-pending','tombstone-pending','active','delete-pending','deleted','expired')
+);
+ALTER TABLE object_references DROP CONSTRAINT IF EXISTS object_references_publication_check;
+ALTER TABLE object_references ADD CONSTRAINT object_references_publication_check CHECK (
+  (lifecycle <> 'upload-pending' OR (publication_token IS NOT NULL AND publication_generation > 0
+    AND ((publication_put_may_still_complete AND publication_lease_expires_at IS NOT NULL)
+      OR (NOT publication_put_may_still_complete AND publication_lease_expires_at IS NULL))))
+  AND (lifecycle <> 'tombstone-pending' OR (publication_generation > 0 AND (publication_token IS NOT NULL OR publication_predecessor_token IS NOT NULL)))
+  AND ((publication_predecessor_token IS NULL) = (publication_predecessor_generation IS NULL))
+  AND ((publication_cleanup_token IS NULL) = (publication_cleanup_lease_expires_at IS NULL))
+);
+
+DROP INDEX IF EXISTS object_references_publication_cleanup_idx;
+CREATE INDEX object_references_publication_cleanup_idx
+  ON object_references (lifecycle, publication_lease_expires_at, id)
+  WHERE lifecycle IN ('upload-pending','tombstone-pending');
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
@@ -284,6 +325,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 7, name: "omr_provider_safety", sql: OMR_PROVIDER_SAFETY_SQL },
   { version: 8, name: "omr_create_outcome_certainty", sql: OMR_CREATE_OUTCOME_CERTAINTY_SQL },
   { version: 9, name: "omr_resaturation_closure", sql: OMR_RESATURATION_CLOSURE_SQL },
+  { version: 10, name: "object_publication_late_put_fencing", sql: OBJECT_PUBLICATION_LATE_PUT_FENCING_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {
