@@ -147,7 +147,7 @@ export class MemoryGovernanceStore implements GovernanceStore {
 
   async completeObjectPublication(input: Parameters<GovernanceStore["completeObjectPublication"]>[0]): Promise<"active" | "delete-required" | "superseded"> {
     const record = await this.findObjectReference(input.id, input.ownerSessionId);
-    if (!record) return "superseded";
+    if (!record || record.objectKey !== input.objectKey) return "superseded";
     const authority = this.publicationAuthority(record, input.publicationToken, input.publicationGeneration);
     if (record.lifecycle === "active") {
       if (authority === "predecessor") this.objects.set(record.id, { ...record, publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined });
@@ -214,7 +214,7 @@ export class MemoryGovernanceStore implements GovernanceStore {
 
   async settleObjectPublicationPut(input: Parameters<GovernanceStore["settleObjectPublicationPut"]>[0]): Promise<"active" | "delete-required" | "settled" | "superseded"> {
     const record = await this.findObjectReference(input.id, input.ownerSessionId);
-    if (!record) return "superseded";
+    if (!record || record.objectKey !== input.objectKey) return "superseded";
     const authority = this.publicationAuthority(record, input.publicationToken, input.publicationGeneration);
     if (record.lifecycle === "active") {
       if (authority === "predecessor") this.objects.set(record.id, { ...record, publicationPredecessorToken: undefined, publicationPredecessorGeneration: undefined });

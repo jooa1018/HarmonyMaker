@@ -193,7 +193,7 @@ export class PostgresGovernanceStore implements GovernanceStore {
     const client = await this.database.connect();
     try {
       await client.query("BEGIN");
-      const selected = await client.query("SELECT * FROM object_references WHERE id=$1 AND owner_session_id=$2 FOR UPDATE", [input.id, input.ownerSessionId]);
+      const selected = await client.query("SELECT * FROM object_references WHERE id=$1 AND owner_session_id=$2 AND object_key=$3 FOR UPDATE", [input.id, input.ownerSessionId, input.objectKey]);
       const row = selected.rows[0];
       if (!row) { await client.query("COMMIT"); return "superseded"; }
       const current = row.publication_token === input.publicationToken && Number(row.publication_generation) === input.publicationGeneration;
@@ -254,7 +254,7 @@ export class PostgresGovernanceStore implements GovernanceStore {
     const client = await this.database.connect();
     try {
       await client.query("BEGIN");
-      const selected = await client.query("SELECT lifecycle,publication_token,publication_generation,publication_predecessor_token,publication_predecessor_generation FROM object_references WHERE id=$1 AND owner_session_id=$2 FOR UPDATE", [input.id, input.ownerSessionId]);
+      const selected = await client.query("SELECT lifecycle,publication_token,publication_generation,publication_predecessor_token,publication_predecessor_generation FROM object_references WHERE id=$1 AND owner_session_id=$2 AND object_key=$3 FOR UPDATE", [input.id, input.ownerSessionId, input.objectKey]);
       const row = selected.rows[0];
       if (!row) { await client.query("COMMIT"); return "superseded"; }
       const current = row.publication_token === input.publicationToken && Number(row.publication_generation) === input.publicationGeneration;

@@ -3,13 +3,46 @@ import "server-only";
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import { binaryDigest, semanticDigest, type BinaryDigest } from "../../domain/digest/canonical";
-import type { GovernanceStore, PrivateRowId } from "../persistence/store";
+import type { GovernanceStore, ObjectReferenceRecord, PrivateRowId } from "../persistence/store";
 import { generateOpaqueToken } from "../security/crypto-core";
 import type { OwnedObjectPut, OwnedObjectRead, OwnedObjectStore } from "./owned-object-store";
 
 function validContentType(value: string): boolean { return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/iu.test(value); }
 const PUBLICATION_LEASE_MS = 5 * 60 * 1_000;
 const PUBLICATION_CLEANUP_LEASE_MS = 5 * 60 * 1_000;
+
+interface PublicationAuthority {
+  readonly publicationToken: string;
+  readonly publicationGeneration: number;
+}
+
+type MaterializedPublication =
+  | { readonly kind: "caller"; readonly authority: PublicationAuthority }
+  | { readonly kind: "current"; readonly authority: PublicationAuthority }
+  | { readonly kind: "predecessor"; readonly authority: PublicationAuthority }
+  | { readonly kind: "unknown" }
+  | { readonly kind: "not-found" };
+
+async function publicationAuthorityDigest(input: {
+  readonly ownerSessionId: PrivateRowId;
+  readonly objectKey: string;
+  readonly contentType: string;
+  readonly byteSize: number;
+  readonly binaryDigest: string;
+  readonly publicationToken: string;
+  readonly publicationGeneration: number;
+}): Promise<string> {
+  return semanticDigest({
+    projectionSchema: "hm-owned-object-publication-authority-v1",
+    ownerSessionId: input.ownerSessionId,
+    objectKey: input.objectKey,
+    contentType: input.contentType,
+    byteSize: input.byteSize,
+    binaryDigest: input.binaryDigest,
+    publicationToken: input.publicationToken,
+    publicationGeneration: input.publicationGeneration,
+  });
+}
 
 function objectNotFound(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -79,26 +112,38 @@ export class S3OwnedObjectStore implements OwnedObjectStore {
         publicationGeneration = inspected!.publicationGeneration!;
       }
     }
+    const materializationAuthority = await publicationAuthorityDigest({
+      ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,
+      byteSize: bytes.byteLength, binaryDigest: digest, publicationToken, publicationGeneration,
+    });
     try {
       await this.client.send(new PutObjectCommand({
         Bucket: this.bucket, Key: objectKey, Body: bytes, ContentType: input.contentType,
-        Metadata: { "hm-sha256": digest, "hm-byte-size": String(bytes.byteLength), ...(input.expiresAt ? { "hm-expires-at": input.expiresAt } : {}) },
+        Metadata: {
+          "hm-sha256": digest,
+          "hm-byte-size": String(bytes.byteLength),
+          "hm-publication-generation": String(publicationGeneration),
+          "hm-publication-authority-digest": materializationAuthority,
+          ...(input.expiresAt ? { "hm-expires-at": input.expiresAt } : {}),
+        },
       }));
     } catch (error) {
       const disposition = await this.records.settleObjectPublicationPut({
-        id: reference.id, ownerSessionId: input.ownerSessionId, publicationToken, publicationGeneration, at: new Date().toISOString(),
+        id: reference.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken, publicationGeneration, at: new Date().toISOString(),
       }).catch(() => "superseded" as const);
       if (disposition === "active") {
         const active = await this.records.findObjectReference(reference.id, input.ownerSessionId).catch(() => undefined);
         if (exact(active) && active?.lifecycle === "active") return active;
       }
-      if (disposition === "delete-required") await this.deletePublication(reference.id, input.ownerSessionId, new Date()).catch(() => undefined);
+      if (disposition === "delete-required") {
+        await this.deletePublication(reference.id, input.ownerSessionId, new Date(), { publicationToken, publicationGeneration }).catch(() => undefined);
+      }
       throw error;
     }
     let publicationDisposition: "active" | "delete-required" | "superseded";
     try {
       publicationDisposition = await this.records.completeObjectPublication({
-        id: reference.id, ownerSessionId: input.ownerSessionId, publicationToken, publicationGeneration, at: new Date().toISOString(),
+        id: reference.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken, publicationGeneration, at: new Date().toISOString(),
       });
     } catch (error) {
       const inspected = await this.records.findObjectReference(reference.id, input.ownerSessionId).catch(() => undefined);
@@ -106,37 +151,87 @@ export class S3OwnedObjectStore implements OwnedObjectStore {
       if (inspected?.lifecycle === "tombstone-pending"
         && (inspected.publicationToken === publicationToken || inspected.publicationPredecessorToken === publicationToken)) {
         const disposition = await this.records.settleObjectPublicationPut({
-          id: reference.id, ownerSessionId: input.ownerSessionId, publicationToken, publicationGeneration, at: new Date().toISOString(),
+          id: reference.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken, publicationGeneration, at: new Date().toISOString(),
         }).catch(() => "superseded" as const);
-        if (disposition === "delete-required") await this.deletePublication(reference.id, input.ownerSessionId, new Date()).catch(() => undefined);
+        if (disposition === "delete-required") {
+          await this.deletePublication(reference.id, input.ownerSessionId, new Date(), { publicationToken, publicationGeneration }).catch(() => undefined);
+        }
       }
       throw error;
     }
     const inspected = await this.records.findObjectReference(reference.id, input.ownerSessionId);
     if (publicationDisposition === "active" && inspected?.lifecycle === "active" && exact(inspected)) return inspected;
     if (publicationDisposition === "delete-required") {
-      await this.deletePublication(reference.id, input.ownerSessionId, new Date());
+      await this.deletePublication(reference.id, input.ownerSessionId, new Date(), { publicationToken, publicationGeneration });
       throw new Error("OBJECT_PUBLICATION_DELETED");
     }
     if (inspected?.lifecycle === "active" && exact(inspected)) return inspected;
     throw new Error("OBJECT_PUBLICATION_SUPERSEDED");
   }
 
-  private async deletePublication(referenceId: PrivateRowId, ownerSessionId: PrivateRowId, now: Date): Promise<void> {
+  private async inspectMaterializedPublication(
+    record: ObjectReferenceRecord,
+    caller?: PublicationAuthority,
+  ): Promise<MaterializedPublication> {
+    let response;
+    try {
+      response = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: record.objectKey }));
+    } catch (error) {
+      if (objectNotFound(error)) return { kind: "not-found" };
+      throw error;
+    }
+    const metadata = response.Metadata;
+    const generationText = metadata?.["hm-publication-generation"];
+    const authorityDigest = metadata?.["hm-publication-authority-digest"];
+    if (response.ContentLength !== record.byteSize || response.ContentType !== record.contentType
+      || metadata?.["hm-sha256"] !== record.binaryDigest || metadata?.["hm-byte-size"] !== String(record.byteSize)
+      || !generationText || !/^[1-9][0-9]*$/u.test(generationText) || !authorityDigest) return { kind: "unknown" };
+    const generation = Number(generationText);
+    if (!Number.isSafeInteger(generation)) return { kind: "unknown" };
+    const matches = async (authority: PublicationAuthority): Promise<boolean> => generation === authority.publicationGeneration
+      && authorityDigest === await publicationAuthorityDigest({
+        ownerSessionId: record.ownerSessionId,
+        objectKey: record.objectKey,
+        contentType: record.contentType,
+        byteSize: record.byteSize,
+        binaryDigest: record.binaryDigest,
+        publicationToken: authority.publicationToken,
+        publicationGeneration: authority.publicationGeneration,
+      });
+    if (caller && await matches(caller)) return { kind: "caller", authority: caller };
+    if (record.publicationToken && record.publicationGeneration !== undefined) {
+      const current = { publicationToken: record.publicationToken, publicationGeneration: record.publicationGeneration };
+      if (await matches(current)) return { kind: "current", authority: current };
+    }
+    if (record.publicationPredecessorToken && record.publicationPredecessorGeneration !== undefined) {
+      const predecessor = {
+        publicationToken: record.publicationPredecessorToken,
+        publicationGeneration: record.publicationPredecessorGeneration,
+      };
+      if (await matches(predecessor)) return { kind: "predecessor", authority: predecessor };
+    }
+    return { kind: "unknown" };
+  }
+
+  private async deletePublication(
+    referenceId: PrivateRowId,
+    ownerSessionId: PrivateRowId,
+    now: Date,
+    caller?: PublicationAuthority,
+  ): Promise<void> {
     let record = await this.records.findObjectReference(referenceId, ownerSessionId);
     if (!record || record.lifecycle === "deleted" || record.lifecycle === "active" && record.publicationPredecessorToken === undefined) return;
 
-    if (record.lifecycle === "tombstone-pending" && record.publicationDeleteConfirmedAt
-      && record.publicationPutMayStillComplete === true && record.publicationToken && record.publicationGeneration !== undefined) {
-      try {
-        await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: record.objectKey }));
-      } catch (error) {
-        if (objectNotFound(error)) return;
-        throw error;
-      }
+    if (caller) {
+      const materialized = await this.inspectMaterializedPublication(record, caller);
+      if (materialized.kind !== "caller" && materialized.kind !== "not-found") return;
+    } else if (record.lifecycle === "tombstone-pending" && record.publicationDeleteConfirmedAt) {
+      const materialized = await this.inspectMaterializedPublication(record);
+      if (materialized.kind === "unknown" || materialized.kind === "not-found" || materialized.kind === "caller") return;
       const observed = await this.records.settleObjectPublicationPut({
-        id: record.id, ownerSessionId, publicationToken: record.publicationToken,
-        publicationGeneration: record.publicationGeneration, at: now.toISOString(),
+        id: record.id, ownerSessionId, objectKey: record.objectKey,
+        publicationToken: materialized.authority.publicationToken,
+        publicationGeneration: materialized.authority.publicationGeneration, at: now.toISOString(),
       });
       if (observed === "active" || observed === "superseded") return;
       record = await this.records.findObjectReference(referenceId, ownerSessionId);

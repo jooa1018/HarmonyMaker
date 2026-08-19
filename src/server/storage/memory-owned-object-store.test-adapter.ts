@@ -25,7 +25,7 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
         if (!restarted) throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
         this.buffers.set(objectKey, bytes);
         const disposition = await this.records.completeObjectPublication({
-          id: existing.id, ownerSessionId: input.ownerSessionId, publicationToken,
+          id: existing.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken,
           publicationGeneration: (existing.publicationGeneration ?? 0) + 1, at: "2026-01-01T00:00:00.000Z",
         });
         if (disposition !== "active") throw new RangeError("OBJECT_PUBLICATION_CONFLICT");

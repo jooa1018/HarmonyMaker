@@ -139,6 +139,7 @@ export interface GovernanceStore {
   completeObjectPublication(input: {
     readonly id: PrivateRowId;
     readonly ownerSessionId: PrivateRowId;
+    readonly objectKey: string;
     readonly publicationToken: string;
     readonly publicationGeneration: number;
     readonly at: string;
@@ -165,6 +166,7 @@ export interface GovernanceStore {
   settleObjectPublicationPut(input: {
     readonly id: PrivateRowId;
     readonly ownerSessionId: PrivateRowId;
+    readonly objectKey: string;
     readonly publicationToken: string;
     readonly publicationGeneration: number;
     readonly at: string;
