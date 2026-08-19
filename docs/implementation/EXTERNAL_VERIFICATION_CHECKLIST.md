@@ -255,6 +255,48 @@ SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
 ```
 
+## Final late-Put cleanup closure checkpoint
+
+Use implementation-and-test checkpoint `deb61929bb260608d91999d4b4e20a1053c88dfb` or its verified four-document handoff descendant. Baseline was exact remote `1a5ab906581807c8fa1b7c6ffb7d8be46c407f86`, clean and 0/0.
+
+Repository-controlled checks completed:
+
+1. Start a deferred S3 Put only after durable `upload-pending` generation/token authority exists; expire the publication lease and run cleanup. Require the first delete to leave `tombstone-pending`, retain exact generation authority, and forbid terminal deletion.
+2. Release the Put after the first delete. Require the returning exact generation to become delete-authorized, issue a second DeleteObject for the same key, and terminalize only after its acknowledged completion.
+3. Replace the service after the first delete and before late materialization. Require a later cleanup to Head the exact tombstoned key, settle the generation, delete it, and survive restart without an orphan.
+4. Fail the second delete. Require the cleanup token to release while the tombstone, generation, and exact key remain durable; the next process must retry and reach truthful terminal state.
+5. Start generation B after A's first delete confirmation. Require B to become the only active logical publication; when A returns, it may only clear its retained predecessor marker and may not delete B or activate over it.
+6. Race two PostgreSQL cleanup claims. Require one winner under atomic row authority, exact token/generation completion, and no stale terminal update.
+7. Retain normal S3 CRUD, Put/reference/activation acknowledgement loss, stable-key restart, page/result publication and commit acknowledgement, and bounded cleanup behavior.
+
+```text
+migration inventory/checksum       PASS — 1–10; migration 10 checksum 5109c4fa0272eb7ab4de1566ce7a1055739a120e5dd2d2ce403cee1f53f63505
+migrations 1–9 unchanged           PASS
+deferred Fake S3 campaign          PASS — 1 file/9 tests
+default suite                      PASS — 66 files/678 tests
+actual PostgreSQL 17.9             PASS — 1 file/13 tests
+npm ci/typecheck/lint/build/diff   PASS
+Segment B 101 / OMR 101            PASS
+frozen authority                   PASS — 2 files/7 tests, six hashes, 99 codes, protected diff 0
+code SHA Actions                   PASS — run 32213077022, quality 95949405828
+code SHA Vercel                    PASS — BNj5Ak6vdAoBbo6o7YTM3iiWrPsR
+```
+
+```text
+P1_RESAT_02_LATE_PUT_CLEANUP = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+Green repository/preview evidence is not production live S3/PostgreSQL or provider certification. Real provider, rights-safe corpora, production live services, iPhone Safari, and Kakao in-app verification remain external; Ultra and Step 11 were not started.
+
 ## Re-saturation findings closure evidence
 
 Repository software-correctness closure is complete at code checkpoint `9dea42214d87dd32c4ad5b2be02fd014937d36a1`, descended additively from exact starting HEAD `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b`.
@@ -410,4 +452,18 @@ P2_RESAT_COUNT = 4
 SEGMENT_D_RESATURATION_AUDIT_COMPLETE = YES
 SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
+```
+
+## Authoritative final repository gate
+
+The subsequent seven-finding implementation closure and `Final late-Put cleanup closure checkpoint` supersede the audit follow-up list above. At code checkpoint `deb61929bb260608d91999d4b4e20a1053c88dfb`, repository software findings are closed; the separately listed provider/live-service/corpus/device items remain external.
+
+```text
+P1_RESAT_02_LATE_PUT_CLEANUP = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
 ```

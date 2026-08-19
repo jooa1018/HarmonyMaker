@@ -845,3 +845,53 @@ SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
 SEGMENT_D_ACCEPTED = YES
 ULTRA_AUDIT_READY = YES
 ```
+
+## Final late-Put / cleanup handoff
+
+Starting remote HEAD `1a5ab906581807c8fa1b7c6ffb7d8be46c407f86` matched exactly, clean and 0/0. Additive code checkpoint `deb61929bb260608d91999d4b4e20a1053c88dfb` closes the only reopened finding.
+
+```text
+P1-RESAT-02-B root          lease expiry did not prove an in-flight Put had quiesced
+generation model           monotonic current generation plus retained predecessor authority
+tombstone                  first delete retains discoverable token/generation state
+late Put                    exact completion selects active adoption or durable second delete
+terminal delete            allowed only after exact cleanup claim/delete and no Put authority remains
+restart                     confirmed-first-delete tombstone + Head observation recovers a late object
+newer generation           B active; delayed A cannot activate over or delete B
+delete failure             cleanup claim releases; exact key/generation remains retryable
+
+migration 10               PASS — additive late-Put fencing; checksum 5109c4fa0272eb7ab4de1566ce7a1055739a120e5dd2d2ce403cee1f53f63505
+migrations 1–9             UNCHANGED
+Fake S3                     PASS — deferred Put, restart, second-delete failure, B fencing; 1 file/9 tests
+local suite                 PASS — 66 files/678 tests
+PostgreSQL 17.9             PASS — migrations 1–10, 1 file/13 tests
+typecheck/lint/build/diff   PASS
+Segment B 101 / OMR 101     PASS
+frozen authority            PASS — six hashes, 99 codes, 2 files/7 tests, protected diff 0
+code Actions                PASS — run 32213077022, quality 95949405828
+code Vercel                 PASS — BNj5Ak6vdAoBbo6o7YTM3iiWrPsR; GitHub deployment 5975594683
+```
+
+The final documentation-only descendant containing this section is verified separately at its exact SHA. No Ultra, Step 11, real provider, corpus calibration, production live service, or device work was started.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02_LATE_PUT_CLEANUP = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External verification remaining: provider selection/credentials/accuracy/pricing/refund/retention/idempotency, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3, physical iPhone Safari, and Kakao in-app browser.

@@ -184,6 +184,40 @@ SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
 ```
 
+## Final late-Put / cleanup publication closure
+
+The residual closure started from exact clean remote HEAD `1a5ab906581807c8fa1b7c6ffb7d8be46c407f86` at 0/0 divergence. Prior implementation checkpoint `9dea42214d87dd32c4ad5b2be02fd014937d36a1`, audit base `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b`, and Segment C base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` are ancestors. Implementation-and-test checkpoint `deb61929bb260608d91999d4b4e20a1053c88dfb` closes `P1-RESAT-02-B`.
+
+The reopened race treated publication-lease expiry as if the original `PutObject` had quiesced. Cleanup could delete the key, terminalize the row, and clear its token before the blocked Put materialized the object. The publication model now has a monotonic generation, `publicationPutMayStillComplete`, a retained predecessor token/generation, `tombstone-pending`, delete-confirmation time, and an exact cleanup token/lease. Cleanup may issue the first delete after lease expiry, but terminal `deleted` is forbidden while the current Put or a predecessor may still finish. A returning exact worker either activates the authorized generation or requests a second exact-key delete. A restarted worker can observe an object that appeared after a confirmed first delete, settle that exact generation, and perform the retryable second delete. Generation B may adopt the stable logical key only after generation A's first delete is confirmed and no cleanup claim is active; A then only clears its predecessor authority and cannot delete or activate over B.
+
+Additive migration `010_object_publication_late_put_fencing.sql` adds the generation, late-Put, predecessor, delete-confirmation, and cleanup-authority fields plus lifecycle/authority constraints and the cleanup index. Its migration checksum is `5109c4fa0272eb7ab4de1566ce7a1055739a120e5dd2d2ce403cee1f53f63505`; migrations 1–9 are byte-unchanged. Full PostgreSQL 17.9 apply from 1 through 10 passed.
+
+Controllable Fake S3 tests block generation A, run cleanup and the first delete, then release the Put. They prove the tombstone remains discoverable, the exact key is deleted a second time, final external object count is zero, and terminal state appears only after confirmed deletion. Separate campaigns cover process replacement plus Head-based rediscovery, second-delete failure and restart retry, concurrent PostgreSQL cleanup-claim exclusion, and generation B activation before delayed A returns. Existing normal put/get/delete, acknowledgement-loss recovery, page/result publication and commit acknowledgement, and cleanup batching remain green.
+
+Fresh local verification passed `npm ci` (451 packages added, 452 audited, zero vulnerabilities), typecheck, lint, 66 files/678 tests, actual PostgreSQL 17.9 1 file/13 tests, Next.js 16.3.0 build, and `git diff --check`. Segment B and OMR 101-run campaigns passed; frozen authority passed 2 files/7 tests with all six hashes and 99 codes exact; protected production musical-path diff from Segment C is zero. Code-checkpoint Actions run `32213077022`, quality job `95949405828`, passed all required steps at exact SHA `deb61929bb260608d91999d4b4e20a1053c88dfb`. Vercel deployment `BNj5Ak6vdAoBbo6o7YTM3iiWrPsR`, GitHub deployment `5975594683`, and commit status `52480310191` succeeded; preview is `https://harmony-maker-46cmr2wei-ecctom1.vercel.app`. The containing four-file documentation-only descendant is the final handoff-inclusive SHA and receives its own exact-SHA terminal evidence.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02_LATE_PUT_CLEANUP = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+Ultra, Step 11, real-provider integration, corpus calibration, production live PostgreSQL/S3, and physical-device verification were not started. Provider selection/credentials/accuracy/pricing/refund/retention/idempotency evidence, rights-safe Dev `>=36` and sealed `>=24` corpora, production live services, iPhone Safari, and Kakao in-app verification remain external.
+
 ## Segment D re-saturation findings final closure
 
 This implementation closure started from exact remote HEAD `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b`; implementation checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529` and Segment C base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` remain ancestors. Code/test checkpoint `9dea42214d87dd32c4ad5b2be02fd014937d36a1` closes all seven audit findings.
@@ -335,4 +369,18 @@ UNRESOLVED_P2 = 4
 SEGMENT_D_RESATURATION_AUDIT_COMPLETE = YES
 SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
+```
+
+## Authoritative final Segment D gate
+
+The later implementation closures, culminating in `Final late-Put / cleanup publication closure` and code checkpoint `deb61929bb260608d91999d4b4e20a1053c88dfb`, supersede the audit-era open counts immediately above.
+
+```text
+P1_RESAT_02_LATE_PUT_CLEANUP = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
 ```

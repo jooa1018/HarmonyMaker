@@ -718,3 +718,49 @@ SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
 SEGMENT_D_ACCEPTED = YES
 ULTRA_AUDIT_READY = YES
 ```
+
+## P1-RESAT-02-B final late-Put evidence
+
+Baseline `1a5ab906581807c8fa1b7c6ffb7d8be46c407f86` matched the remote branch with a clean worktree and 0/0 divergence. Code checkpoint `deb61929bb260608d91999d4b4e20a1053c88dfb` is additive.
+
+| Evidence | Result |
+|---|---|
+| Root reproduction | Deferred Put A remains blocked while its lease expires; cleanup deletes the exact key first; the durable row stays `tombstone-pending` with generation authority |
+| Late continuation | Put A materializes after cleanup; exact generation completion returns delete-required; a second exact-key delete removes it; terminal state is then truthful |
+| Restart | The original continuation is disabled after materialization; a new service finds the tombstone, observes the exact key, settles the generation, deletes it, and terminalizes |
+| Delete failure | Injected second-delete failure retains tombstone/token/generation and releases only the cleanup claim; restarted cleanup eventually deletes the exact key |
+| Newer authority | Generation B adopts the same stable logical publication after A's confirmed first delete; B is active while A is delayed; A later clears only its predecessor marker and never deletes B |
+| PostgreSQL atomicity | Actual PostgreSQL 17.9 proves one of two concurrent cleanup claims wins, exact-token/generation transitions, restart read-back, and terminal-only-after-delete behavior |
+
+Migration 10 adds `publication_generation`, `publication_put_may_still_complete`, retained predecessor token/generation, delete confirmation, cleanup token/lease, `tombstone-pending`, constraints, and its cleanup index. Runtime checksum is `5109c4fa0272eb7ab4de1566ce7a1055739a120e5dd2d2ce403cee1f53f63505`; migrations 1–9 have zero diff.
+
+```text
+npm ci                         PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/678 tests
+npm run test:postgres          PASS — PostgreSQL 17.9, migrations 1–10, 1 file/13 tests
+npm run build                  PASS — Next.js 16.3.0
+git diff --check               PASS
+Segment B 101-run              PASS — 1 file/6 tests including 101 complete executions
+OMR 101-run                    PASS — 1 file/1 test including 101 permutations
+frozen/99-code authority       PASS — 2 files/7 tests, six exact hashes, protected production diff 0
+```
+
+Code-checkpoint Actions run `32213077022`, quality job `95949405828`, succeeded at exact SHA `deb61929bb260608d91999d4b4e20a1053c88dfb` with the same 66/678 and 1/13 campaigns. Vercel deployment `BNj5Ak6vdAoBbo6o7YTM3iiWrPsR`, GitHub deployment `5975594683`, deployment status `16996431490`, and commit status `52480310191` succeeded; preview `https://harmony-maker-46cmr2wei-ecctom1.vercel.app`. Final documentation-descendant evidence is reported after its push.
+
+```text
+P1_RESAT_02_LATE_PUT_CLEANUP = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No production live S3/PostgreSQL or real provider/device/corpus verification was performed. Those external items remain; Ultra and subsequent phases were not started.
