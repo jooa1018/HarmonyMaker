@@ -116,6 +116,7 @@ function jobRow(row: Record<string, unknown>, pages: readonly OmrPageRecord[]): 
     ...(row.status_observation_lease_expires_at ? { statusObservationLeaseExpiresAt: iso(row.status_observation_lease_expires_at) } : {}),
     ...(row.cleanup_lease_token ? { cleanupLeaseToken: row.cleanup_lease_token as string } : {}),
     ...(row.cleanup_lease_expires_at ? { cleanupLeaseExpiresAt: iso(row.cleanup_lease_expires_at) } : {}),
+    ...(row.cleanup_last_attempt_at ? { cleanupLastAttemptAt: iso(row.cleanup_last_attempt_at) } : {}),
     ...(row.reconciliation_kind ? { reconciliationKind: row.reconciliation_kind as DurableOmrJobRecord["reconciliationKind"] } : {}),
     ...(row.retry_kind ? { retryKind: row.retry_kind as DurableOmrJobRecord["retryKind"] } : {}),
     ...(row.retry_attempt === null || row.retry_attempt === undefined ? {} : { retryAttempt: row.retry_attempt as number }),
@@ -165,6 +166,7 @@ const JOB_UPDATE_MAPPINGS: ReadonlyArray<{ key: keyof DurableOmrJobRecord; colum
   { key: "statusObservationLeaseExpiresAt", column: "status_observation_lease_expires_at" },
   { key: "cleanupLeaseToken", column: "cleanup_lease_token" },
   { key: "cleanupLeaseExpiresAt", column: "cleanup_lease_expires_at" },
+  { key: "cleanupLastAttemptAt", column: "cleanup_last_attempt_at" },
   { key: "reconciliationKind", column: "reconciliation_kind" },
   { key: "retryKind", column: "retry_kind" },
   { key: "retryAttempt", column: "retry_attempt" },
@@ -932,13 +934,13 @@ export class PostgresOmrStore implements OmrStore {
              (vendor_delete_state <> 'deleted' AND COALESCE(vendor_delete_next_attempt_at,$1) <= $1)
              OR (local_delete_state <> 'deleted' AND COALESCE(local_delete_next_attempt_at,$1) <= $1)
            ))
-         ) ORDER BY expires_at,id FOR UPDATE SKIP LOCKED LIMIT $2`,
+         ) ORDER BY cleanup_last_attempt_at NULLS FIRST,expires_at,id FOR UPDATE SKIP LOCKED LIMIT $2`,
         [now, limit],
       );
       const records: DurableOmrJobRecord[] = [];
       for (const row of selected.rows) {
         const jobId = id(row.id);
-        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state=CASE WHEN credit_state='settled' THEN 'settled' WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN 'reserved' ELSE 'released' END,cleanup_lease_token=$3,cleanup_lease_expires_at=$4,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
+        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state=CASE WHEN credit_state='settled' THEN 'settled' WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN 'reserved' ELSE 'released' END,cleanup_lease_token=$3,cleanup_lease_expires_at=$4,cleanup_last_attempt_at=$2,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
         const loaded = await loadJob(client, jobId); if (loaded) records.push(loaded);
       }
       await client.query("COMMIT");

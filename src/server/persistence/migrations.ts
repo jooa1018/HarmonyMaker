@@ -440,6 +440,15 @@ CREATE INDEX IF NOT EXISTS idempotency_share_create_recovery_idx
   WHERE operation = 'share-create-v1';
 `;
 
+export const OMR_CLEANUP_FAIRNESS_SQL = String.raw`
+ALTER TABLE omr_jobs
+  ADD COLUMN IF NOT EXISTS cleanup_last_attempt_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS omr_jobs_cleanup_fairness_idx
+  ON omr_jobs (cleanup_last_attempt_at NULLS FIRST, expires_at, id)
+  WHERE state <> 'deleted';
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
@@ -455,6 +464,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 12, name: "share_moderation_lifecycle", sql: SHARE_MODERATION_LIFECYCLE_SQL },
   { version: 13, name: "omr_provider_delete_authority", sql: OMR_PROVIDER_DELETE_AUTHORITY_SQL },
   { version: 14, name: "share_create_cross_session_recovery", sql: SHARE_CREATE_CROSS_SESSION_RECOVERY_SQL },
+  { version: 15, name: "omr_cleanup_fairness", sql: OMR_CLEANUP_FAIRNESS_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {

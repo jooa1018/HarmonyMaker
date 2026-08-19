@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { binaryDigest } from "../../domain/digest/canonical";
-import type { OmrVendorStatus } from "../../domain/omr/contracts";
+import type { VendorOmrStatus } from "../../domain/omr/contracts";
 import { basisPoints } from "../../domain/rates";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
@@ -22,7 +22,7 @@ async function setup() {
   const fixture: ReferenceOmrFixture = {
     id: "cross-session",
     orderedPageDigests: [pageDigest],
-    statusScript: [{ kind: "created" } as OmrVendorStatus],
+    statusScript: [{ kind: "created" } as VendorOmrStatus],
     musicXml,
     evidence: { granularity: "page", frames: [], transforms: [], evidence: [] },
     retentionInfo: { canDeleteImmediately: true, policyReference: "test" },

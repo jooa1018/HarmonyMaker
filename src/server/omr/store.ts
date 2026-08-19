@@ -205,6 +205,8 @@ export interface DurableOmrJobRecord {
   readonly statusObservationLeaseExpiresAt?: string;
   readonly cleanupLeaseToken?: string;
   readonly cleanupLeaseExpiresAt?: string;
+  /** Durable fairness authority: most recent scheduler claim attempt. */
+  readonly cleanupLastAttemptAt?: string;
   readonly reconciliationKind?: "create" | "page-upload" | "sync" | "capture" | OmrOperationKind;
   readonly retryKind?: "sync" | "capture";
   readonly retryAttempt?: number;
@@ -1132,13 +1134,27 @@ export class MemoryOmrStore implements OmrStore {
           (job.vendorDeleteState !== "deleted" && (job.vendorDeleteNextAttemptAt ?? now) <= now)
           || (job.localDeleteState !== "deleted" && (job.localDeleteNextAttemptAt ?? now) <= now)
         ))
-      )).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
+      )).sort((a, b) => {
+        const leftAttempt = a.cleanupLastAttemptAt;
+        const rightAttempt = b.cleanupLastAttemptAt;
+        if (leftAttempt === undefined && rightAttempt !== undefined) return -1;
+        if (leftAttempt !== undefined && rightAttempt === undefined) return 1;
+        if (leftAttempt !== rightAttempt) return (leftAttempt ?? "").localeCompare(rightAttempt ?? "");
+        const expiry = a.handleExpiresAt.localeCompare(b.handleExpiresAt);
+        return expiry !== 0 ? expiry : a.id.localeCompare(b.id);
+      }).slice(0, limit);
       return selected.map((job) => {
         const base = job.state === "delete-pending"
           ? job
           : { ...job, state: "expired" as const, handleActive: false, updatedAt: now };
         const creditState = creditStateAfterHandleDeactivation(base);
-        const updated = { ...base, creditState, cleanupLeaseToken: input.leaseToken, cleanupLeaseExpiresAt: input.leaseExpiresAt };
+        const updated = {
+          ...base,
+          creditState,
+          cleanupLeaseToken: input.leaseToken,
+          cleanupLeaseExpiresAt: input.leaseExpiresAt,
+          cleanupLastAttemptAt: now,
+        };
         this.jobs.set(job.id, updated);
         return this.clone(updated);
       });
