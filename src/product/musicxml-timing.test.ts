@@ -142,11 +142,21 @@ describe("MusicXML timing authority round-trip campaign", () => {
     if (specs[0].duration === 1) expect(abc).not.toContain("=C z3 |");
   });
 
-  it("preserves exact dotted-eighth tempo authority", async () => {
-    const tempo = { beatUnit: 8 as const, dotted: true, bpm: 72 };
-    const { encoded, draft } = await exportAndReimport([{ time: COMPOUND_DUPLE, duration: 3 }], tempo);
-    expect(encoded).toContain("<beat-unit>eighth</beat-unit><beat-unit-dot/><per-minute>72</per-minute>");
+  it.each([
+    ["quarter", { beatUnit: 4 as const, dotted: false, bpm: 96 }, "quarter", "", "1/4=96"],
+    ["eighth", { beatUnit: 8 as const, dotted: false, bpm: 84 }, "eighth", "", "1/8=84"],
+    ["dotted quarter", { beatUnit: 4 as const, dotted: true, bpm: 80 }, "quarter", "<beat-unit-dot/>", "3/8=80"],
+    ["dotted eighth", { beatUnit: 8 as const, dotted: true, bpm: 72 }, "eighth", "<beat-unit-dot/>", "3/16=72"],
+  ])("preserves exact %s tempo through MusicXML parser and ABC whole-note units", async (_name, tempo, beatUnit, dot, abcTempo) => {
+    const { document, encoded, draft } = await exportAndReimport([{ time: COMPOUND_DUPLE, duration: 3 }], tempo);
+    expect(encoded).toContain(`<beat-unit>${beatUnit}</beat-unit>${dot}<per-minute>${tempo.bpm}</per-minute>`);
     expect(draft.defaultTempo).toEqual(tempo);
+    const abc = arrangementRenderDocumentToAbc(document, roles, {
+      title: "Tempo",
+      key: { tonic: { step: "C", alter: 0 }, mode: "major" },
+      tempo,
+    });
+    expect(abc.split("\n")).toContain(`Q:${abcTempo}`);
   });
 
   it("hands mixed-meter timing through Quick Review into an exact durable project reload", async () => {

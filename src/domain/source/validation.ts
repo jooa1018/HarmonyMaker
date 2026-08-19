@@ -1,6 +1,6 @@
 import { isChordParseResult } from "../chord/parser";
 import { digestMusicalSource } from "../digest/source";
-import { addFractions, compareFractions, isPositiveFraction, type Fraction } from "../fraction";
+import { addFractions, compareFractions, fraction, isPositiveFraction, type Fraction } from "../fraction";
 import {
   fractionKey, leadEventId, lyricTokenId, performanceOccurrenceId, phraseRegionId,
   sectionDefinitionId, sectionOccurrenceId, sourceChordEventId, sourceMeasureId,
@@ -9,7 +9,9 @@ import {
 import { validatePerformanceSequence } from "../performance/repeat";
 import { validateCoreInputLimits } from "../limits";
 import type { AlgorithmExecutionRegistry } from "../registries";
-import { comparePositions, type MusicalPosition } from "../time";
+import {
+  canonicalizePosition, comparePositions, type MusicalPosition, type MusicalRange,
+} from "../time";
 import {
   validateOmrEvidenceArchive, validateOmrReviewRecord, validateSourceEvidenceIndex,
 } from "../omr/foundation";
@@ -48,12 +50,47 @@ function leadEventEnd(
     : { performanceMeasureIndex, offset };
 }
 
+function phraseRangeIsCanonicalAndContained(
+  range: MusicalRange,
+  section: SongSourceDocument["sectionOccurrences"][number],
+  measureDurations: readonly Fraction[],
+): boolean {
+  let canonicalStart: MusicalPosition;
+  let canonicalEnd: MusicalPosition;
+  try {
+    canonicalStart = canonicalizePosition(range.start, measureDurations);
+    canonicalEnd = canonicalizePosition(range.end, measureDurations);
+  } catch {
+    return false;
+  }
+  if (comparePositions(canonicalStart, range.start) !== 0
+    || comparePositions(canonicalEnd, range.end) !== 0
+    || comparePositions(canonicalStart, canonicalEnd) >= 0) return false;
+  const sectionStart: MusicalPosition = {
+    performanceMeasureIndex: section.startPerformanceMeasureIndex,
+    offset: fraction(0),
+  };
+  const sectionEnd: MusicalPosition = {
+    performanceMeasureIndex: section.endPerformanceMeasureIndexExclusive,
+    offset: fraction(0),
+  };
+  return comparePositions(canonicalStart, sectionStart) >= 0
+    && comparePositions(canonicalStart, sectionEnd) < 0
+    && comparePositions(canonicalEnd, sectionEnd) <= 0;
+}
+
 /** Authoritative source-boundary check; producer phrase suggestions are not trusted. */
 export function phrasesCoverMelodyBearingIntervals(source: Pick<
   SongSourceDocument,
   "sourceMeasures" | "performanceSequence" | "sectionOccurrences" | "phraseRegions"
 >): boolean {
   const measureById = new Map(source.sourceMeasures.map((measure) => [measure.id, measure]));
+  const measureDurations = source.performanceSequence.occurrences.map((occurrence) => occurrence.duration);
+  const sectionById = new Map(source.sectionOccurrences.map((section) => [section.id, section]));
+  if (!source.phraseRegions.every((phrase) => {
+    const section = sectionById.get(phrase.sectionOccurrenceId);
+    return section !== undefined && phraseRangeIsCanonicalAndContained(phrase.range, section, measureDurations);
+  })) return false;
   for (const section of source.sectionOccurrences) {
     const phrases = source.phraseRegions
       .filter((phrase) => phrase.sectionOccurrenceId === section.id)
@@ -456,11 +493,10 @@ export function isSongSourceDocument(value: unknown): value is SongSourceDocumen
     && isMusicalRange(phrase.range)
     && ["manual", "musicxml", "lead-rest", "long-note", "section-boundary", "automatic-split"].includes(String(phrase.boundarySource)))) return false;
   if (!hasUniqueStrings(source.phraseRegions.map((phrase) => phrase.id))) return false;
+  const performanceMeasureDurations = source.performanceSequence.occurrences.map((occurrence) => occurrence.duration);
   for (const phrase of source.phraseRegions) {
     const section = occurrenceById.get(phrase.sectionOccurrenceId);
-    if (!section
-      || phrase.range.start.performanceMeasureIndex < section.startPerformanceMeasureIndex
-      || phrase.range.end.performanceMeasureIndex > section.endPerformanceMeasureIndexExclusive) return false;
+    if (!section || !phraseRangeIsCanonicalAndContained(phrase.range, section, performanceMeasureDurations)) return false;
   }
   const orderedPhrases = [...source.phraseRegions].sort((left, right) => comparePositions(left.range.start, right.range.start));
   if (orderedPhrases.some((phrase, index) => index > 0 && comparePositions(orderedPhrases[index - 1].range.end, phrase.range.start) > 0)) return false;

@@ -636,12 +636,13 @@ async function validateCandidateIntegrity(
   candidate: ArrangementCandidate,
   project: HarmonyProject,
   intent: ArrangementIntentPlan,
+  activity: ArrangementActivityPlan,
   anchor: ArrangementAnchorPlan,
   ordinals: ProjectOrdinals,
   effectiveConfig: EffectiveArrangementConfig,
   timelineAuthority: EffectiveChordTimeline = resolvedTimeline(project)!,
   atomizationAuthority: SourceLeadAtomization = resolvedAtomization(project)!,
-): Promise<void> {
+): Promise<ArrangementCandidate["candidateStatus"]> {
   const anchorDirectiveOrdinalById = anchorDirectiveOrdinalRegistry(anchor, ordinals);
   validateMetricReferences(candidate.metrics, ordinals);
   const generatedTrackIds = new Set(project.trackPlans
@@ -659,32 +660,6 @@ async function validateCandidateIntegrity(
     requiredOrdinal(anchorDirectiveOrdinalById, realized.directiveId, "anchor directive");
     requiredOrdinal(ordinals.trackOrdinalById, realized.trackPlanId, "track");
   }
-  const rebuilt = await buildArrangementCandidate({
-    presetId: candidate.presetId,
-    candidateStatus: candidate.candidateStatus,
-    anchorPlanDigest: candidate.anchorPlanDigest,
-    effectiveConfigDigest: candidate.effectiveConfigDigest,
-    presetProfileDigest: candidate.presetProfileDigest,
-    effectiveChordTimelineDigest: candidate.effectiveChordTimelineDigest,
-    sourceLeadAtomizationDigest: candidate.sourceLeadAtomizationDigest,
-    tracks: Object.entries(candidate.generatedEventsByTrack).map(([trackPlanId, events]) => ({
-      trackPlanId,
-      events: events.map(eventPayload),
-    })),
-    realizedAnchors: candidate.realizedAnchors,
-    ordinals: {
-      trackOrdinalById: ordinals.trackOrdinalById,
-      lyricOrdinalById: ordinals.lyricOrdinalById,
-      anchorDirectiveOrdinalById,
-    },
-    metrics: candidate.metrics,
-    diagnostics: candidate.diagnostics,
-    canonicalPathKey: candidate.canonicalPathKey,
-  });
-  requireIntegrity(candidate.contentDigest === rebuilt.contentDigest, "Candidate content digest mismatch");
-  requireIntegrity(candidate.id === rebuilt.id, "Candidate ID mismatch");
-  requireIntegrity(exact(candidate.generatedEventsByTrack, rebuilt.generatedEventsByTrack), "Generated Event ID or canonical order mismatch");
-  requireIntegrity(exact(candidate.realizedAnchors, rebuilt.realizedAnchors), "realized anchor canonical order mismatch");
   const timeline = timelineAuthority;
   const atomization = atomizationAuthority;
   requireIntegrity(timeline !== undefined && atomization !== undefined, "Candidate lacks retained timeline/atomization authority");
@@ -702,12 +677,41 @@ async function validateCandidateIntegrity(
         ?? { intent: [], activity: [], anchor: [], solver: [] },
     },
     intentPlan: intent,
+    activityPlan: activity,
     anchorPlan: anchor,
     candidate,
   });
+  const rebuilt = await buildArrangementCandidate({
+    presetId: candidate.presetId,
+    candidateStatus: evidence.candidateStatus,
+    anchorPlanDigest: candidate.anchorPlanDigest,
+    effectiveConfigDigest: candidate.effectiveConfigDigest,
+    presetProfileDigest: candidate.presetProfileDigest,
+    effectiveChordTimelineDigest: candidate.effectiveChordTimelineDigest,
+    sourceLeadAtomizationDigest: candidate.sourceLeadAtomizationDigest,
+    tracks: Object.entries(candidate.generatedEventsByTrack).map(([trackPlanId, events]) => ({
+      trackPlanId,
+      events: events.map(eventPayload),
+    })),
+    realizedAnchors: candidate.realizedAnchors,
+    ordinals: {
+      trackOrdinalById: ordinals.trackOrdinalById,
+      lyricOrdinalById: ordinals.lyricOrdinalById,
+      anchorDirectiveOrdinalById,
+    },
+    metrics: evidence.metrics,
+    diagnostics: evidence.diagnostics,
+    canonicalPathKey: evidence.canonicalPathKey,
+  });
+  requireIntegrity(candidate.candidateStatus === evidence.candidateStatus, "Candidate status differs from required coverage rederivation");
+  requireIntegrity(candidate.contentDigest === rebuilt.contentDigest, "Candidate content digest mismatch");
+  requireIntegrity(candidate.id === rebuilt.id, "Candidate ID mismatch");
+  requireIntegrity(exact(candidate.generatedEventsByTrack, rebuilt.generatedEventsByTrack), "Generated Event ID or canonical order mismatch");
+  requireIntegrity(exact(candidate.realizedAnchors, rebuilt.realizedAnchors), "realized anchor canonical order mismatch");
   requireIntegrity(exact(candidate.metrics, evidence.metrics), "Candidate metrics differ from independent rederivation");
   requireIntegrity(exact(candidate.diagnostics, evidence.diagnostics), "Candidate diagnostics differ from independent rederivation");
   requireIntegrity(candidate.canonicalPathKey === evidence.canonicalPathKey, "Candidate canonicalPathKey differs from independent rederivation");
+  return evidence.candidateStatus;
 }
 
 function generationRegistryKeys(): {
@@ -938,6 +942,7 @@ async function validateRetainedGenerationArtifacts(
     requireIntegrity(marginal !== undefined && entry.trackPlanId in marginal.generatedEventsByTrack, "retained operational role target mismatch", "CANDIDATE_PROJECTION_INVALID");
   }
 
+  const derivedCandidateStatuses: ArrangementCandidate["candidateStatus"][] = [];
   for (const candidate of generation.candidates) {
     requireIntegrity(candidate.presetId === variant.presetId
       && candidate.anchorPlanDigest === generation.digests.anchorPlanDigest
@@ -946,17 +951,22 @@ async function validateRetainedGenerationArtifacts(
       && candidate.effectiveChordTimelineDigest === generation.digests.effectiveChordTimelineDigest
       && candidate.sourceLeadAtomizationDigest === generation.digests.sourceLeadAtomizationDigest,
     "retained Candidate provenance mismatch");
-    await validateCandidateIntegrity(
+    derivedCandidateStatuses.push(await validateCandidateIntegrity(
       candidate,
       project,
       variant.intentPlan,
+      variant.activityPlan,
       variant.anchorPlan,
       ordinals,
       effectiveConfig,
       timeline,
       atomization,
-    );
+    ));
   }
+  const derivedGenerationStatus = derivedCandidateStatuses.length === 0
+    ? "blocked"
+    : derivedCandidateStatuses.some((status) => status === "complete") ? "complete" : "partial";
+  requireIntegrity(generation.status === derivedGenerationStatus, "retained Generation result status differs from derived Candidate coverage", "GENERATION_RESULT_STATE_INVALID");
 
   const candidateById = new Map(generation.candidates.map((candidate) => [candidate.id, candidate]));
   const editsByCandidate = new Map<string, ArrangementOutputEdit[]>();
@@ -1157,6 +1167,7 @@ async function validateVariantIntegrity(
     activityPlanDigest: activity.activityPlanDigest,
     anchorPlanDigest: anchor.anchorPlanDigest,
   }), "Generation digest envelope mismatch");
+  const derivedCandidateStatuses: ArrangementCandidate["candidateStatus"][] = [];
   for (const candidate of generation.candidates) {
     requireIntegrity(candidate.presetId === variant.presetId
       && candidate.anchorPlanDigest === anchor.anchorPlanDigest
@@ -1164,8 +1175,12 @@ async function validateVariantIntegrity(
       && candidate.presetProfileDigest === generation.digests.presetProfileDigest
       && candidate.effectiveChordTimelineDigest === generation.digests.effectiveChordTimelineDigest
       && candidate.sourceLeadAtomizationDigest === generation.digests.sourceLeadAtomizationDigest, "Candidate provenance mismatch");
-    await validateCandidateIntegrity(candidate, project, intent, anchor, ordinals, effectiveConfig);
+    derivedCandidateStatuses.push(await validateCandidateIntegrity(candidate, project, intent, activity, anchor, ordinals, effectiveConfig));
   }
+  const derivedGenerationStatus = derivedCandidateStatuses.length === 0
+    ? "blocked"
+    : derivedCandidateStatuses.some((status) => status === "complete") ? "complete" : "partial";
+  requireIntegrity(generation.status === derivedGenerationStatus, "Generation result status differs from derived Candidate coverage", "GENERATION_RESULT_STATE_INVALID");
   const candidateById = new Map(generation.candidates.map((candidate) => [candidate.id, candidate]));
   const editsByCandidate = new Map<string, ArrangementOutputEdit[]>();
   for (const edit of variant.outputEdits) {

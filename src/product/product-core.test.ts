@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import { generateDeterministicAccompaniment } from "../accompaniment/deterministic";
 import { parseChord } from "../domain/chord/parser";
 import type { ParsedChord } from "../domain/chord/model";
+import { createDiagnostics } from "../domain/diagnostics";
 import type { ArrangementOutputEdit, EditedArrangementSnapshot } from "../domain/edit/model";
 import { fraction } from "../domain/fraction";
+import { buildArrangementCandidate } from "../domain/generation/candidate";
 import type { ArrangementRenderDocument } from "../domain/generation/model";
 import type { HarmonyProject } from "../domain/project";
 import { outputEditId } from "../domain/ids";
@@ -13,6 +15,7 @@ import { normalizeSongSourceDocument } from "../domain/source/normalize";
 import { computeRevisionHistoryDigest } from "../domain/source/revision";
 import { musicalRange } from "../domain/time";
 import { createWagFixtureInput, materializeSegmentBFixture, pitch } from "../grammar/fixtures";
+import { loadFrozenWagAuthority } from "../grammar/authority";
 import { importMusicXml } from "../import/musicxml/parser";
 import { replaceStageLocks } from "./locks";
 import { materializeEditedArrangement } from "./edited-arrangement";
@@ -332,6 +335,81 @@ describe("Product Core workspace, render, playback, and state", () => {
 });
 
 describe("candidate-bound edits and EditedArrangementSnapshot", () => {
+  it("rejects coordinated Candidate status, diagnostics, content digest, ID, and Generation status forgery through every reload boundary", async () => {
+    const input = await createWagFixtureInput({ presetId: "standard", maxHarmonyTracks: 0 });
+    const { project } = await generatedProject(input);
+    const variant = project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") throw new Error("missing Candidate authority fixture");
+    expect(variant.generationResult.candidates).toHaveLength(1);
+    const candidate = variant.generationResult.candidates[0];
+    expect(candidate.candidateStatus).toBe("complete");
+    expect(candidate.generatedEventsByTrack).toEqual({});
+
+    const authority = await loadFrozenWagAuthority();
+    const forgedDiagnostics = await createDiagnostics([{
+      code: "WAG_V1_PARTIAL_REQUIRED_COVERAGE",
+      severity: "error",
+      messageKo: "WAG_V1_PARTIAL_REQUIRED_COVERAGE",
+      details: { missingPhraseCount: 1 },
+    }], authority.diagnostics);
+    const forged = await buildArrangementCandidate({
+      presetId: candidate.presetId,
+      candidateStatus: "partial",
+      anchorPlanDigest: candidate.anchorPlanDigest,
+      effectiveConfigDigest: candidate.effectiveConfigDigest,
+      presetProfileDigest: candidate.presetProfileDigest,
+      effectiveChordTimelineDigest: candidate.effectiveChordTimelineDigest,
+      sourceLeadAtomizationDigest: candidate.sourceLeadAtomizationDigest,
+      tracks: [],
+      realizedAnchors: candidate.realizedAnchors,
+      ordinals: {
+        trackOrdinalById: Object.fromEntries(project.trackPlans.map((track) => [track.id, track.canonicalOrdinal])),
+        lyricOrdinalById: Object.fromEntries(project.source.sourceMeasures.flatMap((measure) => measure.lyricTokens).map((token, index) => [token.id, index])),
+        anchorDirectiveOrdinalById: {},
+      },
+      metrics: { ...candidate.metrics, hardDiagnosticCount: 1 },
+      diagnostics: forgedDiagnostics,
+      canonicalPathKey: candidate.canonicalPathKey,
+    });
+    expect(forged.contentDigest).not.toBe(candidate.contentDigest);
+    expect(forged.id).toBe(`cand:${forged.presetId}:${forged.contentDigest}`);
+    expect(forged.diagnostics).toEqual(forgedDiagnostics);
+
+    const forgedProject: HarmonyProject = {
+      ...project,
+      variants: { ...project.variants, standard: {
+        ...variant,
+        generationResult: {
+          ...variant.generationResult,
+          status: "partial",
+          candidates: [forged],
+        },
+        candidateHarmonyRoles: [],
+        outputEdits: [],
+        editedSnapshots: [],
+        activeArrangement: { kind: "candidate", candidateId: forged.id },
+      } },
+    };
+    const registry = await loadProductExecutionRegistry();
+    expect((await validateHarmonyProject(forgedProject, registry)).status).toBe("blocked");
+    await expect(exportHarmonyProject(forgedProject)).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+    await expect(importHarmonyProject(JSON.stringify(forgedProject))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+    await expect(new MemoryLocalProjectStore().save({
+      projectId: "coordinated-candidate-status-forgery",
+      updatedAt: "2026-08-19T00:00:00.000Z",
+      project: forgedProject,
+    })).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+
+    const browserDatabase = memoryIndexedDb();
+    browserDatabase.rows.set("coordinated-candidate-status-forgery", {
+      projectId: "coordinated-candidate-status-forgery",
+      updatedAt: "2026-08-19T00:00:00.000Z",
+      encoded: JSON.stringify(forgedProject),
+    });
+    await expect(new IndexedDbProjectStore(browserDatabase.factory).load("coordinated-candidate-status-forgery"))
+      .rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+  }, 60_000);
+
   it("rejects stale retained Candidate/Edit/Snapshot tampering through validation, transfer, and IndexedDB reload", async () => {
     const fixture = await projectWithVerifiedSnapshot();
     const freshVariant = fixture.project.variants.standard;

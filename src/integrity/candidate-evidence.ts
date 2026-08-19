@@ -10,6 +10,7 @@ import type {
   TextureDensityMetrics,
 } from "../domain/generation/model";
 import type {
+  ArrangementActivityPlan,
   ArrangementAnchorPlan,
   ArrangementIntentPlan,
 } from "../domain/plans";
@@ -22,10 +23,14 @@ import {
 import {
   comparePositions,
   compareRanges,
+  musicalRange,
+  type MusicalPosition,
   type MusicalRange,
 } from "../domain/time";
 import { loadFrozenWagAuthority } from "../grammar/authority";
 import {
+  activityAt,
+  placementRoleFor,
   rangeDuration,
   type WagLifecycleInput,
 } from "../grammar/lifecycle";
@@ -42,12 +47,87 @@ function containsRange(outer: MusicalRange, inner: MusicalRange): boolean {
     && comparePositions(inner.end, outer.end) <= 0;
 }
 
+function rangesOverlap(left: MusicalRange, right: MusicalRange): boolean {
+  return comparePositions(left.start, right.end) < 0
+    && comparePositions(right.start, left.end) < 0;
+}
+
+function uniquePositions(values: readonly MusicalPosition[]): readonly MusicalPosition[] {
+  const ordered = [...values].sort(comparePositions);
+  return ordered.filter((position, index) => index === 0
+    || comparePositions(position, ordered[index - 1]) !== 0);
+}
+
 function atomFor(input: WagLifecycleInput, range: MusicalRange) {
   return input.sourceLeadAtomization.atoms.find((atom) => containsRange(atom.range, range));
 }
 
-function phraseFor(input: WagLifecycleInput, range: MusicalRange) {
-  return input.source.phraseRegions.find((phrase) => containsRange(phrase.range, range));
+interface CandidateCoverageEvidence {
+  readonly candidateStatus: ArrangementCandidate["candidateStatus"];
+  readonly missingPhraseCount: number;
+  readonly missingRangeCount: number;
+}
+
+/** Mirrors the pipeline's fullRequiredCoverage authority without trusting Candidate material. */
+function deriveCandidateCoverage(
+  input: WagLifecycleInput,
+  intentPlan: ArrangementIntentPlan,
+  activityPlan: ArrangementActivityPlan,
+  candidate: ArrangementCandidate,
+): CandidateCoverageEvidence {
+  const requiredPhrases = intentPlan.phraseIntents.filter((phrase) =>
+    phrase.harmonyExpectation === "H1-required");
+  const trackIds = Object.keys(candidate.generatedEventsByTrack);
+  if (trackIds.length === 0) {
+    return {
+      candidateStatus: requiredPhrases.length === 0 ? "complete" : "partial",
+      missingPhraseCount: requiredPhrases.length,
+      missingRangeCount: 0,
+    };
+  }
+
+  let fullRequiredCoverage = true;
+  let missingRangeCount = 0;
+  const plannedPhrases = input.source.phraseRegions.flatMap((phrase) => {
+    const phraseIntent = intentPlan.phraseIntents.find((entry) => entry.phraseId === phrase.id);
+    const phraseActivity = activityPlan.phraseActivityPlans.find((entry) => entry.phraseId === phrase.id);
+    return phraseIntent && phraseActivity ? [{ phrase, phraseIntent, phraseActivity }] : [];
+  });
+  for (const trackPlanId of trackIds) {
+    for (const { phrase, phraseIntent, phraseActivity } of plannedPhrases) {
+      const placementRole = placementRoleFor(intentPlan, phrase.id, trackPlanId);
+      const activityBoundaries = phraseActivity.activitySpans.flatMap((span) => [span.range.start, span.range.end]);
+      for (const atom of input.sourceLeadAtomization.atoms) {
+        if (!rangesOverlap(atom.range, phrase.range)) continue;
+        if (!containsRange(phrase.range, atom.range)) throw new RangeError("CANDIDATE_PROJECTION_INVALID:phrase-coverage");
+        const boundaries = uniquePositions([
+          atom.range.start,
+          atom.range.end,
+          ...activityBoundaries.filter((position) =>
+            comparePositions(atom.range.start, position) < 0
+            && comparePositions(position, atom.range.end) < 0),
+        ]);
+        for (let index = 0; index < boundaries.length - 1; index += 1) {
+          const range = musicalRange(boundaries[index], boundaries[index + 1]);
+          const activity = activityAt(activityPlan, phrase.id, trackPlanId, range)
+            ?? { state: "rest" as const };
+          if (placementRole && activity.state === "rest") missingRangeCount += 1;
+          const chordEligible = atom.pitch !== null
+            && input.effectiveChordTimeline.spans.some((span) =>
+              containsRange(span.range, range) && span.parseResult.status === "ok");
+          if (placementRole
+            && phraseIntent.harmonyExpectation === "H1-required"
+            && chordEligible
+            && activity.state !== "independent-note") fullRequiredCoverage = false;
+        }
+      }
+    }
+  }
+  return {
+    candidateStatus: fullRequiredCoverage ? "complete" : "partial",
+    missingPhraseCount: 0,
+    missingRangeCount,
+  };
 }
 
 function densityBySection(
@@ -138,23 +218,14 @@ function maxLeapByTrack(candidate: ArrangementCandidate): Readonly<Record<string
 }
 
 async function expectedDiagnostics(
-  input: WagLifecycleInput,
-  intentPlan: ArrangementIntentPlan,
   candidate: ArrangementCandidate,
+  coverage: CandidateCoverageEvidence,
 ): Promise<readonly Diagnostic[]> {
-  if (candidate.candidateStatus === "complete") return [];
+  if (coverage.candidateStatus === "complete") return [];
   const tracks = Object.entries(candidate.generatedEventsByTrack);
   const details: Readonly<Record<string, string | number | boolean>> = tracks.length === 0
-    ? { missingPhraseCount: intentPlan.phraseIntents.filter((phrase) => phrase.harmonyExpectation === "H1-required").length }
-    : {
-        missingRangeCount: tracks.reduce((count, [trackPlanId, events]) => count + events.filter((event) => {
-          if (event.kind !== "rest") return false;
-          const phrase = phraseFor(input, event.range);
-          return phrase !== undefined && intentPlan.phraseIntents.some((intent) =>
-            intent.phraseId === phrase.id
-            && intent.trackRoles.some((role) => role.trackPlanId === trackPlanId));
-        }).length, 0),
-      };
+    ? { missingPhraseCount: coverage.missingPhraseCount }
+    : { missingRangeCount: coverage.missingRangeCount };
   const authority = await loadFrozenWagAuthority();
   return createDiagnostics([{
     code: "WAG_V1_PARTIAL_REQUIRED_COVERAGE",
@@ -209,17 +280,29 @@ function canonicalPathKey(
 export async function deriveCandidateEvidence(input: {
   readonly lifecycleInput: WagLifecycleInput;
   readonly intentPlan: ArrangementIntentPlan;
+  readonly activityPlan: ArrangementActivityPlan;
   readonly anchorPlan: ArrangementAnchorPlan;
   readonly candidate: ArrangementCandidate;
 }): Promise<{
+  readonly candidateStatus: ArrangementCandidate["candidateStatus"];
   readonly metrics: FullSongMetrics;
   readonly diagnostics: readonly Diagnostic[];
   readonly canonicalPathKey: string;
 }> {
-  const diagnostics = await expectedDiagnostics(input.lifecycleInput, input.intentPlan, input.candidate);
+  const coverage = deriveCandidateCoverage(
+    input.lifecycleInput,
+    input.intentPlan,
+    input.activityPlan,
+    input.candidate,
+  );
+  const diagnostics = await expectedDiagnostics(
+    input.candidate,
+    coverage,
+  );
   const soundingCount = Object.values(input.candidate.generatedEventsByTrack)
     .flat().filter((event) => event.kind === "note").length;
   return {
+    candidateStatus: coverage.candidateStatus,
     metrics: {
       densityBySectionOccurrence: densityBySection(input.lifecycleInput, input.candidate),
       maxLeapSemitonesByTrack: maxLeapByTrack(input.candidate),

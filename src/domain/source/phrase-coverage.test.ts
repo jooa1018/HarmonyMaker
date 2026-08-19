@@ -77,6 +77,41 @@ function oneMeasureSource(phraseRanges: readonly ReturnType<typeof musicalRange>
   };
 }
 
+function twoMeasureRestSource(range: ReturnType<typeof musicalRange>) {
+  const first = measure("sm:0", 1, [rest("le:0", "sm:0")]);
+  const second = measure("sm:1", 2, [rest("le:1", "sm:1")]);
+  return {
+    sourceMeasures: [first, second],
+    performanceSequence: {
+      expanderVersion: "repeat-v1",
+      occurrences: [first, second].map((item, index) => ({
+        occurrenceId: `pm:${index}:${index}:0`,
+        sourceMeasureId: item.id,
+        sourceMeasureNumber: item.number,
+        occurrenceIndexForSource: 0,
+        performanceIndex: index,
+        time: item.time,
+        duration: item.duration,
+      })),
+    },
+    sectionOccurrences: [{
+      id: "so:0",
+      sectionDefinitionId: "sd:0",
+      occurrenceIndex: 0,
+      variant: "base" as const,
+      lyricVerseIndex: 1,
+      startPerformanceMeasureIndex: 0,
+      endPerformanceMeasureIndexExclusive: 1,
+    }],
+    phraseRegions: [{
+      id: "ph:0",
+      sectionOccurrenceId: "so:0",
+      range,
+      boundarySource: "manual" as const,
+    }],
+  };
+}
+
 describe("authoritative melody-bearing phrase coverage", () => {
   it("accepts exact full coverage", () => {
     expect(phrasesCoverMelodyBearingIntervals(oneMeasureSource([
@@ -140,5 +175,28 @@ describe("authoritative melody-bearing phrase coverage", () => {
       }],
     };
     expect(phrasesCoverMelodyBearingIntervals(source)).toBe(false);
+  });
+
+  it("rejects a phrase end at the section-exclusive measure with a nonzero offset", () => {
+    expect(phrasesCoverMelodyBearingIntervals(twoMeasureRestSource(musicalRange(
+      { performanceMeasureIndex: 0, offset: fraction(0) },
+      { performanceMeasureIndex: 1, offset: fraction(1) },
+    )))).toBe(false);
+  });
+
+  it("rejects a phrase start exactly at its section-exclusive boundary", () => {
+    expect(phrasesCoverMelodyBearingIntervals(twoMeasureRestSource(musicalRange(
+      { performanceMeasureIndex: 1, offset: fraction(0) },
+      { performanceMeasureIndex: 1, offset: fraction(1) },
+    )))).toBe(false);
+  });
+
+  it("rejects a phrase offset beyond the actual performance-measure duration", () => {
+    expect(phrasesCoverMelodyBearingIntervals(oneMeasureSource([
+      musicalRange(
+        { performanceMeasureIndex: 0, offset: fraction(0) },
+        { performanceMeasureIndex: 0, offset: fraction(5) },
+      ),
+    ], [rest("le:rest")]))).toBe(false);
   });
 });

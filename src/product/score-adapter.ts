@@ -58,6 +58,12 @@ function abcKey(key: KeySignature): string {
   return `${key.tonic.step}${accidental}${key.mode === "minor" ? "m" : ""}`;
 }
 
+function abcTempo(tempo: TempoSpec): string {
+  const numerator = tempo.dotted ? 3 : 1;
+  const denominator = tempo.dotted ? tempo.beatUnit * 2 : tempo.beatUnit;
+  return `${numerator}/${denominator}=${tempo.bpm}`;
+}
+
 function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: ArrangementRenderDocument["measures"], durations: readonly Fraction[], chordAt: Readonly<Record<string, string>>, includeChords: boolean): string {
   const measures: string[] = [];
   for (let measureIndex = 0; measureIndex < measuresAuthority.length; measureIndex += 1) {
@@ -98,7 +104,7 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const voices = tracks.map((track, index) => `[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, chordAt, index === 0)}`).join("\n");
   const score = tracks.map((track) => track.id).join(" ");
   const declarations = tracks.map((track) => `V:${track.id} name="${encodeAbcFreeText(track.label)}" clef=treble`).join("\n");
-  return `X:1\nT:${encodeAbcFreeText(input.title)}\nM:${document.measures[0]?.time.numerator ?? 4}/${document.measures[0]?.time.denominator ?? 4}\nL:1/16\nQ:${input.tempo.dotted ? "3/" : "1/"}${input.tempo.beatUnit}=${input.tempo.bpm}\nK:${abcKey(input.key)}\n%%score ${score}\n${declarations}\n${voices}`;
+  return `X:1\nT:${encodeAbcFreeText(input.title)}\nM:${document.measures[0]?.time.numerator ?? 4}/${document.measures[0]?.time.denominator ?? 4}\nL:1/16\nQ:${abcTempo(input.tempo)}\nK:${abcKey(input.key)}\n%%score ${score}\n${declarations}\n${voices}`;
 }
 
 export type AbcSerializationOutcome =

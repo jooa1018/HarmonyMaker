@@ -456,6 +456,7 @@ async function generationProject(
       locks: { intent: [], activity: [], anchor: [], solver: [] },
     },
     intentPlan,
+    activityPlan,
     anchorPlan,
     candidate: provisionalCandidate,
   });
