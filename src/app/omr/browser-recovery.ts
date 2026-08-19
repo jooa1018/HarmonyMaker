@@ -58,6 +58,12 @@ export function isRetiredCreateReplay(error: unknown): boolean {
     && error.code === "OMR_CREATE_REPLAY_UNAVAILABLE";
 }
 
+/** Browser-side grammar only; the server remains authoritative for signature and expiry. */
+export function isOmrJobHandleShape(value: unknown): value is string {
+  return typeof value === "string"
+    && /^v1\.[A-Za-z0-9_-]{43}\.\d{10,12}\.[a-f0-9]{64}$/u.test(value);
+}
+
 export type OmrFreshStartReason = "stale-recovery-handle" | "retired-create-replay" | "invalid-persisted-create" | "pre-dispatch-correction";
 
 export const OMR_CREATE_PRE_DISPATCH_CORRECTION_CODES = Object.freeze([
@@ -264,6 +270,7 @@ export async function acquireOmrJob<TStatus>(input: {
   readonly validateCreateRequest?: (request: Readonly<Record<string, unknown>>) => boolean;
   readonly recover: (handle: string) => Promise<TStatus>;
   readonly create: (request: Readonly<Record<string, unknown>>) => Promise<{ readonly handle: string }>;
+  readonly validateCreatedHandle?: (handle: unknown) => handle is string;
 }): Promise<OmrJobAcquisition<TStatus>> {
   if (input.forceFresh) {
     input.storage.removeItem(input.createStorageKey);
@@ -310,7 +317,12 @@ export async function acquireOmrJob<TStatus>(input: {
     }
     return { kind: "create-preserved", outcome };
   }
-  input.storage.setItem(input.recoveryStorageKey, created.handle);
+  const createdHandle: unknown = isRecord(created) ? created.handle : undefined;
+  if (typeof createdHandle !== "string"
+    || (input.validateCreatedHandle && !input.validateCreatedHandle(createdHandle))) {
+    return { kind: "create-preserved", outcome: { kind: "transient", code: "OMR_CREATE_RESPONSE_INVALID" } };
+  }
+  input.storage.setItem(input.recoveryStorageKey, createdHandle);
   input.storage.removeItem(input.createStorageKey);
-  return { kind: "acquired", handle: created.handle };
+  return { kind: "acquired", handle: createdHandle };
 }

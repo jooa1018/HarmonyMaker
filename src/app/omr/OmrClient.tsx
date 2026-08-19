@@ -16,6 +16,7 @@ import {
   canResetOmrCreateAfterCorrection,
   consumeExplicitOmrFreshStart,
   finishOmrStart,
+  isOmrJobHandleShape,
   isUnavailableRecoveryHandle,
   omrFreshStartAction,
   OmrApiRequestError,
@@ -36,10 +37,11 @@ import {
   type OmrBrowserJobManifest,
 } from "./browser-job-manifest";
 import {
-  canCancelOmrStatus, isOmrMonitorTerminal, nextOmrMonitorTarget,
+  canCancelOmrStatus, isOmrMonitorRetryDue, isOmrMonitorTerminal, nextOmrMonitorTarget,
   nextOmrUploadBindingRetryTarget,
   OMR_MONITOR_SESSION_BUDGET_MS,
   omrBrowserAuthorityAction, omrDeletionDisposition, shouldPauseOmrMonitorSession,
+  scheduleOmrMonitorRetryResume,
 } from "./browser-job-lifecycle";
 import styles from "./omr.module.css";
 
@@ -404,6 +406,17 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     }
   }, [applyPublicStatus, mutate]);
 
+  useEffect(() => {
+    if (!handle || manifest?.jobHandle !== handle || manifest.lifecycle === "delete-pending" || !status) return;
+    return scheduleOmrMonitorRetryResume({
+      status,
+      nowEpochMs: Date.now(),
+      setTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      clearTimer: (timer) => window.clearTimeout(timer),
+      resume: () => { if (document.visibilityState === "visible") void monitor(handle); },
+    });
+  }, [handle, manifest, monitor, status]);
+
   const resumeBoundUpload = useCallback(async (
     jobHandle: string,
     authority: OmrBrowserJobManifest,
@@ -525,7 +538,9 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
               setError(caught instanceof Error ? caught.message : "페이지 업로드를 재개하지 못했습니다.");
             });
           }
-        } else void monitor(handle);
+        } else if (status.kind !== "retry-pending" || isOmrMonitorRetryDue(status, Date.now())) {
+          void monitor(handle);
+        }
       }
     };
     document.addEventListener("visibilitychange", resumeVisible);
@@ -604,6 +619,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
           }),
         recover: async (storedHandle) => (await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(storedHandle)}`, { cache: "no-store" }))).status,
         create: async (request) => json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify(request) })),
+        validateCreatedHandle: isOmrJobHandleShape,
       });
       if (acquisition.kind === "fresh-start-required") {
         if (acquisition.reason === "retired-create-replay") {

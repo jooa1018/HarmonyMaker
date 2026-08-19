@@ -21,6 +21,28 @@ export function nextOmrMonitorTarget(status: OmrPublicStatus, nowEpochMs: number
   return Math.max(nowEpochMs, retryAt);
 }
 
+export function scheduleOmrMonitorRetryResume<TTimer>(input: {
+  readonly status: OmrPublicStatus;
+  readonly nowEpochMs: number;
+  readonly setTimer: (callback: () => void, delayMs: number) => TTimer;
+  readonly clearTimer: (timer: TTimer) => void;
+  readonly resume: () => void;
+}): () => void {
+  if (!Number.isFinite(input.nowEpochMs)) throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
+  if (input.status.kind !== "retry-pending") return () => undefined;
+  const target = nextOmrMonitorTarget(input.status, input.nowEpochMs);
+  if (target === undefined) return () => undefined;
+  let active = true;
+  const timer = input.setTimer(() => { if (active) input.resume(); }, Math.max(0, target - input.nowEpochMs));
+  return () => { active = false; input.clearTimer(timer); };
+}
+
+export function isOmrMonitorRetryDue(status: OmrPublicStatus, nowEpochMs: number): boolean {
+  if (!Number.isFinite(nowEpochMs)) throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
+  return status.kind === "retry-pending"
+    && (nextOmrMonitorTarget(status, nowEpochMs) ?? Number.POSITIVE_INFINITY) <= nowEpochMs;
+}
+
 export function nextOmrUploadBindingRetryTarget(attempt: number, nowEpochMs: number): number {
   if (!Number.isSafeInteger(attempt) || attempt < 1 || !Number.isFinite(nowEpochMs)) {
     throw new RangeError("OMR_BROWSER_UPLOAD_RETRY_INVALID");

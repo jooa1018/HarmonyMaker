@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   canCancelOmrStatus, nextOmrMonitorTarget, OMR_MONITOR_MAX_SYNC_ATTEMPTS,
   OMR_MONITOR_SESSION_BUDGET_MS, omrDeletionDisposition, omrInputReplacementDisposition,
-  nextOmrUploadBindingRetryTarget, omrBrowserAuthorityAction, shouldPauseOmrMonitorSession,
+  isOmrMonitorRetryDue, nextOmrUploadBindingRetryTarget, omrBrowserAuthorityAction, scheduleOmrMonitorRetryResume,
+  shouldPauseOmrMonitorSession,
 } from "./browser-job-lifecycle";
 
 describe("durable OMR browser retry lifecycle", () => {
@@ -31,6 +32,41 @@ describe("durable OMR browser retry lifecycle", () => {
     const persisted = structuredClone(status);
     expect(nextOmrMonitorTarget(persisted, now + 29 * 60_000)).toBe(now + 30 * 60_000);
     expect(nextOmrMonitorTarget(persisted, now + 31 * 60_000)).toBe(now + 31 * 60_000);
+  });
+
+  it.each([
+    [5 * 60_000, "2026-08-19T00:05:00.000Z"],
+    [30 * 60_000, "2026-08-19T00:30:00.000Z"],
+  ])("arms and fences a durable due timer for a %i ms server retry", (delay, nextAttemptAt) => {
+    let callback: (() => void) | undefined;
+    const cleared: number[] = [];
+    let resumed = 0;
+    const cancel = scheduleOmrMonitorRetryResume({
+      status: { kind: "retry-pending", operation: "sync", attempt: 2, nextAttemptAt, messageKo: "retry" },
+      nowEpochMs: now,
+      setTimer: (next, delayMs) => { callback = next; expect(delayMs).toBe(delay); return 17; },
+      clearTimer: (timer) => { cleared.push(timer); },
+      resume: () => { resumed += 1; },
+    });
+    cancel();
+    expect(cleared).toEqual([17]);
+    callback?.();
+    expect(resumed).toBe(0);
+  });
+
+  it("runs a live due callback once and never treats a pre-due visibility resume as due", () => {
+    const retry = { kind: "retry-pending" as const, operation: "capture" as const, attempt: 2, nextAttemptAt: "2026-08-19T00:05:00.000Z", messageKo: "retry" };
+    let callback: (() => void) | undefined;
+    let resumed = 0;
+    scheduleOmrMonitorRetryResume({
+      status: retry, nowEpochMs: now,
+      setTimer: (next) => { callback = next; return 1; }, clearTimer: () => undefined,
+      resume: () => { resumed += 1; },
+    });
+    expect(isOmrMonitorRetryDue(retry, now + 4 * 60_000)).toBe(false);
+    expect(isOmrMonitorRetryDue(retry, now + 5 * 60_000)).toBe(true);
+    callback?.();
+    expect(resumed).toBe(1);
   });
 
   it("keeps replacement locked until the live handle is deleted, while cancel remains available", () => {

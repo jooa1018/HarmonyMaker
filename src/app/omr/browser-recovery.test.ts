@@ -9,6 +9,7 @@ import {
   classifyOmrCreateOutcome,
   consumeExplicitOmrFreshStart,
   finishOmrStart,
+  isOmrJobHandleShape,
   omrFreshStartAction,
   omrCreateCorrectionRequirements,
   requireExplicitOmrFreshStart,
@@ -279,6 +280,36 @@ describe("OMR browser recovery authority", () => {
       recover: vi.fn(), create: async () => { throw timeout; },
     })).resolves.toEqual({ kind: "create-preserved", outcome: { kind: "transient", code: "OMR_CREATE_TRANSPORT_UNCERTAIN" } });
     expect(storage.getItem(createStorageKey)).toBe(stored);
+  });
+
+  it("keeps K1 until a successful create response carries an exact OMR handle", async () => {
+    const malformedResponses: unknown[] = [{ ok: true }, null, { handle: null }, { handle: "garbage" }];
+    for (const malformed of malformedResponses) {
+      const request = validRequest("K1");
+      const storage = memoryStorage();
+      const acquisition = await acquireOmrJob({
+        storage, createStorageKey, recoveryStorageKey, forceFresh: false,
+        createRequest: () => request, recover: vi.fn(),
+        create: async () => malformed as { readonly handle: string },
+        validateCreatedHandle: isOmrJobHandleShape,
+      });
+      expect(acquisition).toEqual({
+        kind: "create-preserved",
+        outcome: { kind: "transient", code: "OMR_CREATE_RESPONSE_INVALID" },
+      });
+      expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toMatchObject({ request });
+      expect(storage.getItem(recoveryStorageKey)).toBeNull();
+    }
+
+    const validHandle = `v1.${"A".repeat(43)}.1999999999.${"a".repeat(64)}`;
+    const storage = memoryStorage();
+    await expect(acquireOmrJob({
+      storage, createStorageKey, recoveryStorageKey, forceFresh: false,
+      createRequest: () => validRequest("K1"), recover: vi.fn(),
+      create: async () => ({ handle: validHandle }), validateCreatedHandle: isOmrJobHandleShape,
+    })).resolves.toEqual({ kind: "acquired", handle: validHandle });
+    expect(storage.getItem(createStorageKey)).toBeNull();
+    expect(storage.getItem(recoveryStorageKey)).toBe(validHandle);
   });
 
   it("classifies malformed, obsolete, and mismatched persisted envelopes without automatic create", async () => {
