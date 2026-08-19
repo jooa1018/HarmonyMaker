@@ -6,7 +6,7 @@ import { Pool } from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { binaryDigest, semanticDigest } from "../../domain/digest/canonical";
 import { MAX_OMR_CREDIT_ESTIMATE, OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError, type OmrQuotaConfig } from "../../domain/omr/contracts";
-import { applyMigrationsWithClient, MIGRATIONS, OMR_PROVIDER_DELETE_AUTHORITY_SQL } from "../persistence/migrations";
+import { applyMigrationsWithClient, MIGRATIONS, OMR_CLEANUP_FAIRNESS_SQL, OMR_PROVIDER_DELETE_AUTHORITY_SQL } from "../persistence/migrations";
 import type { PrivateRowId } from "../persistence/store";
 import { PostgresGovernanceStore } from "../persistence/postgres-store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
@@ -380,6 +380,7 @@ beforeAll(async () => {
     try { await applyMigrationsWithClient(client, MIGRATIONS.filter((migration) => migration.version < 13)); }
     finally { client.release(); }
     await migrationPool.query(OMR_PROVIDER_DELETE_AUTHORITY_SQL);
+    await migrationPool.query(OMR_CLEANUP_FAIRNESS_SQL);
   } finally { await migrationPool.end(); }
 });
 

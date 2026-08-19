@@ -112,9 +112,9 @@ export class PostgresOmrCreateRecoveryRegistry implements OmrCreateRecoveryRegis
          session_id,operation,key_hash,request_digest,state,response_json,
          created_at,claim_expires_at,expires_at
        )
-       SELECT $2,'omr-session-alias-v1',$1,j.owner_session_id::text,'complete',
+       SELECT $2,'omr-session-alias-v1',$1::text,j.owner_session_id::text,'complete',
          jsonb_build_object('ownerSessionId',j.owner_session_id::text),$3,$3,j.expires_at
-       FROM omr_jobs j WHERE j.id=$1
+       FROM omr_jobs j WHERE j.id=$1::bigint
        ON CONFLICT (session_id,operation,key_hash) DO UPDATE SET
          request_digest=EXCLUDED.request_digest,
          response_json=EXCLUDED.response_json,
