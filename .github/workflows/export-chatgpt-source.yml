@@ -1,6 +1,6 @@
 name: Export ChatGPT closure source
 
-# Temporary CI-only source snapshot for final P1 closure verification.
+# Temporary CI-only source snapshot for corrected P1 closure verification.
 on:
   push:
     branches:
