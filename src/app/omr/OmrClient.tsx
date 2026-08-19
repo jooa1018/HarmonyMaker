@@ -45,6 +45,7 @@ import {
   scheduleOmrMonitorRetryResume, shouldStartOmrMonitorNow,
   type OmrBrowserMonitorGeneration,
 } from "./browser-job-lifecycle";
+import { OmrPageSelectionAuthority, type OmrPageSelectionToken } from "./browser-page-selection";
 import styles from "./omr.module.css";
 
 interface PreparedPage {
@@ -155,6 +156,8 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   const manifestRef = useRef(manifest);
   const monitorAbortRef = useRef<AbortController | undefined>(undefined);
   const recoveryAbortRef = useRef<AbortController | undefined>(undefined);
+  const pageSelectionRef = useRef(new OmrPageSelectionAuthority());
+  const pageSelection = pageSelectionRef.current;
 
   const currentMonitorAuthority = useCallback((): OmrBrowserMonitorGeneration | undefined => {
     const current = manifestRef.current;
@@ -174,8 +177,9 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   useEffect(() => { manifestRef.current = manifest; }, [manifest]);
   useEffect(() => () => {
     abortCurrentAuthorityRequests();
+    pageSelection.abortSelection();
     for (const page of pagesRef.current) URL.revokeObjectURL(page.previewUrl);
-  }, [abortCurrentAuthorityRequests]);
+  }, [abortCurrentAuthorityRequests, pageSelection]);
 
   const replacePages = useCallback((next: readonly PreparedPage[]) => {
     if (manifestRef.current) throw new RangeError("OMR_BROWSER_MANIFEST_ACTIVE");
@@ -207,6 +211,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         for (const page of restored) URL.revokeObjectURL(page.previewUrl);
         return;
       }
+      pageSelection.adoptManifest();
       for (const page of pagesRef.current) URL.revokeObjectURL(page.previewUrl);
       pagesRef.current = restored;
       setPages(restored);
@@ -238,6 +243,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     setBusy(true);
     try {
       const removed = await clearOmrBrowserJobManifest();
+      pageSelection.clearManifest();
       if (removed?.createStorageKey) localStorage.removeItem(removed.createStorageKey);
       if (removed?.recoveryStorageKey) localStorage.removeItem(removed.recoveryStorageKey);
       setInvalidManifestRecovery(false);
@@ -263,35 +269,53 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     return () => { active = false; };
   }, []);
 
-  const prepareAuthoritativeImage = useCallback(async (bytes: Uint8Array, mimeType: "image/png" | "image/jpeg"): Promise<PreparedPage> => {
+  const prepareAuthoritativeImage = useCallback(async (bytes: Uint8Array, mimeType: "image/png" | "image/jpeg", signal?: AbortSignal): Promise<PreparedPage> => {
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     const prepared = await prepareImage(bytes, mimeType);
+    if (signal?.aborted) { URL.revokeObjectURL(prepared.previewUrl); throw new DOMException("aborted", "AbortError"); }
     let csrfToken = csrf;
     if (!csrfToken) {
       const session = await json<{ readonly csrfToken: string }>(await fetch("/api/session", { method: "POST" }));
       csrfToken = session.csrfToken; setCsrf(csrfToken);
     }
     const response = await json<{ readonly inspection: { readonly digest: BinaryDigest; readonly width: number; readonly height: number; readonly quality: ImageQualityReport } }>(await fetch("/api/omr/quality-preflight", {
-      method: "POST", headers: { "content-type": mimeType, "x-csrf-token": csrfToken, "x-page-digest": prepared.rawDigest }, body: bytes.slice().buffer as ArrayBuffer,
+      method: "POST", headers: { "content-type": mimeType, "x-csrf-token": csrfToken, "x-page-digest": prepared.rawDigest }, body: bytes.slice().buffer as ArrayBuffer, ...(signal ? { signal } : {}),
     }));
+    if (signal?.aborted) { URL.revokeObjectURL(prepared.previewUrl); throw new DOMException("aborted", "AbortError"); }
     return { ...prepared, canonicalPageDigest: response.inspection.digest, width: response.inspection.width, height: response.inspection.height, quality: response.inspection.quality };
   }, [csrf]);
 
+  const selectionFailureIsSuperseded = (caught: unknown) => (caught instanceof DOMException && caught.name === "AbortError")
+    || (caught instanceof RangeError && caught.message === "OMR_PAGE_SELECTION_SUPERSEDED");
+
   const selectFile = useCallback(async (file: File) => {
+    let selection: OmrPageSelectionToken;
+    try { selection = pageSelection.beginSelection(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "입력을 준비하지 못했습니다."); return; }
+    const preparedPages: PreparedPage[] = [];
     setBusy(true); setError(undefined); setMessage(`${file.name} 형식과 서명을 검사하는 중…`);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      pageSelection.assertCurrent(selection);
       const mimeType = inferredMime(file);
       const classification = await classifyInputSource({ bytes, declaredMimeType: mimeType, originalFileName: file.name });
+      pageSelection.assertCurrent(selection);
       if (classification.detectedKind === "musicxml" || classification.detectedKind === "mxl") {
         await storeOmrImportHandoff({ fileName: file.name, mimeType, bytes });
+        pageSelection.assertCurrent(selection);
         router.push("/import");
         return;
       }
       if (classification.detectedKind === "pdf") {
         setMessage("PDF.js 고정 정책으로 페이지를 래스터화하는 중…");
         const raster = await rasterizePdfPages({ bytes, maxPages: 12 });
-        const prepared = await Promise.all(raster.pages.map((page) => prepareAuthoritativeImage(page.bytes, page.mimeType)));
-        replacePages(prepared);
+        pageSelection.assertCurrent(selection);
+        for (const page of raster.pages) {
+          preparedPages.push(await prepareAuthoritativeImage(page.bytes, page.mimeType, selection.signal));
+          pageSelection.assertCurrent(selection);
+        }
+        replacePages([...preparedPages]);
+        preparedPages.length = 0;
         if (raster.classification.suggestedKind) {
           setSourceKind(raster.classification.suggestedKind); setPdfConfirmation(false);
           setMessage(`${raster.probe.pageCount}쪽 PDF 준비 완료 · ${raster.classification.suggestedKind === "digital-pdf" ? "디지털 PDF" : "스캔 PDF"}로 안전 분류됨`);
@@ -300,30 +324,48 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
           setMessage(`${raster.probe.pageCount}쪽 PDF 준비 완료 · 디지털/스캔 유형을 직접 확인하세요.`);
         }
       } else {
-        replacePages([await prepareAuthoritativeImage(bytes, classification.mimeType as "image/png" | "image/jpeg")]);
+        const prepared = await prepareAuthoritativeImage(bytes, classification.mimeType as "image/png" | "image/jpeg", selection.signal);
+        preparedPages.push(prepared);
+        pageSelection.assertCurrent(selection);
+        replacePages([prepared]);
+        preparedPages.length = 0;
         setSourceKind("camera-photo"); setPdfConfirmation(false); setMessage("사진 1쪽의 해상도·흐림·원근·반사·잘림 검사를 완료했습니다.");
       }
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "입력을 준비하지 못했습니다."); }
-    finally { setBusy(false); }
-  }, [prepareAuthoritativeImage, replacePages, router]);
+    } catch (caught) {
+      if (!selectionFailureIsSuperseded(caught)) setError(caught instanceof Error ? caught.message : "입력을 준비하지 못했습니다.");
+    } finally {
+      for (const page of preparedPages) URL.revokeObjectURL(page.previewUrl);
+      if (pageSelection.finishSelection(selection)) setBusy(false);
+    }
+  }, [pageSelection, prepareAuthoritativeImage, replacePages, router]);
 
   const selectFiles = useCallback(async (files: readonly File[]) => {
     if (files.length === 1) { await selectFile(files[0]); return; }
+    let selection: OmrPageSelectionToken;
+    try { selection = pageSelection.beginSelection(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "여러 이미지 페이지를 준비하지 못했습니다."); return; }
+    const prepared: PreparedPage[] = [];
     setBusy(true); setError(undefined);
     try {
       if (files.length < 1 || files.length > 12) throw new RangeError("OMR_PAGE_LIMIT_EXCEEDED");
-      const prepared: PreparedPage[] = [];
       for (const file of files) {
         const bytes = new Uint8Array(await file.arrayBuffer());
+        pageSelection.assertCurrent(selection);
         const classification = await classifyInputSource({ bytes, declaredMimeType: inferredMime(file), originalFileName: file.name });
+        pageSelection.assertCurrent(selection);
         if (classification.detectedKind !== "camera-photo") throw new RangeError("OMR_MULTI_IMAGE_ONLY");
-        prepared.push(await prepareAuthoritativeImage(bytes, classification.mimeType as "image/png" | "image/jpeg"));
+        prepared.push(await prepareAuthoritativeImage(bytes, classification.mimeType as "image/png" | "image/jpeg", selection.signal));
+        pageSelection.assertCurrent(selection);
       }
-      replacePages(prepared); setSourceKind("camera-photo"); setPdfConfirmation(false);
-      setMessage(`카메라/이미지 ${prepared.length}쪽을 선택한 순서대로 준비했습니다. 아래에서 명시적으로 순서를 조정하세요.`);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "여러 이미지 페이지를 준비하지 못했습니다."); }
-    finally { setBusy(false); }
-  }, [prepareAuthoritativeImage, replacePages, selectFile]);
+      replacePages([...prepared]); prepared.length = 0; setSourceKind("camera-photo"); setPdfConfirmation(false);
+      setMessage(`카메라/이미지 ${files.length}쪽을 선택한 순서대로 준비했습니다. 아래에서 명시적으로 순서를 조정하세요.`);
+    } catch (caught) {
+      if (!selectionFailureIsSuperseded(caught)) setError(caught instanceof Error ? caught.message : "여러 이미지 페이지를 준비하지 못했습니다.");
+    } finally {
+      for (const page of prepared) URL.revokeObjectURL(page.previewUrl);
+      if (pageSelection.finishSelection(selection)) setBusy(false);
+    }
+  }, [pageSelection, prepareAuthoritativeImage, replacePages, selectFile]);
 
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.target.files ?? [])];
@@ -332,27 +374,48 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   };
 
   const loadReference = async () => {
+    let selection: OmrPageSelectionToken;
+    try { selection = pageSelection.beginSelection(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "reference fixture를 읽지 못했습니다."); return; }
+    const prepared: PreparedPage[] = [];
     setBusy(true); setError(undefined);
     try {
       if (!fixtureControlsEnabled || preflight?.capabilities.vendorId !== "hm-reference") throw new RangeError("OMR_REFERENCE_FIXTURE_DISABLED");
       const { referenceOmrPageBytes } = await import("../../domain/omr/reference-fixture-data");
-      replacePages([await prepareAuthoritativeImage(referenceOmrPageBytes(), "image/png")]);
+      prepared.push(await prepareAuthoritativeImage(referenceOmrPageBytes(), "image/png", selection.signal));
+      pageSelection.assertCurrent(selection);
+      replacePages([...prepared]); prepared.length = 0;
       setSourceKind("camera-photo"); setPdfConfirmation(false);
       setMessage("내장 결정적 reference fixture 1쪽을 준비했습니다. 실제 제공자 정확도 증거로 사용할 수 없습니다.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "reference fixture를 읽지 못했습니다."); }
-    finally { setBusy(false); }
+    } catch (caught) {
+      if (!selectionFailureIsSuperseded(caught)) setError(caught instanceof Error ? caught.message : "reference fixture를 읽지 못했습니다.");
+    } finally {
+      for (const page of prepared) URL.revokeObjectURL(page.previewUrl);
+      if (pageSelection.finishSelection(selection)) setBusy(false);
+    }
   };
 
   const loadCanonicalDuplicateReference = async () => {
+    let selection: OmrPageSelectionToken;
+    try { selection = pageSelection.beginSelection(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "중복 JPEG fixture를 읽지 못했습니다."); return; }
+    const prepared: PreparedPage[] = [];
     setBusy(true); setError(undefined);
     try {
       if (!fixtureControlsEnabled || preflight?.capabilities.vendorId !== "hm-reference") throw new RangeError("OMR_REFERENCE_FIXTURE_DISABLED");
       const { referenceOmrDuplicateJpegPages } = await import("../../domain/omr/reference-duplicate-jpeg-fixture-data");
-      const prepared = await Promise.all(referenceOmrDuplicateJpegPages().map((bytes) => prepareAuthoritativeImage(bytes, "image/jpeg")));
-      replacePages(prepared); setSourceKind("camera-photo"); setPdfConfirmation(false);
+      for (const bytes of referenceOmrDuplicateJpegPages()) {
+        prepared.push(await prepareAuthoritativeImage(bytes, "image/jpeg", selection.signal));
+        pageSelection.assertCurrent(selection);
+      }
+      replacePages([...prepared]); prepared.length = 0; setSourceKind("camera-photo"); setPdfConfirmation(false);
       setMessage("raw bytes는 다르지만 정규화된 decoded page가 같은 JPEG 2쪽을 준비했습니다.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "중복 JPEG fixture를 읽지 못했습니다."); }
-    finally { setBusy(false); }
+    } catch (caught) {
+      if (!selectionFailureIsSuperseded(caught)) setError(caught instanceof Error ? caught.message : "중복 JPEG fixture를 읽지 못했습니다.");
+    } finally {
+      for (const page of prepared) URL.revokeObjectURL(page.previewUrl);
+      if (pageSelection.finishSelection(selection)) setBusy(false);
+    }
   };
 
   const duplicate = useMemo(() => new Set(pages.map((page) => page.canonicalPageDigest)).size !== pages.length, [pages]);
@@ -629,9 +692,11 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     if (omrFreshStartAction(freshStart) === "unlock-correction") return;
     if (!ready || !tryBeginOmrStart(startInFlightRef)) return;
     const freshIntent = consumeExplicitOmrFreshStart(freshStart);
+    let startReservation: number | undefined;
     if (freshIntent.forceFresh) setFreshStart(freshIntent.nextState);
     setBusy(true); setError(undefined); setResult(undefined);
     try {
+      if (!manifestRef.current) startReservation = pageSelection.reserveStart();
       let csrfToken = csrf;
       if (!csrfToken) {
         const session = await json<{ readonly csrfToken: string }>(await fetch("/api/session", { method: "POST" }));
@@ -649,14 +714,19 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         authority = undefined;
         manifestRef.current = undefined;
         setManifest(undefined);
+        pageSelection.clearManifest();
+        startReservation = pageSelection.reserveStart();
       }
       if (!authority) {
-        const createStorageKey = `harmonymaker:omr-create:v4:${preflight.capabilitySnapshotDigest}:${sourceKind}:${pages.map((page) => page.rawDigest).join(":")}`;
+        if (startReservation === undefined) startReservation = pageSelection.reserveStart();
+        pageSelection.assertStartReservation(startReservation);
+        const selectedPages = pagesRef.current;
+        const createStorageKey = `harmonymaker:omr-create:v4:${preflight.capabilitySnapshotDigest}:${sourceKind}:${selectedPages.map((page) => page.rawDigest).join(":")}`;
         authority = await createOmrBrowserJobManifest({
           sourceKind,
           capabilitySnapshotDigest: preflight.capabilitySnapshotDigest,
           createStorageKey,
-          pages: pages.map((page, pageIndex) => ({
+          pages: selectedPages.map((page, pageIndex) => ({
             pageIndex,
             rawDigest: page.rawDigest,
             canonicalPageDigest: page.canonicalPageDigest,
@@ -670,7 +740,11 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
             duplicateConfirmed: duplicatesAccepted,
           })),
         });
+        pageSelection.assertStartReservation(startReservation);
         await persistNewOmrBrowserJobManifest(authority);
+        pageSelection.assertStartReservation(startReservation);
+        pageSelection.installManifest(startReservation);
+        startReservation = undefined;
         manifestRef.current = authority;
         setManifest(authority);
       }
@@ -704,6 +778,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         if (acquisition.reason === "retired-create-replay") {
           abortCurrentAuthorityRequests();
           await clearOmrBrowserJobManifest(activeAuthority.manifestDigest);
+          pageSelection.clearManifest();
           manifestRef.current = undefined; setManifest(undefined);
         }
         setFreshStart(requireExplicitOmrFreshStart(acquisition.reason));
@@ -758,7 +833,10 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       if (recoveredStatus && recoveredStatus.kind !== "created" && recoveredStatus.kind !== "uploading"
         && shouldStartOmrMonitorNow(recoveredStatus, Date.now())) void monitor(jobHandle);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "OMR 작업을 시작하지 못했습니다."); }
-    finally { finishOmrStart(startInFlightRef); setBusy(false); }
+    finally {
+      if (startReservation !== undefined) pageSelection.releaseStart(startReservation);
+      finishOmrStart(startInFlightRef); setBusy(false);
+    }
   };
 
   const unlockCreateCorrection = async () => {
@@ -772,6 +850,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         if (removedKeys?.createStorageKey) localStorage.removeItem(removedKeys.createStorageKey);
         if (removedKeys?.recoveryStorageKey) localStorage.removeItem(removedKeys.recoveryStorageKey);
       }
+      pageSelection.clearManifest();
       manifestRef.current = undefined; setManifest(undefined);
       setHandleRecoveryStorageKey(undefined); setHandle(undefined); setStatus(undefined); setResult(undefined);
       setFreshStart({ mode: "normal" });
@@ -845,6 +924,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       if (handleRecoveryStorageKey) localStorage.removeItem(handleRecoveryStorageKey);
       const currentManifest = manifestRef.current;
       if (currentManifest) await clearOmrBrowserJobManifest(currentManifest.manifestDigest);
+      pageSelection.clearManifest();
       manifestRef.current = undefined; setManifest(undefined);
       setHandleRecoveryStorageKey(undefined);
       setHandle(undefined); setStatus(undefined); setResult(undefined);
@@ -872,6 +952,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       });
       if (handleRecoveryStorageKey) localStorage.removeItem(handleRecoveryStorageKey);
       await clearOmrBrowserJobManifest(authority.manifestDigest);
+      pageSelection.clearManifest();
       manifestRef.current = undefined; setManifest(undefined);
       setHandleRecoveryStorageKey(undefined);
       router.push("/import");
@@ -896,7 +977,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     <div className={styles.flow}>
       <section className="panel" aria-labelledby="omr-source-heading">
         <h2 id="omr-source-heading">1. 안전한 Source 준비</h2>
-        <label className={styles.dropZone} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (manifestLocked) return; const files = [...event.dataTransfer.files]; if (files.length) void selectFiles(files); }}>
+        <label className={styles.dropZone} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (busy || manifestLocked || pageSelection.locked) return; const files = [...event.dataTransfer.files]; if (files.length) void selectFiles(files); }}>
           <span>{busy ? "처리 중…" : "PDF / PNG / JPEG / MusicXML / MXL 선택 또는 드롭"}</span>
           <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.musicxml,.xml,.mxl,application/pdf,image/png,image/jpeg,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFile} disabled={busy || manifestLocked || invalidManifestRecovery} />
         </label>
