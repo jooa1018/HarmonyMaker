@@ -949,6 +949,62 @@ ULTRA_AUDIT_READY = YES
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.
 
+## Final ambiguous Delete / physical-key isolation handoff
+
+Starting remote HEAD `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e` matched exactly, clean and `0/0`. Code checkpoint `85e8913c7095caacee6a41661fe20485343b3124` closes the sole reopened `P1-RESAT-02-E` branch.
+
+```text
+root                        rejected Delete Promise did not prove remote non-effect; all generations reused one key
+logical identity            stable owner/session + publication identity remains on ObjectReference
+physical key                unique per generation; same-generation retry remains exact
+generation ledger           exact key/token/Put/Delete/cleanup authority per generation
+delete outcome              not-started / acknowledged / outcome-uncertain / definitive-not-dispatched
+ambiguous rejection         post-send error records outcome-uncertain and clears only exact cleanup lease
+old cleanup                 exact old key retained and independently restart-retryable
+active current              cleanup of A/B never changes active C lifecycle/key
+terminal condition          every durable generation must be terminal before reference deletion
+process replacement         ledger + exact key + S3 metadata reconstruct all cleanup authority
+Memory implementation       exact-generation map, claims, outcomes, cleanup selection, all-generation terminal check
+PostgreSQL implementation   row/generation locks and atomic exact-generation transitions
+migration                   011 physical-key isolation ledger; migrations 1–10 unchanged
+
+Fake S3                     PASS — 1 file/20 tests
+local suite                 PASS — 66 files/689 tests
+PostgreSQL 17.11            PASS — migrations 1–11, 1 file/22 tests
+typecheck/lint/build/diff   PASS
+Segment B 101 / OMR 101     PASS
+frozen authority            PASS — 2 files/7 tests, six hashes, 99 codes, protected diff 0
+code Actions                PASS — run 32223628536, quality 95978822774, exact SHA 85e8913c7095caacee6a41661fe20485343b3124
+code Vercel                 PASS — 7mLtFthrEcGb3bwrmfmHCoRFws3U; GitHub deployment 5977312411; status 17001152094
+preview                     https://harmony-maker-9ar7u7xkx-ecctom1.vercel.app
+```
+
+Mandatory sequence evidence includes old A Delete applying only after C becomes active, both single-generation Delete response-loss polarities, three-generation process replacement, B exact-key retry failure/reclaim, active C Head/Get integrity, and direct PostgreSQL generation-row read-back. A/B/C physical keys are unequal and no Delete request targets C.
+
+The containing four-file documentation-only descendant is `FINAL_HANDOFF_INCLUSIVE_REMOTE_HEAD` and receives exact-SHA CI/Vercel verification after push.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02_AMBIGUOUS_DELETE_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.
+
 ## Final ambiguous Put-rejection handoff
 
 Starting remote HEAD `448105417052b87e49e8adc75a0828d03db500e6` matched exactly, clean and `0/0`. Code checkpoint `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` closes the sole reopened `P1-RESAT-02-D` branch.

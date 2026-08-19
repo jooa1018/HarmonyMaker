@@ -468,3 +468,46 @@ ULTRA_AUDIT_READY = YES
 ```
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started. Provider/corpus/live-service/device evidence remains external.
+
+## Final ambiguous Delete / physical-key isolation closure
+
+This software-reliability-only closure started from exact remote HEAD `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e`, with a clean worktree, `0/0` divergence, and verified ancestors `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` and `bfadfad1d4bc04e11d348c1270976802a1dc4acc`. Additive implementation-and-test checkpoint `85e8913c7095caacee6a41661fe20485343b3124` closes `P1-RESAT-02-E`.
+
+The residual was that a rejected `DeleteObject` Promise was treated operationally like a non-effect. All generations shared one physical key, so a dispatched A delete whose outcome was still uncertain could apply after generation C reused that key and delete C while the database remained `active`. Logical publication identity is now separate from a generation-specific physical key. A generation retry keeps its exact key; every new generation derives a distinct key under `objects/{logical-digest}/generations/{generation}-{authority-digest}`. Therefore no previously dispatched A delete can target B or C.
+
+Additive migration 011 introduces `logical_publication_key` and the durable `object_publication_generations` ledger. Each ledger row retains the exact physical key, generation/token authority, Put-may-still-complete state, cleanup lease, explicit Delete outcome (`not-started`, `acknowledged`, `outcome-uncertain`, or `definitive-not-dispatched`), and terminal timestamps. Existing active rows retain their current physical key; legacy pending/tombstone predecessor state cannot silently become reusable. Memory and PostgreSQL use exact-generation atomic claims and completions. Cleanup enumerates old generation rows without changing an active current lifecycle, and reference terminalization requires every generation authority to be terminal.
+
+S3 `HeadObject`, `GetObject`, and `DeleteObject` use the exact ledger key. Current reads require exact generation metadata and authority-digest integrity. Any Delete rejection after `send()` is invoked records `outcome-uncertain` durably and clears only that exact cleanup lease. Restarted cleanup retries/inspects the same old key. A late old delete can remove only that old key, while current generation bytes and metadata remain readable.
+
+Controllable Fake S3 tests separate client rejection from delayed remote Delete application. They prove A/B/C physical-key inequality; A delete applying after C activation; applied and non-applied single-generation response loss; three-generation process replacement; B delete retry failure and reclaim; exact current Head/Get; and no target against C. Actual PostgreSQL 17.11 repeats these transitions and verifies the logical row plus three generation rows directly.
+
+```text
+npm ci                         PASS — npm 11.6.2, 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS — zero warnings/errors
+npm test                       PASS — 66 files/689 tests
+npm run test:postgres          PASS — PostgreSQL 17.11, migrations 1–11, 1 file/22 tests
+npm run build                  PASS — Next.js 16.3.0
+git diff --check               PASS
+Segment B 101-run              PASS — 1 targeted test, 101 complete executions
+OMR 101-run                    PASS — 1 file/1 test, 101 permutations
+frozen/99-code authority       PASS — 2 files/7 tests, six exact hashes, protected production diff 0
+```
+
+Code-checkpoint Actions run `32223628536`, quality job `95978822774`, succeeded at exact SHA `85e8913c7095caacee6a41661fe20485343b3124` with 66/689 and PostgreSQL 1/22. Vercel deployment `7mLtFthrEcGb3bwrmfmHCoRFws3U`, GitHub deployment `5977312411`, deployment status `17001152094`, and commit status `52486050259` succeeded; preview is `https://harmony-maker-9ar7u7xkx-ecctom1.vercel.app`. The containing four-file documentation-only descendant is `FINAL_HANDOFF_INCLUSIVE_REMOTE_HEAD` and is verified separately at its exact SHA after push.
+
+```text
+P1_RESAT_02_AMBIGUOUS_DELETE_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started. Provider/corpus/live-service/device evidence remains external.

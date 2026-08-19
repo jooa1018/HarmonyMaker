@@ -536,3 +536,38 @@ ULTRA_AUDIT_READY = YES
 ```
 
 External verification still remaining: real-provider selection/credentials/accuracy and commercial/retention/idempotency contracts; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL/S3; physical iPhone Safari; and Kakao in-app browser.
+
+## P1-RESAT-02-E ambiguous Delete / physical-key isolation checkpoint
+
+Use additive implementation-and-test checkpoint `85e8913c7095caacee6a41661fe20485343b3124`, based on exact clean remote HEAD `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e`.
+
+- [x] Logical publication identity remains stable while every new generation receives a distinct, deterministic physical S3 key.
+- [x] The same generation retries its exact physical key; A, B, and C never share a Delete target.
+- [x] Migration 011 durably records every generation's exact key, token, Put authority, Delete outcome, cleanup lease, and terminal state.
+- [x] A generic Delete rejection after `send()` begins is stored as `outcome-uncertain`, never as proof of non-effect.
+- [x] Applied-but-response-lost and rejected-with-no-remote-effect Delete variants both recover after process replacement.
+- [x] A delayed generation-A remote Delete applies after C is active and removes only A; C Head/Get remain exact and readable.
+- [x] A/B/C overlap survives service replacement; B late materialization and one failed retry are independently reconciled.
+- [x] Cleanup can select old generations while leaving the current active lifecycle and physical key unchanged.
+- [x] Reference terminalization requires all generation rows to be terminal; one logical publication has at most one active current generation.
+- [x] Actual PostgreSQL 17.11 applies migrations 1–11 and verifies exact generation rows, cleanup fencing, uncertain outcome, retry, and active C read-back.
+- [x] Fake S3 publication campaign passed 1 file/20 tests; full default suite passed 66 files/689 tests; PostgreSQL passed 1 file/22 tests.
+- [x] Clean install, typecheck, lint, build, and `git diff --check` passed.
+- [x] Segment B 101-run, OMR 101-run, and frozen authority 2 files/7 tests passed; six hashes, 99 codes, and protected musical paths are unchanged.
+- [x] Exact code SHA Actions run `32223628536`, quality job `95978822774`, succeeded with all required steps.
+- [x] Exact code SHA Vercel `7mLtFthrEcGb3bwrmfmHCoRFws3U`, GitHub deployment `5977312411`, status `17001152094`, commit status `52486050259`, succeeded at `https://harmony-maker-9ar7u7xkx-ecctom1.vercel.app`.
+
+The containing four-document descendant is the final handoff-inclusive remote HEAD and receives separate exact-SHA Actions/Vercel verification after push.
+
+```text
+P1_RESAT_02_AMBIGUOUS_DELETE_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External verification still remaining, and not part of this repository-only closure: real-provider selection/credentials/recognition accuracy and commercial/retention/idempotency contracts; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL/S3; physical iPhone Safari; and Kakao in-app browser.

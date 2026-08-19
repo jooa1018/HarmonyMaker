@@ -815,6 +815,58 @@ ULTRA_AUDIT_READY = YES
 
 External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.
 
+## P1-RESAT-02-E ambiguous Delete / physical-key isolation evidence
+
+The exact starting remote HEAD was `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e`; the worktree was clean and local/remote divergence was `0/0`. Additive code checkpoint `85e8913c7095caacee6a41661fe20485343b3124` is the implementation authority.
+
+| Evidence | Result |
+|---|---|
+| Root reproduction | Fake S3 dispatches A Delete, rejects its client Promise, retains a deferred remote task, activates C, then applies the old task |
+| Logical/physical split | One stable `logical_publication_key`; generation-specific physical keys derived from logical identity, generation, and token authority |
+| Durable ledger | Migration 011 `object_publication_generations` stores exact physical key, Put state/lease, Delete outcome, cleanup lease, and terminal timestamps |
+| Delete taxonomy | `not-started`, `acknowledged`, `outcome-uncertain`, `definitive-not-dispatched`; post-`send` rejection persists as uncertain |
+| Old Delete after C | A/B/C keys are unequal; late A remote Delete removes A only; active C metadata and exact bytes remain readable |
+| Response-loss polarity | Both remote-applied/response-lost and rejected/no-effect single-generation Deletes converge after exact-key restart retry |
+| Three generations | A Put uncertain, B Put uncertain, A Delete uncertain, process replacement, C active, A late delete, B late materialization, independent A/B cleanup |
+| Retry fencing | One B exact-key delete retry failure leaves `outcome-uncertain` and no cleanup token; a new process succeeds without targeting C |
+| Current integrity | Active reference points to current physical key; exact generation/authority metadata matches; Head and Get return expected size/bytes |
+| Memory parity | Controllable Fake S3 file passes 20 tests including all new ambiguous-Delete sequences |
+| PostgreSQL | Actual PostgreSQL 17.11 verifies migrations 1–11 and direct logical/current/old generation row transitions in 1 file/22 tests |
+| Frozen authority | Segment B/OMR 101-run pass; 2 files/7 authority tests pass; six hashes, 99 codes, and protected paths are unchanged |
+
+Migration 011 deterministically backfills `logical_publication_key` and one current generation row, preserves the existing current physical key, and keeps legacy pending/tombstone predecessor state fail-closed. Unique physical-key and logical-key indexes plus row/generation checks prevent silent key reuse or contradictory cleanup state. Migrations 1–10 remain byte-unchanged, inventory/checksum tests cover 1–11, and actual PostgreSQL full apply passes.
+
+```text
+npm ci                         PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/689 tests
+npm run test:postgres          PASS — PostgreSQL 17.11, migrations 1–11, 1 file/22 tests
+npm run build                  PASS
+git diff --check               PASS
+Segment B 101-run              PASS
+OMR 101-run                    PASS
+frozen/99-code authority       PASS — 2 files/7 tests, six hashes exact, protected diff 0
+```
+
+Exact code-checkpoint remote evidence: Actions run `32223628536`, quality job `95978822774`, SHA `85e8913c7095caacee6a41661fe20485343b3124`, success with 66/689 and PostgreSQL 1/22; Vercel `7mLtFthrEcGb3bwrmfmHCoRFws3U`, GitHub deployment `5977312411`, deployment status `17001152094`, commit status `52486050259`, success; preview `https://harmony-maker-9ar7u7xkx-ecctom1.vercel.app`. The final four-document descendant is verified independently at its own exact SHA.
+
+```text
+P1_RESAT_02_AMBIGUOUS_DELETE_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.
+
 ## P1-RESAT-02-D ambiguous Put-rejection evidence
 
 The exact starting remote HEAD was `448105417052b87e49e8adc75a0828d03db500e6`; the worktree was clean and local/remote divergence was `0/0`. Additive code checkpoint `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` is the implementation authority.
