@@ -258,7 +258,16 @@ export class WorkspaceRouteController {
     updatedAt: string,
     expectedAuthorityId?: string,
   ): Promise<WorkspaceRouteSaveOutcome> {
-    const authority = this.beginMutation(currentRequestedId, expectedAuthorityId);
+    let authority: WorkspaceControllerMutationAuthority;
+    try {
+      authority = this.beginMutation(currentRequestedId, expectedAuthorityId);
+    } catch (error) {
+      if (expectedAuthorityId !== undefined && error instanceof RangeError
+        && error.message === "WORKSPACE_PROJECT_AUTHORITY_SUPERSEDED") {
+        return { applied: false, record: { projectId: currentRequestedId, project, updatedAt } };
+      }
+      throw error;
+    }
     const nextUpdatedAt = monotonicUpdatedAt(updatedAt, authority.loadedUpdatedAt);
     const record = {
       projectId: authority.loadedProjectId,
