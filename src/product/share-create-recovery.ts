@@ -285,6 +285,10 @@ export async function prepareShareCreateRecovery(input: {
   readonly now: Date;
 }): Promise<ShareCreateRecoveryEnvelope> {
   if (!isPracticeSharePayload(input.canonicalRequest.payload) || !RIGHTS.includes(input.canonicalRequest.rightsBasis)) throw new RangeError("SHARE_CREATE_REQUEST_INVALID");
+  if (!input.explicitFreshIntent) {
+    const existing = await input.store.load(input.projectId);
+    if (existing) return existing;
+  }
   const idempotencyKey = input.generateId();
   if (!isShareCreateIdempotencyKey(idempotencyKey)) throw new RangeError("IDEMPOTENCY_KEY_INVALID");
   const canonicalRequest = structuredClone(input.canonicalRequest);
