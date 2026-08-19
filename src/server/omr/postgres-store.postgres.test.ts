@@ -527,6 +527,86 @@ describe("actual PostgreSQL OMR authority", () => {
     });
   });
 
+  it.each([
+    {
+      key: "ack-failed",
+      supportsIdempotency: true,
+      dispatchOutcome: "acknowledged-failed" as const,
+      reconciliationRequired: false,
+      result: { status: "failed" as const, code: "OMR_VENDOR_DELETE_FAILED", message: "acknowledged failure" },
+    },
+    {
+      key: "non-idempotent-uncertain",
+      supportsIdempotency: false,
+      dispatchOutcome: "outcome-uncertain" as const,
+      reconciliationRequired: true,
+      result: { status: "failed" as const, code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", message: "reconciliation required" },
+    },
+  ])("keeps PostgreSQL DELETE ledger truth after a stale pending finalizer: $key", async (scenario) => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, `provider-delete-reverse-${scenario.key}`);
+      const created = await claim(store, ownerSessionId, "2026-01-01T00:00:00.000Z", `provider-delete-reverse-${scenario.key}`, 100);
+      if (created.status !== "claimed") throw new Error(`DELETE_LEDGER_SEED_FAILED:${created.status}`);
+      const authority = {
+        jobId: created.job.id,
+        operationId: `provider-delete:reverse:${scenario.key}`,
+        operationGeneration: 1,
+        providerBindingId: created.job.providerBindingId,
+        adapterContractVersion: created.job.adapterContractVersion,
+        vendorId: created.job.capabilities.vendorId,
+        vendorJobIdEnvelope: replayEnvelope,
+        idempotencyKey: `provider-delete-reverse-key:${scenario.key}`,
+        supportsDeletion: true,
+        supportsIdempotency: scenario.supportsIdempotency,
+      } as const;
+      await store.markHandleDeleted(created.job.id, "2026-01-01T00:00:00.000Z");
+      await expect(store.claimProviderDelete({
+        ...authority, claimToken: "W1", claimLeaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        now: "2026-01-01T00:00:00.000Z",
+      })).resolves.toMatchObject({ status: "claimed" });
+      await expect(store.beginProviderDeleteDispatch({
+        jobId: created.job.id, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", now: "2026-01-01T00:00:01.000Z",
+      })).resolves.toBe(true);
+      await expect(store.completeProviderDelete({
+        jobId: created.job.id, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", dispatchOutcome: scenario.dispatchOutcome, result: scenario.result,
+        nextAttemptAt: "2026-01-01T12:00:00.000Z",
+        reconciliationRequired: scenario.reconciliationRequired,
+        now: "2026-01-01T00:00:02.000Z",
+      })).resolves.toBe(true);
+      const providerDeleteAuthority = {
+        operationId: authority.operationId,
+        operationGeneration: authority.operationGeneration,
+      };
+      await expect(store.finalizeJobDelete({
+        jobId: created.job.id,
+        providerDeleteAuthority,
+        update: {
+          state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+          vendorDeleteResult: scenario.result, vendorDeleteNextAttemptAt: "2026-01-01T12:00:00.000Z",
+        },
+        now: "2026-01-01T00:00:03.000Z",
+      })).resolves.toMatchObject({ status: "applied", job: { vendorDeleteState: "failed" } });
+      await expect(new PostgresOmrStore(pool).finalizeJobDelete({
+        jobId: created.job.id,
+        providerDeleteAuthority,
+        update: {
+          state: "delete-pending", vendorDeleteState: "pending", localDeleteState: "failed",
+          vendorDeleteResult: { status: "failed", code: "STALE_PENDING", message: "stale pending observation" },
+          vendorDeleteNextAttemptAt: "2026-01-01T00:10:00.000Z",
+        },
+        now: "2026-01-01T00:00:04.000Z",
+      })).resolves.toMatchObject({
+        status: "applied",
+        job: {
+          state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+          vendorDeleteResult: scenario.result, vendorDeleteNextAttemptAt: "2026-01-01T12:00:00.000Z",
+        },
+      });
+    });
+  });
+
   it("does not claim or burn a PostgreSQL upload while historical binding A is absent, then resumes on A", async () => {
     await withStore("UTC", async (pool, store) => {
       const ownerSessionId = await session(pool, "historical-upload-binding");

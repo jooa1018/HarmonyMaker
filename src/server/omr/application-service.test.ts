@@ -2195,4 +2195,86 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       reconciliationRequired: false, now: "2026-01-01T00:00:19.999Z",
     })).resolves.toBe(true);
   });
+
+  it.each([
+    {
+      label: "acknowledged failure",
+      supportsIdempotency: true,
+      dispatchOutcome: "acknowledged-failed" as const,
+      reconciliationRequired: false,
+      result: { status: "failed" as const, code: "OMR_VENDOR_DELETE_FAILED", message: "acknowledged failure" },
+    },
+    {
+      label: "non-idempotent uncertainty",
+      supportsIdempotency: false,
+      dispatchOutcome: "outcome-uncertain" as const,
+      reconciliationRequired: true,
+      result: { status: "failed" as const, code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", message: "reconciliation required" },
+    },
+  ])("keeps Memory DELETE ledger truth after a stale pending finalizer: $label", async (scenario) => {
+    const h = await harness();
+    await createConsentedJob(h.service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: `delete-reverse:${scenario.label}`,
+    });
+    const job = h.store.listJobs()[0];
+    if (!job.vendorJobIdEnvelope) throw new Error("DELETE_LEDGER_FIXTURE_INVALID");
+    const authority = {
+      jobId: job.id,
+      operationId: `delete-reverse:${scenario.label}`,
+      operationGeneration: 1,
+      providerBindingId: job.providerBindingId,
+      adapterContractVersion: job.adapterContractVersion,
+      vendorId: job.capabilities.vendorId,
+      vendorJobIdEnvelope: job.vendorJobIdEnvelope,
+      idempotencyKey: `delete-reverse-key:${scenario.label}`,
+      supportsDeletion: true,
+      supportsIdempotency: scenario.supportsIdempotency,
+    } as const;
+    await h.store.markHandleDeleted(job.id, "2026-01-01T00:00:00.000Z");
+    await expect(h.store.claimProviderDelete({
+      ...authority, claimToken: "W1", claimLeaseExpiresAt: "2026-01-01T00:10:00.000Z",
+      now: "2026-01-01T00:00:00.000Z",
+    })).resolves.toMatchObject({ status: "claimed" });
+    await expect(h.store.beginProviderDeleteDispatch({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", now: "2026-01-01T00:00:01.000Z",
+    })).resolves.toBe(true);
+    await expect(h.store.completeProviderDelete({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", dispatchOutcome: scenario.dispatchOutcome, result: scenario.result,
+      nextAttemptAt: "2026-01-01T12:00:00.000Z",
+      reconciliationRequired: scenario.reconciliationRequired,
+      now: "2026-01-01T00:00:02.000Z",
+    })).resolves.toBe(true);
+    const finalizationAuthority = {
+      operationId: authority.operationId,
+      operationGeneration: authority.operationGeneration,
+    };
+    await expect(h.store.finalizeJobDelete({
+      jobId: job.id,
+      providerDeleteAuthority: finalizationAuthority,
+      update: {
+        state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+        vendorDeleteResult: scenario.result, vendorDeleteNextAttemptAt: "2026-01-01T12:00:00.000Z",
+      },
+      now: "2026-01-01T00:00:03.000Z",
+    })).resolves.toMatchObject({ status: "applied", job: { vendorDeleteState: "failed" } });
+    await expect(h.store.finalizeJobDelete({
+      jobId: job.id,
+      providerDeleteAuthority: finalizationAuthority,
+      update: {
+        state: "delete-pending", vendorDeleteState: "pending", localDeleteState: "failed",
+        vendorDeleteResult: { status: "failed", code: "STALE_PENDING", message: "stale pending observation" },
+        vendorDeleteNextAttemptAt: "2026-01-01T00:10:00.000Z",
+      },
+      now: "2026-01-01T00:00:04.000Z",
+    })).resolves.toMatchObject({
+      status: "applied",
+      job: {
+        state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+        vendorDeleteResult: scenario.result, vendorDeleteNextAttemptAt: "2026-01-01T12:00:00.000Z",
+      },
+    });
+  });
 });

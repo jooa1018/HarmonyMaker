@@ -7,6 +7,15 @@ const OMR_UPLOAD_BINDING_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000] as 
 export interface OmrBrowserMonitorGeneration {
   readonly jobHandle: string;
   readonly manifestDigest: string;
+  readonly lifecycle: "create-pending" | "bound" | "completed" | "terminal" | "delete-pending";
+}
+
+export function abortOmrBrowserAuthorityRequests(input: {
+  readonly monitor?: AbortController;
+  readonly recovery?: AbortController;
+}): void {
+  input.monitor?.abort();
+  input.recovery?.abort();
 }
 
 const MONITOR_TERMINAL = new Set<OmrPublicStatus["kind"]>([
@@ -65,9 +74,28 @@ export function assertOmrBrowserMonitorGeneration(input: {
   const current = input.currentAuthority();
   if (input.signal.aborted
     || current?.jobHandle !== input.authority.jobHandle
-    || current.manifestDigest !== input.authority.manifestDigest) {
+    || current.manifestDigest !== input.authority.manifestDigest
+    || current.lifecycle !== input.authority.lifecycle) {
     throw monitorAbortError();
   }
+}
+
+export async function runOmrBrowserRecoverySession(input: {
+  readonly authority: OmrBrowserMonitorGeneration;
+  readonly currentAuthority: () => OmrBrowserMonitorGeneration | undefined;
+  readonly signal: AbortSignal;
+  readonly recover: (signal: AbortSignal) => Promise<OmrPublicStatus>;
+  readonly applyStatus: (status: OmrPublicStatus, signal: AbortSignal) => Promise<void>;
+  readonly continueAfterStatus: (status: OmrPublicStatus, signal: AbortSignal) => Promise<void>;
+}): Promise<void> {
+  assertOmrBrowserMonitorGeneration(input);
+  const status = await input.recover(input.signal);
+  assertOmrBrowserMonitorGeneration(input);
+  await input.applyStatus(status, input.signal);
+  if (isOmrMonitorTerminal(status)) return;
+  assertOmrBrowserMonitorGeneration(input);
+  await input.continueAfterStatus(status, input.signal);
+  assertOmrBrowserMonitorGeneration(input);
 }
 
 export async function runOmrBrowserMonitorSession(input: {
@@ -93,6 +121,7 @@ export async function runOmrBrowserMonitorSession(input: {
     assertOmrBrowserMonitorGeneration(input);
     completedSyncAttempts += 1;
     await input.applyStatus(status, input.signal);
+    if (isOmrMonitorTerminal(status)) return;
     assertOmrBrowserMonitorGeneration(input);
     const now = nowEpochMs();
     const nextAt = nextOmrMonitorTarget(status, now);

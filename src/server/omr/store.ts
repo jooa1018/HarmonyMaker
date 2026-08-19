@@ -230,6 +230,81 @@ export type OmrJobDeleteFinalizationResult = {
   readonly job: DurableOmrJobRecord;
 };
 
+function providerDeleteFailure(
+  code: "OMR_VENDOR_DELETE_PENDING" | "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" | "OMR_VENDOR_DELETE_AUTHORITY_INVALID",
+): VendorDeleteResult {
+  if (code === "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN") {
+    return { status: "failed", code, message: "Vendor 삭제 결과가 불확실하며 안전한 자동 재호출 권한이 없습니다." };
+  }
+  if (code === "OMR_VENDOR_DELETE_AUTHORITY_INVALID") {
+    return { status: "failed", code, message: "Vendor 삭제 operation authority가 durable outcome과 일치하지 않습니다." };
+  }
+  return { status: "failed", code, message: "Vendor 삭제 확인을 기다리고 있습니다." };
+}
+
+function authoritativeProviderDeleteProjection(
+  operation: DurableOmrProviderDeleteOperation,
+  now: string,
+): Pick<DurableOmrJobRecord, "vendorDeleteState" | "vendorDeleteResult" | "vendorDeleteNextAttemptAt"> {
+  const liveClaim = operation.claimToken !== undefined
+    && (operation.claimLeaseExpiresAt ?? "") > now;
+  if (operation.dispatchOutcome === "acknowledged-deleted") {
+    return { vendorDeleteState: "deleted", vendorDeleteResult: { status: "deleted" }, vendorDeleteNextAttemptAt: undefined };
+  }
+  if (operation.dispatchOutcome === "acknowledged-not-supported") {
+    if (operation.result?.status !== "not-supported") {
+      return {
+        vendorDeleteState: "failed",
+        vendorDeleteResult: providerDeleteFailure("OMR_VENDOR_DELETE_AUTHORITY_INVALID"),
+        vendorDeleteNextAttemptAt: operation.nextAttemptAt,
+      };
+    }
+    const vendorDeletesAt = operation.result.retentionInfo.vendorDeletesAt;
+    return vendorDeletesAt !== undefined && vendorDeletesAt <= now
+      ? { vendorDeleteState: "deleted", vendorDeleteResult: { status: "deleted" }, vendorDeleteNextAttemptAt: undefined }
+      : {
+          vendorDeleteState: "not-supported",
+          vendorDeleteResult: structuredClone(operation.result),
+          vendorDeleteNextAttemptAt: vendorDeletesAt ?? operation.nextAttemptAt,
+        };
+  }
+  if (liveClaim) {
+    return {
+      vendorDeleteState: "pending",
+      vendorDeleteResult: providerDeleteFailure("OMR_VENDOR_DELETE_PENDING"),
+      vendorDeleteNextAttemptAt: operation.claimLeaseExpiresAt,
+    };
+  }
+  if (operation.dispatchOutcome === "acknowledged-failed") {
+    return {
+      vendorDeleteState: "failed",
+      vendorDeleteResult: operation.result?.status === "failed"
+        ? structuredClone(operation.result)
+        : providerDeleteFailure("OMR_VENDOR_DELETE_AUTHORITY_INVALID"),
+      vendorDeleteNextAttemptAt: operation.nextAttemptAt,
+    };
+  }
+  if (operation.dispatchOutcome === "outcome-uncertain") {
+    const reconciliationRequired = operation.reconciliationRequired || !operation.supportsIdempotency;
+    return {
+      vendorDeleteState: "failed",
+      vendorDeleteResult: operation.result?.status === "failed"
+        ? structuredClone(operation.result)
+        : providerDeleteFailure(reconciliationRequired
+          ? "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN"
+          : "OMR_VENDOR_DELETE_PENDING"),
+      vendorDeleteNextAttemptAt: operation.nextAttemptAt ?? operation.claimLeaseExpiresAt,
+    };
+  }
+  return {
+    vendorDeleteState: "failed",
+    vendorDeleteResult: operation.result?.status === "failed"
+      ? structuredClone(operation.result)
+      : providerDeleteFailure("OMR_VENDOR_DELETE_PENDING"),
+    vendorDeleteNextAttemptAt: operation.nextAttemptAt ?? operation.claimLeaseExpiresAt,
+  };
+}
+
 /**
  * Merge a delete worker's observation into the current locked aggregate.
  * Deletion is monotonic: an acknowledged provider deletion or completed local
@@ -252,23 +327,16 @@ export function mergeOmrJobDeleteFinalization(
     ? update.vendorDeleteNextAttemptAt
     : current.vendorDeleteNextAttemptAt;
 
-  if (providerOperation?.dispatchOutcome === "acknowledged-deleted") {
-    vendorDeleteState = "deleted";
-    vendorDeleteResult = { status: "deleted" };
+  if (current.vendorDeleteState === "deleted") {
+    vendorDeleteResult = current.vendorDeleteResult?.status === "deleted"
+      ? structuredClone(current.vendorDeleteResult)
+      : { status: "deleted" };
     vendorDeleteNextAttemptAt = undefined;
-  } else if (vendorDeleteState !== "deleted"
-    && providerOperation?.dispatchOutcome === "acknowledged-not-supported"
-    && providerOperation.result?.status === "not-supported") {
-    const vendorDeletesAt = providerOperation.result.retentionInfo.vendorDeletesAt;
-    if (vendorDeletesAt && vendorDeletesAt <= now) {
-      vendorDeleteState = "deleted";
-      vendorDeleteResult = { status: "deleted" };
-      vendorDeleteNextAttemptAt = undefined;
-    } else {
-      vendorDeleteState = "not-supported";
-      vendorDeleteResult = structuredClone(providerOperation.result);
-      vendorDeleteNextAttemptAt = vendorDeletesAt ?? vendorDeleteNextAttemptAt;
-    }
+  } else if (providerOperation) {
+    const authoritative = authoritativeProviderDeleteProjection(providerOperation, now);
+    vendorDeleteState = authoritative.vendorDeleteState;
+    vendorDeleteResult = authoritative.vendorDeleteResult;
+    vendorDeleteNextAttemptAt = authoritative.vendorDeleteNextAttemptAt;
   }
 
   const localDeleteState = current.localDeleteState === "deleted"
@@ -308,6 +376,10 @@ export function mergeOmrJobDeleteFinalization(
     cleanupLeaseExpiresAt: state === "deleted" || callerOwnsCleanupLease ? undefined : current.cleanupLeaseExpiresAt,
     deletedAt: current.deletedAt ?? now,
     updatedAt: now,
+    ...(state === "delete-pending" && vendorDeleteResult?.status === "failed" ? {
+      publicFailureCode: vendorDeleteResult.code,
+      publicFailureMessageKo: vendorDeleteResult.message,
+    } : {}),
     ...(state === "deleted" ? {
       vendorJobIdEnvelope: undefined,
       publicFailureCode: undefined,
