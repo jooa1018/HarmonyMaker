@@ -8,6 +8,7 @@ import {
   importMusicXml,
   replaceChord,
   selectLeadCandidate,
+  setDefaultKey,
   setPerformerRange,
   setSectionOccurrenceLyricVerse,
   type MusicXmlImportDraft,
@@ -72,6 +73,29 @@ function selectAndConfirm(
 }
 
 describe("Quick Review blocking completeness", () => {
+  it("binds key/modulation analysis to the selected Lead part and preserves explicit override", async () => {
+    const keyedPart = (id: string, name: string) =>
+      `<score-part id="${id}"><part-name>${name}</part-name></score-part>`;
+    const part = (id: string, fifths: number, step: "C" | "D") =>
+      `<part id="${id}"><measure number="1"><attributes><divisions>1</divisions><key><fifths>${fifths}</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><direction><sound tempo="100"/></direction><direction><direction-type><rehearsal>Verse</rehearsal></direction-type></direction><harmony><root><root-step>${step}</root-step></root><kind>major</kind></harmony><note><pitch><step>${step}</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><staff>1</staff></note></measure></part>`;
+    const xml = `<score-partwise><part-list>${keyedPart("P1", "D lead")}${keyedPart("P2", "C lead")}</part-list>${part("P1", 2, "D")}${part("P2", 0, "C")}</score-partwise>`;
+    const draft = await draftFrom(xml);
+    const dLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 0)!;
+    const cLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 1)!;
+
+    const selectedC = selectLeadCandidate(draft, cLead.key);
+    expect(selectedC.defaultKey).toEqual({ tonic: { step: "C", alter: 0 }, mode: "major" });
+    expect((await deriveQuickReview(selectedC)).diagnostics.some((item) => item.code === "UNSUPPORTED_MODULATION")).toBe(false);
+
+    const selectedD = selectLeadCandidate(selectedC, dLead.key);
+    expect(selectedD.defaultKey).toEqual({ tonic: { step: "D", alter: 0 }, mode: "major" });
+    const selectedCAgain = selectLeadCandidate(selectedD, cLead.key);
+    expect(selectedCAgain.defaultKey).toEqual(selectedC.defaultKey);
+
+    const overridden = setDefaultKey(selectedCAgain, { tonic: { step: "G", alter: 0 }, mode: "major" });
+    expect(overridden.defaultKey).toEqual({ tonic: { step: "G", alter: 0 }, mode: "major" });
+  });
+
   it("reports no explicit lead selection", async () => {
     const review = await deriveQuickReview(await draftFrom());
     expect(review.state.readyForPlanning).toBe(false);

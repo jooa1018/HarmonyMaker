@@ -14,7 +14,7 @@ import {
 import { digestMusicalSource } from "./digest/source";
 import { computeSourceProvenanceDigest } from "./source/provenance";
 import { buildArrangementCandidate } from "./generation/candidate";
-import type { FullSongMetrics } from "./generation/model";
+import type { FullSongMetrics, GeneratedVoiceEventPayload } from "./generation/model";
 import {
   digestPerformanceSequence, digestSourceChordProjection,
   resolveEffectiveChordTimeline,
@@ -37,6 +37,7 @@ import {
   type SourceRevisionRecord,
 } from "./source/revision";
 import { musicalRange } from "./time";
+import { deriveCandidateEvidence } from "../integrity/candidate-evidence";
 
 const d = (digit: string): SemanticDigest => digit.repeat(64) as SemanticDigest;
 
@@ -417,7 +418,7 @@ async function generationProject(
     plannedNctResolution: countRate(0, 0),
     sourceChordRespect: countRate(0, 0),
   };
-  const candidate = await buildArrangementCandidate({
+  const candidateInput = {
     presetId: "simple",
     candidateStatus: "complete",
     anchorPlanDigest: anchorPlan.anchorPlanDigest,
@@ -435,9 +436,32 @@ async function generationProject(
       lyricOrdinalById: {},
       anchorDirectiveOrdinalById: {},
     },
+  } as const;
+  const provisionalCandidate = await buildArrangementCandidate({
+    ...candidateInput,
     metrics,
     diagnostics: [],
-    canonicalPathKey: "fixture-path",
+    canonicalPathKey: "provisional",
+  });
+  const evidence = await deriveCandidateEvidence({
+    lifecycleInput: {
+      source,
+      effectiveChordTimeline: timelineState.timeline,
+      sourceLeadAtomization: atomization,
+      performers,
+      trackPlans,
+      assignments,
+      userCaps: settings.userCaps,
+      effectiveConfig,
+      locks: { intent: [], activity: [], anchor: [], solver: [] },
+    },
+    intentPlan,
+    anchorPlan,
+    candidate: provisionalCandidate,
+  });
+  const candidate = await buildArrangementCandidate({
+    ...candidateInput,
+    ...evidence,
   });
   const generationResult = {
     presetId: "simple",
@@ -649,6 +673,86 @@ describe("persisted HarmonyProject integrity gate", () => {
     };
     expect(isHarmonyProjectShape(forgedEventProject)).toBe(true);
     expect((await validateHarmonyProject(forgedEventProject, executionRegistry)).status).toBe("blocked");
+  });
+
+  it.each([
+    ["metrics", (candidate: Awaited<ReturnType<typeof buildArrangementCandidate>>) => ({
+      ...candidate,
+      metrics: {
+        ...candidate.metrics,
+        maxLeapSemitonesByTrack: {
+          ...candidate.metrics.maxLeapSemitonesByTrack,
+          "track:h1": (candidate.metrics.maxLeapSemitonesByTrack["track:h1"] ?? 0) + 1,
+        },
+      },
+    })],
+    ["diagnostics", (candidate: Awaited<ReturnType<typeof buildArrangementCandidate>>) => ({
+      ...candidate,
+      diagnostics: [{
+        id: "dg:WAG_V1_PARTIAL_REQUIRED_COVERAGE:counterexample:0",
+        code: "WAG_V1_PARTIAL_REQUIRED_COVERAGE" as const,
+        severity: "error" as const,
+        messageKo: "counterexample",
+        details: { missingRangeCount: 1 },
+      }],
+    })],
+    ["canonicalPathKey", (candidate: Awaited<ReturnType<typeof buildArrangementCandidate>>) => ({
+      ...candidate,
+      canonicalPathKey: `${candidate.canonicalPathKey}|forged`,
+    })],
+  ])("independently rederives Candidate %s evidence even when a forged content digest and ID are self-consistent", async (_field, mutate) => {
+    const project = await generationProject();
+    const variant = generatedVariant(project);
+    const candidate = variant.generationResult.candidates[0];
+    const forgedEvidence = mutate(candidate);
+    const payload = (event: (typeof candidate.generatedEventsByTrack)[string][number]): GeneratedVoiceEventPayload => event.kind === "rest"
+      ? { kind: "rest", range: event.range }
+      : {
+          kind: "note",
+          range: event.range,
+          pitch: event.pitch,
+          tieStart: event.tieStart,
+          tieStop: event.tieStop,
+          lyricTokenIds: event.lyricTokenIds,
+          source: event.source,
+          ...(event.originDirectiveId ? { originDirectiveId: event.originDirectiveId } : {}),
+        };
+    const forged = await buildArrangementCandidate({
+      presetId: candidate.presetId,
+      candidateStatus: candidate.candidateStatus,
+      anchorPlanDigest: candidate.anchorPlanDigest,
+      effectiveConfigDigest: candidate.effectiveConfigDigest,
+      presetProfileDigest: candidate.presetProfileDigest,
+      effectiveChordTimelineDigest: candidate.effectiveChordTimelineDigest,
+      sourceLeadAtomizationDigest: candidate.sourceLeadAtomizationDigest,
+      tracks: Object.entries(candidate.generatedEventsByTrack).map(([trackPlanId, events]) => ({
+        trackPlanId,
+        events: events.map(payload),
+      })),
+      realizedAnchors: candidate.realizedAnchors,
+      ordinals: {
+        trackOrdinalById: Object.fromEntries(project.trackPlans.map((track) => [track.id, track.canonicalOrdinal])),
+        lyricOrdinalById: Object.fromEntries(project.source.sourceMeasures.flatMap((measure) => measure.lyricTokens).map((token, ordinal) => [token.id, ordinal])),
+        anchorDirectiveOrdinalById: {},
+      },
+      metrics: forgedEvidence.metrics,
+      diagnostics: forgedEvidence.diagnostics,
+      canonicalPathKey: forgedEvidence.canonicalPathKey,
+    });
+    expect(forged.contentDigest).toBe(candidate.contentDigest);
+    expect(forged.id).toBe(`cand:${forged.presetId}:${forged.contentDigest}`);
+    const withForgedEvidence: HarmonyProject = {
+      ...project,
+      variants: { ...project.variants, simple: {
+        ...variant,
+        generationResult: { ...variant.generationResult, candidates: [forged] },
+        candidateHarmonyRoles: variant.candidateHarmonyRoles.map((role) => ({
+          ...role,
+          marginalCandidateId: forged.id,
+        })),
+      } },
+    };
+    expect((await validateHarmonyProject(withForgedEvidence, executionRegistry)).status).toBe("blocked");
   });
 
   it("preserves a C timeline after a current-source edit to G without making it executable", async () => {

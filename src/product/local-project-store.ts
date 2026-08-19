@@ -21,9 +21,11 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 }
 
 export class IndexedDbProjectStore implements LocalProjectStore {
+  constructor(private readonly factory: IDBFactory | undefined = globalThis.indexedDB) {}
+
   private async database(): Promise<IDBDatabase> {
-    if (typeof indexedDB === "undefined") throw new RangeError("LOCAL_STORAGE_UNAVAILABLE");
-    const request = indexedDB.open(DATABASE_NAME, LOCAL_PROJECT_DATABASE_VERSION);
+    if (!this.factory) throw new RangeError("LOCAL_STORAGE_UNAVAILABLE");
+    const request = this.factory.open(DATABASE_NAME, LOCAL_PROJECT_DATABASE_VERSION);
     request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME, { keyPath: "projectId" }); };
     return requestResult(request);
   }

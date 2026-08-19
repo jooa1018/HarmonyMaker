@@ -4,6 +4,7 @@ import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/g
 import type { ParsedChord, ChordDegree } from "../domain/chord/model";
 import type { KeySignature, SpelledPitch } from "../domain/pitch";
 import type { TimelineAtom } from "../domain/source/atomization";
+import type { TempoSpec } from "../domain/source/model";
 import type { PerformanceMeasureOccurrence } from "../domain/performance/repeat";
 import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
@@ -169,7 +170,20 @@ function harmonyXml(document: ArrangementRenderDocument, measureIndex: number, d
   }).join("");
 }
 
-function partXml(input: { readonly id: string; readonly events: readonly (XmlEvent & { readonly measureIndex: number })[]; readonly document: ArrangementRenderDocument; readonly divisions: number; readonly key: KeySignature; readonly includeHarmony: boolean }): string {
+function fullMeasureDuration(measure: ArrangementRenderDocument["measures"][number]): Fraction {
+  return fraction(measure.time.numerator * 4, measure.time.denominator);
+}
+
+function timeXml(measure: ArrangementRenderDocument["measures"][number]): string {
+  return `<time><beats>${measure.time.numerator}</beats><beat-type>${measure.time.denominator}</beat-type></time>`;
+}
+
+function tempoXml(tempo: TempoSpec): string {
+  const beatUnit = tempo.beatUnit === 4 ? "quarter" : "eighth";
+  return `<direction placement="above"><direction-type><metronome><beat-unit>${beatUnit}</beat-unit>${tempo.dotted ? "<beat-unit-dot/>" : ""}<per-minute>${tempo.bpm}</per-minute></metronome></direction-type></direction>`;
+}
+
+function partXml(input: { readonly id: string; readonly events: readonly (XmlEvent & { readonly measureIndex: number })[]; readonly document: ArrangementRenderDocument; readonly divisions: number; readonly key: KeySignature; readonly tempo: TempoSpec; readonly includeHarmony: boolean; readonly includeTempo: boolean }): string {
   const lyricById = Object.fromEntries(input.document.lyricTokens.map((token) => [token.id, token]));
   const measures = input.document.measures.map((measure, measureIndex) => {
     const events = input.events.filter((event) => event.measureIndex === measureIndex).sort((a, b) => compareFractions(a.offset, b.offset));
@@ -181,13 +195,20 @@ function partXml(input: { readonly id: string; readonly events: readonly (XmlEve
       cursor = addFractions(event.offset, event.duration);
     }
     if (compareFractions(cursor, measure.duration) < 0) filled.push({ kind: "rest", offset: cursor, duration: subtractFractions(measure.duration, cursor), tieStart: false, tieStop: false, lyricTokenIds: [] });
-    const attributes = measureIndex === 0 ? `<attributes><divisions>${input.divisions}</divisions><key><fifths>${fifths(input.key)}</fifths><mode>${input.key.mode}</mode></key><time><beats>${measure.time.numerator}</beats><beat-type>${measure.time.denominator}</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>` : "";
-    return `<measure number="${measureIndex + 1}">${attributes}${input.includeHarmony ? harmonyXml(input.document, measureIndex, input.divisions) : ""}${filled.map((event) => noteXml(event, input.divisions, lyricById)).join("")}</measure>`;
+    const previous = input.document.measures[measureIndex - 1];
+    const meterChanged = measureIndex === 0 || !previous
+      || previous.time.numerator !== measure.time.numerator
+      || previous.time.denominator !== measure.time.denominator;
+    const attributes = measureIndex === 0
+      ? `<attributes><divisions>${input.divisions}</divisions><key><fifths>${fifths(input.key)}</fifths><mode>${input.key.mode}</mode></key>${timeXml(measure)}<clef><sign>G</sign><line>2</line></clef></attributes>`
+      : meterChanged ? `<attributes>${timeXml(measure)}</attributes>` : "";
+    const implicit = !equalFraction(measure.duration, fullMeasureDuration(measure));
+    return `<measure number="${measureIndex + 1}"${implicit ? ' implicit="yes"' : ""}>${attributes}${input.includeTempo && measureIndex === 0 ? tempoXml(input.tempo) : ""}${input.includeHarmony ? harmonyXml(input.document, measureIndex, input.divisions) : ""}${filled.map((event) => noteXml(event, input.divisions, lyricById)).join("")}</measure>`;
   }).join("");
   return `<part id="${input.id}">${measures}</part>`;
 }
 
-export function exportArrangementMusicXml(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly composer?: string; readonly key: KeySignature }): string {
+export function exportArrangementMusicXml(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly composer?: string; readonly key: KeySignature; readonly tempo: TempoSpec }): string {
   const allFractions = [
     ...document.measures.map((measure) => measure.duration),
     ...document.sourceLeadTrack.atoms.flatMap((atom) => [atom.range.start.offset, canonicalRangeDuration(document.measures, atom.range)]),
@@ -204,6 +225,6 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
     }),
   ];
   const partList = tracks.map((track) => `<score-part id="${track.id}"><part-name>${xml(track.name)}</part-name></score-part>`).join("");
-  const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, document, divisions, key: input.key, includeHarmony: index === 0 })).join("");
+  const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
   return `<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"><work><work-title>${xml(input.title)}</work-title></work>${input.composer ? `<identification><creator type="composer">${xml(input.composer)}</creator></identification>` : ""}<part-list>${partList}</part-list>${parts}</score-partwise>`;
 }

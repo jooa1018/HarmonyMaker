@@ -9,7 +9,7 @@ import {
 import { validatePerformanceSequence } from "../performance/repeat";
 import { validateCoreInputLimits } from "../limits";
 import type { AlgorithmExecutionRegistry } from "../registries";
-import { comparePositions } from "../time";
+import { comparePositions, type MusicalPosition } from "../time";
 import {
   validateOmrEvidenceArchive, validateOmrReviewRecord, validateSourceEvidenceIndex,
 } from "../omr/foundation";
@@ -33,6 +33,56 @@ import {
 
 const SOURCE_KINDS = ["manual", "musicxml", "omr", "suggested"] as const;
 const ALLOWED_USES = ["generation", "evaluation", "share", "provider-transfer"] as const;
+
+function leadEventEnd(
+  performanceMeasureIndex: number,
+  onset: Fraction,
+  duration: Fraction,
+  measureDuration: Fraction,
+): MusicalPosition | undefined {
+  const offset = addFractions(onset, duration);
+  const comparison = compareFractions(offset, measureDuration);
+  if (comparison > 0) return undefined;
+  return comparison === 0
+    ? { performanceMeasureIndex: performanceMeasureIndex + 1, offset: { n: 0, d: 1 } }
+    : { performanceMeasureIndex, offset };
+}
+
+/** Authoritative source-boundary check; producer phrase suggestions are not trusted. */
+export function phrasesCoverMelodyBearingIntervals(source: Pick<
+  SongSourceDocument,
+  "sourceMeasures" | "performanceSequence" | "sectionOccurrences" | "phraseRegions"
+>): boolean {
+  const measureById = new Map(source.sourceMeasures.map((measure) => [measure.id, measure]));
+  for (const section of source.sectionOccurrences) {
+    const phrases = source.phraseRegions
+      .filter((phrase) => phrase.sectionOccurrenceId === section.id)
+      .slice()
+      .sort((left, right) => comparePositions(left.range.start, right.range.start));
+    for (let performanceIndex = section.startPerformanceMeasureIndex;
+      performanceIndex < section.endPerformanceMeasureIndexExclusive;
+      performanceIndex += 1) {
+      const occurrence = source.performanceSequence.occurrences[performanceIndex];
+      const measure = occurrence ? measureById.get(occurrence.sourceMeasureId) : undefined;
+      if (!occurrence || !measure) return false;
+      for (const event of measure.leadEvents) {
+        if (event.kind !== "note") continue;
+        const start = { performanceMeasureIndex: performanceIndex, offset: event.onset };
+        const end = leadEventEnd(performanceIndex, event.onset, event.duration, occurrence.duration);
+        if (!end) return false;
+        let coveredUntil = start;
+        for (const phrase of phrases) {
+          if (comparePositions(phrase.range.end, coveredUntil) <= 0) continue;
+          if (comparePositions(phrase.range.start, coveredUntil) > 0) break;
+          coveredUntil = phrase.range.end;
+          if (comparePositions(end, coveredUntil) <= 0) break;
+        }
+        if (comparePositions(coveredUntil, end) < 0) return false;
+      }
+    }
+  }
+  return true;
+}
 
 function isTempoSpec(value: unknown): value is TempoSpec {
   return isPlainRecord(value)
@@ -414,6 +464,7 @@ export function isSongSourceDocument(value: unknown): value is SongSourceDocumen
   }
   const orderedPhrases = [...source.phraseRegions].sort((left, right) => comparePositions(left.range.start, right.range.start));
   if (orderedPhrases.some((phrase, index) => index > 0 && comparePositions(orderedPhrases[index - 1].range.end, phrase.range.start) > 0)) return false;
+  if (!phrasesCoverMelodyBearingIntervals(source)) return false;
   if (validateSectionPartition(source.sectionDefinitions, source.sectionOccurrences, source.sourceMeasures, source.performanceSequence).length > 0) return false;
   return hasCanonicalSongSourceOrder(source);
 }

@@ -4,11 +4,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TempoSpec } from "../domain/source/model";
 import { audibleTrackIds, PRACTICE_SPEEDS, quarterSeconds, type PlaybackPlan, type PracticeSpeed } from "./playback-plan";
 
-interface ActiveAudio {
+export interface OwnedAudioSession {
+  readonly context: Pick<AudioContext, "close">;
+  readonly nodes: readonly Pick<OscillatorNode, "stop">[];
+  disposed: boolean;
+}
+
+interface ActiveAudio extends OwnedAudioSession {
   readonly context: AudioContext;
   readonly nodes: readonly OscillatorNode[];
   readonly startedAt: number;
   readonly positionQuarter: number;
+}
+
+export function disposeOwnedAudioSession(session: OwnedAudioSession | undefined): void {
+  if (!session || session.disposed) return;
+  session.disposed = true;
+  for (const node of session.nodes) {
+    try { node.stop(); } catch { /* already stopped */ }
+  }
+  void session.context.close().catch(() => undefined);
 }
 
 export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = false }: {
@@ -36,10 +51,9 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
   const stopNodes = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = undefined;
-    for (const node of activeRef.current?.nodes ?? []) {
-      try { node.stop(); } catch { /* already stopped */ }
-    }
+    const active = activeRef.current;
     activeRef.current = undefined;
+    disposeOwnedAudioSession(active);
   }, []);
 
   const reset = useCallback(() => {
@@ -62,9 +76,7 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
   }, [abc, identity]);
 
   useEffect(() => () => {
-    const context = activeRef.current?.context;
     stopNodes();
-    if (context) void context.close();
   }, [stopNodes]);
 
   const scoreReady = scoreReadyIdentity === identity;
@@ -75,10 +87,11 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
     try {
       const AudioContextConstructor = window.AudioContext;
       const context = new AudioContextConstructor();
-      await context.resume();
       const secondsPerQuarter = quarterSeconds(tempo, speed);
       const startedAt = context.currentTime + 0.05;
       const nodes: OscillatorNode[] = [];
+      activeRef.current = { context, nodes, startedAt, positionQuarter: fromQuarter, disposed: false };
+      await context.resume();
       for (const event of plan.events) {
         if (!audible.has(event.trackId) || event.startQuarter + event.durationQuarter <= fromQuarter) continue;
         const startQuarter = Math.max(event.startQuarter, fromQuarter);
@@ -92,7 +105,6 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
         oscillator.stop(startedAt + (event.startQuarter + event.durationQuarter - fromQuarter) * secondsPerQuarter);
         nodes.push(oscillator);
       }
-      activeRef.current = { context, nodes, startedAt, positionQuarter: fromQuarter };
       setPhase("playing");
       timerRef.current = setInterval(() => {
         const current = activeRef.current;
@@ -103,7 +115,6 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
           setPhase("finished");
           setPositionQuarter(0);
           setCursorEventId(undefined);
-          void current.context.close();
           return;
         }
         setPositionQuarter(nextPosition);
@@ -122,7 +133,6 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
     if (!current) return;
     const next = current.positionQuarter + Math.max(0, current.context.currentTime - current.startedAt) / quarterSeconds(tempo, speed);
     stopNodes();
-    void current.context.close();
     setPositionQuarter(Math.min(next, plan.totalQuarter));
     setPhase("paused");
   };

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { generateDeterministicAccompaniment } from "../accompaniment/deterministic";
 import { parseChord } from "../domain/chord/parser";
 import type { ParsedChord } from "../domain/chord/model";
-import type { ArrangementOutputEdit } from "../domain/edit/model";
+import type { ArrangementOutputEdit, EditedArrangementSnapshot } from "../domain/edit/model";
 import { fraction } from "../domain/fraction";
 import type { ArrangementRenderDocument } from "../domain/generation/model";
 import type { HarmonyProject } from "../domain/project";
@@ -16,7 +16,7 @@ import { createWagFixtureInput, materializeSegmentBFixture, pitch } from "../gra
 import { importMusicXml } from "../import/musicxml/parser";
 import { replaceStageLocks } from "./locks";
 import { materializeEditedArrangement } from "./edited-arrangement";
-import { MemoryLocalProjectStore } from "./local-project-store";
+import { IndexedDbProjectStore, MemoryLocalProjectStore } from "./local-project-store";
 import { exportArrangementMusicXml } from "./musicxml-export";
 import { audibleTrackIds, buildPlaybackPlan, INITIAL_TRANSPORT, quarterSeconds, reduceTransport } from "./playback-plan";
 import { exportHarmonyProject, importHarmonyProject } from "./project-transfer";
@@ -27,7 +27,7 @@ import { arrangementRenderDocumentToAbc } from "./score-adapter";
 import { decodeProductUrlShare, encodeProductUrlShare } from "./share-url";
 import { practiceShareToRenderDocument } from "./shared-practice";
 import { generateProjectVariant, type ProductGenerationOutcome } from "./workspace";
-import { canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, type UiStageLock } from "./workspace-controls";
+import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "./workspace-controls";
 import type { WagLifecycleInput } from "../grammar/lifecycle";
 
 function chordToneSet(chord: ParsedChord) {
@@ -54,6 +54,109 @@ async function generatedProject(inputOverride?: WagLifecycleInput): Promise<{ re
   const generated = await generateProjectVariant(project, "standard");
   if (generated.status === "blocked") throw new Error("fixture blocked");
   return { project: generated.project, generated };
+}
+
+async function projectWithVerifiedSnapshot(): Promise<{
+  readonly project: HarmonyProject;
+  readonly snapshot: EditedArrangementSnapshot;
+  readonly edits: readonly [ArrangementOutputEdit, ArrangementOutputEdit];
+}> {
+  const { project } = await generatedProject();
+  const variant = project.variants.standard;
+  if (!variant || variant.lifecycle !== "generation-attempted") throw new Error("missing generated variant");
+  const candidate = variant.generationResult.candidates.find((item) =>
+    Object.values(item.generatedEventsByTrack).flat().filter((event) => event.kind === "note").length >= 2);
+  if (!candidate) throw new Error("snapshot fixture candidate unavailable");
+  const notes = Object.values(candidate.generatedEventsByTrack).flat()
+    .filter((event): event is Extract<typeof event, { readonly kind: "note" }> => event.kind === "note")
+    .slice(0, 2);
+  const edits = notes.map((event, editOrdinal): ArrangementOutputEdit => ({
+    id: outputEditId("standard", candidate.contentDigest, editOrdinal),
+    kind: "replace-pitch",
+    presetId: "standard",
+    baseCandidateId: candidate.id,
+    baseCandidateDigest: candidate.contentDigest,
+    editOrdinal,
+    eventId: event.id,
+    pitch: event.pitch,
+  })) as unknown as readonly [ArrangementOutputEdit, ArrangementOutputEdit];
+  const result = await materializeEditedArrangement({
+    lifecycleInput: await (await import("./workspace")).wagInputFromProject(project, "standard"),
+    intentPlan: variant.intentPlan,
+    activityPlan: variant.activityPlan,
+    anchorPlan: variant.anchorPlan,
+    candidate,
+    edits,
+  });
+  if (result.status !== "complete") throw new Error("snapshot fixture materialization blocked");
+  return {
+    snapshot: result.snapshot,
+    edits,
+    project: {
+      ...project,
+      variants: { ...project.variants, standard: {
+        ...variant,
+        outputEdits: edits,
+        editedSnapshots: [result.snapshot],
+        activeArrangement: { kind: "edited-snapshot", snapshotId: result.snapshot.id },
+      } },
+    },
+  };
+}
+
+function memoryIndexedDb(): {
+  readonly factory: IDBFactory;
+  readonly rows: Map<string, { readonly projectId: string; readonly updatedAt: string; readonly encoded: string }>;
+} {
+  const rows = new Map<string, { readonly projectId: string; readonly updatedAt: string; readonly encoded: string }>();
+  let storeCreated = false;
+  const request = <T>(result: T): IDBRequest<T> => {
+    const value = { result, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
+    queueMicrotask(() => value.onsuccess?.({ target: value } as unknown as Event));
+    return value;
+  };
+  const objectStore = {
+    put(value: { readonly projectId: string; readonly updatedAt: string; readonly encoded: string }) {
+      rows.set(value.projectId, value);
+      return request(value.projectId);
+    },
+    get(key: string) { return request(rows.get(key)); },
+    getAll() { return request([...rows.values()]); },
+    delete(key: string) { rows.delete(key); return request(undefined); },
+  } as unknown as IDBObjectStore;
+  const database = {
+    objectStoreNames: { contains: () => storeCreated },
+    createObjectStore: () => { storeCreated = true; return objectStore; },
+    transaction: () => {
+      const transaction = {
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+        error: null,
+        objectStore: () => objectStore,
+      } as unknown as IDBTransaction;
+      setTimeout(() => transaction.oncomplete?.({ target: transaction } as unknown as Event), 0);
+      return transaction;
+    },
+    close: () => undefined,
+  } as unknown as IDBDatabase;
+  const factory = {
+    open: () => {
+      const value = {
+        result: database,
+        onupgradeneeded: null,
+        onsuccess: null,
+        onerror: null,
+        error: null,
+      } as unknown as IDBOpenDBRequest;
+      queueMicrotask(() => {
+        if (!storeCreated) value.onupgradeneeded?.({ target: value } as unknown as IDBVersionChangeEvent);
+        value.onsuccess?.({ target: value } as unknown as Event);
+      });
+      return value;
+    },
+  } as unknown as IDBFactory;
+  return { factory, rows };
 }
 
 describe("Product Core workspace, render, playback, and state", () => {
@@ -149,7 +252,7 @@ describe("Product Core workspace, render, playback, and state", () => {
     const shared = (await import("./shared-practice")).materializeSharedPractice(payload);
     expect(shared.trackRoles.byTrackPlanId["share:track:h1"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
     expect(buildPlaybackPlan(shared.document, shared.trackRoles).trackLabels["share:track:h1"]).toBe("Lower / H1");
-    const musicXml = exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, key: project.source.defaultKey });
+    const musicXml = exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, key: project.source.defaultKey, tempo: project.source.defaultTempo });
     expect(musicXml).toContain('<score-part id="P-H1"><part-name>Lower / H1</part-name>');
     expect(musicXml).toContain('<score-part id="P-H2"><part-name>Upper / H2</part-name>');
   });
@@ -192,6 +295,13 @@ describe("Product Core workspace, render, playback, and state", () => {
     expect(blocked.status).toBe("blocked");
     expect(blocked.project.variants.standard?.lastBlockedAttempt?.stage).toBe("generation");
     expect(blocked.project.variants.standard?.staleness?.staleFrom).toBe("generation");
+    const blockedVariant = blocked.project.variants.standard;
+    const store = new MemoryLocalProjectStore();
+    await store.save({ projectId: "blocked-generation", updatedAt: "2026-08-19T00:00:00.000Z", project: blocked.project });
+    const reloaded = await store.load("blocked-generation");
+    expect(reloaded?.project.variants.standard?.lastBlockedAttempt).toEqual(blockedVariant?.lastBlockedAttempt);
+    expect(reloaded?.project.variants.standard?.diagnostics).toEqual(blockedVariant?.diagnostics);
+    expect(reloaded?.project.source.revisionDigest).toBe(blocked.project.source.revisionDigest);
   });
 
   it("exposes canonical targets for every lock stage and preserves the earliest stale boundary", async () => {
@@ -222,6 +332,165 @@ describe("Product Core workspace, render, playback, and state", () => {
 });
 
 describe("candidate-bound edits and EditedArrangementSnapshot", () => {
+  it("rejects the snapshot field-by-field tamper matrix at every persistence and render authority gate", async () => {
+    const fixture = await projectWithVerifiedSnapshot();
+    const replacementDigest = "f".repeat(64) as EditedArrangementSnapshot["contentDigest"];
+    const mapFirstEvent = (
+      snapshot: EditedArrangementSnapshot,
+      transform: (event: EditedArrangementSnapshot["generatedHarmonyTracks"][number]["events"][number]) => EditedArrangementSnapshot["generatedHarmonyTracks"][number]["events"][number],
+    ): EditedArrangementSnapshot => ({
+      ...snapshot,
+      generatedHarmonyTracks: snapshot.generatedHarmonyTracks.map((track, trackIndex) => ({
+        ...track,
+        events: track.events.map((event, eventIndex) => trackIndex === 0 && eventIndex === 0 ? transform(event) : event),
+      })),
+    });
+    const matrix: readonly [string, (snapshot: EditedArrangementSnapshot) => EditedArrangementSnapshot][] = [
+      ["pitch", (snapshot) => mapFirstEvent(snapshot, (event) => event.kind === "note" ? { ...event, pitch: { ...event.pitch, octave: event.pitch.octave + 1 } } : event)],
+      ["duration", (snapshot) => mapFirstEvent(snapshot, (event) => ({ ...event, range: { ...event.range, end: { ...event.range.end, offset: fraction(event.range.end.offset.n * 16 + event.range.end.offset.d, event.range.end.offset.d * 16) } } }))],
+      ["event range", (snapshot) => mapFirstEvent(snapshot, (event) => ({ ...event, range: { start: { ...event.range.start, offset: fraction(event.range.start.offset.n * 16 + event.range.start.offset.d, event.range.start.offset.d * 16) }, end: { ...event.range.end, offset: fraction(event.range.end.offset.n * 16 + event.range.end.offset.d, event.range.end.offset.d * 16) } } }))],
+      ["lyrics", (snapshot) => mapFirstEvent(snapshot, (event) => event.kind === "note" ? { ...event, lyricTokenIds: event.lyricTokenIds.length > 0 ? [] : ["ly:forged"] } : event)],
+      ["event ID", (snapshot) => mapFirstEvent(snapshot, (event) => ({ ...event, id: `${event.id}:forged` }))],
+      ["directive provenance", (snapshot) => mapFirstEvent(snapshot, (event) => event.kind === "note" ? { ...event, originDirectiveId: `${event.originDirectiveId ?? "ad"}:forged` } : event)],
+      ["realized anchors", (snapshot) => ({ ...snapshot, realizedAnchors: snapshot.realizedAnchors.length > 0 ? snapshot.realizedAnchors.map((anchor, index) => index === 0 ? { ...anchor, pitch: { ...anchor.pitch, octave: anchor.pitch.octave + 1 } } : anchor) : [{ directiveId: "ad:forged", trackPlanId: "track:h1", position: { performanceMeasureIndex: 0, offset: fraction(0) }, pitch: { step: "C", alter: 0, octave: 4 } }] })],
+      ["metrics", (snapshot) => ({ ...snapshot, metrics: { ...snapshot.metrics, hardDiagnosticCount: snapshot.metrics.hardDiagnosticCount + 1 } })],
+      ["diagnostics", (snapshot) => ({ ...snapshot, validationDiagnostics: [...snapshot.validationDiagnostics, { id: "dg:EDIT_SNAPSHOT_INVALID:forged:0", code: "EDIT_SNAPSHOT_INVALID", severity: "error", messageKo: "forged" }] })],
+      ["status", (snapshot) => ({ ...snapshot, status: snapshot.status === "valid" ? "invalid" : "valid" })],
+      ["contentDigest", (snapshot) => ({ ...snapshot, contentDigest: replacementDigest })],
+      ["snapshot ID", (snapshot) => ({ ...snapshot, id: `${snapshot.id}:forged` })],
+      ["appliedEditIds", (snapshot) => ({ ...snapshot, appliedEditIds: ["edit:forged", ...snapshot.appliedEditIds.slice(1)] })],
+      ["applied edit order", (snapshot) => ({ ...snapshot, appliedEditIds: [...snapshot.appliedEditIds].reverse() })],
+      ["appliedEditSetDigest", (snapshot) => ({ ...snapshot, appliedEditSetDigest: replacementDigest })],
+      ["baseCandidateId", (snapshot) => ({ ...snapshot, baseCandidateId: `${snapshot.baseCandidateId}:forged` })],
+      ["baseCandidateDigest", (snapshot) => ({ ...snapshot, baseCandidateDigest: replacementDigest })],
+      ["effectiveChordTimelineDigest", (snapshot) => ({ ...snapshot, effectiveChordTimelineDigest: replacementDigest })],
+      ["sourceLeadAtomizationDigest", (snapshot) => ({ ...snapshot, sourceLeadAtomizationDigest: replacementDigest })],
+      ["materializerVersion", (snapshot) => ({ ...snapshot, materializerVersion: `${snapshot.materializerVersion}-forged` })],
+      ["validatorVersion", (snapshot) => ({ ...snapshot, validatorVersion: `${snapshot.validatorVersion}-forged` })],
+      ["metricsVersion", (snapshot) => ({ ...snapshot, metricsVersion: `${snapshot.metricsVersion}-forged` })],
+      ["diagnosticRegistryVersion", (snapshot) => ({ ...snapshot, diagnosticRegistryVersion: `${snapshot.diagnosticRegistryVersion}-forged` })],
+      ["validatorConfigDigest", (snapshot) => ({ ...snapshot, validatorConfigDigest: replacementDigest })],
+      ["metricConfigDigest", (snapshot) => ({ ...snapshot, metricConfigDigest: replacementDigest })],
+      ["diagnosticRegistryDigest", (snapshot) => ({ ...snapshot, diagnosticRegistryDigest: replacementDigest })],
+    ];
+
+    for (const [field, mutate] of matrix) {
+      const snapshot = mutate(fixture.snapshot);
+      const originalVariant = fixture.project.variants.standard;
+      if (!originalVariant || originalVariant.lifecycle !== "generation-attempted") throw new Error("missing snapshot variant");
+      const tampered: HarmonyProject = {
+        ...fixture.project,
+        variants: { ...fixture.project.variants, standard: {
+          ...originalVariant,
+          editedSnapshots: [snapshot],
+          activeArrangement: { kind: "edited-snapshot", snapshotId: snapshot.id },
+        } },
+      };
+      expect((await validateHarmonyProject(tampered, await loadProductExecutionRegistry())).status, field).toBe("blocked");
+      await expect(exportHarmonyProject(tampered), field).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+      await expect(importHarmonyProject(JSON.stringify(tampered)), field).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+      await expect(new MemoryLocalProjectStore().save({ projectId: `tamper-${field}`, updatedAt: "2026-08-19T00:00:00.000Z", project: tampered }), field).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+      expect(() => materializeActiveArrangement(tampered, "standard"), field).toThrow("EDIT_SNAPSHOT_UNVERIFIED");
+      expect(() => projectRenderDocument(tampered, "standard", "full"), field).toThrow("EDIT_SNAPSHOT_UNVERIFIED");
+    }
+  }, 60_000);
+
+  it("attests exact imported snapshots before render, playback, export, and share consumption", async () => {
+    const fixture = await projectWithVerifiedSnapshot();
+    const rawClone = JSON.parse(JSON.stringify(fixture.project)) as HarmonyProject;
+    expect(() => materializeActiveArrangement(rawClone, "standard")).toThrow("EDIT_SNAPSHOT_UNVERIFIED");
+    const imported = await importHarmonyProject(JSON.stringify(rawClone));
+    const materialized = materializeActiveArrangement(imported, "standard");
+    expect(projectRenderDocument(imported, "standard", "full").artifactKind).toBe("edited-snapshot");
+    expect(buildPlaybackPlan(materialized.document, materialized.trackRoles).events.length).toBeGreaterThan(0);
+    expect(exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: imported.source.title, key: imported.source.defaultKey, tempo: imported.source.defaultTempo })).toContain("<score-partwise");
+    const share = materializePracticeShare({ project: confirmShareRights(imported), presetId: "standard", materialized });
+    expect(share.arrangement.tracks.length).toBeGreaterThan(0);
+
+    const browserDatabase = memoryIndexedDb();
+    const indexedDbStore = new IndexedDbProjectStore(browserDatabase.factory);
+    await indexedDbStore.save({ projectId: "verified-snapshot", updatedAt: "2026-08-19T00:00:00.000Z", project: fixture.project });
+    const indexedDbReload = await indexedDbStore.load("verified-snapshot");
+    expect(indexedDbReload?.project.variants.standard?.lifecycle).toBe("generation-attempted");
+    expect(materializeActiveArrangement(indexedDbReload!.project, "standard").artifactKind).toBe("edited-snapshot");
+
+    const variant = fixture.project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") throw new Error("missing snapshot variant");
+    const tamperedSnapshot = { ...fixture.snapshot, metrics: { ...fixture.snapshot.metrics, hardDiagnosticCount: fixture.snapshot.metrics.hardDiagnosticCount + 1 } };
+    const tampered: HarmonyProject = {
+      ...fixture.project,
+      variants: { ...fixture.project.variants, standard: { ...variant, editedSnapshots: [tamperedSnapshot] } },
+    };
+    browserDatabase.rows.set("tampered-snapshot", {
+      projectId: "tampered-snapshot",
+      updatedAt: "2026-08-19T00:00:01.000Z",
+      encoded: JSON.stringify(tampered),
+    });
+    await expect(indexedDbStore.load("tampered-snapshot")).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+  });
+
+  it("keeps immutable edit revisions and snapshots across exact reload while identical reapply is idempotent", async () => {
+    const fixture = await projectWithVerifiedSnapshot();
+    const variant = fixture.project.variants.standard;
+    if (!variant || variant.lifecycle !== "generation-attempted") throw new Error("missing snapshot variant");
+    const candidate = variant.generationResult.candidates.find((item) => item.id === fixture.snapshot.baseCandidateId)!;
+    const previousEdit = fixture.edits[0];
+    if (previousEdit.kind !== "replace-pitch") throw new Error("unexpected edit fixture");
+    const nextPitch = { ...previousEdit.pitch, step: previousEdit.pitch.step === "C" ? "D" as const : "C" as const };
+    const nextEdit: ArrangementOutputEdit = {
+      ...previousEdit,
+      id: outputEditId("standard", candidate.contentDigest, 2),
+      editOrdinal: 2,
+      pitch: nextPitch,
+    };
+    expect(activeOutputEditsForCandidate(variant, candidate.id).map((edit) => edit.id)).toEqual(fixture.snapshot.appliedEditIds);
+    const activeEdits = [...activeOutputEditsForCandidate(variant, candidate.id).filter((edit) => outputEditTargetId(edit) !== previousEdit.eventId), nextEdit]
+      .sort((left, right) => left.editOrdinal - right.editOrdinal);
+    const result = await materializeEditedArrangement({
+      lifecycleInput: await (await import("./workspace")).wagInputFromProject(fixture.project, "standard"),
+      intentPlan: variant.intentPlan,
+      activityPlan: variant.activityPlan,
+      anchorPlan: variant.anchorPlan,
+      candidate,
+      edits: activeEdits,
+    });
+    if (result.status !== "complete") throw new Error("revision fixture blocked");
+    const snapshots = upsertEditedSnapshotHistory([fixture.snapshot], result.snapshot);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0].appliedEditIds).toContain(previousEdit.id);
+    expect(snapshots[0].appliedEditIds).not.toContain(nextEdit.id);
+    expect(snapshots[1].appliedEditIds).toContain(nextEdit.id);
+    expect(snapshots[1].appliedEditIds).not.toContain(previousEdit.id);
+
+    const withRevision: HarmonyProject = {
+      ...fixture.project,
+      variants: { ...fixture.project.variants, standard: {
+        ...variant,
+        outputEdits: [...variant.outputEdits, nextEdit],
+        editedSnapshots: snapshots,
+        activeArrangement: { kind: "edited-snapshot", snapshotId: result.snapshot.id },
+      } },
+    };
+    const reloaded = await importHarmonyProject(await exportHarmonyProject(withRevision));
+    const reloadedVariant = reloaded.variants.standard;
+    if (!reloadedVariant || reloadedVariant.lifecycle !== "generation-attempted") throw new Error("missing reloaded variant");
+    expect(reloadedVariant.outputEdits.map((edit) => edit.id)).toEqual([...fixture.edits.map((edit) => edit.id), nextEdit.id]);
+    expect(reloadedVariant.editedSnapshots[0].appliedEditIds).toEqual(fixture.snapshot.appliedEditIds);
+    expect(reloadedVariant.editedSnapshots[1].appliedEditIds).toEqual(result.snapshot.appliedEditIds);
+
+    const identical = await materializeEditedArrangement({
+      lifecycleInput: await (await import("./workspace")).wagInputFromProject(reloaded, "standard"),
+      intentPlan: reloadedVariant.intentPlan,
+      activityPlan: reloadedVariant.activityPlan,
+      anchorPlan: reloadedVariant.anchorPlan,
+      candidate: reloadedVariant.generationResult.candidates.find((item) => item.id === candidate.id)!,
+      edits: activeOutputEditsForCandidate(reloadedVariant, candidate.id),
+    });
+    if (identical.status !== "complete") throw new Error("identical reapply blocked");
+    expect(identical.snapshot.id).toBe(result.snapshot.id);
+    expect(upsertEditedSnapshotHistory(reloadedVariant.editedSnapshots, identical.snapshot)).toHaveLength(2);
+  });
+
   it("returns valid, invalid, and blocked outcomes without mutating the Candidate", async () => {
     const { project } = await generatedProject();
     const variant = project.variants.standard;
@@ -363,8 +632,8 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
     const { project } = await generatedProject();
     const materialized = materializeActiveArrangement(project, "standard");
     const document = materialized.document;
-    const first = exportArrangementMusicXml(document, materialized.trackRoles, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey });
-    const second = exportArrangementMusicXml(document, materialized.trackRoles, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey });
+    const first = exportArrangementMusicXml(document, materialized.trackRoles, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey, tempo: project.source.defaultTempo });
+    const second = exportArrangementMusicXml(document, materialized.trackRoles, { title: project.source.title, composer: project.source.composer, key: project.source.defaultKey, tempo: project.source.defaultTempo });
     expect(first).toBe(second);
     expect(first).not.toMatch(/session|csrf|database|share-token|objects\//iu);
     const imported = await importMusicXml(new TextEncoder().encode(first), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
@@ -397,7 +666,7 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
       },
     };
     const roles = { generatedTracks: [], byTrackPlanId: {} } as const;
-    const encoded = exportArrangementMusicXml(document, roles, { title: "Adversarial", key: { tonic: { step: "E", alter: -1 }, mode: "minor" } });
+    const encoded = exportArrangementMusicXml(document, roles, { title: "Adversarial", key: { tonic: { step: "E", alter: -1 }, mode: "minor" }, tempo: project.source.defaultTempo });
     expect(encoded).toContain("<root-step>E</root-step><root-alter>-1</root-alter>");
     expect(encoded).toContain(`<kind text="${chord.chord.canonicalSymbol.slice(2, -3)}">`);
     expect(encoded).toContain("<bass-step>G</bass-step><bass-alter>-1</bass-alter>");
@@ -442,7 +711,7 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
         spans: base.document.effectiveChordTimeline.spans.map((span, index) => index === 0 ? { ...span, parseResult: parsed } : span),
       },
     };
-    const encoded = exportArrangementMusicXml(document, base.trackRoles, { title: `Structured ${_caseName}`, key: project.source.defaultKey })
+    const encoded = exportArrangementMusicXml(document, base.trackRoles, { title: `Structured ${_caseName}`, key: project.source.defaultKey, tempo: project.source.defaultTempo })
       .replace(/ text="[^"]*"/gu, "");
     const imported = await importMusicXml(new TextEncoder().encode(encoded), { algorithmVersions: { performanceExpanderVersion: "repeat-v1", chordTimelineResolverVersion: "chord-timeline-v1", sourceLeadAtomizerVersion: "source-lead-atomizer-v1" } });
     expect(imported.status).toBe("review-required");

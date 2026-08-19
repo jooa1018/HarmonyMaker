@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ChangeEvent } from "react";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { ArrangementPresetId } from "../../domain/config";
 import type { ChordToneSpec } from "../../domain/chord/model";
+import { canonicalJson } from "../../domain/digest/canonical";
 import type { ArrangementOutputEdit } from "../../domain/edit/model";
 import { outputEditId } from "../../domain/ids";
 import type { VariantStageLocks } from "../../domain/locks";
@@ -23,7 +24,15 @@ import { canDefaultExportOrShare, projectRenderDocument, selectActiveCandidate, 
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
-import { canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, type UiStageLock } from "../../product/workspace-controls";
+import {
+  authoritativeWorkspaceProject,
+  authoritativeWorkspaceSaveRecord,
+  initialWorkspaceRouteState,
+  reduceWorkspaceRoute,
+  requireWorkspaceMutationAuthority,
+  workspaceMutationStillCurrent,
+} from "../../product/workspace-route-state";
+import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import styles from "./workspace.module.css";
 
@@ -68,9 +77,21 @@ export function WorkspaceClient() {
   const search = useSearchParams();
   const router = useRouter();
   const projectId = search.get("project") ?? "";
-  const [project, setProject] = useState<HarmonyProject>();
+  const [routeState, dispatchRoute] = useReducer(reduceWorkspaceRoute, projectId, initialWorkspaceRouteState);
+  const routeAuthorityRef = useRef({ routeState, projectId });
+  useLayoutEffect(() => { routeAuthorityRef.current = { routeState, projectId }; }, [projectId, routeState]);
+  const project = authoritativeWorkspaceProject(routeState, projectId);
   const [projection, setProjection] = useState<ScoreProjection>("full");
-  const [message, setMessage] = useState(() => projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요.");
+  const [messageState, setMessageState] = useState<{ readonly projectId: string; readonly value: string }>(() => ({
+    projectId,
+    value: projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요.",
+  }));
+  const message = !projectId
+    ? "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요."
+    : routeState.requestedId !== projectId || routeState.loadStatus === "loading"
+      ? "로컬 프로젝트를 확인하는 중…"
+      : messageState.projectId === projectId ? messageState.value : "로컬 프로젝트를 확인하는 중…";
+  const setMessage = useCallback((value: string) => setMessageState({ projectId, value }), [projectId]);
   const [busy, setBusy] = useState(false);
   const [pitchText, setPitchText] = useState("C4");
   const [lockTargetKey, setLockTargetKey] = useState("");
@@ -83,25 +104,48 @@ export function WorkspaceClient() {
   const [editKind, setEditKind] = useState<EditKind>("replace-pitch");
   const [tieStart, setTieStart] = useState(false);
   const [tieStop, setTieStop] = useState(false);
-  const [shareUrl, setShareUrl] = useState<string>();
-  const [storedShare, setStoredShare] = useState<{ token: string; ownerDeleteSecret: string; csrfToken: string }>();
+  const [shareUrlState, setShareUrlState] = useState<{ readonly projectId: string; readonly value?: string }>({ projectId });
+  const [storedShareState, setStoredShareState] = useState<{ readonly projectId: string; readonly value?: { token: string; ownerDeleteSecret: string; csrfToken: string } }>({ projectId });
+  const shareUrl = shareUrlState.projectId === projectId ? shareUrlState.value : undefined;
+  const storedShare = storedShareState.projectId === projectId ? storedShareState.value : undefined;
+  const setShareUrl = useCallback((value: string | undefined) => setShareUrlState({ projectId, ...(value ? { value } : {}) }), [projectId]);
+  const setStoredShare = useCallback((value: { token: string; ownerDeleteSecret: string; csrfToken: string } | undefined) => setStoredShareState({ projectId, ...(value ? { value } : {}) }), [projectId]);
 
-  const saveProject = useCallback(async (next: HarmonyProject, status = "이 브라우저에 저장했습니다.") => {
-    if (!projectId) throw new RangeError("PROJECT_ID_MISSING");
-    await new IndexedDbProjectStore().save({ projectId, updatedAt: new Date().toISOString(), project: next });
-    setProject(next); setMessage(status);
-  }, [projectId]);
+  const saveProject = useCallback(async (next: HarmonyProject, status = "이 브라우저에 저장했습니다.", expectedProjectId?: string) => {
+    const current = routeAuthorityRef.current;
+    const authority = requireWorkspaceMutationAuthority(current.routeState, current.projectId, expectedProjectId);
+    await new IndexedDbProjectStore().save(authoritativeWorkspaceSaveRecord(
+      current.routeState,
+      current.projectId,
+      next,
+      new Date().toISOString(),
+    ));
+    const after = routeAuthorityRef.current;
+    if (!workspaceMutationStillCurrent(after.routeState, after.projectId, authority.projectId)) return;
+    dispatchRoute({ type: "saved", requestedId: authority.projectId, loadedId: authority.projectId, project: next });
+    setMessage(status);
+  }, [setMessage]);
 
   useEffect(() => {
+    dispatchRoute({ type: "request", requestedId: projectId });
     if (!projectId) return;
     let active = true;
     void new IndexedDbProjectStore().load(projectId).then((record) => {
       if (!active) return;
-      if (!record) setMessage("이 브라우저에서 프로젝트를 찾을 수 없습니다.");
-      else { setProject(record.project); setMessage(`로컬 저장본 ${new Date(record.updatedAt).toLocaleString()} 로드 완료`); }
-    }).catch(() => setMessage("IndexedDB 프로젝트를 열지 못했습니다."));
+      if (!record) {
+        dispatchRoute({ type: "missing", requestedId: projectId });
+        setMessage("이 브라우저에서 프로젝트를 찾을 수 없습니다.");
+      } else {
+        dispatchRoute({ type: "loaded", requestedId: projectId, loadedId: record.projectId, project: record.project });
+        setMessage(`로컬 저장본 ${new Date(record.updatedAt).toLocaleString()} 로드 완료`);
+      }
+    }).catch(() => {
+      if (!active) return;
+      dispatchRoute({ type: "corrupt", requestedId: projectId });
+      setMessage("IndexedDB 프로젝트를 열지 못했거나 저장본이 손상되었습니다.");
+    });
     return () => { active = false; };
-  }, [projectId]);
+  }, [projectId, setMessage]);
 
   const presetId = project?.selectedPresetId ?? "standard";
   const variant = project?.variants[presetId];
@@ -151,13 +195,17 @@ export function WorkspaceClient() {
 
   const generate = async () => {
     if (!project) return;
+    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
     setBusy(true); setMessage(`${regenerationBoundary(project.variants[presetId] ?? { lifecycle: "empty", presetId, diagnostics: [] }) === "none" ? "Intent" : "stale boundary"}부터 정본 lifecycle을 실행하는 중…`);
     try {
       const outcome = await generateProjectVariant(project, presetId);
-      if (outcome.status === "blocked") setMessage(`blocked · ${outcome.stage} · ${outcome.diagnostics.map((item) => item.code).join(", ") || "진단 없음"}`);
-      else await saveProject(outcome.project, `${outcome.status} · 후보 ${outcome.execution.generation.result.candidates.length}개 · 독립 Validator 통과 결과 저장`);
+      if (outcome.status === "blocked") await saveProject(outcome.project, `blocked · ${outcome.stage} · ${outcome.diagnostics.map((item) => item.code).join(", ") || "진단 없음"} · 시도 권위 저장`, operationProjectId);
+      else await saveProject(outcome.project, `${outcome.status} · 후보 ${outcome.execution.generation.result.candidates.length}개 · 독립 Validator 통과 결과 저장`, operationProjectId);
       setShareUrl(undefined);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "생성에 실패했습니다."); }
+    } catch (error) {
+      const current = routeAuthorityRef.current;
+      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "생성에 실패했습니다.");
+    }
     finally { setBusy(false); }
   };
 
@@ -207,47 +255,60 @@ export function WorkspaceClient() {
 
   const applyOutputEdit = async () => {
     if (!project || !variant || variant.lifecycle !== "generation-attempted" || variant.staleness || !activeCandidate || !selectedEditTarget) return;
+    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
     const event = selectedEditTarget.event;
     const pitch = parsePitch(pitchText);
     if ((editKind === "replace-pitch" || editKind === "replace-event-note") && !pitch) { setMessage("편집 음정을 C4, Bb3처럼 입력해 주세요."); return; }
     if ((editKind === "replace-pitch" || editKind === "set-tie") && event.kind !== "note") { setMessage("이 편집 종류는 note 이벤트만 대상으로 합니다."); return; }
-    const baseEdits = variant.outputEdits.filter((item) => item.baseCandidateId === activeCandidate.id);
+    const historicalEdits = variant.outputEdits.filter((item) => item.baseCandidateId === activeCandidate.id);
+    const baseEdits = activeOutputEditsForCandidate(variant, activeCandidate.id);
     const existing = baseEdits.find((item) => outputEditTargetId(item) === event.id);
-    const editOrdinal = existing?.editOrdinal ?? Math.max(-1, ...baseEdits.map((item) => item.editOrdinal)) + 1;
-    const common = { id: existing?.id ?? outputEditId(presetId, activeCandidate.contentDigest, editOrdinal), presetId, baseCandidateId: activeCandidate.id, baseCandidateDigest: activeCandidate.contentDigest, editOrdinal } as const;
-    const edit: ArrangementOutputEdit = editKind === "replace-pitch"
-      ? { ...common, kind: "replace-pitch", eventId: event.id, pitch: pitch! }
+    const provisionalOrdinal = existing?.editOrdinal ?? Math.max(-1, ...historicalEdits.map((item) => item.editOrdinal)) + 1;
+    const provisionalCommon = { id: existing?.id ?? outputEditId(presetId, activeCandidate.contentDigest, provisionalOrdinal), presetId, baseCandidateId: activeCandidate.id, baseCandidateDigest: activeCandidate.contentDigest, editOrdinal: provisionalOrdinal } as const;
+    const provisionalEdit: ArrangementOutputEdit = editKind === "replace-pitch"
+      ? { ...provisionalCommon, kind: "replace-pitch", eventId: event.id, pitch: pitch! }
       : editKind === "replace-event-note"
-        ? { ...common, kind: "replace-event", oldEventId: event.id, replacement: { kind: "note", pitch: pitch!, tieStart, tieStop } }
+        ? { ...provisionalCommon, kind: "replace-event", oldEventId: event.id, replacement: { kind: "note", pitch: pitch!, tieStart, tieStop } }
         : editKind === "replace-event-rest"
-          ? { ...common, kind: "replace-event", oldEventId: event.id, replacement: { kind: "rest" } }
-          : { ...common, kind: "set-tie", eventId: event.id, tieStart, tieStop };
+          ? { ...provisionalCommon, kind: "replace-event", oldEventId: event.id, replacement: { kind: "rest" } }
+          : { ...provisionalCommon, kind: "set-tie", eventId: event.id, tieStart, tieStop };
+    const identical = existing !== undefined && canonicalJson(existing) === canonicalJson(provisionalEdit);
+    const editOrdinal = identical ? existing.editOrdinal : Math.max(-1, ...historicalEdits.map((item) => item.editOrdinal)) + 1;
+    const edit = identical ? existing : { ...provisionalEdit, id: outputEditId(presetId, activeCandidate.contentDigest, editOrdinal), editOrdinal } as ArrangementOutputEdit;
     const nextBaseEdits = [...baseEdits.filter((item) => outputEditTargetId(item) !== event.id), edit].sort((left, right) => left.editOrdinal - right.editOrdinal);
     setBusy(true);
     try {
       const result = await materializeEditedArrangement({ lifecycleInput: await wagInputFromProject(project, presetId), intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate: activeCandidate, edits: nextBaseEdits });
       if (result.status === "blocked") { setMessage(`편집 blocked · ${result.diagnostics.map((item) => item.code).join(", ")}`); return; }
-      const outputEdits = [...variant.outputEdits.filter((item) => item.baseCandidateId !== activeCandidate.id || outputEditTargetId(item) !== event.id), edit];
-      const nextVariant = { ...variant, outputEdits, editedSnapshots: [...variant.editedSnapshots, result.snapshot], activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
-      await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다."); }
+      const outputEdits = identical ? variant.outputEdits : [...variant.outputEdits, edit];
+      const nextVariant = { ...variant, outputEdits, editedSnapshots: upsertEditedSnapshotHistory(variant.editedSnapshots, result.snapshot), activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
+      await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`, operationProjectId);
+    } catch (error) {
+      const current = routeAuthorityRef.current;
+      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다.");
+    }
     finally { setBusy(false); }
   };
 
   const exportMusicXml = () => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
-    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey }), "application/vnd.recordare.musicxml+xml");
+    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey, tempo: project.source.defaultTempo }), "application/vnd.recordare.musicxml+xml");
   };
   const exportProject = async () => { if (project) download(`${safeName(project.source.title)}.harmonymaker.json`, await exportHarmonyProject(project), "application/json"); };
   const importProject = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-    try { await saveProject(await importHarmonyProject(await file.text()), "정본 프로젝트 파일을 검증하고 로드했습니다."); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다."); }
+    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
+    try { await saveProject(await importHarmonyProject(await file.text()), "정본 프로젝트 파일을 검증하고 로드했습니다.", operationProjectId); }
+    catch (error) {
+      const current = routeAuthorityRef.current;
+      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다.");
+    }
   };
   const deleteLocal = async () => { if (!projectId) return; await new IndexedDbProjectStore().delete(projectId); router.push("/"); };
 
   const createShare = async () => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
+    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
     setBusy(true); setShareUrl(undefined);
     try {
       const withRights = confirmShareRights(project, new Date().toISOString());
@@ -255,7 +316,7 @@ export function WorkspaceClient() {
       const encoded = encodeProductUrlShare(payload);
       if (urlShareFits(encoded)) {
         const url = `${window.location.origin}/share#p=${encoded}`;
-        setShareUrl(url); await saveProject(withRights, `URL share ${new TextEncoder().encode(encoded).byteLength} bytes · 서버 저장 없음`);
+        setShareUrl(url); await saveProject(withRights, `URL share ${new TextEncoder().encode(encoded).byteLength} bytes · 서버 저장 없음`, operationProjectId);
       } else {
         const sessionResponse = await fetch("/api/session", { method: "POST" });
         const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; error?: { messageKo?: string } };
@@ -263,11 +324,16 @@ export function WorkspaceClient() {
         const response = await fetch("/api/shares", { method: "POST", headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken }, body: JSON.stringify({ payload, rightsBasis: project.source.rights.basis, idempotencyKey: crypto.randomUUID() }) });
         const body = await response.json() as { ok: boolean; share?: { token: string; ownerDeleteSecret: string }; error?: { messageKo?: string } };
         if (!response.ok || !body.share) throw new Error(body.error?.messageKo ?? "ShareStore 저장에 실패했습니다.");
+        const current = routeAuthorityRef.current;
+        if (!workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) throw new RangeError("WORKSPACE_PROJECT_AUTHORITY_SUPERSEDED");
         setStoredShare({ ...body.share, csrfToken: session.csrfToken });
         setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(body.share.token)}`);
-        await saveProject(withRights, "암호화 ShareStore에 저장했습니다. 삭제 비밀은 이 화면에만 유지됩니다.");
+        await saveProject(withRights, "암호화 ShareStore에 저장했습니다. 삭제 비밀은 이 화면에만 유지됩니다.", operationProjectId);
       }
-    } catch (error) { setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다."); }
+    } catch (error) {
+      const current = routeAuthorityRef.current;
+      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다.");
+    }
     finally { setBusy(false); }
   };
 

@@ -49,6 +49,9 @@ import type { LeadEvent, SongSourceDocument } from "./source/model";
 import { validateSongSourceDocumentIntegrity } from "./source/validation";
 import { comparePositions, compareRanges, type MusicalPosition } from "./time";
 import type { StageExecutionResult } from "./plans";
+import { attestVerifiedEditedSnapshot, materializeEditedArrangement } from "../integrity/edited-snapshot-authority";
+import { deriveCandidateEvidence } from "../integrity/candidate-evidence";
+import type { WagLifecycleInput } from "../grammar/lifecycle";
 
 export type HarmonyProjectIntegrityResult = StageExecutionResult<HarmonyProject>;
 
@@ -618,8 +621,10 @@ function validateMetricReferences(
 async function validateCandidateIntegrity(
   candidate: ArrangementCandidate,
   project: HarmonyProject,
+  intent: ArrangementIntentPlan,
   anchor: ArrangementAnchorPlan,
   ordinals: ProjectOrdinals,
+  effectiveConfig: EffectiveArrangementConfig,
 ): Promise<void> {
   const anchorDirectiveOrdinalById = anchorDirectiveOrdinalRegistry(anchor, ordinals);
   validateMetricReferences(candidate.metrics, ordinals);
@@ -664,6 +669,29 @@ async function validateCandidateIntegrity(
   requireIntegrity(candidate.id === rebuilt.id, "Candidate ID mismatch");
   requireIntegrity(exact(candidate.generatedEventsByTrack, rebuilt.generatedEventsByTrack), "Generated Event ID or canonical order mismatch");
   requireIntegrity(exact(candidate.realizedAnchors, rebuilt.realizedAnchors), "realized anchor canonical order mismatch");
+  const timeline = resolvedTimeline(project);
+  const atomization = resolvedAtomization(project);
+  requireIntegrity(timeline !== undefined && atomization !== undefined, "fresh Candidate lacks resolved timeline/atomization");
+  const evidence = await deriveCandidateEvidence({
+    lifecycleInput: {
+      source: project.source,
+      effectiveChordTimeline: timeline,
+      sourceLeadAtomization: atomization,
+      effectiveConfig,
+      userCaps: project.settings.userCaps,
+      performers: project.performers,
+      trackPlans: project.trackPlans,
+      assignments: project.assignments,
+      locks: project.locksByPreset[candidate.presetId]
+        ?? { intent: [], activity: [], anchor: [], solver: [] },
+    },
+    intentPlan: intent,
+    anchorPlan: anchor,
+    candidate,
+  });
+  requireIntegrity(exact(candidate.metrics, evidence.metrics), "Candidate metrics differ from independent rederivation");
+  requireIntegrity(exact(candidate.diagnostics, evidence.diagnostics), "Candidate diagnostics differ from independent rederivation");
+  requireIntegrity(candidate.canonicalPathKey === evidence.canonicalPathKey, "Candidate canonicalPathKey differs from independent rederivation");
 }
 
 function generationRegistryKeys(): {
@@ -753,16 +781,32 @@ async function validateSnapshots(
   snapshots: readonly EditedArrangementSnapshot[],
   edits: readonly ArrangementOutputEdit[],
   candidates: readonly ArrangementCandidate[],
+  intent: ArrangementIntentPlan,
+  activity: ArrangementActivityPlan,
   anchor: ArrangementAnchorPlan,
   project: HarmonyProject,
   expected: AlgorithmExecutionRegistry,
   ordinals: ProjectOrdinals,
+  effectiveConfig: EffectiveArrangementConfig,
 ): Promise<void> {
   const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   const editById = new Map(edits.map((edit) => [edit.id, edit]));
   const directiveOrdinals = anchorDirectiveOrdinalRegistry(anchor, ordinals);
   const timeline = resolvedTimeline(project);
   const atomization = resolvedAtomization(project);
+  requireIntegrity(timeline !== undefined && atomization !== undefined, "fresh snapshot lacks resolved timeline/atomization", "EDIT_SNAPSHOT_INVALID");
+  const lifecycleInput: WagLifecycleInput = {
+    source: project.source,
+    effectiveChordTimeline: timeline,
+    sourceLeadAtomization: atomization,
+    effectiveConfig,
+    userCaps: project.settings.userCaps,
+    performers: project.performers,
+    trackPlans: project.trackPlans,
+    assignments: project.assignments,
+    locks: project.locksByPreset[effectiveConfig.presetId]
+      ?? { intent: [], activity: [], anchor: [], solver: [] },
+  };
   for (const snapshot of snapshots) {
     validateMetricReferences(snapshot.metrics, ordinals);
     const candidate = candidateById.get(snapshot.baseCandidateId);
@@ -813,6 +857,21 @@ async function validateSnapshots(
       requiredOrdinal(directiveOrdinals, realized.directiveId, "anchor directive");
       requiredOrdinal(ordinals.trackOrdinalById, realized.trackPlanId, "track");
     }
+    const rederived = await materializeEditedArrangement({
+      lifecycleInput,
+      intentPlan: intent,
+      activityPlan: activity,
+      anchorPlan: anchor,
+      candidate,
+      edits: appliedEdits,
+    });
+    requireIntegrity(rederived.status === "complete", "Snapshot cannot be rederived from its canonical base and edits", "EDIT_SNAPSHOT_INVALID");
+    requireIntegrity(
+      exact(snapshot, rederived.snapshot),
+      "Snapshot semantic material/evidence differs from canonical rederivation",
+      "EDIT_SNAPSHOT_INVALID",
+    );
+    attestVerifiedEditedSnapshot(snapshot);
   }
 }
 
@@ -986,7 +1045,7 @@ async function validateVariantIntegrity(
       && candidate.presetProfileDigest === generation.digests.presetProfileDigest
       && candidate.effectiveChordTimelineDigest === generation.digests.effectiveChordTimelineDigest
       && candidate.sourceLeadAtomizationDigest === generation.digests.sourceLeadAtomizationDigest, "Candidate provenance mismatch");
-    await validateCandidateIntegrity(candidate, project, anchor, ordinals);
+    await validateCandidateIntegrity(candidate, project, intent, anchor, ordinals, effectiveConfig);
   }
   const candidateById = new Map(generation.candidates.map((candidate) => [candidate.id, candidate]));
   const editsByCandidate = new Map<string, ArrangementOutputEdit[]>();
@@ -1008,10 +1067,13 @@ async function validateVariantIntegrity(
     variant.editedSnapshots,
     variant.outputEdits,
     generation.candidates,
+    intent,
+    activity,
     anchor,
     project,
     expected,
     ordinals,
+    effectiveConfig,
   );
 }
 
