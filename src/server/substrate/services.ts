@@ -6,6 +6,7 @@ import { Pool } from "pg";
 import { CleanupService } from "../cleanup/cleanup-service";
 import { verifyMigrations } from "../persistence/migrations";
 import { PostgresGovernanceStore } from "../persistence/postgres-store";
+import { MemoryOmrCreateRecoveryRegistry, PostgresOmrCreateRecoveryRegistry, type OmrCreateRecoveryRegistry } from "../omr/cross-session-create-recovery";
 import { PostgresOmrStore } from "../omr/postgres-store";
 import { ShareStoreService } from "../share/share-store";
 import { QuotaAndIdempotencyService } from "../security/quota";
@@ -22,6 +23,7 @@ export interface ProductionServices {
   readonly objects: OwnedObjectStore;
   readonly cleanup: CleanupService;
   readonly omrStore: OmrStore;
+  readonly omrCreateRecovery: OmrCreateRecoveryRegistry;
 }
 
 let servicesPromise: Promise<ProductionServices> | undefined;
@@ -45,6 +47,7 @@ export function getProductionServices(): Promise<ProductionServices> {
         objects,
         cleanup: new CleanupService(store, objects),
         omrStore: new MemoryOmrStore(),
+        omrCreateRecovery: new MemoryOmrCreateRecoveryRegistry(),
       };
     }
     const pool = new Pool({ connectionString: config.database.connectionString, max: 10 });
@@ -64,6 +67,7 @@ export function getProductionServices(): Promise<ProductionServices> {
       objects,
       cleanup: new CleanupService(store, objects),
       omrStore: new PostgresOmrStore(pool),
+      omrCreateRecovery: new PostgresOmrCreateRecoveryRegistry(pool),
     };
   })().catch((error) => { servicesPromise = undefined; throw error; });
   return servicesPromise;
