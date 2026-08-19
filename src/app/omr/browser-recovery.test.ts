@@ -2,9 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   OmrApiRequestError,
+  OMR_CREATE_PRE_DISPATCH_CORRECTION_CODES,
   acquireOmrJob,
+  applyOmrCreateCorrection,
+  canResetOmrCreateAfterCorrection,
+  classifyOmrCreateOutcome,
   consumeExplicitOmrFreshStart,
   finishOmrStart,
+  omrFreshStartAction,
+  omrCreateCorrectionRequirements,
   requireExplicitOmrFreshStart,
   readOmrApiJson,
   serializeOmrCreateEnvelope,
@@ -75,7 +81,7 @@ async function exerciseAmbiguousExplicitFreshRetry(failure: Error) {
   await expect(click()).resolves.toEqual({ kind: "fresh-start-required", reason: "stale-recovery-handle" });
   expect(freshState).toEqual({ mode: "explicit-required", reason: "stale-recovery-handle" });
 
-  await expect(click()).rejects.toBe(failure);
+  await expect(click()).resolves.toMatchObject({ kind: "create-preserved", outcome: { kind: "transient" } });
   expect(freshState).toEqual({ mode: "normal" });
   expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toMatchObject({ request: freshRequest });
   expect(storage.getItem(recoveryStorageKey)).toBeNull();
@@ -271,7 +277,7 @@ describe("OMR browser recovery authority", () => {
       storage, createStorageKey, recoveryStorageKey, forceFresh: false,
       createRequest: () => ({ idempotencyKey: "must-not-rotate" }),
       recover: vi.fn(), create: async () => { throw timeout; },
-    })).rejects.toBe(timeout);
+    })).resolves.toEqual({ kind: "create-preserved", outcome: { kind: "transient", code: "OMR_CREATE_TRANSPORT_UNCERTAIN" } });
     expect(storage.getItem(createStorageKey)).toBe(stored);
   });
 
@@ -302,7 +308,7 @@ describe("OMR browser recovery authority", () => {
     }
   });
 
-  it("requires explicit reset after invalid local state and preserves a deterministic 4xx record until reset", async () => {
+  it("requires explicit reset after invalid local state but never rotates a deterministic server rejection", async () => {
     const storage = memoryStorage({ [createStorageKey]: "malformed" });
     const create = vi.fn(async (request: Readonly<Record<string, unknown>>) => {
       if (request.idempotencyKey === "K1") throw new OmrApiRequestError(400, "OMR_CREATE_INVALID", "invalid");
@@ -315,17 +321,118 @@ describe("OMR browser recovery authority", () => {
     await expect(acquireOmrJob({ ...common, forceFresh: false, createRequest: () => validRequest("unused") }))
       .resolves.toEqual({ kind: "fresh-start-required", reason: "invalid-persisted-create" });
     await expect(acquireOmrJob({ ...common, forceFresh: true, createRequest: () => validRequest("K1") }))
-      .resolves.toEqual({ kind: "fresh-start-required", reason: "rejected-create-request" });
+      .resolves.toMatchObject({ kind: "create-preserved", outcome: { kind: "deterministic-rejection", code: "OMR_CREATE_INVALID" } });
     const rejectedRecord = storage.getItem(createStorageKey);
     expect(rejectedRecord).not.toBeNull();
     expect(create).toHaveBeenCalledTimes(1);
     await expect(acquireOmrJob({ ...common, forceFresh: false, createRequest: () => validRequest("must-not-rotate") }))
-      .resolves.toEqual({ kind: "fresh-start-required", reason: "rejected-create-request" });
+      .resolves.toMatchObject({ kind: "create-preserved", outcome: { kind: "deterministic-rejection", code: "OMR_CREATE_INVALID" } });
     expect(storage.getItem(createStorageKey)).toBe(rejectedRecord);
     expect(create).toHaveBeenCalledTimes(2);
-    await expect(acquireOmrJob({ ...common, forceFresh: true, createRequest: () => validRequest("K2") }))
-      .resolves.toEqual({ kind: "acquired", handle: "handle:K2" });
-    expect(create).toHaveBeenCalledTimes(3);
-    expect(storage.getItem(createStorageKey)).toBeNull();
+    expect(create.mock.calls.map(([request]) => request.idempotencyKey)).toEqual(["K1", "K1"]);
+  });
+
+  it("classifies every emitted create code and reloads with the exact preserved K1", async () => {
+    const cases = [
+      [409, "OMR_IDEMPOTENCY_PENDING", "pending"],
+      [400, "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN", "outcome-uncertain"],
+      [400, "OMR_JOB_RECONCILIATION_REQUIRED", "reconciliation-required"],
+      [429, "OMR_QUOTA_EXCEEDED", "quota"],
+      [429, "OMR_GLOBAL_CREDIT_CEILING_EXCEEDED", "quota"],
+      ...[
+        "RIGHTS_PROVIDER_TRANSFER_NOT_CONFIRMED", "OMR_PAGE_LIMIT_EXCEEDED", "OMR_REQUEST_INVALID", "OMR_PROVIDER_CONSENT_STALE",
+        "OMR_CREDIT_ESTIMATE_REQUIRED", "OMR_CREDIT_ESTIMATE_INVALID", "OMR_PROVIDER_BINDING_INVALID",
+        "OMR_VENDOR_CREATE_DEFINITIVE_REJECTION",
+        "OMR_IDEMPOTENCY_CONFLICT", "OMR_CREATE_STATE_INVALID", "OMR_VENDOR_OPERATION_FAILED",
+      ].map((code) => [400, code, "deterministic-rejection"] as const),
+      [408, "OMR_CREATE_TIMEOUT", "transient"],
+      [503, "SERVER_OPERATION_FAILED", "transient"],
+    ] as const;
+    for (const [status, code, kind] of cases) {
+      const storage = memoryStorage();
+      const request = validRequest("K1");
+      const createRequest = vi.fn(() => request);
+      let attempt = 0;
+      const create = vi.fn(async (posted: Readonly<Record<string, unknown>>) => {
+        attempt += 1;
+        if (attempt === 1) throw new OmrApiRequestError(status, code, code);
+        return { handle: `handle:${String(posted.idempotencyKey)}` };
+      });
+      const common = { storage, createStorageKey, recoveryStorageKey, forceFresh: false, createRequest, recover: vi.fn(), create };
+      await expect(acquireOmrJob(common)).resolves.toMatchObject({ kind: "create-preserved", outcome: { kind, code } });
+      expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toMatchObject({ request });
+      await expect(acquireOmrJob(common)).resolves.toEqual({ kind: "acquired", handle: "handle:K1" });
+      expect(createRequest).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls.map(([posted]) => posted.idempotencyKey)).toEqual(["K1", "K1"]);
+    }
+  });
+
+  it("allows explicit correction reset only for exact server-guaranteed pre-dispatch codes", () => {
+    for (const code of OMR_CREATE_PRE_DISPATCH_CORRECTION_CODES) {
+      const outcome = classifyOmrCreateOutcome(new OmrApiRequestError(400, code, "correct input"));
+      expect(outcome).not.toBe("retired");
+      if (outcome === "retired") throw new Error("UNREACHABLE");
+      expect(outcome).toMatchObject({ kind: "deterministic-rejection", code, correction: "explicit-reset-allowed" });
+      expect(canResetOmrCreateAfterCorrection(outcome)).toBe(true);
+    }
+    for (const [status, code] of [[400, "OMR_VENDOR_OPERATION_FAILED"], [409, "OMR_IDEMPOTENCY_CONFLICT"], [400, "UNKNOWN_CREATE_REJECTION"]] as const) {
+      const outcome = classifyOmrCreateOutcome(new OmrApiRequestError(status, code, "preserve"));
+      if (outcome === "retired") throw new Error("UNREACHABLE");
+      expect(outcome).toMatchObject({ kind: "deterministic-rejection", correction: "preserve-key" });
+      expect(canResetOmrCreateAfterCorrection(outcome)).toBe(false);
+    }
+  });
+
+  it("orders stale K1 -> fresh preflight -> revoked consent -> explicit re-consent -> K2", async () => {
+    const outcome = classifyOmrCreateOutcome(new OmrApiRequestError(400, "OMR_PROVIDER_CONSENT_STALE", "stale"));
+    if (outcome === "retired") throw new Error("UNREACHABLE");
+    expect(omrCreateCorrectionRequirements(outcome)).toEqual({ refreshPreflight: true, requireTransferReconsent: true });
+    expect(canResetOmrCreateAfterCorrection(outcome)).toBe(true);
+    const storage = memoryStorage();
+    let activeDigest = "a".repeat(64);
+    let transferConsent = true;
+    let key = "K1";
+    const posted: Array<{ readonly key: unknown; readonly digest: unknown }> = [];
+    const create = vi.fn(async (request: Readonly<Record<string, unknown>>) => {
+      posted.push({ key: request.idempotencyKey, digest: request.consentCapabilitySnapshotDigest });
+      if (posted.length === 1) throw new OmrApiRequestError(400, "OMR_PROVIDER_CONSENT_STALE", "stale");
+      return { handle: `handle:${String(request.idempotencyKey)}` };
+    });
+    const request = () => validRequest(key) satisfies Readonly<Record<string, unknown>>;
+    await expect(acquireOmrJob({
+      storage, createStorageKey, recoveryStorageKey, forceFresh: false,
+      createRequest: () => ({ ...request(), consentCapabilitySnapshotDigest: activeDigest }), recover: vi.fn(), create,
+    })).resolves.toMatchObject({ kind: "create-preserved", outcome: { code: "OMR_PROVIDER_CONSENT_STALE" } });
+    const freshDigest = "f".repeat(64);
+    const correctionEvents: string[] = [];
+    await applyOmrCreateCorrection(outcome, {
+      refreshPreflight: async () => {
+        correctionEvents.push("GET capabilities");
+        return { capabilitySnapshotDigest: freshDigest };
+      },
+      acceptRefreshedPreflight: (fresh) => {
+        correctionEvents.push("accept fresh digest");
+        activeDigest = fresh.capabilitySnapshotDigest;
+      },
+      revokeTransferConsent: () => {
+        correctionEvents.push("revoke consent");
+        transferConsent = false;
+      },
+    });
+    expect({ activeDigest, transferConsent }).toEqual({ activeDigest: freshDigest, transferConsent: false });
+    expect(correctionEvents).toEqual(["GET capabilities", "accept fresh digest", "revoke consent"]);
+    expect(create).toHaveBeenCalledTimes(1);
+    const correctionState = requireExplicitOmrFreshStart("pre-dispatch-correction");
+    expect(omrFreshStartAction(correctionState)).toBe("unlock-correction");
+    storage.removeItem(createStorageKey);
+    storage.removeItem(recoveryStorageKey);
+    expect(create).toHaveBeenCalledTimes(1);
+    transferConsent = true;
+    key = "K2";
+    await expect(acquireOmrJob({
+      storage, createStorageKey, recoveryStorageKey, forceFresh: true,
+      createRequest: () => ({ ...request(), consentCapabilitySnapshotDigest: activeDigest }), recover: vi.fn(), create,
+    })).resolves.toEqual({ kind: "acquired", handle: "handle:K2" });
+    expect(posted).toEqual([{ key: "K1", digest: "a".repeat(64) }, { key: "K2", digest: freshDigest }]);
   });
 });

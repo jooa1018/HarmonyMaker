@@ -426,7 +426,7 @@ export function ImportReviewClient() {
   useEffect(() => {
     void takeOmrImportHandoff().then((handoff) => {
       if (handoff) {
-        if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image)) });
+        if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image.blob)) });
         void loadFile(handoff.file).then((loaded) => loaded
           ? (!handoff.omrProviderResult ? completeOmrImportHandoff(handoff.handoffId) : undefined)
           : recordOmrImportHandoffFailure(handoff.handoffId));

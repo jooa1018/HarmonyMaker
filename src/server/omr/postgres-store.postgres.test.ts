@@ -4,14 +4,17 @@ vi.mock("server-only", () => ({}));
 
 import { Pool } from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { semanticDigest } from "../../domain/digest/canonical";
-import { MAX_OMR_CREDIT_ESTIMATE, type OmrQuotaConfig } from "../../domain/omr/contracts";
-import { applyMigrations } from "../persistence/migrations";
+import { binaryDigest, semanticDigest } from "../../domain/digest/canonical";
+import { MAX_OMR_CREDIT_ESTIMATE, OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError, type OmrQuotaConfig } from "../../domain/omr/contracts";
+import { applyMigrationsWithClient, MIGRATIONS, OMR_PROVIDER_DELETE_AUTHORITY_SQL } from "../persistence/migrations";
 import type { PrivateRowId } from "../persistence/store";
 import { PostgresGovernanceStore } from "../persistence/postgres-store";
+import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
 import { S3OwnedObjectStore } from "../storage/s3-owned-object-store";
 import { CleanupService } from "../cleanup/cleanup-service";
+import { DurableOmrApplicationService, omrQuotaConfig } from "./application-service";
 import { PostgresOmrStore } from "./postgres-store";
+import { ReferenceOmrVendorAdapter, type ReferenceOmrFixture } from "./reference-adapter";
 import type { DurableOmrJobRecord, OmrStore } from "./store";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -332,11 +335,52 @@ async function withStore<T>(timeZone: "UTC" | "Asia/Seoul", operation: (pool: Po
   }
 }
 
+function failAfterFailPageStage(pool: Pool, failureStage: number): Pool {
+  return new Proxy(pool, {
+    get(target, property, receiver) {
+      if (property !== "connect") return Reflect.get(target, property, receiver);
+      return async () => {
+        const client = await target.connect();
+        let stage = 0;
+        let injected = false;
+        return new Proxy(client, {
+          get(clientTarget, clientProperty, clientReceiver) {
+            if (clientProperty !== "query") {
+              const value = Reflect.get(clientTarget, clientProperty, clientReceiver) as unknown;
+              return typeof value === "function" ? value.bind(clientTarget) : value;
+            }
+            return async (text: string, values: readonly unknown[] = []) => {
+              const result = await clientTarget.query(text, values as unknown[]);
+              const normalized = text.replace(/\s+/gu, " ").trim();
+              const isStage = normalized === "BEGIN"
+                || normalized === "SELECT state FROM omr_jobs WHERE id=$1 FOR UPDATE"
+                || normalized.startsWith("SELECT upload_state,upload_lease_token FROM omr_pages")
+                || normalized.startsWith("UPDATE omr_pages SET upload_state=")
+                || normalized.startsWith("UPDATE omr_jobs SET state='reconciliation-required'")
+                || normalized === "COMMIT";
+              if (isStage) stage += 1;
+              if (!injected && isStage && stage === failureStage) {
+                injected = true;
+                throw new Error(`failPage fault after stage ${failureStage}`);
+              }
+              return result;
+            };
+          },
+        });
+      };
+    },
+  }) as Pool;
+}
+
 beforeAll(async () => {
   await admin.query(`CREATE SCHEMA "${schema}"`);
   const migrationPool = poolFor("UTC");
-  try { await applyMigrations(migrationPool); }
-  finally { await migrationPool.end(); }
+  try {
+    const client = await migrationPool.connect();
+    try { await applyMigrationsWithClient(client, MIGRATIONS.filter((migration) => migration.version < 13)); }
+    finally { client.release(); }
+    await migrationPool.query(OMR_PROVIDER_DELETE_AUTHORITY_SQL);
+  } finally { await migrationPool.end(); }
 });
 
 beforeEach(async () => {
@@ -351,6 +395,274 @@ afterAll(async () => {
 });
 
 describe("actual PostgreSQL OMR authority", () => {
+  it("fences provider DELETE at exact lease expiry and after W2 reclaims W1", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, "provider-delete-fence");
+      const created = await claim(store, ownerSessionId, "2026-01-01T00:00:00.000Z", "provider-delete-fence", 100);
+      if (created.status !== "claimed") throw new Error(`DELETE_LEDGER_SEED_FAILED:${created.status}`);
+      const authority = {
+        jobId: created.job.id,
+        operationId: "provider-delete:integration:1",
+        operationGeneration: 1,
+        providerBindingId: created.job.providerBindingId,
+        adapterContractVersion: created.job.adapterContractVersion,
+        vendorId: created.job.capabilities.vendorId,
+        vendorJobIdEnvelope: replayEnvelope,
+        idempotencyKey: "provider-delete-idempotency:integration:1",
+        supportsDeletion: true,
+        supportsIdempotency: true,
+      } as const;
+      await expect(store.claimProviderDelete({
+        ...authority, claimToken: "W1", claimLeaseExpiresAt: "2026-01-01T00:00:10.000Z", now: "2026-01-01T00:00:00.000Z",
+      })).resolves.toMatchObject({ status: "claimed", operation: { claimToken: "W1" } });
+      await expect(store.beginProviderDeleteDispatch({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", now: "2026-01-01T00:00:09.999Z",
+      })).resolves.toBe(true);
+      await expect(new PostgresOmrStore(pool).claimProviderDelete({
+        ...authority, claimToken: "overlap", claimLeaseExpiresAt: "2026-01-01T00:00:19.999Z", now: "2026-01-01T00:00:09.999Z",
+      })).resolves.toMatchObject({ status: "pending", operation: { claimToken: "W1", dispatchOutcome: "outcome-uncertain" } });
+      await expect(store.completeProviderDelete({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+        reconciliationRequired: false, now: "2026-01-01T00:00:10.000Z",
+      })).resolves.toBe(false);
+      const restartedStore = new PostgresOmrStore(pool);
+      await expect(restartedStore.claimProviderDelete({
+        ...authority, claimToken: "W2", claimLeaseExpiresAt: "2026-01-01T00:00:20.000Z", now: "2026-01-01T00:00:10.000Z",
+      })).resolves.toMatchObject({ status: "claimed", operation: { claimToken: "W2" } });
+      await expect(store.beginProviderDeleteDispatch({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", now: "2026-01-01T00:00:10.001Z",
+      })).resolves.toBe(false);
+      await expect(store.completeProviderDelete({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+        reconciliationRequired: false, now: "2026-01-01T00:00:10.001Z",
+      })).resolves.toBe(false);
+      await expect(store.beginProviderDeleteDispatch({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W2", now: "2026-01-01T00:00:10.001Z",
+      })).resolves.toBe(true);
+      await expect(store.completeProviderDelete({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W2", dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+        reconciliationRequired: false, now: "2026-01-01T00:00:19.999Z",
+      })).resolves.toBe(true);
+      await expect(store.getProviderDeleteOperation(authority.jobId)).resolves.toMatchObject({
+        claimToken: undefined, dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+      });
+    });
+  });
+
+  it("persists non-idempotent DELETE uncertainty as reconciliation authority across restart", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, "provider-delete-non-idempotent");
+      const created = await claim(store, ownerSessionId, "2026-01-01T00:00:00.000Z", "provider-delete-non-idempotent", 100);
+      if (created.status !== "claimed") throw new Error(`DELETE_LEDGER_SEED_FAILED:${created.status}`);
+      const authority = {
+        jobId: created.job.id,
+        operationId: "provider-delete:integration:non-idempotent",
+        operationGeneration: 1,
+        providerBindingId: created.job.providerBindingId,
+        adapterContractVersion: created.job.adapterContractVersion,
+        vendorId: created.job.capabilities.vendorId,
+        vendorJobIdEnvelope: replayEnvelope,
+        idempotencyKey: "provider-delete-idempotency:integration:non-idempotent",
+        supportsDeletion: true,
+        supportsIdempotency: false,
+      } as const;
+      await expect(store.claimProviderDelete({
+        ...authority, claimToken: "W1", claimLeaseExpiresAt: "2026-01-01T00:00:10.000Z", now: "2026-01-01T00:00:00.000Z",
+      })).resolves.toMatchObject({ status: "claimed" });
+      await expect(store.beginProviderDeleteDispatch({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", now: "2026-01-01T00:00:01.000Z",
+      })).resolves.toBe(true);
+      await expect(store.completeProviderDelete({
+        jobId: authority.jobId, operationId: authority.operationId, operationGeneration: 1,
+        claimToken: "W1", dispatchOutcome: "outcome-uncertain",
+        result: { status: "failed", code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", message: "reconcile" },
+        nextAttemptAt: "2026-01-01T12:00:00.000Z", reconciliationRequired: true,
+        now: "2026-01-01T00:00:02.000Z",
+      })).resolves.toBe(true);
+      const restartedStore = new PostgresOmrStore(pool);
+      await expect(restartedStore.claimProviderDelete({
+        ...authority, claimToken: "W2", claimLeaseExpiresAt: "2026-01-02T00:05:00.000Z", now: "2026-01-02T00:00:00.000Z",
+      })).resolves.toMatchObject({
+        status: "reconciliation-required",
+        operation: { dispatchOutcome: "outcome-uncertain", reconciliationRequired: true, claimToken: undefined },
+      });
+    });
+  });
+
+  it("does not claim or burn a PostgreSQL upload while historical binding A is absent, then resumes on A", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, "historical-upload-binding");
+      const pageBytes = new TextEncoder().encode("postgres-historical-binding-page");
+      const pageDigest = await binaryDigest(pageBytes);
+      const fixture: ReferenceOmrFixture = {
+        id: "historical-upload-binding",
+        orderedPageDigests: [pageDigest],
+        statusScript: [{ kind: "queued" }],
+        musicXml: "<score-partwise/>",
+        evidence: { granularity: "page", frames: [], transforms: [], evidence: [] },
+        retentionInfo: { canDeleteImmediately: true, policyReference: "integration" },
+      };
+      const adapterA = new ReferenceOmrVendorAdapter([fixture], { vendorId: "provider-a", vendorDisplayName: "Provider A" });
+      const adapterB = new ReferenceOmrVendorAdapter([fixture], { vendorId: "provider-b", vendorDisplayName: "Provider B" });
+      const registry = new Map<string, ReferenceOmrVendorAdapter>([["binding:a", adapterA], ["binding:b", adapterB]]);
+      const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
+        ? registry.get(bindingId) : undefined;
+      const governance = new PostgresGovernanceStore(pool);
+      const objects = new MemoryOwnedObjectStore(governance);
+      const inspectPage = async (input: { readonly bytes: Uint8Array; readonly mimeType: string }) => ({
+        bytes: Uint8Array.from(input.bytes), digest: await binaryDigest(input.bytes), mimeType: input.mimeType,
+        width: 100, height: 120,
+        quality: { blurBp: 0 as never, perspectiveBp: 0 as never, glareBp: 0 as never, cropRiskBp: 0 as never, status: "pass" as const, reasons: [] },
+      });
+      const common = {
+        store, objects, handleHmacKey: new Uint8Array(32).fill(11), vendorJobEncryptionKey: new Uint8Array(32).fill(12),
+        quota: omrQuotaConfig(100), actor: { sessionId: ownerSessionId, ipOwnerHash: "ip:postgres-historical-binding" },
+        inspectPage, now: () => new Date("2026-01-01T00:00:00.000Z"),
+        adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
+        resolveAdapter,
+      };
+      const serviceA = new DurableOmrApplicationService({ ...common, adapter: adapterA, providerBindingId: "binding:a" });
+      const preflight = await serviceA.getProviderPreflight();
+      const handle = await serviceA.createJob({
+        sessionId: ownerSessionId, pageCount: 1,
+        pages: [{ pageIndex: 0, pageDigest, mimeType: "image/png" }], sourceKind: "camera-photo",
+        rights: { basis: "self-authored", allowedUses: ["generation", "provider-transfer"] },
+        providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest,
+        idempotencyKey: "postgres-historical-binding-create",
+      });
+      registry.delete("binding:a");
+      const rotated = new DurableOmrApplicationService({ ...common, adapter: adapterB, providerBindingId: "binding:b" });
+      const upload = { pageIndex: 0, pageDigest, mimeType: "image/png" as const, idempotencyKey: "postgres-historical-binding-upload", bytes: new Blob([pageBytes]) };
+      await expect(rotated.uploadPage(handle, upload)).rejects.toThrow("OMR_PROVIDER_BINDING_UNAVAILABLE");
+      const restarted = new DurableOmrApplicationService({ ...common, adapter: adapterB, providerBindingId: "binding:b" });
+      await expect(restarted.uploadPage(handle, upload)).rejects.toThrow("OMR_PROVIDER_BINDING_UNAVAILABLE");
+      expect(adapterA.callCounts.upload).toBe(0);
+      expect(adapterB.callCounts.upload).toBe(0);
+      const beforeRestore = await pool.query("SELECT state FROM omr_jobs WHERE owner_session_id=$1", [ownerSessionId]);
+      expect(beforeRestore.rows[0].state).toBe("created");
+      const pagesBeforeRestore = await pool.query("SELECT retry_count,upload_state,upload_lease_token FROM omr_pages WHERE job_id=(SELECT id FROM omr_jobs WHERE owner_session_id=$1)", [ownerSessionId]);
+      expect(pagesBeforeRestore.rows).toEqual([]);
+      registry.set("binding:a", adapterA);
+      const restored = new DurableOmrApplicationService({ ...common, adapter: adapterB, providerBindingId: "binding:b" });
+      await expect(restored.uploadPage(handle, upload)).resolves.toBeUndefined();
+      expect(adapterA.callCounts.upload).toBe(1);
+      expect(adapterB.callCounts.upload).toBe(0);
+      const afterRestore = await pool.query("SELECT retry_count,upload_state,upload_lease_token FROM omr_pages WHERE job_id=(SELECT id FROM omr_jobs WHERE owner_session_id=$1)", [ownerSessionId]);
+      expect(afterRestore.rows[0]).toMatchObject({ retry_count: 0, upload_state: "uploaded", upload_lease_token: null });
+    });
+  });
+
+  it("runs shared provider-delete application authority on PostgreSQL across overlap, uncertainty, restart, and local cleanup", async () => {
+    await withStore("UTC", async (pool, store) => {
+      let nowMs = Date.parse("2026-01-01T00:00:00.000Z");
+      const pageBytes = new TextEncoder().encode("postgres-provider-delete-application-page");
+      const pageDigest = await binaryDigest(pageBytes);
+      const fixture: ReferenceOmrFixture = {
+        id: "postgres-provider-delete-application",
+        orderedPageDigests: [pageDigest], statusScript: [{ kind: "queued" }],
+        musicXml: "<score-partwise/>", evidence: { granularity: "page", frames: [], transforms: [], evidence: [] },
+        retentionInfo: { canDeleteImmediately: true, policyReference: "postgres-delete-application" },
+      };
+      const governance = new PostgresGovernanceStore(pool);
+      const objects = new MemoryOwnedObjectStore(governance);
+      const inspectPage = async (input: { readonly bytes: Uint8Array; readonly mimeType: string }) => ({
+        bytes: Uint8Array.from(input.bytes), digest: await binaryDigest(input.bytes), mimeType: input.mimeType,
+        width: 100, height: 120,
+        quality: { blurBp: 0 as never, perspectiveBp: 0 as never, glareBp: 0 as never, cropRiskBp: 0 as never, estimatedStaffSpacePixels: 20, status: "pass" as const, reasons: [] },
+      });
+      const make = async (key: string, adapter: ReferenceOmrVendorAdapter) => {
+        const ownerSessionId = await session(pool, `delete-app:${key}`);
+        const dependencies = {
+          store, objects, adapter,
+          handleHmacKey: new Uint8Array(32).fill(21), vendorJobEncryptionKey: new Uint8Array(32).fill(22),
+          quota: omrQuotaConfig(100), actor: { sessionId: ownerSessionId, ipOwnerHash: `ip:delete-app:${key}` },
+          inspectPage, now: () => new Date(nowMs),
+        };
+        const service = new DurableOmrApplicationService(dependencies);
+        const preflight = await service.getProviderPreflight();
+        const handle = await service.createJob({
+          sessionId: ownerSessionId, pageCount: 1,
+          pages: [{ pageIndex: 0, pageDigest, mimeType: "image/png" }], sourceKind: "camera-photo",
+          rights: { basis: "self-authored", allowedUses: ["generation", "provider-transfer"] },
+          providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest,
+          idempotencyKey: `delete-app:${key}`,
+        });
+        return { service, handle, dependencies };
+      };
+
+      const overlapAdapter = new ReferenceOmrVendorAdapter([fixture]);
+      const overlap = await make("overlap", overlapAdapter);
+      const gate = deferred();
+      const overlapDelete = vi.spyOn(overlapAdapter, "deleteVendorJob").mockImplementation(async () => {
+        await gate.promise;
+        return { status: "deleted" };
+      });
+      const direct = overlap.service.delete(overlap.handle);
+      await vi.waitFor(() => expect(overlapDelete).toHaveBeenCalledTimes(1));
+      await expect(overlap.service.cleanupExpiredJobs()).resolves.toMatchObject([{ result: { cleanupState: "pending" } }]);
+      expect(overlapDelete).toHaveBeenCalledTimes(1);
+      gate.resolve();
+      await expect(direct).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+      expect(overlapDelete).toHaveBeenCalledTimes(1);
+
+      const idempotentAdapter = new ReferenceOmrVendorAdapter([fixture]);
+      const idempotent = await make("idempotent-loss", idempotentAdapter);
+      const exactKeys: string[] = [];
+      let deleteCalls = 0;
+      vi.spyOn(idempotentAdapter, "deleteVendorJob").mockImplementation(async (_job, operation) => {
+        exactKeys.push(operation.idempotencyKey);
+        deleteCalls += 1;
+        if (deleteCalls === 1) throw new OmrVendorCallError("applied then response lost", "outcome-uncertain");
+        return { status: "deleted" };
+      });
+      await expect(idempotent.service.delete(idempotent.handle)).resolves.toMatchObject({ cleanupState: "pending" });
+      nowMs += 60_001;
+      const idempotentRestart = new DurableOmrApplicationService(idempotent.dependencies);
+      await expect(idempotentRestart.delete(idempotent.handle)).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+      expect(exactKeys).toHaveLength(2);
+      expect(new Set(exactKeys).size).toBe(1);
+
+      const nonIdempotentAdapter = new ReferenceOmrVendorAdapter([fixture], { supportsIdempotency: false });
+      const nonIdempotent = await make("non-idempotent-loss", nonIdempotentAdapter);
+      const nonIdempotentDelete = vi.spyOn(nonIdempotentAdapter, "deleteVendorJob")
+        .mockRejectedValue(new OmrVendorCallError("applied then response lost", "outcome-uncertain"));
+      await expect(nonIdempotent.service.delete(nonIdempotent.handle)).resolves.toMatchObject({
+        cleanupState: "pending", vendor: { status: "failed", code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" },
+      });
+      nowMs += 12 * 60 * 60_000 + 1;
+      const nonIdempotentRestart = new DurableOmrApplicationService(nonIdempotent.dependencies);
+      await expect(nonIdempotentRestart.delete(nonIdempotent.handle)).resolves.toMatchObject({ cleanupState: "pending" });
+      expect(nonIdempotentDelete).toHaveBeenCalledTimes(1);
+
+      const localAdapter = new ReferenceOmrVendorAdapter([fixture]);
+      const local = await make("local-cleanup", localAdapter);
+      await local.service.uploadPage(local.handle, {
+        pageIndex: 0, pageDigest, mimeType: "image/png", idempotencyKey: "delete-app:local-page",
+        bytes: new Blob([pageBytes]),
+      });
+      const originalObjectDelete = objects.delete.bind(objects);
+      const localDelete = vi.spyOn(objects, "delete")
+        .mockRejectedValueOnce(new Error("local cleanup transient"))
+        .mockImplementation(originalObjectDelete);
+      await expect(local.service.delete(local.handle)).resolves.toMatchObject({
+        cleanupState: "pending", vendor: { status: "deleted" }, nextAttemptAt: expect.any(String),
+      });
+      nowMs += 60_001;
+      const localRestart = new DurableOmrApplicationService(local.dependencies);
+      await expect(localRestart.cleanupExpiredJobs()).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ result: expect.objectContaining({ cleanupState: "resolved", vendor: { status: "deleted" } }) }),
+      ]));
+      expect(localDelete).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("denies settled credit from the same UTC day under an Asia/Seoul session", async () => {
     await withStore("Asia/Seoul", async (pool, store) => {
       await seedSettled(pool, store, "2026-01-01T10:00:00.000Z", "seoul-same-day");
@@ -450,6 +762,86 @@ describe("actual PostgreSQL OMR authority", () => {
       })).resolves.toEqual({ status: "committed-exact" });
       const durable = await pool.query("SELECT upload_state,processed_object_reference_id FROM omr_pages WHERE job_id=$1 AND page_ordinal=0", [created.job.id]);
       expect(durable.rows[0]).toMatchObject({ upload_state: "uploaded", processed_object_reference_id: objectId });
+    });
+  });
+
+  it("keeps failPage aggregate authority atomic at all six PostgreSQL fault points", async () => {
+    await withStore("UTC", async (pool, store) => {
+      for (let failureStage = 1; failureStage <= 6; failureStage += 1) {
+        const key = `fail-page-stage-${failureStage}`;
+        const ownerSessionId = await session(pool, key);
+        const now = "2026-01-01T00:00:00.000Z";
+        const created = await claim(store, ownerSessionId, now, key, 100);
+        if (created.status !== "claimed") throw new Error(`FAIL_PAGE_SEED_FAILED:${created.status}`);
+        const page = {
+          pageIndex: 0, pageDigest: "b".repeat(64) as never, mimeType: "image/png",
+          idempotencyKeyHash: `page:idempotency:${failureStage}`, width: 100, height: 120,
+          quality: { blurBp: 0 as never, perspectiveBp: 0 as never, glareBp: 0 as never, cropRiskBp: 0 as never, estimatedStaffSpacePixels: 20, status: "pass" as const, reasons: [] },
+          warnAcknowledged: false, duplicateConfirmed: false, uploadState: "pending" as const, retryCount: 0,
+        };
+        const leaseToken = `fail-page-lease-${failureStage}`;
+        await expect(store.claimPage(created.job.id, page, 3, leaseToken, "2026-01-01T00:05:00.000Z", false, now))
+          .resolves.toMatchObject({ status: "claimed" });
+        const faultingStore = new PostgresOmrStore(failAfterFailPageStage(pool, failureStage));
+        await expect(faultingStore.failPage(created.job.id, 0, leaseToken, "reconciliation-required", "2026-01-01T00:00:01.000Z"))
+          .rejects.toThrow(`failPage fault after stage ${failureStage}`);
+        const durable = await pool.query(
+          `SELECT j.state,j.reconciliation_kind,p.upload_state,p.upload_lease_token
+           FROM omr_jobs j JOIN omr_pages p ON p.job_id=j.id WHERE j.id=$1 AND p.page_ordinal=0`,
+          [created.job.id],
+        );
+        if (failureStage < 6) {
+          expect(durable.rows[0]).toMatchObject({
+            state: "uploading", reconciliation_kind: null,
+            upload_state: "pending", upload_lease_token: leaseToken,
+          });
+          await expect(store.failPage(created.job.id, 0, leaseToken, "reconciliation-required", "2026-01-01T00:00:02.000Z"))
+            .resolves.toBeUndefined();
+        } else {
+          expect(durable.rows[0]).toMatchObject({
+            state: "reconciliation-required", reconciliation_kind: "page-upload",
+            upload_state: "reconciliation-required", upload_lease_token: null,
+          });
+        }
+        const restarted = await pool.query(
+          `SELECT j.state,j.reconciliation_kind,p.upload_state,p.upload_lease_token
+           FROM omr_jobs j JOIN omr_pages p ON p.job_id=j.id WHERE j.id=$1 AND p.page_ordinal=0`,
+          [created.job.id],
+        );
+        expect(restarted.rows[0]).toMatchObject({
+          state: "reconciliation-required", reconciliation_kind: "page-upload",
+          upload_state: "reconciliation-required", upload_lease_token: null,
+        });
+      }
+    });
+  });
+
+  it("leaves PostgreSQL page and job rows byte-for-byte unchanged for a stale failPage token", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, "stale-fail-page-token");
+      const created = await claim(store, ownerSessionId, "2026-01-01T00:00:00.000Z", "stale-fail-page-token", 100);
+      if (created.status !== "claimed") throw new Error(`FAIL_PAGE_SEED_FAILED:${created.status}`);
+      const page = {
+        pageIndex: 0, pageDigest: "b".repeat(64) as never, mimeType: "image/png",
+        idempotencyKeyHash: "stale-token-page-key", width: 100, height: 120,
+        quality: { blurBp: 0 as never, perspectiveBp: 0 as never, glareBp: 0 as never, cropRiskBp: 0 as never, estimatedStaffSpacePixels: 20, status: "pass" as const, reasons: [] },
+        warnAcknowledged: false, duplicateConfirmed: false, uploadState: "pending" as const, retryCount: 0,
+      };
+      await expect(store.claimPage(created.job.id, page, 3, "current-page-lease", "2026-01-01T00:05:00.000Z", true, "2026-01-01T00:00:00.000Z"))
+        .resolves.toMatchObject({ status: "claimed" });
+      const before = await pool.query(
+        `SELECT to_jsonb(j) AS job,to_jsonb(p) AS page
+         FROM omr_jobs j JOIN omr_pages p ON p.job_id=j.id WHERE j.id=$1 AND p.page_ordinal=0`,
+        [created.job.id],
+      );
+      await expect(store.failPage(created.job.id, 0, "stale-page-lease", "reconciliation-required", "2026-01-01T00:00:01.000Z"))
+        .resolves.toBeUndefined();
+      const after = await pool.query(
+        `SELECT to_jsonb(j) AS job,to_jsonb(p) AS page
+         FROM omr_jobs j JOIN omr_pages p ON p.job_id=j.id WHERE j.id=$1 AND p.page_ordinal=0`,
+        [created.job.id],
+      );
+      expect(after.rows[0]).toEqual(before.rows[0]);
     });
   });
 

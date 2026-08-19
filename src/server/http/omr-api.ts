@@ -2,7 +2,7 @@ import "server-only";
 
 import type { NextRequest } from "next/server";
 
-import type { OmrJobHandle } from "../../domain/omr/contracts";
+import { VENDOR_INPUT_REQUEST_LIMITS, type OmrJobHandle } from "../../domain/omr/contracts";
 import type { SemanticDigest } from "../../domain/digest/canonical";
 import type { InputSourceKind } from "../../domain/omr/input";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
@@ -88,17 +88,25 @@ export function parseCreateJobBody(value: unknown) {
 export function parseVendorInputBody(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("OMR_REQUEST_INVALID");
   const record = value as Record<string, unknown>;
-  if (typeof record.requestId !== "string" || record.requestId.length < 1 || record.requestId.length > 128) throw new RangeError("OMR_REQUEST_INVALID");
-  if (record.kind === "select-instrument" && typeof record.choice === "string") return { kind: record.kind, requestId: record.requestId, choice: record.choice } as const;
+  const utf8Length = (text: string) => new TextEncoder().encode(text).byteLength;
+  if (typeof record.requestId !== "string" || record.requestId.length < 1
+    || utf8Length(record.requestId) > VENDOR_INPUT_REQUEST_LIMITS.requestIdLength) throw new RangeError("OMR_REQUEST_INVALID");
+  if (record.kind === "select-instrument" && typeof record.choice === "string"
+    && record.choice.length > 0 && utf8Length(record.choice) <= VENDOR_INPUT_REQUEST_LIMITS.choiceLength) {
+    return { kind: record.kind, requestId: record.requestId, choice: record.choice } as const;
+  }
   if (record.kind === "confirm-page-order" && Array.isArray(record.pageIndices) && record.pageIndices.every(Number.isSafeInteger)) return { kind: record.kind, requestId: record.requestId, pageIndices: record.pageIndices as number[] } as const;
-  if (record.kind === "vendor-specific" && typeof record.schemaId === "string" && record.schemaId.length > 0 && record.schemaId.length <= 128
+  if (record.kind === "vendor-specific" && typeof record.schemaId === "string" && record.schemaId.length > 0
+    && utf8Length(record.schemaId) <= VENDOR_INPUT_REQUEST_LIMITS.schemaIdLength
     && record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)) {
     const payload = record.payload as Readonly<Record<string, unknown>>;
-    if (Object.keys(payload).length > 32 || JSON.stringify(payload).length > 8_192
-      || Object.entries(payload).some(([key, item]) => key.length < 1 || key.length > 128
+    if (Object.keys(payload).length > VENDOR_INPUT_REQUEST_LIMITS.payloadEntries
+      || utf8Length(JSON.stringify(payload)) > VENDOR_INPUT_REQUEST_LIMITS.payloadBytes
+      || Object.entries(payload).some(([key, item]) => key.length < 1
+        || utf8Length(key) > VENDOR_INPUT_REQUEST_LIMITS.payloadKeyLength
         || !["string", "number", "boolean"].includes(typeof item)
-        || (typeof item === "string" && item.length > 8_192)
-        || (typeof item === "number" && !Number.isFinite(item)))) throw new RangeError("OMR_REQUEST_INVALID");
+        || (typeof item === "string" && utf8Length(item) > VENDOR_INPUT_REQUEST_LIMITS.payloadStringLength)
+        || (typeof item === "number" && !Number.isSafeInteger(item)))) throw new RangeError("OMR_REQUEST_INVALID");
     return { kind: record.kind, requestId: record.requestId, schemaId: record.schemaId, payload: payload as Readonly<Record<string, string | number | boolean>> } as const;
   }
   throw new RangeError("OMR_REQUEST_INVALID");
