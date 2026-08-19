@@ -12,6 +12,11 @@ import type { ProductTrackRoleRegistry } from "./track-roles";
 function xml(value: string): string { return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;").replace(/"/gu, "&quot;").replace(/'/gu, "&apos;"); }
 function gcd(a: number, b: number): number { return b === 0 ? Math.abs(a) : gcd(b, a % b); }
 function lcm(a: number, b: number): number { return Math.abs(a * b) / gcd(a, b); }
+function scaledInteger(value: Fraction, divisions: number, code: string): number {
+  const scaled = value.n * divisions / value.d;
+  if (!Number.isSafeInteger(scaled)) throw new RangeError(code);
+  return scaled;
+}
 function pitchXml(pitch: SpelledPitch): string { return `<pitch><step>${pitch.step}</step>${pitch.alter === 0 ? "" : `<alter>${pitch.alter}</alter>`}<octave>${pitch.octave}</octave></pitch>`; }
 function fifths(key: KeySignature): number {
   const names: Readonly<Record<string, number>> = { "Cb": -7, "Gb": -6, "Db": -5, "Ab": -4, "Eb": -3, "Bb": -2, F: -1, C: 0, G: 1, D: 2, A: 3, E: 4, B: 5, "F#": 6, "C#": 7 };
@@ -65,7 +70,7 @@ function notationForDuration(duration: Fraction): { readonly type: string; reado
 }
 
 function noteXml(event: XmlEvent, divisions: number, lyricById: Readonly<Record<string, ArrangementRenderDocument["lyricTokens"][number]>>): string {
-  const duration = event.duration.n * divisions / event.duration.d;
+  const duration = scaledInteger(event.duration, divisions, "MUSICXML_DURATION_UNREPRESENTABLE");
   const notation = notationForDuration(event.duration);
   const ties = `${event.tieStop ? '<tie type="stop"/>' : ""}${event.tieStart ? '<tie type="start"/>' : ""}`;
   const tied = event.tieStart || event.tieStop ? `<notations>${event.tieStop ? '<tied type="stop"/>' : ""}${event.tieStart ? '<tied type="start"/>' : ""}</notations>` : "";
@@ -162,7 +167,7 @@ function structuredHarmony(chord: ParsedChord): { readonly kind: string; readonl
 
 function harmonyXml(document: ArrangementRenderDocument, measureIndex: number, divisions: number): string {
   return document.effectiveChordTimeline.spans.filter((span) => span.range.start.performanceMeasureIndex === measureIndex).map((span) => {
-    const offset = span.range.start.offset.n * divisions / span.range.start.offset.d;
+    const offset = scaledInteger(span.range.start.offset, divisions, "MUSICXML_HARMONY_OFFSET_UNREPRESENTABLE");
     if (span.parseResult.status === "no-chord") return `<harmony><kind text="N.C.">none</kind>${offset ? `<offset>${offset}</offset>` : ""}</harmony>`;
     const chord = span.parseResult.chord;
     const structured = structuredHarmony(chord);
@@ -213,6 +218,7 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
     ...document.measures.map((measure) => measure.duration),
     ...document.sourceLeadTrack.atoms.flatMap((atom) => [atom.range.start.offset, canonicalRangeDuration(document.measures, atom.range)]),
     ...document.generatedHarmonyTracks.flatMap((track) => track.events.flatMap((event) => [event.range.start.offset, canonicalRangeDuration(document.measures, event.range)])),
+    ...document.effectiveChordTimeline.spans.map((span) => span.range.start.offset),
   ];
   const divisions = allFractions.reduce((value, item) => lcm(value, item.d), 1);
   if (!Number.isSafeInteger(divisions) || divisions > 1_000_000) throw new RangeError("MUSICXML_DIVISIONS_UNREPRESENTABLE");
