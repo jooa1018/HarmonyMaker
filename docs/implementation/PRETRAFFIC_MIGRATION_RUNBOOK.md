@@ -18,8 +18,8 @@ Runtime composition은 migration을 적용하지 않는다. `getProductionServic
 2. 대상 `DATABASE_URL`을 release job에만 주입
 3. `npm ci`
 4. `npm run migrate`
-5. 출력의 `ok=true`, `latestVersion=12` 확인
+5. 출력의 `ok=true`, `latestVersion=14` 확인
 6. application artifact 배포
 7. runtime verify-only readiness 성공 후 traffic 연결
 
-Rollback은 이미 적용된 migration을 되감지 않는다. 실패하면 traffic 연결을 중단하고 원인을 해결한 뒤 동일 명령을 재실행한다. migrations 1–11은 byte-unchanged이며 새 변경은 additive migration 12부터 시작한다.
+Rollback은 이미 적용된 migration을 되감지 않는다. 실패하면 traffic 연결을 중단하고 원인을 해결한 뒤 동일 명령을 재실행한다. Migrations 1–11은 byte-unchanged이며 Ultra closure의 변경은 additive migrations 12–14에만 존재한다.

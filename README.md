@@ -9,10 +9,10 @@ HarmonyMaker는 멜로디, 확인된 코드, 곡 구조, 실제 가수 음역을
 - Segment C — Product Core: 구현 완료
 - Segment D — provider-neutral OMR Core 및 PostgreSQL/S3 substrate: 구현 완료
 - Ultra whole-repository discovery: 완료 (`d81d7dfb3f749a78cb2ebac45b8319dd865598a8`)
-- Ultra finding closure: 진행 중 (`10 P1 + 14 P2 + 7 TG`); 별도 Ultra re-audit 전에는 `ULTRA_ACCEPTED=NO`, `SEGMENT_D_ACCEPTED=NO`
+- Ultra finding closure: 구현·repository validation 완료 (`10 P1 + 14 P2 + 7 TG`), 별도 Ultra re-audit 준비 완료; `ULTRA_ACCEPTED=NO`, `SEGMENT_D_ACCEPTED=NO`
 - Step 11: 시작하지 않음
 
-Ultra discovery의 historical evidence는 [`docs/implementation/ULTRA_AUDIT_DISCOVERY_REPORT.md`](docs/implementation/ULTRA_AUDIT_DISCOVERY_REPORT.md)에 있습니다. Closure 결과가 green이어도 acceptance를 뜻하지 않으며, 별도 re-audit가 필요합니다.
+Ultra discovery의 historical evidence는 [`docs/implementation/ULTRA_AUDIT_DISCOVERY_REPORT.md`](docs/implementation/ULTRA_AUDIT_DISCOVERY_REPORT.md)에 있고, consolidated closure 결과는 [`docs/implementation/ULTRA_CLOSURE_REPORT.md`](docs/implementation/ULTRA_CLOSURE_REPORT.md)에 있습니다. Closure 결과가 green이어도 acceptance를 뜻하지 않으며, 별도 re-audit가 필요합니다.
 
 ## 구현 범위
 
