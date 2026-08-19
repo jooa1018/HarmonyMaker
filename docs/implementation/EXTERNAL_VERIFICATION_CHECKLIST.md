@@ -499,3 +499,40 @@ ULTRA_AUDIT_READY = YES
 ```
 
 External verification still remaining, and not part of this closure: real-provider selection/credentials/recognition accuracy and commercial/retention/idempotency contracts; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL/S3; physical iPhone Safari; and Kakao in-app browser.
+
+## P1-RESAT-02-D ambiguous Put-rejection closure checkpoint
+
+Use additive implementation-and-test checkpoint `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e`, based on exact clean remote HEAD `448105417052b87e49e8adc75a0828d03db500e6`.
+
+- [x] A generic `client.send(PutObjectCommand)` rejection after invocation begins is outcome-uncertain, never evidence of remote quiescence.
+- [x] Timeout/reset/5xx/response-loss/unknown SDK errors retain `publicationPutMayStillComplete=true`, exact token, generation, and metadata authority.
+- [x] Only local failure before dispatch begins can use the definitive-not-dispatched settlement path.
+- [x] Same-publication retry while the generation may complete performs attributed Head recovery and dispatches no duplicate Put.
+- [x] An absent-key first delete leaves `tombstone-pending`; repeated not-found or unknown metadata cannot terminalize the generation.
+- [x] Reject-now/materialize-later is recovered after process replacement from durable row plus exact S3 generation metadata, then exactly deleted.
+- [x] Rejected A and B generations materialize and reconcile independently; neither settles the other and final object count is zero.
+- [x] Exact late-object delete failure releases cleanup claim, retains token/generation authority, and succeeds on restarted retry.
+- [x] Actual PostgreSQL 17.11 repeats the uncertain row transitions and proves one-of-two cleanup claim fencing.
+- [x] Existing applied-then-throw, blocked Put, current/predecessor attribution, B-active/A-late, commit-ack, and page/result regressions remain green.
+- [x] Migrations 1–10 are unchanged; migration 011 is not required.
+- [x] Clean validation passed: 66 files/686 tests, PostgreSQL 1 file/20 tests, typecheck, lint, build, and diff check.
+- [x] Segment B 101-run, OMR 101-run, and frozen authority 2 files/7 tests passed with zero protected musical-path diff.
+- [x] Exact code SHA Actions run `32218299321`, quality job `95963827595`, succeeded.
+- [x] Exact code SHA Vercel `2QkeJcYTVGkKtWERX9s7Svk53eno`, GitHub deployment `5976430155`, status `16998806574`, commit status `52483102528`, succeeded at `https://harmony-maker-4ngg7awo1-ecctom1.vercel.app`.
+
+Without a storage-adapter quiescence contract, a never-materializing uncertain request intentionally leaves one bounded durable tombstone for its logical publication. External operations may monitor/reconcile that fail-closed row, but must not convert one not-found observation or elapsed grace period into terminal authority.
+
+The containing four-document descendant is the final handoff-inclusive remote HEAD and receives separate exact-SHA Actions/Vercel verification after push.
+
+```text
+P1_RESAT_02_AMBIGUOUS_PUT_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External verification still remaining: real-provider selection/credentials/accuracy and commercial/retention/idempotency contracts; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL/S3; physical iPhone Safari; and Kakao in-app browser.

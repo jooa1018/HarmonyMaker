@@ -814,3 +814,53 @@ ULTRA_AUDIT_READY = YES
 ```
 
 External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.
+
+## P1-RESAT-02-D ambiguous Put-rejection evidence
+
+The exact starting remote HEAD was `448105417052b87e49e8adc75a0828d03db500e6`; the worktree was clean and local/remote divergence was `0/0`. Additive code checkpoint `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` is the implementation authority.
+
+| Evidence | Result |
+|---|---|
+| Root reproduction | Fake S3 rejects the client Promise immediately while retaining an independent deferred remote materialization; the old catch would falsely settle and terminalize |
+| Outcome taxonomy | Pre-`send` local failure is definitive-not-dispatched; every generic error after invocation begins is outcome-uncertain |
+| Durable state | Uncertain rejection retains current token, generation, authority digest, lease record, and `publicationPutMayStillComplete=true` |
+| Not-found | First idempotent delete confirms tombstone cleanup but cannot terminalize; later not-found/unknown Head observations preserve authority |
+| Late materialization | Restarted cleanup identifies exact generation metadata, settles only that generation, deletes the stable key, and reaches truthful terminal state |
+| A/B ordering | Both Put Promises reject before materialization; A and B later materialize and are independently attributed/deleted without cross-settlement |
+| Delete failure | Injected exact late-object delete failure releases only cleanup lease; durable token/generation remain and restart retry succeeds |
+| Applied-then-throw | Already-materialized object is recovered by exact Head and activated without a second Put |
+| PostgreSQL | Actual PostgreSQL 17.11 verifies persisted uncertainty, nonterminal first delete, restart recovery, A/B ordering, delete retry, and concurrent cleanup claim fencing |
+| Bounded residue | If no attributed object ever appears and no adapter quiescence proof exists, one nonterminal tombstone per logical publication is intentionally retained fail-closed |
+
+No migration was needed. Migrations 1–10 and their checksums are unchanged; the existing current/predecessor token-generation fields and tombstone lifecycle encode the required authority.
+
+```text
+npm ci                         PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/686 tests
+npm run test:postgres          PASS — PostgreSQL 17.11, migrations 1–10, 1 file/20 tests
+npm run build                  PASS
+git diff --check               PASS
+Segment B 101-run              PASS
+OMR 101-run                    PASS
+frozen/99-code authority       PASS — 2 files/7 tests, six hashes exact, protected diff 0
+```
+
+Exact code-checkpoint remote evidence: Actions run `32218299321`, quality job `95963827595`, SHA `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e`, success; Vercel `2QkeJcYTVGkKtWERX9s7Svk53eno`, GitHub deployment `5976430155`, deployment status `16998806574`, commit status `52483102528`, success; preview `https://harmony-maker-4ngg7awo1-ecctom1.vercel.app`. The final four-document descendant is verified independently at its own exact SHA.
+
+```text
+P1_RESAT_02_AMBIGUOUS_PUT_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.

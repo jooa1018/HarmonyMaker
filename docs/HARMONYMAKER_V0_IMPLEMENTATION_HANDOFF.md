@@ -425,3 +425,46 @@ ULTRA_AUDIT_READY = YES
 ```
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started.
+
+## Final ambiguous Put-rejection closure
+
+This reliability-only closure started from exact remote HEAD `448105417052b87e49e8adc75a0828d03db500e6`, with a clean worktree, `0/0` divergence, and the required implementation/Segment C ancestors. Additive implementation-and-test checkpoint `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` closes `P1-RESAT-02-D`.
+
+The residual inference was `client.send(PutObjectCommand) rejected => the remote generation is quiescent`. A timeout, reset, 5xx, response decode failure, response loss, abort after dispatch, or unknown SDK error can reject while the request is applied, still running, or able to materialize later. The catch path nevertheless called `settleObjectPublicationPut`, cleared the lease, set `publicationPutMayStillComplete=false`, and let an absent-key cleanup terminally delete the only durable authority before a late object appeared.
+
+Put failures now have an explicit `definitive-not-dispatched` / `outcome-uncertain` taxonomy. Only a failure before `client.send` begins may settle the generation as locally non-dispatched. Every generic rejection after invocation begins remains outcome-uncertain: the durable token, generation, authority-digest identity, lease record, and `publicationPutMayStillComplete=true` remain intact. Retrying the same upload-pending publication never dispatches another Put while that authority may still complete; it performs exact generation-attributed Head inspection and activates only a matching current generation. Not-found and unknown/malformed Head observations preserve a nonterminal tombstone. A later exact metadata match settles only that generation, deletes the stable key, and re-evaluates terminal authority. Delete failure releases only its cleanup claim and is restart-retryable.
+
+The existing migration-10 generation/token/predecessor/tombstone schema is sufficient; migrations 1–10 and their checksums are unchanged and migration 011 was not created. If a remote service never materializes an uncertain request and exposes no authoritative quiescence contract, v0 intentionally retains at most one durable tombstone for that logical publication. This is bounded fail-closed operational residue, not false deletion or an untracked external object.
+
+The Fake S3 campaign separates immediate Promise rejection from an independently deferred remote materialization. Memory tests prove reject-now/materialize-later restart recovery, an absent-key first delete without terminalization, A/B reject-before-materialize attribution, and failed exact late-object deletion with retry. Actual PostgreSQL 17.11 proves the same row transitions, process replacement, two-generation ordering, delete retry, and atomic one-of-two cleanup claim fencing.
+
+```text
+npm ci                         PASS — npm 11.6.2, 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/686 tests
+npm run test:postgres          PASS — PostgreSQL 17.11, migrations 1–10, 1 file/20 tests
+npm run build                  PASS — Next.js 16.3.0
+git diff --check               PASS
+Segment B 101-run              PASS — 1 targeted test, 101 complete executions
+OMR 101-run                    PASS — 1 file/1 test, 101 permutations
+frozen/99-code authority       PASS — 2 files/7 tests, six exact hashes, protected production diff 0
+```
+
+Code-checkpoint Actions run `32218299321`, quality job `95963827595`, succeeded at exact SHA `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` with 66/686 and PostgreSQL 1/20. Vercel deployment `2QkeJcYTVGkKtWERX9s7Svk53eno`, GitHub deployment `5976430155`, deployment status `16998806574`, and commit status `52483102528` succeeded; preview is `https://harmony-maker-4ngg7awo1-ecctom1.vercel.app`. The containing four-file documentation-only descendant is `FINAL_HANDOFF_INCLUSIVE_REMOTE_HEAD` and receives independent exact-SHA Actions/Vercel verification after push.
+
+```text
+P1_RESAT_02_AMBIGUOUS_PUT_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started. Provider/corpus/live-service/device evidence remains external.

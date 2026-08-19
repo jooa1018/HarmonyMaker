@@ -948,3 +948,56 @@ ULTRA_AUDIT_READY = YES
 ```
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.
+
+## Final ambiguous Put-rejection handoff
+
+Starting remote HEAD `448105417052b87e49e8adc75a0828d03db500e6` matched exactly, clean and `0/0`. Code checkpoint `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` closes the sole reopened `P1-RESAT-02-D` branch.
+
+```text
+root                        rejected client Promise was treated as proof that remote Put had quiesced
+taxonomy                    pre-dispatch local failure / outcome-uncertain after client.send begins
+uncertain state             retain token + generation + lease authority + mayStillComplete=true
+same-publication retry      exact attributed Head recovery only; no second Put while uncertain
+not-found                   idempotent first delete allowed; tombstone stays nonterminal/discoverable
+late materialization        exact generation metadata -> settle exact authority -> exact delete
+process replacement         durable row plus S3 metadata recovers without original application process
+A/B generations             both rejected-before-materialize generations reconcile independently
+delete failure              cleanup claim releases; exact token/generation survives restart retry
+bounded policy              one fail-closed tombstone if no object or quiescence proof ever appears
+store contract              existing migration-10 token/generation/predecessor/cleanup fencing
+migration                   NONE — migrations 1–10 unchanged; full apply PASS
+
+Fake S3                     PASS — 1 file/17 tests
+local suite                 PASS — 66 files/686 tests
+PostgreSQL 17.11            PASS — migrations 1–10, 1 file/20 tests
+typecheck/lint/build/diff   PASS
+Segment B 101 / OMR 101     PASS
+frozen authority            PASS — 2 files/7 tests, six hashes, 99 codes, protected diff 0
+code Actions                PASS — run 32218299321, quality 95963827595, exact SHA 9684b3fd230bb52e4b4a6664aeff3d9beabfea2e
+code Vercel                 PASS — 2QkeJcYTVGkKtWERX9s7Svk53eno; GitHub deployment 5976430155; status 16998806574
+preview                     https://harmony-maker-4ngg7awo1-ecctom1.vercel.app
+```
+
+The containing four-file documentation-only descendant is `FINAL_HANDOFF_INCLUSIVE_REMOTE_HEAD` and receives exact-SHA CI/Vercel verification after push.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02_AMBIGUOUS_PUT_REJECTION = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.
