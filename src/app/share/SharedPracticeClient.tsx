@@ -7,9 +7,9 @@ import { generateDeterministicAccompaniment } from "../../accompaniment/determin
 import type { PracticeSharePayload } from "../../domain/share";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import { buildPlaybackPlan } from "../../product/playback-plan";
-import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
+import { arrangementRenderDocumentToAbcSafely } from "../../product/score-adapter";
 import { decodeProductUrlShare } from "../../product/share-url";
-import { reduceShareLocatorLoad, resolveShareLocator } from "../../product/share-locator";
+import { displayedShareLocatorState, reduceShareLocatorLoad, resolveShareLocator } from "../../product/share-locator";
 import { submitStoredShareReport, type DisplayedStoredShareAuthority } from "../../product/share-report";
 import { materializeSharedPracticeSafely } from "../../product/shared-practice";
 
@@ -20,11 +20,15 @@ export function SharedPracticeClient() {
   const [loadState, dispatchLoad] = useReducer(reduceShareLocatorLoad, { status: "idle" });
   const displayedStoredAuthorityRef = useRef<DisplayedStoredShareAuthority | undefined>(undefined);
   const reportAbortRef = useRef<AbortController | undefined>(undefined);
-  const payload: PracticeSharePayload | undefined = loadState.status === "loaded" ? loadState.payload : undefined;
+  const locatorResult = useMemo(() => hashState.ready ? resolveShareLocator(token, hashState.value) : undefined, [hashState, token]);
+  const displayedLoadState = displayedShareLocatorState(loadState, locatorResult);
+  const payload: PracticeSharePayload | undefined = displayedLoadState?.payload;
   const [message, setMessage] = useState("공유 payload를 검증하는 중…");
   const materialization = useMemo(() => payload ? materializeSharedPracticeSafely(payload) : undefined, [payload]);
   const materialized = materialization?.status === "available" ? materialization.value : undefined;
   const document = materialized?.document;
+  const abcSerialization = useMemo(() => payload && materialized ? arrangementRenderDocumentToAbcSafely(materialized.document, materialized.trackRoles, { title: payload.title, tempo: payload.tempo, key: payload.key }) : undefined, [materialized, payload]);
+  const abc = abcSerialization?.status === "available" ? abcSerialization.value : undefined;
   const [accompanimentState, setAccompanimentState] = useState<{ readonly digest: string; readonly value: Awaited<ReturnType<typeof generateDeterministicAccompaniment>> }>();
 
   useEffect(() => {
@@ -35,7 +39,6 @@ export function SharedPracticeClient() {
     return () => { window.removeEventListener("hashchange", refresh); window.removeEventListener("popstate", refresh); };
   }, []);
 
-  const locatorResult = useMemo(() => hashState.ready ? resolveShareLocator(token, hashState.value) : undefined, [hashState, token]);
   const locatorLoading = locatorResult?.status === "valid"
     && (loadState.status !== "loaded" || loadState.key !== locatorResult.key);
   const presentedMessage = locatorResult?.status === "invalid"
@@ -44,12 +47,13 @@ export function SharedPracticeClient() {
       ? "공유 payload를 검증하는 중…"
       : payload && materialization?.status === "unavailable"
       ? "이 공유의 연습 자료를 안전하게 구성할 수 없습니다."
+      : payload && abcSerialization?.status === "unavailable"
+      ? "이 공유의 ABC 악보를 안전하게 직렬화할 수 없습니다."
       : message;
 
   useLayoutEffect(() => {
-    const next = loadState.status === "loaded" && loadState.locator.kind === "stored"
-      && locatorResult?.status === "valid" && locatorResult.key === loadState.key
-      ? { key: loadState.key, token: loadState.locator.token }
+    const next = displayedLoadState?.locator.kind === "stored"
+      ? { key: displayedLoadState.key, token: displayedLoadState.locator.token }
       : undefined;
     const previous = displayedStoredAuthorityRef.current;
     if (previous && (previous.key !== next?.key || previous.token !== next?.token)) {
@@ -57,7 +61,7 @@ export function SharedPracticeClient() {
       reportAbortRef.current = undefined;
     }
     displayedStoredAuthorityRef.current = next;
-  }, [loadState, locatorResult]);
+  }, [displayedLoadState]);
 
   useEffect(() => () => reportAbortRef.current?.abort(), []);
 
@@ -96,12 +100,11 @@ export function SharedPracticeClient() {
   }, [document]);
   const accompaniment = document && accompanimentState?.digest === document.effectiveChordTimeline.digest ? accompanimentState.value : undefined;
 
-  const abc = useMemo(() => payload && materialized ? arrangementRenderDocumentToAbc(materialized.document, materialized.trackRoles, { title: payload.title, tempo: payload.tempo, key: payload.key }) : undefined, [materialized, payload]);
   const plan = useMemo(() => materialized ? buildPlaybackPlan(materialized.document, materialized.trackRoles, accompaniment) : undefined, [accompaniment, materialized]);
 
   const report = async () => {
-    if (loadState.status !== "loaded" || loadState.locator.kind !== "stored") return;
-    const authority = { key: loadState.key, token: loadState.locator.token };
+    if (!displayedLoadState || displayedLoadState.locator.kind !== "stored") return;
+    const authority = { key: displayedLoadState.key, token: displayedLoadState.locator.token };
     reportAbortRef.current?.abort();
     const controller = new AbortController();
     reportAbortRef.current = controller;
@@ -116,6 +119,6 @@ export function SharedPracticeClient() {
   return <>
     <header><p className="eyebrow">PRACTICE SHARE · READ ONLY</p><h1>{payload?.title ?? "공유 연습 악보"}</h1><p>후보, 잠금, 진단, 원본 파일 없이 선택된 연습 artifact만 표시합니다.</p><p><Link href="/">HarmonyMaker 시작으로</Link></p></header>
     <p className={`status${payload ? "" : " error"}`} aria-live="polite">{presentedMessage}</p>
-    {payload && abc && plan && loadState.status === "loaded" ? <><section className="panel"><dl><div><dt>Preset</dt><dd>{payload.presetId}</dd></div><div><dt>Rights</dt><dd>{payload.rightsShareConfirmed ? "공유 확인됨" : "차단"}</dd></div><div><dt>Artifact</dt><dd><code>{payload.arrangementArtifactDigest}</code></dd></div></dl></section><ProductPracticePlayer key={loadState.key} abc={abc} plan={plan} tempo={payload.tempo} identity={loadState.key} initialSettings={payload.playbackDefaults} readOnly />{loadState.locator.kind === "stored" ? <section className="panel"><h2>공유 신고</h2><button type="button" disabled={loadState.reported} onClick={() => void report()}>{loadState.reported ? "접수됨" : "권리 또는 악용 신고"}</button></section> : null}</> : null}
+    {payload && abc && plan && displayedLoadState ? <><section className="panel"><dl><div><dt>Preset</dt><dd>{payload.presetId}</dd></div><div><dt>Rights</dt><dd>{payload.rightsShareConfirmed ? "공유 확인됨" : "차단"}</dd></div><div><dt>Artifact</dt><dd><code>{payload.arrangementArtifactDigest}</code></dd></div></dl></section><ProductPracticePlayer key={displayedLoadState.key} abc={abc} plan={plan} tempo={payload.tempo} identity={displayedLoadState.key} initialSettings={payload.playbackDefaults} readOnly />{displayedLoadState.locator.kind === "stored" ? <section className="panel"><h2>공유 신고</h2><button type="button" disabled={displayedLoadState.reported} onClick={() => void report()}>{displayedLoadState.reported ? "접수됨" : "권리 또는 악용 신고"}</button></section> : null}</> : null}
   </>;
 }

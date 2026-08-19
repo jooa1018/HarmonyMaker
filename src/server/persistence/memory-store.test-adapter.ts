@@ -1,9 +1,12 @@
 import type {
   AbuseReportInput, AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, CleanupResult, DurableShareRecord, GovernanceStore,
-  IdempotencyClaim, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
+  IdempotencyClaim, IdempotencyRecoveryLookup, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
 } from "./store";
 
 interface IdempotencyState {
+  readonly sessionId: PrivateRowId;
+  readonly operation: string;
+  readonly keyHash: string;
   readonly requestDigest: string;
   readonly claimCreatedAt: string;
   readonly expiresAt: string;
@@ -65,13 +68,26 @@ export class MemoryGovernanceStore implements GovernanceStore {
     if (found) {
       if (found.requestDigest !== input.requestDigest) return { status: "conflict" };
       if (found.response === undefined && found.claimExpiresAt <= input.createdAt) {
-        this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt, claimCreatedAt: input.createdAt });
+        this.idempotency.set(key, { sessionId: input.sessionId, operation: input.operation, keyHash: input.keyHash, requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt, claimCreatedAt: input.createdAt });
         return { status: "claimed", claimCreatedAt: input.createdAt };
       }
       return found.response === undefined ? { status: "pending" } : { status: "replay", response: found.response };
     }
-    this.idempotency.set(key, { requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt, claimCreatedAt: input.createdAt });
+    this.idempotency.set(key, { sessionId: input.sessionId, operation: input.operation, keyHash: input.keyHash, requestDigest: input.requestDigest, expiresAt: input.expiresAt, claimExpiresAt: input.claimExpiresAt, claimCreatedAt: input.createdAt });
     return { status: "claimed", claimCreatedAt: input.createdAt };
+  }
+
+  async recoverIdempotency(input: { readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly now: string }): Promise<IdempotencyRecoveryLookup> {
+    const matches = [...this.idempotency.values()].filter((record) => record.operation === input.operation && record.keyHash === input.keyHash);
+    if (matches.length === 0) return { status: "missing" };
+    if (matches.length !== 1) return { status: "ambiguous" };
+    const found = matches[0];
+    if (found.requestDigest !== input.requestDigest) return { status: "conflict" };
+    if (found.response !== undefined) return found.expiresAt <= input.now ? { status: "expired" } : { status: "replay", response: structuredClone(found.response) };
+    if (found.claimExpiresAt > input.now) return { status: "pending" };
+    const key = `${found.sessionId}:${found.operation}:${found.keyHash}`;
+    if (this.idempotency.get(key) === found) this.idempotency.delete(key);
+    return { status: "retired-no-effect" };
   }
 
   async completeIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly response: unknown }): Promise<void> {

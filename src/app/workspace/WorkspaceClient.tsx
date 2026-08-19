@@ -23,8 +23,8 @@ import { exportHarmonyProject, importHarmonyProject } from "../../product/projec
 import { canDefaultExportOrShare, projectRenderDocument, selectActiveCandidate, selectActiveSnapshot, type MaterializedArrangement, type ScoreProjection } from "../../product/render";
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
-import { completedShareRecoveryTransport, dispatchShareCreateRecovery, dispatchShareOwnerReconciliation } from "../../product/share-create-api";
-import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, ShareCreateOperationGate } from "../../product/share-create-recovery";
+import { completedShareRecoveryTransport, dispatchShareCreateReadOnlyRecovery, dispatchShareCreateRecovery, dispatchShareOwnerReconciliation, pendingShareRecoveryTransport } from "../../product/share-create-api";
+import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, restoredShareCreateUiAuthority, ShareCreateOperationGate } from "../../product/share-create-recovery";
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
 import {
   authoritativeWorkspaceProject,
@@ -145,10 +145,11 @@ export function WorkspaceClient() {
     if (!projectId) return;
     let active = true;
     void shareRecoveryStore.load(projectId).then((envelope) => {
-      if (!active || envelope?.operationLifecycle !== "completed" || !envelope.createdResponse) return;
-      setStoredShare(envelope.createdResponse);
-      setShareFreshAllowed(envelope.freshIntentAuthority?.reason === "retired-replay");
-      setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
+      if (!active || !envelope) return;
+      const authority = restoredShareCreateUiAuthority(envelope);
+      setShareFreshAllowed(authority.freshIntentAllowed);
+      setStoredShare(authority.createdResponse);
+      setShareUrl(authority.createdResponse ? `${window.location.origin}/share?token=${encodeURIComponent(authority.createdResponse.token)}` : undefined);
     }).catch(() => undefined);
     return () => { active = false; };
   }, [projectId, shareRecoveryStore, setShareFreshAllowed, setShareUrl, setStoredShare]);
@@ -336,11 +337,12 @@ export function WorkspaceClient() {
         const sessionResponse = await fetch("/api/session", { method: "POST" });
         const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; sessionAuthority?: string; expiresAt?: string; error?: { messageKo?: string } };
         if (!sessionResponse.ok || !session.csrfToken || !session.sessionAuthority || !session.expiresAt) throw new Error(session.error?.messageKo ?? "서버 저장 기능을 사용할 수 없습니다.");
-        if (completedShareRecoveryTransport(envelope, session.sessionAuthority) === "owner-reconcile") {
+        const { csrfToken, sessionAuthority, expiresAt } = session;
+        if (completedShareRecoveryTransport(envelope, sessionAuthority) === "owner-reconcile") {
           const reconciliation = await dispatchShareOwnerReconciliation({ envelope });
+          if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
           if (reconciliation.kind === "active") {
             if (!envelope.createdResponse) throw new RangeError("SHARE_OWNER_RECONCILE_INVALID");
-            if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
             setStoredShare(envelope.createdResponse);
             setShareFreshAllowed(false);
             setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
@@ -361,16 +363,29 @@ export function WorkspaceClient() {
           }
           throw new RangeError(reconciliation.code);
         }
-        envelope = await bindShareCreateSession({ store: shareRecoveryStore, envelope, sessionAuthority: session.sessionAuthority, sessionExpiresAt: session.expiresAt, now: new Date() });
-        const outcome = await dispatchShareCreateRecovery({ envelope, csrfToken: session.csrfToken });
+        const crossSessionRecovery = pendingShareRecoveryTransport(envelope, sessionAuthority) === "cross-session-recovery";
+        const outcome = crossSessionRecovery
+          ? await dispatchShareCreateReadOnlyRecovery({ envelope, csrfToken })
+          : await (async () => {
+            envelope = await bindShareCreateSession({ store: shareRecoveryStore, envelope, sessionAuthority, sessionExpiresAt: expiresAt, now: new Date() });
+            return dispatchShareCreateRecovery({ envelope, csrfToken });
+          })();
+        if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
         if (outcome.kind === "retain") {
-          setMessage(`ShareStore 응답이 확정되지 않았습니다(${outcome.code}). 저장된 동일 요청/K1으로만 복구합니다.`);
+          setMessage(`ShareStore 응답이 확정되지 않았습니다(${outcome.code}). 저장된 동일 요청/K1의 read-only 복구만 유지합니다.`);
           return;
         }
         if (outcome.kind === "fresh-allowed") {
-          envelope = await allowShareCreateFreshIntent({ store: shareRecoveryStore, envelope, reason: "retired-replay", now: new Date() });
+          envelope = await allowShareCreateFreshIntent({
+            store: shareRecoveryStore,
+            envelope,
+            reason: outcome.code === "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" ? "deterministic-no-effect" : "retired-replay",
+            now: new Date(),
+          });
           setShareFreshAllowed(true);
-          setMessage("이전 공유가 확정적으로 만료되었습니다. 명시적 새 요청을 시작할 수 있습니다.");
+          setMessage(outcome.code === "SHARE_CREATE_DETERMINISTIC_NO_EFFECT"
+            ? "이전 요청에 durable 공유 효과가 없음이 확정되었습니다. 명시적 새 요청을 시작할 수 있습니다."
+            : "이전 공유가 확정적으로 만료되었습니다. 명시적 새 요청을 시작할 수 있습니다.");
           return;
         }
         if (outcome.kind === "conflict") throw new RangeError("SHARE_CREATE_RECOVERY_CONFLICT");

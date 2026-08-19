@@ -98,11 +98,16 @@ function isConsumableChordSymbol(value: unknown, requireCanonical: boolean): val
 }
 
 function isCompactPitch(value: unknown): value is CompactPitch {
-  return Array.isArray(value)
-    && value.length === 3
-    && ["C", "D", "E", "F", "G", "A", "B"].includes(String(value[0]))
-    && [-2, -1, 0, 1, 2].includes(value[1] as number)
-    && Number.isSafeInteger(value[2]);
+  if (!Array.isArray(value)
+    || value.length !== 3
+    || !["C", "D", "E", "F", "G", "A", "B"].includes(String(value[0]))
+    || ![-2, -1, 0, 1, 2].includes(value[1] as number)
+    || !Number.isSafeInteger(value[2])) return false;
+  const octave = value[2] as number;
+  if (octave < -1 || octave > 9) return false;
+  const natural = ({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 } as const)[value[0] as Step];
+  const midi = (octave + 1) * 12 + natural + (value[1] as number);
+  return midi >= 0 && midi <= 127;
 }
 
 function isCompactEvent(value: unknown, measureCount: number): value is CompactVocalEvent {
@@ -157,9 +162,8 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
     && (measure.lyricVerseIndex as number) > 0
     && Array.isArray(measure.timeSignature)
     && measure.timeSignature.length === 2
-    && Number.isSafeInteger(measure.timeSignature[0])
-    && measure.timeSignature[0] > 0
-    && (measure.timeSignature[1] === 4 || measure.timeSignature[1] === 8)
+    && ((measure.timeSignature[0] === 4 && measure.timeSignature[1] === 4)
+      || (measure.timeSignature[0] === 6 && measure.timeSignature[1] === 8))
     && isPositiveCompactFraction(measure.duration))) return false;
   const lyrics = value.lyrics;
   if (lyrics.length > PRACTICE_SHARE_LIMITS.maxLyrics || !lyrics.every((token) => isPlainRecord(token)

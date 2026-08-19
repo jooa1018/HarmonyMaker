@@ -3,9 +3,10 @@ import "server-only";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-import { semanticDigest } from "../../domain/digest/canonical";
+import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
 import { isPracticeSharePayload } from "../../domain/share";
 import type { RightsBasis } from "../../domain/source/model";
+import { isShareCreateIdempotencyKey } from "../../product/share-create-key";
 import { ProductionSubstrateConfigurationError } from "../substrate/config";
 import { getProductionServices } from "../substrate/services";
 import { SESSION_COOKIE_NAME, SessionSecurityError } from "../security/session";
@@ -63,6 +64,18 @@ export async function parseShareCreateBody(value: unknown) {
     || !isPracticeSharePayload(record.payload) || !rights.includes(record.rightsBasis as RightsBasis)
     || typeof record.idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/u.test(record.idempotencyKey)) throw new RangeError("SHARE_REQUEST_INVALID");
   return { payload: record.payload, rightsBasis: record.rightsBasis as RightsBasis, idempotencyKey: record.idempotencyKey, requestDigest: await semanticDigest({ payload: record.payload, rightsBasis: record.rightsBasis }) };
+}
+
+export function parseShareCreateRecoveryBody(value: unknown): { readonly idempotencyKey: string; readonly requestDigest: SemanticDigest } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("SHARE_CREATE_RECOVERY_INVALID");
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 2
+    || !Object.hasOwn(record, "idempotencyKey") || !Object.hasOwn(record, "requestDigest")
+    || !isShareCreateIdempotencyKey(record.idempotencyKey)
+    || typeof record.requestDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.requestDigest)) {
+    throw new RangeError("SHARE_CREATE_RECOVERY_INVALID");
+  }
+  return { idempotencyKey: record.idempotencyKey, requestDigest: record.requestDigest as SemanticDigest };
 }
 
 export function readBoundedShareJson(request: NextRequest, maxBytes = SHARE_REQUEST_MAX_BYTES): Promise<unknown> {

@@ -128,6 +128,7 @@ export interface OmrCleanupItemFailure {
 export interface OmrCleanupBatchSummary {
   readonly attemptedJobs: number;
   readonly completedJobs: number;
+  readonly pendingJobs: number;
   readonly failedJobs: number;
   readonly results: readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[];
   readonly failures: readonly OmrCleanupItemFailure[];
@@ -1196,7 +1197,14 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         await this.recordAuditBestEffort(job.id, "job-delete", "cleanup-isolated-failure", now.toISOString());
       }
     }
-    return { attemptedJobs: expired.length, completedJobs: results.length, failedJobs: failures.length, results, failures };
+    return {
+      attemptedJobs: expired.length,
+      completedJobs: results.filter(({ result }) => result.cleanupState === "resolved").length,
+      pendingJobs: results.filter(({ result }) => result.cleanupState === "pending").length,
+      failedJobs: failures.length,
+      results,
+      failures,
+    };
   }
 
   async cleanupExpiredJobs(limit = 50): Promise<readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[]> {

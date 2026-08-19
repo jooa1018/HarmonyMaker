@@ -4,7 +4,7 @@ import type { Pool, PoolClient } from "pg";
 
 import type {
   AbuseReportInput, AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, CleanupResult, DurableShareRecord, GovernanceStore,
-  IdempotencyClaim, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
+  IdempotencyClaim, IdempotencyRecoveryLookup, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
 } from "./store";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -137,6 +137,32 @@ export class PostgresGovernanceStore implements GovernanceStore {
     const row = existing.rows[0];
     if (!row || row.request_digest !== input.requestDigest) return { status: "conflict" };
     return row.state === "complete" ? { status: "replay", response: row.response_json } : { status: "pending" };
+  }
+  async recoverIdempotency(input: { readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly now: string }): Promise<IdempotencyRecoveryLookup> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        "SELECT id,request_digest,state,response_json,claim_expires_at,expires_at FROM idempotency_records WHERE operation=$1 AND key_hash=$2 ORDER BY id LIMIT 2 FOR UPDATE",
+        [input.operation, input.keyHash],
+      );
+      if (result.rows.length === 0) { await client.query("COMMIT"); return { status: "missing" }; }
+      if (result.rows.length !== 1) { await client.query("COMMIT"); return { status: "ambiguous" }; }
+      const row = result.rows[0];
+      if (row.request_digest !== input.requestDigest) { await client.query("COMMIT"); return { status: "conflict" }; }
+      if (row.state === "complete") {
+        await client.query("COMMIT");
+        return iso(row.expires_at as Date) <= input.now ? { status: "expired" } : { status: "replay", response: row.response_json };
+      }
+      if (iso(row.claim_expires_at as Date) > input.now) { await client.query("COMMIT"); return { status: "pending" }; }
+      const retired = await client.query("DELETE FROM idempotency_records WHERE id=$1 AND state='pending'", [row.id]);
+      if (retired.rowCount !== 1) throw new Error("IDEMPOTENCY_RECOVERY_FENCE_FAILED");
+      await client.query("COMMIT");
+      return { status: "retired-no-effect" };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
   async completeIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly response: unknown }): Promise<void> {
     const result = await this.database.query(

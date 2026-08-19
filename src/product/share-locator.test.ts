@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PracticeSharePayload } from "../domain/share";
-import { reduceShareLocatorLoad, resolveShareLocator } from "./share-locator";
+import { displayedShareLocatorState, reduceShareLocatorLoad, resolveShareLocator } from "./share-locator";
 
 const payload = { schemaVersion: 3 } as PracticeSharePayload;
 
@@ -33,5 +33,16 @@ describe("public share locator authority", () => {
     state = reduceShareLocatorLoad(state, { type: "success", key: "stored:A", payload });
     expect(reduceShareLocatorLoad(state, { type: "reported", key: "stored:B" })).toBe(state);
     expect(reduceShareLocatorLoad(state, { type: "reported", key: "stored:A" })).toMatchObject({ status: "loaded", key: "stored:A", reported: true });
+  });
+
+  it("hides stale A synchronously on the first B render before a passive begin effect", () => {
+    const resolvedA = resolveShareLocator("stored-token-A1234", "");
+    if (resolvedA.status !== "valid") throw new Error("expected valid A locator");
+    let state = reduceShareLocatorLoad({ status: "idle" }, { type: "begin", key: resolvedA.key, locator: resolvedA.locator });
+    state = reduceShareLocatorLoad(state, { type: "success", key: resolvedA.key, payload });
+    const locatorB = resolveShareLocator("stored-token-B1234", "");
+    expect(displayedShareLocatorState(state, locatorB)).toBeUndefined();
+    expect(displayedShareLocatorState(state, resolvedA)).toBe(state);
+    expect(displayedShareLocatorState(state, resolveShareLocator("stored-token-A1234", "#p=inline"))).toBeUndefined();
   });
 });

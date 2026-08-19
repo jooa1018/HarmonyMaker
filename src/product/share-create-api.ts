@@ -13,6 +13,13 @@ export type ShareOwnerReconcileApiOutcome =
   | { readonly kind: "retain"; readonly code: "NETWORK_UNCERTAIN" | "RESPONSE_UNCERTAIN" | "REQUEST_TIMEOUT" | "SERVER_TRANSIENT" }
   | { readonly kind: "rejected"; readonly code: string };
 
+export type ShareCreateReadOnlyRecoveryOutcome =
+  | { readonly kind: "completed"; readonly response: StoredShareCreateResponse }
+  | { readonly kind: "retain"; readonly code: "NETWORK_UNCERTAIN" | "RESPONSE_UNCERTAIN" | "REQUEST_TIMEOUT" | "RATE_LIMITED" | "SERVER_TRANSIENT" | "IDEMPOTENCY_PENDING" }
+  | { readonly kind: "fresh-allowed"; readonly code: "SHARE_CREATE_REPLAY_RETIRED" | "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" }
+  | { readonly kind: "conflict"; readonly code: "IDEMPOTENCY_CONFLICT" | "IDEMPOTENCY_AMBIGUOUS" }
+  | { readonly kind: "rejected"; readonly code: string };
+
 function errorCode(body: unknown): string | undefined {
   if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
   const error = (body as Record<string, unknown>).error;
@@ -89,6 +96,48 @@ export function completedShareRecoveryTransport(envelope: ShareCreateRecoveryEnv
     && envelope.sessionAuthority !== currentSessionAuthority
     ? "owner-reconcile"
     : "idempotent-replay";
+}
+
+export function pendingShareRecoveryTransport(envelope: ShareCreateRecoveryEnvelope, currentSessionAuthority: string): "idempotent-replay" | "cross-session-recovery" {
+  return envelope.operationLifecycle === "pending" && envelope.sessionAuthority !== undefined
+    && envelope.sessionAuthority !== currentSessionAuthority
+    ? "cross-session-recovery"
+    : "idempotent-replay";
+}
+
+export function classifyShareCreateReadOnlyRecoveryResult(status: number, body: unknown): ShareCreateReadOnlyRecoveryOutcome {
+  const ordinary = classifyShareCreateApiResult(status, body);
+  if (ordinary.kind === "completed" || ordinary.kind === "fresh-allowed") return ordinary;
+  const code = errorCode(body);
+  if (code === "SHARE_CREATE_DETERMINISTIC_NO_EFFECT") return { kind: "fresh-allowed", code };
+  if (code === "IDEMPOTENCY_PENDING") return { kind: "retain", code };
+  if (code === "IDEMPOTENCY_CONFLICT" || code === "IDEMPOTENCY_AMBIGUOUS") return { kind: "conflict", code };
+  if (status === 408) return { kind: "retain", code: "REQUEST_TIMEOUT" };
+  if (status === 429) return { kind: "retain", code: "RATE_LIMITED" };
+  if (status >= 500) return { kind: "retain", code: "SERVER_TRANSIENT" };
+  if (status === 200) return { kind: "retain", code: "RESPONSE_UNCERTAIN" };
+  return { kind: "rejected", code: code ?? "SHARE_CREATE_RECOVERY_REJECTED" };
+}
+
+export async function dispatchShareCreateReadOnlyRecovery(input: {
+  readonly envelope: ShareCreateRecoveryEnvelope;
+  readonly csrfToken: string;
+  readonly fetcher?: typeof fetch;
+  readonly signal?: AbortSignal;
+}): Promise<ShareCreateReadOnlyRecoveryOutcome> {
+  if (input.envelope.operationLifecycle !== "pending") return { kind: "rejected", code: "SHARE_CREATE_RECOVERY_INVALID" };
+  try {
+    const response = await (input.fetcher ?? fetch)("/api/shares/recover", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": input.csrfToken },
+      body: JSON.stringify({ idempotencyKey: input.envelope.idempotencyKey, requestDigest: input.envelope.requestDigest }),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    let body: unknown;
+    try { body = await response.json(); }
+    catch { body = undefined; }
+    return classifyShareCreateReadOnlyRecoveryResult(response.status, body);
+  } catch { return { kind: "retain", code: "NETWORK_UNCERTAIN" }; }
 }
 
 export function classifyShareOwnerReconcileApiResult(status: number, body: unknown): ShareOwnerReconcileApiOutcome {

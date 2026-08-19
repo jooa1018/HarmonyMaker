@@ -11,7 +11,7 @@ import { confirmChord, confirmRights, confirmSection, deriveQuickReview, selectL
 import { MemoryLocalProjectStore } from "./local-project-store";
 import { exportArrangementMusicXml } from "./musicxml-export";
 import { buildPlaybackPlan } from "./playback-plan";
-import { arrangementRenderDocumentToAbc, encodeAbcFreeText } from "./score-adapter";
+import { arrangementRenderDocumentToAbc, arrangementRenderDocumentToAbcSafely, encodeAbcFreeText } from "./score-adapter";
 import { createProjectFromQuickReview } from "./workspace";
 
 const digest = "0".repeat(64) as SemanticDigest;
@@ -210,5 +210,21 @@ describe("ABC free-text serialization boundary", () => {
     expect(title).toBe("Original\r\nM:9/8\\\"");
     expect(abc.split("\n").filter((line) => line.startsWith("M:"))).toEqual(["M:4/4"]);
     expect(abc).toContain("T:Original M:9/8/'");
+  });
+
+  it("turns an out-of-bound pitch into a controlled ABC unavailable outcome", () => {
+    const document = renderDocument([{ time: COMMON_TIME, duration: 4 }]);
+    const invalid = {
+      ...document,
+      sourceLeadTrack: {
+        ...document.sourceLeadTrack,
+        atoms: document.sourceLeadTrack.atoms.map((atom) => ({ ...atom, pitch: { ...atom.pitch!, octave: Number.MAX_SAFE_INTEGER } })),
+      },
+    } as ArrangementRenderDocument;
+    expect(arrangementRenderDocumentToAbcSafely(invalid, roles, {
+      title: "Unavailable",
+      key: { tonic: { step: "C", alter: 0 }, mode: "major" },
+      tempo: { beatUnit: 4, dotted: false, bpm: 96 },
+    })).toEqual({ status: "unavailable", code: "ABC_SERIALIZATION_UNAVAILABLE" });
   });
 });

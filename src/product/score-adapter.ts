@@ -17,6 +17,7 @@ interface AdapterEvent {
 }
 
 function abcPitch(pitch: SpelledPitch): string {
+  if (!Number.isSafeInteger(pitch.octave) || pitch.octave < -1 || pitch.octave > 9) throw new RangeError("ABC_SERIALIZATION_UNAVAILABLE");
   const accidental = pitch.alter === -2 ? "__" : pitch.alter === -1 ? "_" : pitch.alter === 1 ? "^" : pitch.alter === 2 ? "^^" : "=";
   const upper = pitch.octave <= 4;
   const letter = upper ? pitch.step : pitch.step.toLowerCase();
@@ -98,4 +99,17 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const score = tracks.map((track) => track.id).join(" ");
   const declarations = tracks.map((track) => `V:${track.id} name="${encodeAbcFreeText(track.label)}" clef=treble`).join("\n");
   return `X:1\nT:${encodeAbcFreeText(input.title)}\nM:${document.measures[0]?.time.numerator ?? 4}/${document.measures[0]?.time.denominator ?? 4}\nL:1/16\nQ:${input.tempo.dotted ? "3/" : "1/"}${input.tempo.beatUnit}=${input.tempo.bpm}\nK:${abcKey(input.key)}\n%%score ${score}\n${declarations}\n${voices}`;
+}
+
+export type AbcSerializationOutcome =
+  | { readonly status: "available"; readonly value: string }
+  | { readonly status: "unavailable"; readonly code: "ABC_SERIALIZATION_UNAVAILABLE" };
+
+export function arrangementRenderDocumentToAbcSafely(
+  document: ArrangementRenderDocument,
+  trackRoles: ProductTrackRoleRegistry,
+  input: { readonly title: string; readonly tempo: TempoSpec; readonly key: KeySignature },
+): AbcSerializationOutcome {
+  try { return { status: "available", value: arrangementRenderDocumentToAbc(document, trackRoles, input) }; }
+  catch { return { status: "unavailable", code: "ABC_SERIALIZATION_UNAVAILABLE" }; }
 }

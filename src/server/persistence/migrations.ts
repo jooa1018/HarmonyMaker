@@ -434,6 +434,12 @@ CREATE INDEX IF NOT EXISTS omr_provider_delete_operations_due_idx
   WHERE dispatch_outcome NOT IN ('acknowledged-deleted','acknowledged-not-supported');
 `;
 
+export const SHARE_CREATE_CROSS_SESSION_RECOVERY_SQL = String.raw`
+CREATE INDEX IF NOT EXISTS idempotency_share_create_recovery_idx
+  ON idempotency_records (operation, key_hash, expires_at, id)
+  WHERE operation = 'share-create-v1';
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
@@ -448,6 +454,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 11, name: "object_publication_physical_key_isolation", sql: OBJECT_PUBLICATION_PHYSICAL_KEY_ISOLATION_SQL },
   { version: 12, name: "share_moderation_lifecycle", sql: SHARE_MODERATION_LIFECYCLE_SQL },
   { version: 13, name: "omr_provider_delete_authority", sql: OMR_PROVIDER_DELETE_AUTHORITY_SQL },
+  { version: 14, name: "share_create_cross_session_recovery", sql: SHARE_CREATE_CROSS_SESSION_RECOVERY_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {

@@ -43,6 +43,15 @@ export type IdempotencyClaim =
   | { readonly status: "pending" }
   | { readonly status: "conflict" };
 
+export type IdempotencyRecoveryLookup =
+  | { readonly status: "missing" }
+  | { readonly status: "pending" }
+  | { readonly status: "conflict" }
+  | { readonly status: "ambiguous" }
+  | { readonly status: "expired" }
+  | { readonly status: "retired-no-effect" }
+  | { readonly status: "replay"; readonly response: unknown };
+
 export interface AbuseReportInput {
   readonly reporterSessionId?: PrivateRowId;
   readonly shareRecordId?: PrivateRowId;
@@ -129,6 +138,13 @@ export interface GovernanceStore {
     readonly claimExpiresAt: string;
     readonly expiresAt: string;
   }): Promise<IdempotencyClaim>;
+  /** Global K1 recovery never creates an effect; an expired pending claim is atomically fenced and retired. */
+  recoverIdempotency(input: {
+    readonly operation: string;
+    readonly keyHash: string;
+    readonly requestDigest: string;
+    readonly now: string;
+  }): Promise<IdempotencyRecoveryLookup>;
   completeIdempotency(input: {
     readonly sessionId: PrivateRowId;
     readonly operation: string;

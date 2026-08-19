@@ -5,15 +5,16 @@ vi.mock("server-only", () => ({}));
 import { Pool } from "pg";
 import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
 import type { PracticeSharePayload } from "../../domain/share";
-import { classifyShareCreateApiResult, completedShareRecoveryTransport } from "../../product/share-create-api";
-import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, MemoryShareCreateRecoveryStore, prepareShareCreateRecovery } from "../../product/share-create-recovery";
+import { classifyShareCreateApiResult, completedShareRecoveryTransport, pendingShareRecoveryTransport } from "../../product/share-create-api";
+import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, type ShareCreateRecoveryEnvelope } from "../../product/share-create-recovery";
 import { applyMigrations } from "../persistence/migrations";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import { PostgresGovernanceStore } from "../persistence/postgres-store";
 import type { GovernanceStore } from "../persistence/store";
 import { QuotaAndIdempotencyService } from "../security/quota-core";
+import { admitAnonymousSession } from "../security/session-admission";
 import { AnonymousSessionService } from "../security/session-core";
-import { createShareIdempotently } from "./idempotent-create";
+import { createShareIdempotently, recoverShareCreateIdempotently } from "./idempotent-create";
 import { readShareWithIpQuota } from "./quota-read";
 import { ShareStoreService } from "./share-store-core";
 
@@ -40,6 +41,7 @@ function payload(title: string): PracticeSharePayload {
 
 interface Harness {
   readonly store: GovernanceStore;
+  readonly pool?: Pool;
   readonly activeShareCount: () => Promise<number>;
   readonly auditKinds: () => Promise<readonly string[]>;
   readonly close: () => Promise<void>;
@@ -64,10 +66,46 @@ async function postgresHarness(): Promise<Harness> {
   await applyMigrations(pool);
   return {
     store: new PostgresGovernanceStore(pool),
+    pool,
     activeShareCount: async () => Number((await pool.query("SELECT count(*)::int AS count FROM share_records WHERE lifecycle='active'")).rows[0].count),
     auditKinds: async () => (await pool.query("SELECT event_kind FROM audit_events ORDER BY id")).rows.map((row) => String(row.event_kind)),
     close: async () => { await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); },
   };
+}
+
+function memoryIndexedDb(): IDBFactory {
+  const rows = new Map<string, ShareCreateRecoveryEnvelope>();
+  let storeCreated = false;
+  const request = <T>(result: T): IDBRequest<T> => {
+    const value = { result, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
+    queueMicrotask(() => value.onsuccess?.({ target: value } as unknown as Event));
+    return value;
+  };
+  const objectStore = {
+    put(value: ShareCreateRecoveryEnvelope) { rows.set(value.projectId, structuredClone(value)); return request(value.projectId); },
+    get(key: string) { return request(rows.get(key)); },
+    delete(key: string) { rows.delete(key); return request(undefined); },
+  } as unknown as IDBObjectStore;
+  const database = {
+    objectStoreNames: { contains: () => storeCreated },
+    createObjectStore: () => { storeCreated = true; return objectStore; },
+    transaction: () => {
+      const transaction = { oncomplete: null, onerror: null, onabort: null, error: null, objectStore: () => objectStore } as unknown as IDBTransaction;
+      setTimeout(() => transaction.oncomplete?.({ target: transaction } as unknown as Event), 0);
+      return transaction;
+    },
+    close: () => undefined,
+  } as unknown as IDBDatabase;
+  return {
+    open: () => {
+      const value = { result: database, onupgradeneeded: null, onsuccess: null, onerror: null, error: null } as unknown as IDBOpenDBRequest;
+      queueMicrotask(() => {
+        if (!storeCreated) value.onupgradeneeded?.({ target: value } as unknown as IDBVersionChangeEvent);
+        value.onsuccess?.({ target: value } as unknown as Event);
+      });
+      return value;
+    },
+  } as unknown as IDBFactory;
 }
 
 async function runShareSessionConformance(makeHarness: () => Promise<Harness>): Promise<void> {
@@ -81,6 +119,12 @@ async function runShareSessionConformance(makeHarness: () => Promise<Harness>): 
     const firstSession = await sessions.issue(now);
     expect(await sessions.verify(firstSession.token, now)).toEqual(firstSession.record);
     expect(sessions.authorityFor(firstSession.record)).toBe(sessions.authorityFor(firstSession.record));
+    await expect(admitAnonymousSession({ sessions, quota, existingToken: firstSession.token, ipAddress: "192.0.2.7", now: new Date(now.getTime() + 1_000) })).resolves.toEqual({
+      status: "existing",
+      csrfToken: firstSession.csrfToken,
+      sessionAuthority: sessions.authorityFor(firstSession.record),
+      expiresAt: firstSession.record.expiresAt,
+    });
     await expect(sessions.authorizeMutation({ sessionToken: firstSession.token, csrfToken: firstSession.csrfToken, origin: "https://hm.test", host: "hm.test", now })).resolves.toEqual(firstSession.record);
     const rotated = await sessions.rotate(firstSession.token, new Date(now.getTime() + 1_000));
     await expect(sessions.verify(firstSession.token, new Date(now.getTime() + 2_000))).rejects.toThrow("SESSION_INVALID");
@@ -107,6 +151,40 @@ async function runShareSessionConformance(makeHarness: () => Promise<Harness>): 
     expect(concurrent.filter((result) => result.status === 200 || result.status === 409)).toHaveLength(7);
     const concurrentCreated = concurrent.find((result) => result.status === 201)!;
     for (const result of concurrent.filter((candidate) => candidate.status === 200)) expect(result.body).toEqual(concurrentCreated.body);
+    expect(await harness.activeShareCount()).toBe(2);
+
+    const crossSessionPayload = payload("cross-session-response-loss");
+    const crossSessionDigest = await semanticDigest({ payload: crossSessionPayload, rightsBasis: "self-authored" });
+    const crossSessionKey = "11111111-1111-4111-8111-111111111111";
+    const crossSessionCreated = await createShareIdempotently({
+      quota, shares, sessionId: rotated.record.id, sessionQuotaOwner: rotated.record.tokenHash,
+      payload: crossSessionPayload, rightsBasis: "self-authored", idempotencyKey: crossSessionKey,
+      requestDigest: crossSessionDigest, now, forceStore: true,
+    });
+    expect(crossSessionCreated.status).toBe(201);
+    const replacementAdmission = await admitAnonymousSession({
+      sessions, quota, existingToken: rotated.token, ipAddress: "192.0.2.7", now: new Date(now.getTime() + 31 * 86_400_000),
+    });
+    expect(replacementAdmission.status).toBe("created");
+    if (replacementAdmission.status !== "created") throw new Error("expected expired-session re-admission");
+    expect(replacementAdmission.sessionAuthority).not.toBe(sessions.authorityFor(rotated.record));
+    const crossSessionRecovered = await recoverShareCreateIdempotently({ quota, shares, idempotencyKey: crossSessionKey, requestDigest: crossSessionDigest, now: new Date(now.getTime() + 31 * 86_400_000) });
+    expect(crossSessionRecovered).toEqual({ ...crossSessionCreated, status: 200 });
+    expect(await harness.activeShareCount()).toBe(3);
+    const recoveredChoice = (crossSessionRecovered.body as { share: { token: string; ownerDeleteSecret: string } }).share;
+    await shares.ownerDelete(recoveredChoice.token, recoveredChoice.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000));
+    expect(await harness.activeShareCount()).toBe(2);
+
+    const duplicateKey = "66666666-6666-4666-8666-666666666666";
+    const duplicatePayload = payload("duplicate-global-k1");
+    const duplicateDigest = await semanticDigest({ payload: duplicatePayload, rightsBasis: "self-authored" });
+    const duplicateA = await createShareIdempotently({ quota, shares, sessionId: rotated.record.id, sessionQuotaOwner: rotated.record.tokenHash, payload: duplicatePayload, rightsBasis: "self-authored", idempotencyKey: duplicateKey, requestDigest: duplicateDigest, now, forceStore: true });
+    const duplicateB = await createShareIdempotently({ quota, shares, sessionId: replacementAdmission.issued.record.id, sessionQuotaOwner: replacementAdmission.issued.record.tokenHash, payload: duplicatePayload, rightsBasis: "self-authored", idempotencyKey: duplicateKey, requestDigest: duplicateDigest, now, forceStore: true });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: duplicateKey, requestDigest: duplicateDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_AMBIGUOUS" } } });
+    for (const duplicate of [duplicateA, duplicateB]) {
+      const choice = (duplicate.body as { share: { token: string; ownerDeleteSecret: string } }).share;
+      await shares.ownerDelete(choice.token, choice.ownerDeleteSecret, now);
+    }
     expect(await harness.activeShareCount()).toBe(2);
 
     const quotaResults = await Promise.all(Array.from({ length: 20 }, () => quota.consumeHourly({ ownerKind: "ip-hmac", owner: "192.0.2.80", policyKey: "conformance-v1", limit: 3, now })));
@@ -160,11 +238,13 @@ describe("actual PostgreSQL browser share-create recovery", () => {
       const quota = new QuotaAndIdempotencyService(harness.store, key(3));
       const shares = new ShareStoreService(harness.store, key(4), key(5), key(6), key(7));
       const issued = await sessions.issue(now);
-      const browser = new MemoryShareCreateRecoveryStore();
+      const factory = memoryIndexedDb();
+      const browserBeforeLoss = new IndexedDbShareCreateRecoveryStore(factory);
       const canonicalRequest = { payload: payload("browser-pg-response-loss"), rightsBasis: "self-authored" as const };
-      const identifiers = ["request-key-browser-pg-K1", "intent-browser-pg-K1"];
+      const k1 = "44444444-4444-4444-8444-444444444444";
+      const identifiers = [k1, "intent-browser-pg-K1"];
       let envelope = await prepareShareCreateRecovery({
-        store: browser,
+        store: browserBeforeLoss,
         projectId: "project:browser-pg",
         canonicalRequest,
         explicitFreshIntent: false,
@@ -172,8 +252,8 @@ describe("actual PostgreSQL browser share-create recovery", () => {
         now,
       });
       expect(await harness.activeShareCount()).toBe(0);
-      envelope = await bindShareCreateSession({ store: browser, envelope, sessionAuthority: sessions.authorityFor(issued.record), sessionExpiresAt: issued.record.expiresAt, now });
-      expect(await browser.load("project:browser-pg")).toMatchObject({ operationLifecycle: "pending", idempotencyKey: "request-key-browser-pg-K1" });
+      envelope = await bindShareCreateSession({ store: browserBeforeLoss, envelope, sessionAuthority: sessions.authorityFor(issued.record), sessionExpiresAt: issued.record.expiresAt, now });
+      expect(await browserBeforeLoss.load("project:browser-pg")).toMatchObject({ operationLifecycle: "pending", idempotencyKey: k1 });
 
       const request = {
         quota, shares, sessionId: issued.record.id, sessionQuotaOwner: issued.record.tokenHash,
@@ -183,49 +263,100 @@ describe("actual PostgreSQL browser share-create recovery", () => {
       const committedAcknowledgementLost = await createShareIdempotently(request);
       expect(committedAcknowledgementLost.status).toBe(201);
       expect(await harness.activeShareCount()).toBe(1);
-      expect((await browser.load("project:browser-pg"))?.operationLifecycle).toBe("pending");
+      expect((await browserBeforeLoss.load("project:browser-pg"))?.operationLifecycle).toBe("pending");
 
+      const recoveryAt = new Date(now.getTime() + 31 * 86_400_000);
+      const replacementAdmission = await admitAnonymousSession({ sessions, quota, existingToken: issued.token, ipAddress: "192.0.2.91", now: recoveryAt });
+      expect(replacementAdmission.status).toBe("created");
+      if (replacementAdmission.status !== "created") throw new Error("expected replacement session");
+      const browserAfterReload = new IndexedDbShareCreateRecoveryStore(factory);
       const reloaded = await prepareShareCreateRecovery({
-        store: browser,
+        store: browserAfterReload,
         projectId: "project:browser-pg",
         canonicalRequest: { payload: payload("regenerated-must-not-replace-frozen-request"), rightsBasis: "self-authored" },
         explicitFreshIntent: false,
         generateId: () => "must-not-rotate",
-        now: new Date(now.getTime() + 1_000),
+        now: recoveryAt,
       });
-      expect(reloaded.idempotencyKey).toBe("request-key-browser-pg-K1");
+      expect(reloaded.idempotencyKey).toBe(k1);
       expect(reloaded.canonicalRequest.payload.title).toBe("browser-pg-response-loss");
-      const replay = await createShareIdempotently({ ...request, now: new Date(now.getTime() + 1_000) });
+      expect(pendingShareRecoveryTransport(reloaded, replacementAdmission.sessionAuthority)).toBe("cross-session-recovery");
+      const replay = await recoverShareCreateIdempotently({ quota, shares, idempotencyKey: reloaded.idempotencyKey, requestDigest: reloaded.requestDigest, now: recoveryAt });
       const outcome = classifyShareCreateApiResult(replay.status, replay.body);
       expect(outcome.kind).toBe("completed");
       if (outcome.kind !== "completed") throw new Error("expected completed replay");
-      await completeShareCreateRecovery({ store: browser, envelope: reloaded, response: outcome.response, now: new Date(now.getTime() + 1_000) });
-      const recovered = await browser.load("project:browser-pg");
+      await completeShareCreateRecovery({ store: browserAfterReload, envelope: reloaded, response: outcome.response, now: recoveryAt });
+      const browserAfterCompletionReload = new IndexedDbShareCreateRecoveryStore(factory);
+      const recovered = await browserAfterCompletionReload.load("project:browser-pg");
       expect(recovered).toMatchObject({
         operationLifecycle: "completed",
-        idempotencyKey: "request-key-browser-pg-K1",
+        idempotencyKey: k1,
         createdResponse: outcome.response,
-        completedAuthorities: [outcome.response],
+        completedAuthorities: [{ ...outcome.response, idempotencyKey: k1 }],
       });
       expect(replay).toEqual({ ...committedAcknowledgementLost, status: 200 });
       expect(await harness.activeShareCount()).toBe(1);
 
       if (!recovered) throw new Error("browser recovery envelope missing");
-      const rotatedSession = await sessions.issue(new Date(now.getTime() + 31 * 86_400_000));
-      expect(completedShareRecoveryTransport(recovered, sessions.authorityFor(rotatedSession.record))).toBe("owner-reconcile");
-      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000))).resolves.toEqual({ status: "active" });
-      const expiredAt = new Date(now.getTime() + 181 * 86_400_000);
-      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, expiredAt)).resolves.toEqual({ status: "retired", reason: "expired" });
-      const retired = await allowShareCreateFreshIntent({ store: browser, envelope: recovered, reason: "retired-replay", now: expiredAt });
-      const freshIds = ["request-key-browser-pg-K2", "intent-browser-pg-K2"];
-      const fresh = await prepareShareCreateRecovery({ store: browser, projectId: "project:browser-pg", canonicalRequest: { payload: payload("fresh-after-expiry"), rightsBasis: "self-authored" }, explicitFreshIntent: true, generateId: () => freshIds.shift() ?? "unexpected-fresh-id", now: new Date(expiredAt.getTime() + 1) });
-      expect(retired.freshIntentAuthority).toMatchObject({ reason: "retired-replay" });
-      expect(fresh).toMatchObject({ operationLifecycle: "pending", idempotencyKey: "request-key-browser-pg-K2", completedAuthorities: [{ token: outcome.response.token, idempotencyKey: "request-key-browser-pg-K1" }] });
-
-      await shares.ownerDelete(outcome.response.token, outcome.response.ownerDeleteSecret, expiredAt);
-      await expect(shares.read(outcome.response.token, expiredAt)).rejects.toThrow("SHARE_UNAVAILABLE");
+      expect(completedShareRecoveryTransport(recovered, replacementAdmission.sessionAuthority)).toBe("owner-reconcile");
+      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt)).resolves.toEqual({ status: "active" });
+      await shares.ownerDelete(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt);
+      await expect(shares.read(outcome.response.token, recoveryAt)).rejects.toThrow("SHARE_UNAVAILABLE");
       expect(await harness.activeShareCount()).toBe(0);
+      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt)).resolves.toEqual({ status: "retired", reason: "owner-deleted" });
+      const retired = await allowShareCreateFreshIntent({ store: browserAfterCompletionReload, envelope: recovered, reason: "owner-deleted", now: recoveryAt });
+      const k2 = "55555555-5555-4555-8555-555555555555";
+      const freshIds = [k2, "intent-browser-pg-K2"];
+      const fresh = await prepareShareCreateRecovery({ store: browserAfterCompletionReload, projectId: "project:browser-pg", canonicalRequest: { payload: payload("fresh-after-owner-delete"), rightsBasis: "self-authored" }, explicitFreshIntent: true, generateId: () => freshIds.shift() ?? "unexpected-fresh-id", now: new Date(recoveryAt.getTime() + 1) });
+      expect(retired.freshIntentAuthority).toMatchObject({ reason: "owner-deleted" });
+      expect(fresh).toMatchObject({ operationLifecycle: "pending", idempotencyKey: k2, completedAuthorities: [{ token: outcome.response.token, idempotencyKey: k1 }] });
     } finally { await harness.close(); }
+  }, 30_000);
+
+  it("serializes expired-pending retirement ahead of a stale aggregate completion", async () => {
+    const harness = await postgresHarness();
+    const blocker = await harness.pool!.connect();
+    try {
+      const sessions = new AnonymousSessionService(harness.store, key(1), key(2), false);
+      const quota = new QuotaAndIdempotencyService(harness.store, key(3));
+      const shares = new ShareStoreService(harness.store, key(4), key(5), key(6), key(7));
+      const issued = await sessions.issue(now);
+      const requestPayload = payload("pg-pending-fence");
+      const requestDigest = await semanticDigest({ payload: requestPayload, rightsBasis: "self-authored" });
+      const idempotencyKey = "77777777-7777-4777-8777-777777777777";
+      const claim = await quota.claimIdempotency({ sessionId: issued.record.id, operation: "share-create-v1", key: idempotencyKey, requestDigest, now, pendingLeaseSeconds: 1 });
+      expect(claim.status).toBe("claimed");
+      if (claim.status !== "claimed") throw new Error("expected claimed row");
+
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM idempotency_records WHERE session_id=$1 AND operation='share-create-v1' AND key_hash=$2 FOR UPDATE", [issued.record.id, claim.keyHash]);
+      const waitForLockWaiter = async (queryPrefix: string): Promise<void> => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const observed = await harness.pool!.query(
+            "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1",
+            [`${queryPrefix}%`],
+          );
+          if (Number(observed.rows[0].count) > 0) return;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        throw new Error("EXPECTED_POSTGRES_LOCK_WAITER");
+      };
+      const recovery = recoverShareCreateIdempotently({ quota, shares, idempotencyKey, requestDigest, now: new Date(now.getTime() + 1_001) });
+      await waitForLockWaiter("SELECT id,request_digest,state,response_json,claim_expires_at,expires_at FROM idempotency_records");
+      const staleCompletion = shares.createAndCompleteIdempotency({
+        ownerSessionId: issued.record.id, payload: requestPayload, rightsBasis: "self-authored", now, forceStore: true,
+        idempotency: { operation: "share-create-v1", keyHash: claim.keyHash, requestDigest, claimCreatedAt: claim.claimCreatedAt },
+      });
+      await waitForLockWaiter("SELECT request_digest,state,created_at FROM idempotency_records");
+      await blocker.query("COMMIT");
+      await expect(recovery).resolves.toMatchObject({ status: 409, body: { error: { code: "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" } } });
+      await expect(staleCompletion).rejects.toThrow("IDEMPOTENCY_NOT_CLAIMED");
+      expect(await harness.activeShareCount()).toBe(0);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await harness.close();
+    }
   }, 30_000);
 });
 

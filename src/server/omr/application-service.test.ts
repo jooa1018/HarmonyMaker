@@ -525,9 +525,31 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(h.service.cleanupExpiredJobsForScheduler()).resolves.toEqual({
       attemptedJobs: 1,
       completedJobs: 0,
+      pendingJobs: 0,
       failedJobs: 1,
       results: [],
       failures: [{ jobId: "1", code: "OMR_DELETE_FAULT_INJECTED" }],
+    });
+  });
+
+  it("reports a retryable delete outcome as pending rather than completed", async () => {
+    const h = await harness();
+    await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "cleanup-summary-pending" });
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    const internal = h.service as unknown as { deleteRecord: (...input: readonly unknown[]) => Promise<never> };
+    vi.spyOn(internal, "deleteRecord").mockResolvedValueOnce({
+      localHandleDeleted: true,
+      vendor: { status: "failed", code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", message: "pending" },
+      cleanupState: "pending",
+      nextAttemptAt: "2026-01-02T00:00:00.000Z",
+    } as never);
+    await expect(h.service.cleanupExpiredJobsForScheduler()).resolves.toMatchObject({
+      attemptedJobs: 1,
+      completedJobs: 0,
+      pendingJobs: 1,
+      failedJobs: 0,
+      results: [{ jobId: "1", result: { cleanupState: "pending" } }],
+      failures: [],
     });
   });
 

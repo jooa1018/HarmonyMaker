@@ -33,6 +33,13 @@ export type ShareLocatorLoadAction =
   | { readonly type: "failure"; readonly key?: string; readonly code: string }
   | { readonly type: "reported"; readonly key: string };
 
+export type DisplayedShareLocatorState = Extract<ShareLocatorLoadState, { readonly status: "loaded" }>;
+
+/** Render authority is synchronous: passive effects are not needed to hide a stale prior locator. */
+export function displayedShareLocatorState(state: ShareLocatorLoadState, locator: ShareLocatorResult | undefined): DisplayedShareLocatorState | undefined {
+  return locator?.status === "valid" && state.status === "loaded" && state.key === locator.key ? state : undefined;
+}
+
 export function reduceShareLocatorLoad(state: ShareLocatorLoadState, action: ShareLocatorLoadAction): ShareLocatorLoadState {
   if (action.type === "begin") return { status: "loading", key: action.key, locator: action.locator };
   if (action.type === "failure") {

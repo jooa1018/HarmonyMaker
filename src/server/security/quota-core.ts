@@ -1,5 +1,5 @@
 import type { SemanticDigest } from "../../domain/digest/canonical";
-import type { GovernanceStore, IdempotencyClaim, PrivateRowId } from "../persistence/store";
+import type { GovernanceStore, IdempotencyClaim, IdempotencyRecoveryLookup, PrivateRowId } from "../persistence/store";
 import { keyedTokenHash } from "./crypto-core";
 
 export const OMR_QUOTA_POLICY = Object.freeze({ maxConcurrentJobsPerSession: 1, maxJobsPerSessionPerHour: 3 });
@@ -50,6 +50,11 @@ export class QuotaAndIdempotencyService {
 
   async completeIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly response: unknown }): Promise<void> {
     await this.store.completeIdempotency(input);
+  }
+
+  async recoverIdempotency(input: { readonly operation: string; readonly key: string; readonly requestDigest: SemanticDigest; readonly now: Date }): Promise<IdempotencyRecoveryLookup> {
+    const keyHash = keyedTokenHash(input.key, this.hmacKey, "idempotency-v1");
+    return this.store.recoverIdempotency({ operation: input.operation, keyHash, requestDigest: input.requestDigest, now: input.now.toISOString() });
   }
 
   async releaseIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly claimCreatedAt?: string }): Promise<void> {

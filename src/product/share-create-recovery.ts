@@ -1,6 +1,7 @@
 import { semanticDigest, type SemanticDigest } from "../domain/digest/canonical";
 import { isPracticeSharePayload, type PracticeSharePayload } from "../domain/share";
 import type { RightsBasis } from "../domain/source/model";
+import { isShareCreateIdempotencyKey } from "./share-create-key";
 
 export const SHARE_CREATE_RECOVERY_VERSION = 1 as const;
 const DATABASE_NAME = "harmonymaker-share-authority-v1";
@@ -47,6 +48,16 @@ export class ShareCreateOperationGate {
   finish(): void { this.active = false; }
 }
 
+export function restoredShareCreateUiAuthority(envelope: ShareCreateRecoveryEnvelope): {
+  readonly freshIntentAllowed: boolean;
+  readonly createdResponse?: StoredShareCreateResponse;
+} {
+  return {
+    freshIntentAllowed: envelope.freshIntentAuthority !== undefined,
+    ...(envelope.operationLifecycle === "completed" && envelope.createdResponse ? { createdResponse: envelope.createdResponse } : {}),
+  };
+}
+
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -77,7 +88,7 @@ function validCompletedAuthority(value: unknown): value is StoredCompletedShareA
     && ["token", "ownerDeleteSecret", "idempotencyKey", "requestDigest", "completedAt"].every((key) => Object.hasOwn(record, key))
     && typeof record.token === "string" && /^[A-Za-z0-9_-]{8,512}$/u.test(record.token)
     && typeof record.ownerDeleteSecret === "string" && /^[A-Za-z0-9_-]{8,512}$/u.test(record.ownerDeleteSecret)
-    && typeof record.idempotencyKey === "string" && /^[A-Za-z0-9._:-]{8,128}$/u.test(record.idempotencyKey)
+    && isShareCreateIdempotencyKey(record.idempotencyKey)
     && typeof record.requestDigest === "string" && /^[0-9a-f]{64}$/u.test(record.requestDigest)
     && typeof record.completedAt === "string" && !Number.isNaN(Date.parse(record.completedAt));
 }
@@ -95,7 +106,7 @@ function validEnvelopeShape(value: unknown): value is ShareCreateRecoveryEnvelop
     && Object.keys(request).length === 2 && Object.hasOwn(request, "payload") && Object.hasOwn(request, "rightsBasis")
     && isPracticeSharePayload(request.payload) && RIGHTS.includes(request.rightsBasis as RightsBasis)
     && typeof record.requestDigest === "string" && /^[0-9a-f]{64}$/u.test(record.requestDigest)
-    && typeof record.idempotencyKey === "string" && /^[A-Za-z0-9._:-]{8,128}$/u.test(record.idempotencyKey)
+    && isShareCreateIdempotencyKey(record.idempotencyKey)
     && (record.operationLifecycle === "pending" || record.operationLifecycle === "completed")
     && typeof record.explicitFreshIntentId === "string" && record.explicitFreshIntentId.length > 0
     && (record.sessionAuthority === undefined || (typeof record.sessionAuthority === "string" && record.sessionAuthority.length >= 32))
@@ -116,9 +127,11 @@ async function validatedEnvelope(value: unknown): Promise<ShareCreateRecoveryEnv
 }
 
 export class IndexedDbShareCreateRecoveryStore implements ShareCreateRecoveryStore {
+  constructor(private readonly factory: IDBFactory | undefined = globalThis.indexedDB) {}
+
   private async database(): Promise<IDBDatabase> {
-    if (typeof indexedDB === "undefined") throw new RangeError("LOCAL_STORAGE_UNAVAILABLE");
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    if (!this.factory) throw new RangeError("LOCAL_STORAGE_UNAVAILABLE");
+    const request = this.factory.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME, { keyPath: "projectId" });
     };
@@ -177,7 +190,7 @@ export async function prepareShareCreateRecovery(input: {
   if (!input.explicitFreshIntent && previous) return previous;
   if (input.explicitFreshIntent && previous && !previous.freshIntentAuthority) throw new RangeError("SHARE_CREATE_FRESH_INTENT_NOT_AUTHORIZED");
   const idempotencyKey = input.generateId();
-  if (!/^[A-Za-z0-9._:-]{8,128}$/u.test(idempotencyKey)) throw new RangeError("IDEMPOTENCY_KEY_INVALID");
+  if (!isShareCreateIdempotencyKey(idempotencyKey)) throw new RangeError("IDEMPOTENCY_KEY_INVALID");
   const canonicalRequest = structuredClone(input.canonicalRequest);
   const envelope: ShareCreateRecoveryEnvelope = {
     version: SHARE_CREATE_RECOVERY_VERSION,

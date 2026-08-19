@@ -13,7 +13,7 @@ import type { PrivateRowId } from "../persistence/store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
 import { QuotaAndIdempotencyService, SHARE_CREATE_PER_HOUR } from "../security/quota-core";
 import { AnonymousSessionService } from "../security/session-core";
-import { createShareIdempotently, SHARE_CREATE_REPLAY_RETENTION_DAYS } from "./idempotent-create";
+import { createShareIdempotently, recoverShareCreateIdempotently, SHARE_CREATE_REPLAY_RETENTION_DAYS } from "./idempotent-create";
 import { readShareWithIpQuota } from "./quota-read";
 import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS, URL_SHARE_MAX_ENCODED_BYTES } from "./share-store-core";
 
@@ -309,6 +309,38 @@ describe("ShareStore and URL share", () => {
     expect(store.shares.size).toBe(0);
     await expect(create(recovered)).resolves.toMatchObject({ ok: true, share: { kind: "store" } });
     expect(store.shares.size).toBe(1);
+  });
+
+  it("recovers global UUID K1 exactly and atomically retires an expired pending claim without a share effect", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const k1 = "11111111-1111-4111-8111-111111111111";
+    const requestPayload = payload(64);
+    const requestDigest = await semanticDigest({ payload: requestPayload, rightsBasis: "self-authored" });
+    const created = await createShareIdempotently({ quota, shares, sessionId: owner, sessionQuotaOwner: "old-session", payload: requestPayload, rightsBasis: "self-authored", idempotencyKey: k1, requestDigest, now, forceStore: true });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: k1, requestDigest, now: new Date(now.getTime() + 31 * 86_400_000) })).resolves.toEqual({ ...created, status: 200 });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: k1, requestDigest: await semanticDigest({ changed: true }), now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT" } } });
+    expect(store.shares.size).toBe(1);
+
+    const missingKey = "22222222-2222-4222-8222-222222222222";
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: missingKey, requestDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" } } });
+    expect(store.shares.size).toBe(1);
+
+    const pendingKey = "33333333-3333-4333-8333-333333333333";
+    const pending = await quota.claimIdempotency({ sessionId: owner, operation: "share-create-v1", key: pendingKey, requestDigest, now, pendingLeaseSeconds: 1 });
+    expect(pending.status).toBe("claimed");
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: pendingKey, requestDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_PENDING" } } });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: pendingKey, requestDigest, now: new Date(now.getTime() + 1_001) })).resolves.toMatchObject({ status: 409, body: { error: { code: "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" } } });
+    if (pending.status !== "claimed") throw new Error("expected pending claim");
+    await expect(shares.createAndCompleteIdempotency({
+      ownerSessionId: owner, payload: requestPayload, rightsBasis: "self-authored", now, forceStore: true,
+      idempotency: { operation: "share-create-v1", keyHash: pending.keyHash, requestDigest, claimCreatedAt: pending.claimCreatedAt },
+    })).rejects.toThrow("IDEMPOTENCY_NOT_CLAIMED");
+    expect(store.shares.size).toBe(1);
+
+    await createShareIdempotently({ quota, shares, sessionId: other, sessionQuotaOwner: "other-session", payload: requestPayload, rightsBasis: "self-authored", idempotencyKey: k1, requestDigest, now, forceStore: true });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: k1, requestDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_AMBIGUOUS" } } });
   });
 
   it("applies the ShareStore read limit to an IP-HMAC owner without retaining the raw IP", async () => {
