@@ -12,6 +12,7 @@ const digest = "a".repeat(64) as PracticeSharePayload["arrangementArtifactDigest
 const now = new Date("2026-01-01T00:00:00.000Z");
 const K1 = "11111111-1111-4111-8111-111111111111";
 const K2 = "22222222-2222-4222-8222-222222222222";
+const K3 = "33333333-3333-4333-8333-333333333333";
 
 function canonicalRequest(title = "Frozen at 00:00"): CanonicalShareCreateRequest {
   return {
@@ -69,7 +70,7 @@ describe("durable browser ShareStore create authority", () => {
     const first = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("clock:00:00"), explicitFreshIntent: false, generateId: ids(K1, "intent-K1"), now });
     expect(first).toMatchObject({ idempotencyKey: K1, operationLifecycle: "pending", canonicalRequest: { payload: { title: "clock:00:00" } } });
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const reloaded = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("clock:23:59"), explicitFreshIntent: false, generateId: ids("must-not-rotate", "must-not-rotate-intent"), now: new Date(now.getTime() + 86_400_000 + attempt) });
+      const reloaded = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("clock:23:59"), explicitFreshIntent: false, generateId: ids(K2, `must-not-win-${attempt}`), now: new Date(now.getTime() + 86_400_000 + attempt) });
       expect(reloaded.idempotencyKey).toBe(K1);
       expect(reloaded.canonicalRequest.payload.title).toBe("clock:00:00");
     }
@@ -150,7 +151,7 @@ describe("durable browser ShareStore create authority", () => {
       createdResponse: response,
       completedAuthorities: [{ ...response, idempotencyKey: K1 }],
     });
-    expect(completed?.createdResponse).toEqual(response); // Exact input consumed by the owner-delete workflow after reload.
+    expect(completed?.createdResponse).toEqual(response);
   });
 
   it("restores deterministic-no-effect fresh authority while the old envelope remains pending", async () => {
@@ -167,5 +168,28 @@ describe("durable browser ShareStore create authority", () => {
     expect(restored.createdResponse).toBeUndefined();
     const fresh = await prepareShareCreateRecovery({ store: afterReload, projectId: "project:fresh-reload", canonicalRequest: canonicalRequest("new"), explicitFreshIntent: true, generateId: ids(K2, "intent-2"), now: new Date(now.getTime() + 1) });
     expect(fresh).toMatchObject({ operationLifecycle: "pending", idempotencyKey: K2, canonicalRequest: { payload: { title: "new" } } });
+  });
+
+  it("atomically converges two tabs starting from an empty IndexedDB record onto one K", async () => {
+    const factory = memoryIndexedDb();
+    const firstTab = new IndexedDbShareCreateRecoveryStore(factory);
+    const secondTab = new IndexedDbShareCreateRecoveryStore(factory);
+    const [first, second] = await Promise.all([
+      prepareShareCreateRecovery({ store: firstTab, projectId: "project:two-tab", canonicalRequest: canonicalRequest("same"), explicitFreshIntent: false, generateId: ids(K1, "intent-tab-1"), now }),
+      prepareShareCreateRecovery({ store: secondTab, projectId: "project:two-tab", canonicalRequest: canonicalRequest("same"), explicitFreshIntent: false, generateId: ids(K2, "intent-tab-2"), now }),
+    ]);
+    expect(first.idempotencyKey).toBe(second.idempotencyKey);
+    expect([K1, K2]).toContain(first.idempotencyKey);
+    expect((await firstTab.load("project:two-tab"))?.idempotencyKey).toBe(first.idempotencyKey);
+  });
+
+  it("rejects a stale completion after an explicit fresh generation wins", async () => {
+    const store = new MemoryShareCreateRecoveryStore();
+    let old = await prepareShareCreateRecovery({ store, projectId: "project:stale", canonicalRequest: canonicalRequest("old"), explicitFreshIntent: false, generateId: ids(K1, "intent-old"), now });
+    old = await allowShareCreateFreshIntent({ store, envelope: old, reason: "deterministic-no-effect", now });
+    const fresh = await prepareShareCreateRecovery({ store, projectId: "project:stale", canonicalRequest: canonicalRequest("fresh"), explicitFreshIntent: true, generateId: ids(K3, "intent-fresh"), now: new Date(now.getTime() + 1) });
+    await expect(completeShareCreateRecovery({ store, envelope: old, response: { token: "stale-token", ownerDeleteSecret: "stale-secret" }, now: new Date(now.getTime() + 2) }))
+      .rejects.toThrow("SHARE_CREATE_RECOVERY_SUPERSEDED");
+    expect(await store.load("project:stale")).toMatchObject({ idempotencyKey: fresh.idempotencyKey, operationLifecycle: "pending" });
   });
 });
