@@ -895,3 +895,56 @@ ULTRA_AUDIT_READY = YES
 ```
 
 External verification remaining: provider selection/credentials/accuracy/pricing/refund/retention/idempotency, rights-safe Dev `>=36` and sealed `>=24` corpora, production live PostgreSQL/S3, physical iPhone Safari, and Kakao in-app browser.
+
+## Final cross-generation publication attribution handoff
+
+Starting remote HEAD `263adfbfeddb49d56c3e6a6bfa9e25101b3aa36e` matched exactly, clean and `0/0`. Code checkpoint `6fdab1189dbe403b1e515f6607f0fe0ebbaec104` closes the sole reopened `P1-RESAT-02-C` branch.
+
+```text
+root                        stable-key existence did not identify which concurrent generation materialized it
+Put metadata                hm-publication-generation + domain-separated hm-publication-authority-digest
+authority binding           owner/session + stable key + content type/digest/size + generation + token
+Head classification         exact current / exact predecessor / unknown-malformed / not-found
+caller fencing              returning Put passes its own exact token and generation; no implicit current selection
+A before B                  A settles/deletes only A; B token/generation/mayStillComplete remain durable
+B after A                   B independently settles/deletes; final object count 0; terminal state truthful
+restart                     A and B materializations are rediscovered by attributed metadata after process replacement
+delete failure              B cleanup authority survives failed delete and succeeds on restarted retry
+active regression           B active before delayed A remains active and cannot be deleted by A
+store contract              id + owner + stable key + exact token/generation + lifecycle/cleanup fencing
+migration                   NONE — migrations 1–10 unchanged; full apply PASS
+
+Fake S3                     PASS — 1 file/14 tests
+local suite                 PASS — 66 files/683 tests
+PostgreSQL 17.11            PASS — migrations 1–10, 1 file/17 tests
+typecheck/lint/build/diff   PASS
+Segment B 101 / OMR 101     PASS
+frozen authority            PASS — 2 files/7 tests, six hashes, 99 codes, protected diff 0
+code Actions                PASS — run 32216013561, quality 95957569928, exact SHA 6fdab1189dbe403b1e515f6607f0fe0ebbaec104
+code Vercel                 PASS — F7WD9sse2iJ8HYh8c4jEXBxxrQks; GitHub deployment 5976068679; status 16997856308
+preview                     https://harmony-maker-mqlnlbdel-ecctom1.vercel.app
+```
+
+The containing four-file documentation-only descendant is `FINAL_HANDOFF_INCLUSIVE_REMOTE_HEAD` and receives exact-SHA CI/Vercel verification after push.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02_CROSS_GENERATION_ATTRIBUTION = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.

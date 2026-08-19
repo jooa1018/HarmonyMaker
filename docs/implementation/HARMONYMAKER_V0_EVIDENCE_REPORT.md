@@ -764,3 +764,53 @@ ULTRA_AUDIT_READY = YES
 ```
 
 No production live S3/PostgreSQL or real provider/device/corpus verification was performed. Those external items remain; Ultra and subsequent phases were not started.
+
+## P1-RESAT-02-C cross-generation attribution evidence
+
+The exact starting remote HEAD was `263adfbfeddb49d56c3e6a6bfa9e25101b3aa36e`; the worktree was clean and local/remote divergence was `0/0`. Additive code checkpoint `6fdab1189dbe403b1e515f6607f0fe0ebbaec104` is the implementation authority.
+
+| Evidence | Result |
+|---|---|
+| Root reproduction | A and B Put calls are simultaneously blocked at one stable key; A materializes first after both first-delete passes |
+| S3 attribution | Put metadata records generation plus a domain-separated authority digest over owner, key, content identity/size, generation, and token |
+| A disposition | Head identifies A; only predecessor A is settled; B token/generation and `publication_put_may_still_complete=true` remain |
+| B disposition | B later materializes under its own metadata, is independently settled/deleted, and final object count is zero |
+| Process restart A | Cleanup sees A metadata, clears only A predecessor authority, deletes A, and preserves B |
+| Process restart B | After A deletion, cleanup sees B metadata, settles B, deletes the exact key, and reaches terminal state |
+| Delete failure | Injected B delete failure retains row/token/generation and releases cleanup claim; restart retry succeeds |
+| Unknown metadata | Missing/malformed attribution never settles current/predecessor and preserves the tombstone |
+| Active regression | B active before delayed A remains active; A cannot delete or replace B authority |
+| PostgreSQL | Actual PostgreSQL 17.11 verifies the same row transitions, locks, process replacement, and retry semantics in 1 file/17 tests |
+
+No migration was needed: migrations 1–10 and their checksums are unchanged, and the complete PostgreSQL apply succeeded. The Memory and PostgreSQL store operations now fence `id`, owner, stable object key, exact token/generation, lifecycle, and cleanup generation.
+
+```text
+npm ci                         PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/683 tests
+npm run test:postgres          PASS — PostgreSQL 17.11, migrations 1–10, 1 file/17 tests
+npm run build                  PASS
+git diff --check               PASS
+Segment B 101-run              PASS
+OMR 101-run                    PASS
+frozen/99-code authority       PASS — 2 files/7 tests, six hashes exact, protected diff 0
+```
+
+Exact code-checkpoint remote evidence: Actions run `32216013561`, quality job `95957569928`, SHA `6fdab1189dbe403b1e515f6607f0fe0ebbaec104`, success; Vercel `F7WD9sse2iJ8HYh8c4jEXBxxrQks`, GitHub deployment `5976068679`, deployment status `16997856308`, commit status `52481874207`, success; preview `https://harmony-maker-mqlnlbdel-ecctom1.vercel.app`. The final four-document descendant is verified independently at its own exact SHA.
+
+```text
+P1_RESAT_02_CROSS_GENERATION_ATTRIBUTION = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.

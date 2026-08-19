@@ -467,3 +467,35 @@ SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
 SEGMENT_D_ACCEPTED = YES
 ULTRA_AUDIT_READY = YES
 ```
+
+## Final cross-generation publication attribution checklist
+
+Baseline `263adfbfeddb49d56c3e6a6bfa9e25101b3aa36e` matched exactly. Code checkpoint `6fdab1189dbe403b1e515f6607f0fe0ebbaec104` closes the sole reopened repository finding.
+
+- [x] Every S3 Put records exact publication generation and a domain-separated authority digest bound to owner, stable key, content digest, byte size, and token.
+- [x] Head inspection distinguishes current, predecessor, unknown/malformed, and not-found materialization; an unqualified object never settles current authority.
+- [x] A returning Put propagates its exact token/generation and cannot remove B's token or mark B quiescent.
+- [x] Two blocked generations are independently reconciled; A deletion preserves B future authority and B deletion reaches truthful terminal state.
+- [x] A-process and B-process replacement variants recover from attributed metadata in Memory and actual PostgreSQL 17.11.
+- [x] Generation B delete failure releases only the cleanup lease, retains durable discovery authority, and succeeds on restart retry.
+- [x] B-active/A-late remains one active logical object; malformed metadata remains fail-closed under tombstone authority.
+- [x] Migrations 1–10 inventory/checksums are unchanged; migration 011 is not required.
+- [x] Clean npm validation passed: 66 files/683 tests; actual PostgreSQL 1 file/17 tests; typecheck, lint, build, and diff check.
+- [x] Segment B 101-run, OMR 101-run, and frozen authority 2 files/7 tests passed; six hashes, 99 codes, and protected musical paths are unchanged.
+- [x] Exact code SHA Actions `32216013561` / quality `95957569928` succeeded.
+- [x] Exact code SHA Vercel `F7WD9sse2iJ8HYh8c4jEXBxxrQks`, GitHub deployment `5976068679`, status `16997856308` succeeded at `https://harmony-maker-mqlnlbdel-ecctom1.vercel.app`.
+
+The containing four-document descendant is the final handoff-inclusive remote HEAD and receives separate exact-SHA Actions/Vercel verification after push.
+
+```text
+P1_RESAT_02_CROSS_GENERATION_ATTRIBUTION = CLOSED
+P1_RESAT_02 = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+External verification still remaining, and not part of this closure: real-provider selection/credentials/recognition accuracy and commercial/retention/idempotency contracts; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL/S3; physical iPhone Safari; and Kakao in-app browser.

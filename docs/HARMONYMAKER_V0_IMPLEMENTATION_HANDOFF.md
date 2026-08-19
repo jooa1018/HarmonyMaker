@@ -384,3 +384,44 @@ SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
 SEGMENT_D_ACCEPTED = YES
 ULTRA_AUDIT_READY = YES
 ```
+
+## Final cross-generation publication attribution closure
+
+This narrow reliability closure started from exact remote HEAD `263adfbfeddb49d56c3e6a6bfa9e25101b3aa36e`, with clean worktree, `0/0` divergence, and the required code/Segment C ancestors. Additive code checkpoint `6fdab1189dbe403b1e515f6607f0fe0ebbaec104` closes `P1-RESAT-02-C`.
+
+The residual was a stable-key attribution error: while generation A and generation B `PutObject` calls were both in flight, an A object discovered by an unqualified `HeadObject` could be used to settle B. B could then materialize after terminal deletion with no remaining cleanup authority. Every Put now carries `hm-publication-generation` and a domain-separated `hm-publication-authority-digest` binding owner/session, stable logical object key, content type, content digest, byte size, exact generation, and the high-entropy publication token. Cleanup Head inspection classifies only exact current, exact predecessor, unknown/malformed, or not-found materialization. A live continuation propagates its own token/generation; it can never select the row's current generation implicitly. Unknown or un-attributable materialization remains under a durable tombstone.
+
+The existing generation/predecessor/tombstone fields from migration 10 were sufficient, so migrations 1–10 are byte-unchanged and no migration 011 exists. Completion and settlement store contracts now additionally fence the exact object key in both Memory and PostgreSQL.
+
+Controllable Fake S3 tests independently block A and B, run each first delete, release A, prove B's token/generation and `mayStillComplete` remain intact, then release B and prove two attributed materializations are deleted with final object count zero. Separate tests cover A and B process replacement, metadata-based predecessor/current recovery, B's attributed delete failure and retry, malformed metadata fail-closed behavior, and the existing B-active/A-late regression. Actual PostgreSQL 17.11 repeats the two-generation row transitions, both process-restart variants, and delete-failure recovery.
+
+```text
+npm ci                         PASS — npm 11.6.2, 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/683 tests
+npm run test:postgres          PASS — PostgreSQL 17.11, migrations 1–10, 1 file/17 tests
+npm run build                  PASS — Next.js 16.3.0
+git diff --check               PASS
+Segment B 101-run              PASS — 1 targeted test, 101 complete executions
+OMR 101-run                    PASS — 1 file/1 test, 101 permutations
+frozen/99-code authority       PASS — 2 files/7 tests, six exact hashes, protected production diff 0
+```
+
+Code-checkpoint Actions run `32216013561`, quality job `95957569928`, succeeded at exact SHA `6fdab1189dbe403b1e515f6607f0fe0ebbaec104` with 66/683 and PostgreSQL 1/17. Vercel deployment `F7WD9sse2iJ8HYh8c4jEXBxxrQks`, GitHub deployment `5976068679`, deployment status `16997856308`, and commit status `52481874207` succeeded; preview is `https://harmony-maker-mqlnlbdel-ecctom1.vercel.app`. The containing four-file documentation-only descendant is `FINAL_HANDOFF_INCLUSIVE_REMOTE_HEAD` and is verified separately at its exact SHA after push.
+
+```text
+P1_RESAT_02_CROSS_GENERATION_ATTRIBUTION = CLOSED
+P1_RESAT_02 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started.
