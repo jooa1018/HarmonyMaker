@@ -101,7 +101,7 @@ export class PostgresOmrCreateRecoveryRegistry implements OmrCreateRecoveryRegis
     };
   }
 
-  async recordCreate(_input: OmrCreateRecoveryAuthority & { readonly idempotencyKeyHash: string }): Promise<void> {
+  async recordCreate(): Promise<void> {
     // omr_create_idempotency is the durable recovery ledger. The per-key
     // advisory lock serializes every production claim before this row exists.
   }

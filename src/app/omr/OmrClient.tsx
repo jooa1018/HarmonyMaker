@@ -156,8 +156,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   const manifestRef = useRef(manifest);
   const monitorAbortRef = useRef<AbortController | undefined>(undefined);
   const recoveryAbortRef = useRef<AbortController | undefined>(undefined);
-  const pageSelectionRef = useRef(new OmrPageSelectionAuthority());
-  const pageSelection = pageSelectionRef.current;
+  const [pageSelection] = useState(() => new OmrPageSelectionAuthority());
 
   const currentMonitorAuthority = useCallback((): OmrBrowserMonitorGeneration | undefined => {
     const current = manifestRef.current;
@@ -236,7 +235,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       } else setError(caught instanceof Error ? caught.message : "저장된 OMR manifest를 복구하지 못했습니다.");
     });
     return () => { active = false; };
-  }, []);
+  }, [pageSelection]);
 
   const discardInvalidManifest = async () => {
     abortCurrentAuthorityRequests();
