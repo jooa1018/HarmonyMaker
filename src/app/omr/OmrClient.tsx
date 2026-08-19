@@ -37,11 +37,11 @@ import {
   type OmrBrowserJobManifest,
 } from "./browser-job-manifest";
 import {
-  canCancelOmrStatus, isOmrMonitorRetryDue, isOmrMonitorTerminal, nextOmrMonitorTarget,
+  assertOmrBrowserMonitorGeneration, canCancelOmrStatus, isOmrMonitorRetryDue, isOmrMonitorTerminal,
   nextOmrUploadBindingRetryTarget,
-  OMR_MONITOR_SESSION_BUDGET_MS,
-  omrBrowserAuthorityAction, omrDeletionDisposition, shouldPauseOmrMonitorSession,
-  scheduleOmrMonitorRetryResume,
+  omrBrowserAuthorityAction, omrDeletionDisposition,
+  runOmrBrowserMonitorSession, scheduleOmrMonitorRetryResume, shouldStartOmrMonitorNow,
+  type OmrBrowserMonitorGeneration,
 } from "./browser-job-lifecycle";
 import styles from "./omr.module.css";
 
@@ -153,12 +153,20 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   const manifestRef = useRef(manifest);
   const monitorAbortRef = useRef<AbortController | undefined>(undefined);
 
+  const currentMonitorAuthority = useCallback((): OmrBrowserMonitorGeneration | undefined => {
+    const current = manifestRef.current;
+    return current?.jobHandle
+      ? { jobHandle: current.jobHandle, manifestDigest: current.manifestDigest }
+      : undefined;
+  }, []);
+  const abortCurrentMonitor = useCallback(() => { monitorAbortRef.current?.abort(); }, []);
+
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => { manifestRef.current = manifest; }, [manifest]);
   useEffect(() => () => {
-    monitorAbortRef.current?.abort();
+    abortCurrentMonitor();
     for (const page of pagesRef.current) URL.revokeObjectURL(page.previewUrl);
-  }, []);
+  }, [abortCurrentMonitor]);
 
   const replacePages = useCallback((next: readonly PreparedPage[]) => {
     if (manifestRef.current) throw new RangeError("OMR_BROWSER_MANIFEST_ACTIVE");
@@ -217,6 +225,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   }, []);
 
   const discardInvalidManifest = async () => {
+    abortCurrentMonitor();
     setBusy(true);
     try {
       const removed = await clearOmrBrowserJobManifest();
@@ -347,56 +356,89 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     correctionLocked: omrFreshStartAction(freshStart) === "unlock-correction",
   }) : undefined, [freshStart, manifest, status]);
 
-  const mutate = useCallback(async (url: string, method: "POST" | "DELETE", body?: unknown) => {
+  const mutate = useCallback(async (url: string, method: "POST" | "DELETE", body?: unknown, signal?: AbortSignal) => {
     if (!csrf) throw new Error("세션 CSRF 토큰이 없습니다.");
-    return fetch(url, { method, headers: { "x-csrf-token": csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return fetch(url, {
+      method,
+      headers: { "x-csrf-token": csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(signal ? { signal } : {}),
+    });
   }, [csrf]);
 
-  const applyPublicStatus = useCallback(async (jobHandle: string, next: OmrPublicStatus) => {
+  const applyPublicStatus = useCallback(async (
+    authority: OmrBrowserMonitorGeneration,
+    next: OmrPublicStatus,
+    signal: AbortSignal,
+  ) => {
+    const assertCurrent = () => assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal });
+    assertCurrent();
+    const currentManifest = manifestRef.current;
+    if (next.kind === "completed") {
+      const resultResponse = await fetch(`/api/omr/jobs/${encodeURIComponent(authority.jobHandle)}/result`, { cache: "no-store", signal });
+      assertCurrent();
+      const exported = await json<{ readonly result: OmrProviderResult }>(resultResponse);
+      assertCurrent();
+      let updatedManifest: OmrBrowserJobManifest | undefined;
+      if (currentManifest?.jobHandle === authority.jobHandle
+        && currentManifest.manifestDigest === authority.manifestDigest
+        && currentManifest.lifecycle !== "completed") {
+        updatedManifest = await markOmrBrowserJobManifest(currentManifest.manifestDigest, "completed");
+        assertCurrent();
+      }
+      assertCurrent();
+      setResult(exported.result);
+      setStatus(next);
+      if (updatedManifest) {
+        manifestRef.current = updatedManifest;
+        setManifest(updatedManifest);
+      }
+      return;
+    }
+    if (["failed", "cancelled", "cancel-failed", "reconciliation-required"].includes(next.kind)
+      && currentManifest?.jobHandle === authority.jobHandle
+      && currentManifest.manifestDigest === authority.manifestDigest
+      && currentManifest.lifecycle !== "terminal") {
+      const updated = await markOmrBrowserJobManifest(currentManifest.manifestDigest, "terminal");
+      assertCurrent();
+      setStatus(next);
+      manifestRef.current = updated; setManifest(updated);
+      return;
+    }
+    assertCurrent();
     if (next.kind === "needs-input" && next.inputRequest.kind === "confirm-page-order") setPageOrderInput([...next.inputRequest.pageIndices]);
     if (next.kind === "needs-input" && next.inputRequest.kind === "vendor-specific") setVendorInputPayload(structuredClone(next.inputRequest.payload));
     setStatus(next);
-    const currentManifest = manifestRef.current;
-    if (next.kind === "completed") {
-      const exported = await json<{ readonly result: OmrProviderResult }>(await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/result`, { cache: "no-store" }));
-      setResult(exported.result);
-      if (currentManifest?.jobHandle === jobHandle && currentManifest.lifecycle !== "completed") {
-        const updated = await markOmrBrowserJobManifest(currentManifest.manifestDigest, "completed");
-        manifestRef.current = updated; setManifest(updated);
-      }
-    } else if (["failed", "cancelled", "cancel-failed", "reconciliation-required"].includes(next.kind)
-      && currentManifest?.jobHandle === jobHandle && currentManifest.lifecycle !== "terminal") {
-      const updated = await markOmrBrowserJobManifest(currentManifest.manifestDigest, "terminal");
-      manifestRef.current = updated; setManifest(updated);
-    }
-  }, []);
+  }, [currentMonitorAuthority]);
 
   const monitor = useCallback(async (jobHandle: string) => {
-    monitorAbortRef.current?.abort();
+    abortCurrentMonitor();
+    const currentManifest = manifestRef.current;
+    if (currentManifest?.jobHandle !== jobHandle) return;
+    const authority: OmrBrowserMonitorGeneration = {
+      jobHandle,
+      manifestDigest: currentManifest.manifestDigest,
+    };
     const controller = new AbortController();
     monitorAbortRef.current = controller;
-    const deadlineEpochMs = Date.now() + OMR_MONITOR_SESSION_BUDGET_MS;
-    let completedSyncAttempts = 0;
     try {
-      while (!controller.signal.aborted) {
-        if (completedSyncAttempts > 0 && Date.now() >= deadlineEpochMs) {
-          setMessage("활성 상태 확인 시간 한도에 도달했습니다. exact handle과 manifest는 유지됩니다. ‘상태 확인 재개’로 계속할 수 있습니다.");
-          return;
-        }
-        const response = await json<{ readonly status: OmrPublicStatus }>(await mutate(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/sync`, "POST"));
-        completedSyncAttempts += 1;
-        await applyPublicStatus(jobHandle, response.status);
-        const nowEpochMs = Date.now();
-        const nextAt = nextOmrMonitorTarget(response.status, nowEpochMs);
-        if (nextAt === undefined) return;
-        if (shouldPauseOmrMonitorSession({
-          nowEpochMs, deadlineEpochMs, completedSyncAttempts, nextTargetEpochMs: nextAt,
-        })) {
-          setMessage(`활성 상태 확인을 일시 중지했습니다. exact handle과 manifest는 유지됩니다. 다음 제공자 확인 목표 ${new Date(nextAt).toISOString()}`);
-          return;
-        }
-        await waitForMonitor(nextAt, controller.signal);
-      }
+      await runOmrBrowserMonitorSession({
+        authority,
+        currentAuthority: currentMonitorAuthority,
+        signal: controller.signal,
+        sync: async (signal) => {
+          const syncResponse = await mutate(`/api/omr/jobs/${encodeURIComponent(jobHandle)}/sync`, "POST", undefined, signal);
+          assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal });
+          const response = await json<{ readonly status: OmrPublicStatus }>(syncResponse);
+          assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal });
+          return response.status;
+        },
+        applyStatus: (next, signal) => applyPublicStatus(authority, next, signal),
+        waitUntil: waitForMonitor,
+        onBudgetPause: (nextAt) => setMessage(nextAt === undefined
+          ? "활성 상태 확인 시간 한도에 도달했습니다. exact handle과 manifest는 유지됩니다. ‘상태 확인 재개’로 계속할 수 있습니다."
+          : `활성 상태 확인을 일시 중지했습니다. exact handle과 manifest는 유지됩니다. 다음 제공자 확인 목표 ${new Date(nextAt).toISOString()}`),
+      });
     } catch (caught) {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
         setError(caught instanceof Error ? caught.message : "OMR 작업 상태를 다시 확인하지 못했습니다.");
@@ -404,7 +446,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     } finally {
       if (monitorAbortRef.current === controller) monitorAbortRef.current = undefined;
     }
-  }, [applyPublicStatus, mutate]);
+  }, [abortCurrentMonitor, applyPublicStatus, currentMonitorAuthority, mutate]);
 
   useEffect(() => {
     if (!handle || manifest?.jobHandle !== handle || manifest.lifecycle === "delete-pending" || !status) return;
@@ -480,29 +522,39 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
   useEffect(() => {
     if (!csrf || !manifest?.jobHandle || manifest.lifecycle === "delete-pending" || startInFlightRef.current) return;
     let active = true;
+    const controller = new AbortController();
+    const jobHandle = manifest.jobHandle;
+    const authority: OmrBrowserMonitorGeneration = { jobHandle, manifestDigest: manifest.manifestDigest };
     void (async () => {
-      const recovered = await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(manifest.jobHandle as string)}`, { cache: "no-store" }));
-      if (!active) return;
-      await applyPublicStatus(manifest.jobHandle as string, recovered.status);
+      const recoveredResponse = await fetch(`/api/omr/jobs/${encodeURIComponent(jobHandle)}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal: controller.signal });
+      const recovered = await json<{ readonly status: OmrPublicStatus }>(recoveredResponse);
+      assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal: controller.signal });
+      await applyPublicStatus(authority, recovered.status, controller.signal);
+      assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal: controller.signal });
       if (recovered.status.kind === "created" || recovered.status.kind === "uploading") {
         const retryAt = manifest.pendingUploadRetry
           ? Date.parse(manifest.pendingUploadRetry.nextAttemptAt) : undefined;
         if (retryAt === undefined || retryAt <= Date.now()) {
-          await resumeBoundUpload(manifest.jobHandle as string, manifest, csrf);
+          await resumeBoundUpload(jobHandle, manifest, csrf);
+          assertOmrBrowserMonitorGeneration({ authority, currentAuthority: currentMonitorAuthority, signal: controller.signal });
         }
-      } else if (!isOmrMonitorTerminal(recovered.status)) {
-        void monitor(manifest.jobHandle as string);
+      } else if (shouldStartOmrMonitorNow(recovered.status, Date.now())) {
+        void monitor(jobHandle);
       }
     })().catch((caught: unknown) => {
-      if (!active) return;
+      if (!active || (caught instanceof DOMException && caught.name === "AbortError")) return;
       if (isUnavailableRecoveryHandle(caught)) {
         setFreshStart(requireExplicitOmrFreshStart("stale-recovery-handle"));
         setHandle(undefined); setHandleRecoveryStorageKey(undefined); setStatus(undefined);
         setError("저장된 작업 handle이 더 이상 유효하지 않습니다. manifest를 폐기하고 새 작업을 시작하려면 명시적으로 확인하세요.");
       } else setError(caught instanceof Error ? caught.message : "저장된 OMR 작업을 복구하지 못했습니다.");
     });
-    return () => { active = false; };
-  }, [applyPublicStatus, csrf, manifest, monitor, resumeBoundUpload]);
+    return () => { active = false; controller.abort(); };
+  }, [applyPublicStatus, csrf, currentMonitorAuthority, manifest, monitor, resumeBoundUpload]);
 
   useEffect(() => {
     const retry = manifest?.pendingUploadRetry;
@@ -564,6 +616,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       if (sourceKind === "musicxml" || sourceKind === "mxl") throw new RangeError("OMR_REQUEST_INVALID");
       let authority = manifestRef.current;
       if (freshIntent.forceFresh && authority) {
+        abortCurrentMonitor();
         const removedKeys = await clearOmrBrowserJobManifest(authority.manifestDigest);
         if (removedKeys?.createStorageKey) localStorage.removeItem(removedKeys.createStorageKey);
         if (removedKeys?.recoveryStorageKey) localStorage.removeItem(removedKeys.recoveryStorageKey);
@@ -623,6 +676,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       });
       if (acquisition.kind === "fresh-start-required") {
         if (acquisition.reason === "retired-create-replay") {
+          abortCurrentMonitor();
           await clearOmrBrowserJobManifest(activeAuthority.manifestDigest);
           manifestRef.current = undefined; setManifest(undefined);
         }
@@ -668,16 +722,18 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         await resumeBoundUpload(jobHandle, authority, csrfToken);
       }
       if (recoveredStatus && recoveredStatus.kind !== "created" && recoveredStatus.kind !== "uploading") {
-        await applyPublicStatus(jobHandle, recoveredStatus);
+        const applyController = new AbortController();
+        await applyPublicStatus({ jobHandle, manifestDigest: authority.manifestDigest }, recoveredStatus, applyController.signal);
       }
       if (recoveredStatus && recoveredStatus.kind !== "created" && recoveredStatus.kind !== "uploading"
-        && !isOmrMonitorTerminal(recoveredStatus)) void monitor(jobHandle);
+        && shouldStartOmrMonitorNow(recoveredStatus, Date.now())) void monitor(jobHandle);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "OMR 작업을 시작하지 못했습니다."); }
     finally { finishOmrStart(startInFlightRef); setBusy(false); }
   };
 
   const unlockCreateCorrection = async () => {
     if (omrFreshStartAction(freshStart) !== "unlock-correction") return;
+    abortCurrentMonitor();
     setBusy(true); setError(undefined);
     try {
       const authority = manifestRef.current;
@@ -720,6 +776,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
 
   const cancel = async () => {
     if (!handle) return;
+    abortCurrentMonitor();
     setBusy(true); setError(undefined);
     try { await json(await mutate(`/api/omr/jobs/${encodeURIComponent(handle)}/cancel`, "POST")); void monitor(handle); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "취소하지 못했습니다."); }
@@ -728,6 +785,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
 
   const remove = async () => {
     if (!handle) return;
+    abortCurrentMonitor();
     setBusy(true); setError(undefined);
     try {
       const beforeDispatch = manifestRef.current;
@@ -766,6 +824,7 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
 
   const handoff = async () => {
     if (!result) return;
+    abortCurrentMonitor();
     setBusy(true); setError(undefined);
     try {
       const authority = manifestRef.current;

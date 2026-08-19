@@ -4,6 +4,11 @@ export const OMR_MONITOR_SESSION_BUDGET_MS = 60_000;
 export const OMR_MONITOR_MAX_SYNC_ATTEMPTS = 80;
 const OMR_UPLOAD_BINDING_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000] as const;
 
+export interface OmrBrowserMonitorGeneration {
+  readonly jobHandle: string;
+  readonly manifestDigest: string;
+}
+
 const MONITOR_TERMINAL = new Set<OmrPublicStatus["kind"]>([
   "completed", "failed", "cancelled", "needs-input", "cancel-failed", "reconciliation-required",
 ]);
@@ -41,6 +46,69 @@ export function isOmrMonitorRetryDue(status: OmrPublicStatus, nowEpochMs: number
   if (!Number.isFinite(nowEpochMs)) throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
   return status.kind === "retry-pending"
     && (nextOmrMonitorTarget(status, nowEpochMs) ?? Number.POSITIVE_INFINITY) <= nowEpochMs;
+}
+
+export function shouldStartOmrMonitorNow(status: OmrPublicStatus, nowEpochMs: number): boolean {
+  return !isOmrMonitorTerminal(status)
+    && (status.kind !== "retry-pending" || isOmrMonitorRetryDue(status, nowEpochMs));
+}
+
+function monitorAbortError(): DOMException {
+  return new DOMException("OMR_BROWSER_MONITOR_SUPERSEDED", "AbortError");
+}
+
+export function assertOmrBrowserMonitorGeneration(input: {
+  readonly authority: OmrBrowserMonitorGeneration;
+  readonly currentAuthority: () => OmrBrowserMonitorGeneration | undefined;
+  readonly signal: AbortSignal;
+}): void {
+  const current = input.currentAuthority();
+  if (input.signal.aborted
+    || current?.jobHandle !== input.authority.jobHandle
+    || current.manifestDigest !== input.authority.manifestDigest) {
+    throw monitorAbortError();
+  }
+}
+
+export async function runOmrBrowserMonitorSession(input: {
+  readonly authority: OmrBrowserMonitorGeneration;
+  readonly currentAuthority: () => OmrBrowserMonitorGeneration | undefined;
+  readonly signal: AbortSignal;
+  readonly sync: (signal: AbortSignal) => Promise<OmrPublicStatus>;
+  readonly applyStatus: (status: OmrPublicStatus, signal: AbortSignal) => Promise<void>;
+  readonly waitUntil: (targetEpochMs: number, signal: AbortSignal) => Promise<void>;
+  readonly nowEpochMs?: () => number;
+  readonly onBudgetPause?: (nextTargetEpochMs?: number) => void;
+}): Promise<void> {
+  const nowEpochMs = input.nowEpochMs ?? Date.now;
+  const deadlineEpochMs = nowEpochMs() + OMR_MONITOR_SESSION_BUDGET_MS;
+  let completedSyncAttempts = 0;
+  while (true) {
+    assertOmrBrowserMonitorGeneration(input);
+    if (completedSyncAttempts > 0 && nowEpochMs() >= deadlineEpochMs) {
+      input.onBudgetPause?.();
+      return;
+    }
+    const status = await input.sync(input.signal);
+    assertOmrBrowserMonitorGeneration(input);
+    completedSyncAttempts += 1;
+    await input.applyStatus(status, input.signal);
+    assertOmrBrowserMonitorGeneration(input);
+    const now = nowEpochMs();
+    const nextAt = nextOmrMonitorTarget(status, now);
+    if (nextAt === undefined) return;
+    if (shouldPauseOmrMonitorSession({
+      nowEpochMs: now,
+      deadlineEpochMs,
+      completedSyncAttempts,
+      nextTargetEpochMs: nextAt,
+    })) {
+      input.onBudgetPause?.(nextAt);
+      return;
+    }
+    await input.waitUntil(nextAt, input.signal);
+    assertOmrBrowserMonitorGeneration(input);
+  }
 }
 
 export function nextOmrUploadBindingRetryTarget(attempt: number, nowEpochMs: number): number {
