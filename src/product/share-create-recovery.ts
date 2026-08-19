@@ -26,6 +26,7 @@ export interface ShareCreateRecoveryEnvelope {
   readonly requestDigest: SemanticDigest;
   readonly idempotencyKey: string;
   readonly operationLifecycle: "pending" | "completed";
+  /** Durable operation generation and compare-and-swap authority. */
   readonly explicitFreshIntentId: string;
   readonly sessionAuthority?: string;
   readonly sessionExpiresAt?: string;
@@ -36,9 +37,17 @@ export interface ShareCreateRecoveryEnvelope {
   readonly updatedAt: string;
 }
 
+interface ClaimOrLoadShareCreateInput {
+  readonly projectId: string;
+  readonly candidate: ShareCreateRecoveryEnvelope;
+  readonly explicitFreshIntent: boolean;
+}
+
 export interface ShareCreateRecoveryStore {
   load(projectId: string): Promise<ShareCreateRecoveryEnvelope | undefined>;
   save(envelope: ShareCreateRecoveryEnvelope): Promise<void>;
+  claimOrLoad(input: ClaimOrLoadShareCreateInput): Promise<ShareCreateRecoveryEnvelope>;
+  compareAndSwap(expectedFreshIntentId: string, envelope: ShareCreateRecoveryEnvelope): Promise<boolean>;
   delete(projectId: string): Promise<void>;
 }
 
@@ -126,6 +135,35 @@ async function validatedEnvelope(value: unknown): Promise<ShareCreateRecoveryEnv
   return value;
 }
 
+const indexedDbClaimQueues = new WeakMap<IDBFactory, Map<string, Promise<void>>>();
+
+async function withIndexedDbClaim<T>(factory: IDBFactory, projectId: string, operation: () => Promise<T>): Promise<T> {
+  let queues = indexedDbClaimQueues.get(factory);
+  if (!queues) {
+    queues = new Map();
+    indexedDbClaimQueues.set(factory, queues);
+  }
+  const previous = queues.get(projectId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const queued = previous.then(() => gate);
+  queues.set(projectId, queued);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (queues.get(projectId) === queued) queues.delete(projectId);
+  }
+}
+
+function nextFreshEnvelope(candidate: ShareCreateRecoveryEnvelope, previous?: ShareCreateRecoveryEnvelope): ShareCreateRecoveryEnvelope {
+  return {
+    ...candidate,
+    completedAuthorities: previous?.completedAuthorities ?? candidate.completedAuthorities,
+  };
+}
+
 export class IndexedDbShareCreateRecoveryStore implements ShareCreateRecoveryStore {
   constructor(private readonly factory: IDBFactory | undefined = globalThis.indexedDB) {}
 
@@ -156,6 +194,51 @@ export class IndexedDbShareCreateRecoveryStore implements ShareCreateRecoverySto
       await transactionDone(transaction);
     } finally { database.close(); }
   }
+  async claimOrLoad(input: ClaimOrLoadShareCreateInput): Promise<ShareCreateRecoveryEnvelope> {
+    await validatedEnvelope(input.candidate);
+    if (!this.factory) throw new RangeError("LOCAL_STORAGE_UNAVAILABLE");
+    return withIndexedDbClaim(this.factory, input.projectId, async () => {
+      const database = await this.database();
+      let selected: ShareCreateRecoveryEnvelope;
+      try {
+        const transaction = database.transaction(STORE_NAME, "readwrite");
+        const store = transaction.objectStore(STORE_NAME);
+        const raw: unknown = await requestResult(store.get(input.projectId));
+        const previous = raw === undefined ? undefined : raw;
+        if (previous !== undefined && !validEnvelopeShape(previous)) throw new RangeError("SHARE_CREATE_RECOVERY_INVALID");
+        if (previous !== undefined && !input.explicitFreshIntent) {
+          selected = structuredClone(previous);
+        } else {
+          if (input.explicitFreshIntent && previous !== undefined && !previous.freshIntentAuthority) {
+            throw new RangeError("SHARE_CREATE_FRESH_INTENT_NOT_AUTHORIZED");
+          }
+          selected = nextFreshEnvelope(input.candidate, previous);
+          store.put(structuredClone(selected));
+        }
+        await transactionDone(transaction);
+      } finally { database.close(); }
+      return structuredClone(await validatedEnvelope(selected!));
+    });
+  }
+  async compareAndSwap(expectedFreshIntentId: string, envelope: ShareCreateRecoveryEnvelope): Promise<boolean> {
+    await validatedEnvelope(envelope);
+    if (!this.factory) throw new RangeError("LOCAL_STORAGE_UNAVAILABLE");
+    return withIndexedDbClaim(this.factory, envelope.projectId, async () => {
+      const database = await this.database();
+      try {
+        const transaction = database.transaction(STORE_NAME, "readwrite");
+        const store = transaction.objectStore(STORE_NAME);
+        const raw: unknown = await requestResult(store.get(envelope.projectId));
+        if (raw === undefined || !validEnvelopeShape(raw) || raw.explicitFreshIntentId !== expectedFreshIntentId) {
+          await transactionDone(transaction);
+          return false;
+        }
+        store.put(structuredClone(envelope));
+        await transactionDone(transaction);
+        return true;
+      } finally { database.close(); }
+    });
+  }
   async delete(projectId: string): Promise<void> {
     const database = await this.database();
     try {
@@ -174,6 +257,22 @@ export class MemoryShareCreateRecoveryStore implements ShareCreateRecoveryStore 
     return structuredClone(await validatedEnvelope(value));
   }
   async save(envelope: ShareCreateRecoveryEnvelope): Promise<void> { await validatedEnvelope(envelope); this.records.set(envelope.projectId, structuredClone(envelope)); }
+  async claimOrLoad(input: ClaimOrLoadShareCreateInput): Promise<ShareCreateRecoveryEnvelope> {
+    await validatedEnvelope(input.candidate);
+    const previous = this.records.get(input.projectId);
+    if (previous && !input.explicitFreshIntent) return structuredClone(await validatedEnvelope(previous));
+    if (input.explicitFreshIntent && previous && !previous.freshIntentAuthority) throw new RangeError("SHARE_CREATE_FRESH_INTENT_NOT_AUTHORIZED");
+    const selected = nextFreshEnvelope(input.candidate, previous);
+    this.records.set(input.projectId, structuredClone(selected));
+    return structuredClone(selected);
+  }
+  async compareAndSwap(expectedFreshIntentId: string, envelope: ShareCreateRecoveryEnvelope): Promise<boolean> {
+    await validatedEnvelope(envelope);
+    const current = this.records.get(envelope.projectId);
+    if (!current || current.explicitFreshIntentId !== expectedFreshIntentId) return false;
+    this.records.set(envelope.projectId, structuredClone(envelope));
+    return true;
+  }
   async delete(projectId: string): Promise<void> { this.records.delete(projectId); }
 }
 
@@ -186,13 +285,10 @@ export async function prepareShareCreateRecovery(input: {
   readonly now: Date;
 }): Promise<ShareCreateRecoveryEnvelope> {
   if (!isPracticeSharePayload(input.canonicalRequest.payload) || !RIGHTS.includes(input.canonicalRequest.rightsBasis)) throw new RangeError("SHARE_CREATE_REQUEST_INVALID");
-  const previous = await input.store.load(input.projectId);
-  if (!input.explicitFreshIntent && previous) return previous;
-  if (input.explicitFreshIntent && previous && !previous.freshIntentAuthority) throw new RangeError("SHARE_CREATE_FRESH_INTENT_NOT_AUTHORIZED");
   const idempotencyKey = input.generateId();
   if (!isShareCreateIdempotencyKey(idempotencyKey)) throw new RangeError("IDEMPOTENCY_KEY_INVALID");
   const canonicalRequest = structuredClone(input.canonicalRequest);
-  const envelope: ShareCreateRecoveryEnvelope = {
+  const candidate: ShareCreateRecoveryEnvelope = {
     version: SHARE_CREATE_RECOVERY_VERSION,
     projectId: input.projectId,
     canonicalRequest,
@@ -200,11 +296,25 @@ export async function prepareShareCreateRecovery(input: {
     idempotencyKey,
     operationLifecycle: "pending",
     explicitFreshIntentId: input.generateId(),
-    completedAuthorities: previous?.completedAuthorities ?? [],
+    completedAuthorities: [],
     updatedAt: input.now.toISOString(),
   };
-  await input.store.save(envelope);
-  return envelope;
+  return input.store.claimOrLoad({
+    projectId: input.projectId,
+    candidate,
+    explicitFreshIntent: input.explicitFreshIntent,
+  });
+}
+
+async function persistGenerationUpdate(input: {
+  readonly store: ShareCreateRecoveryStore;
+  readonly previous: ShareCreateRecoveryEnvelope;
+  readonly next: ShareCreateRecoveryEnvelope;
+}): Promise<ShareCreateRecoveryEnvelope> {
+  if (!await input.store.compareAndSwap(input.previous.explicitFreshIntentId, input.next)) {
+    throw new RangeError("SHARE_CREATE_RECOVERY_SUPERSEDED");
+  }
+  return input.next;
 }
 
 export async function bindShareCreateSession(input: {
@@ -216,8 +326,7 @@ export async function bindShareCreateSession(input: {
 }): Promise<ShareCreateRecoveryEnvelope> {
   if (input.envelope.sessionAuthority && input.envelope.sessionAuthority !== input.sessionAuthority) throw new RangeError("SHARE_CREATE_SESSION_AUTHORITY_CHANGED");
   const next = { ...input.envelope, sessionAuthority: input.sessionAuthority, sessionExpiresAt: input.sessionExpiresAt, updatedAt: input.now.toISOString() };
-  await input.store.save(next);
-  return next;
+  return persistGenerationUpdate({ store: input.store, previous: input.envelope, next });
 }
 
 export async function allowShareCreateFreshIntent(input: {
@@ -227,8 +336,7 @@ export async function allowShareCreateFreshIntent(input: {
   readonly now: Date;
 }): Promise<ShareCreateRecoveryEnvelope> {
   const next = { ...input.envelope, freshIntentAuthority: { reason: input.reason, grantedAt: input.now.toISOString() }, updatedAt: input.now.toISOString() } as const;
-  await input.store.save(next);
-  return next;
+  return persistGenerationUpdate({ store: input.store, previous: input.envelope, next });
 }
 
 export async function completeShareCreateRecovery(input: {
@@ -253,6 +361,5 @@ export async function completeShareCreateRecovery(input: {
     freshIntentAuthority: undefined,
     updatedAt: input.now.toISOString(),
   };
-  await input.store.save(next);
-  return next;
+  return persistGenerationUpdate({ store: input.store, previous: input.envelope, next });
 }
