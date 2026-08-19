@@ -189,7 +189,7 @@ function targetExists(source: SongSourceDocument, target: MusicXmlCurrentSourceT
 
 export async function validateMusicXmlSourceTargetMap(source: SongSourceDocument): Promise<boolean> {
   const map = source.importInfo?.musicXmlSourceTargetMap;
-  if (!map) return source.importInfo?.sourceKind !== "musicxml" && source.importInfo?.sourceKind !== "omr";
+  if (!map) return source.importInfo === undefined || source.importInfo.sourceKind === "manual";
   if (map.version !== "musicxml-source-target-map-v1" || !revisionRefsEqual(map.sourceRevision, currentRevision(source))
     || !Array.isArray(map.entries) || canonicalJson(map.entries) !== canonicalJson(canonicalEntries(map.entries))
     || new Set(map.entries.map((item) => canonicalJson(item.selector))).size !== map.entries.length) return false;

@@ -1,4 +1,4 @@
-import { binaryDigest, type BinaryDigest } from "../../domain/digest/canonical";
+import { binaryDigest, semanticDigest, type BinaryDigest } from "../../domain/digest/canonical";
 import type { GovernanceStore, PrivateRowId } from "../persistence/store";
 import { generateOpaqueToken } from "../security/crypto-core";
 import type { OwnedObjectPut, OwnedObjectRead, OwnedObjectStore } from "./owned-object-store";
@@ -8,9 +8,28 @@ export class MemoryOwnedObjectStore implements OwnedObjectStore {
   readonly buffers = new Map<string, Uint8Array>();
   constructor(private readonly records: GovernanceStore) {}
   async put(input: OwnedObjectPut) {
-    const objectKey = `objects/${generateOpaqueToken()}`;
+    if (input.publicationId.length < 1 || input.publicationId.length > 256) throw new RangeError("OBJECT_PUBLICATION_ID_INVALID");
+    const objectKey = `objects/${await semanticDigest({ projectionSchema: "hm-owned-object-publication-v1", ownerSessionId: input.ownerSessionId, publicationId: input.publicationId })}`;
     const bytes = Uint8Array.from(input.bytes);
     const digest = await binaryDigest(bytes);
+    const existing = await this.records.findObjectReferenceByKey(objectKey, input.ownerSessionId);
+    if (existing) {
+      if (existing.lifecycle === "active" && existing.binaryDigest === digest && existing.byteSize === bytes.byteLength && existing.contentType === input.contentType) return existing;
+      if (existing.lifecycle === "deleted" && existing.binaryDigest === digest && existing.byteSize === bytes.byteLength && existing.contentType === input.contentType) {
+        const publicationToken = generateOpaqueToken();
+        const restarted = await this.records.restartObjectPublication({
+          id: existing.id, ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,
+          byteSize: bytes.byteLength, binaryDigest: digest, publicationToken,
+          publicationLeaseExpiresAt: "2026-01-01T00:05:00.000Z", at: "2026-01-01T00:00:00.000Z",
+        });
+        if (!restarted) throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
+        this.buffers.set(objectKey, bytes);
+        if (!await this.records.completeObjectPublication({ id: existing.id, ownerSessionId: input.ownerSessionId, publicationToken, at: "2026-01-01T00:00:00.000Z" })) throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
+        const active = await this.records.findObjectReference(existing.id, input.ownerSessionId);
+        if (active?.lifecycle === "active") return active;
+      }
+      throw new RangeError("OBJECT_PUBLICATION_CONFLICT");
+    }
     this.buffers.set(objectKey, bytes);
     return this.records.createObjectReference({
       ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,

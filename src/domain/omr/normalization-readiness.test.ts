@@ -14,6 +14,7 @@ import { validateRuntimeOmrReadiness } from "./readiness";
 import { acceptOmrReviewAlternative, validateReviewEvidenceTargetBindings } from "./review";
 import { parseChord } from "../chord/parser";
 import { computeMusicXmlSourceTargetMapDigest } from "./import-identity";
+import { computeSourceProvenanceDigest } from "../source/provenance";
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Lead</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note></measure></part></score-partwise>`;
@@ -50,16 +51,17 @@ describe("Vendor MusicXML normalization boundary", () => {
 });
 
 async function readinessSource(): Promise<SongSourceDocument> {
-  let source: SongSourceDocument = {
+  let source = {
     schemaVersion: 9, documentId: "doc:ready", revisionOrdinal: 0, revisionDigest: "0".repeat(64) as never,
     revisionHistory: [], revisionHistoryDigest: await computeRevisionHistoryDigest([]), title: "Ready",
+    sourceProvenanceDigest: "0".repeat(64) as never,
     defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" }, defaultTempo: { beatUnit: 4, dotted: false, bpm: 100 },
     sourceMeasures: [{ id: "sm:0", number: 1, implicit: false, time: COMMON_TIME, duration: fraction(4), leadEvents: [{ kind: "note", id: "le:0:0", sourceMeasureId: "sm:0", onset: fraction(0), duration: fraction(4), pitch: { step: "C", alter: 0, octave: 4 }, tieStart: false, tieStop: false, lyricTokenIds: [] }], chordEvents: [], lyricTokens: [], textEvents: [], repeat: { startRepeat: false } }],
     performanceSequence: { expanderVersion: "repeat-v1", occurrences: [{ occurrenceId: "pm:0:0:0", sourceMeasureId: "sm:0", sourceMeasureNumber: 1, occurrenceIndexForSource: 0, performanceIndex: 0, time: COMMON_TIME, duration: fraction(4) }] },
     sectionDefinitions: [{ id: "sd:0:1:other:0", type: "other", label: "Song", sourceMeasureIds: ["sm:0"], confirmation: "confirmed" }],
     sectionOccurrences: [{ id: "so:0:1:0", sectionDefinitionId: "sd:0:1:other:0", occurrenceIndex: 0, variant: "base", lyricVerseIndex: 1, startPerformanceMeasureIndex: 0, endPerformanceMeasureIndexExclusive: 1 }],
     phraseRegions: [], rights: { basis: "self-authored", allowedUses: ["generation"] }, importInfo: { sourceKind: "omr", importerVersion: "omr-normalizer-v1" },
-  };
+  } as unknown as SongSourceDocument;
   source = { ...source, revisionDigest: await digestMusicalSource(source) };
   const sourceRevision = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
   const entries = [
@@ -69,7 +71,8 @@ async function readinessSource(): Promise<SongSourceDocument> {
     { selector: { kind: "voice-event" as const, musicXmlPartOrdinal: 0, musicXmlStaffNumber: 1, musicXmlVoiceKey: "1", measureOrdinal: 0, eventOrdinal: 0 }, status: "mapped-one" as const, targets: [{ kind: "voice-event" as const, eventId: "le:0:0" }] as const },
   ];
   const map = { version: "musicxml-source-target-map-v1" as const, sourceRevision, entries };
-  source = { ...source, importInfo: { ...source.importInfo!, musicXmlSourceTargetMap: { ...map, mapDigest: await computeMusicXmlSourceTargetMapDigest(map) } } };
+  source = { ...source, importInfo: { ...source.importInfo!, musicXmlSourceTargetMap: { ...map, mapDigest: await computeMusicXmlSourceTargetMapDigest(map) } } } as unknown as SongSourceDocument;
+  source = { ...source, sourceProvenanceDigest: await computeSourceProvenanceDigest(source) };
   return source;
 }
 

@@ -59,7 +59,9 @@ export interface ObjectReferenceRecord {
   readonly contentType: string;
   readonly byteSize: number;
   readonly binaryDigest: string;
-  readonly lifecycle: "active" | "delete-pending" | "deleted" | "expired";
+  readonly lifecycle: "upload-pending" | "active" | "delete-pending" | "deleted" | "expired";
+  readonly publicationToken?: string;
+  readonly publicationLeaseExpiresAt?: string;
   readonly createdAt: string;
   readonly expiresAt?: string;
   readonly deletedAt?: string;
@@ -126,6 +128,30 @@ export interface GovernanceStore {
   }): Promise<void>;
   createObjectReference(input: Omit<ObjectReferenceRecord, "id">): Promise<ObjectReferenceRecord>;
   findObjectReference(id: PrivateRowId, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined>;
+  findObjectReferenceByKey(objectKey: string, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined>;
+  completeObjectPublication(input: {
+    readonly id: PrivateRowId;
+    readonly ownerSessionId: PrivateRowId;
+    readonly publicationToken: string;
+    readonly at: string;
+  }): Promise<boolean>;
+  restartObjectPublication(input: {
+    readonly id: PrivateRowId;
+    readonly ownerSessionId: PrivateRowId;
+    readonly objectKey: string;
+    readonly contentType: string;
+    readonly byteSize: number;
+    readonly binaryDigest: string;
+    readonly publicationToken: string;
+    readonly publicationLeaseExpiresAt: string;
+    readonly at: string;
+  }): Promise<boolean>;
+  failObjectPublication(input: {
+    readonly id: PrivateRowId;
+    readonly ownerSessionId: PrivateRowId;
+    readonly publicationToken: string;
+    readonly at: string;
+  }): Promise<"active" | "cleanup-required" | "superseded">;
   transitionObjectReference(input: {
     readonly id: PrivateRowId;
     readonly ownerSessionId: PrivateRowId;

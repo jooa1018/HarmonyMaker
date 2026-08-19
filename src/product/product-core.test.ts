@@ -75,7 +75,7 @@ describe("Product Core workspace, render, playback, and state", () => {
           },
         },
       },
-    } as HarmonyProject;
+    } as unknown as HarmonyProject;
     await expect(generateProjectVariant(unresolved, "standard")).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
   });
 

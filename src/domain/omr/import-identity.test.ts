@@ -63,6 +63,7 @@ async function sourceFor(draft: MusicXmlImportDraft): Promise<SongSourceDocument
   return {
     schemaVersion: 9, documentId: draft.documentId, revisionOrdinal: 0, revisionDigest: "b".repeat(64) as never,
     revisionHistory: [], revisionHistoryDigest: await computeRevisionHistoryDigest([]), title: draft.title,
+    sourceProvenanceDigest: "c".repeat(64) as never,
     defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" }, defaultTempo: { beatUnit: 4, dotted: false, bpm: 100 },
     sourceMeasures: [{
       id: "sm:0", number: 1, implicit: false, time: COMMON_TIME, duration: fraction(4),

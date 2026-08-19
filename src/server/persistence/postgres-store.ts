@@ -37,6 +37,8 @@ function objectRow(row: Record<string, unknown>): ObjectReferenceRecord {
     objectKey: row.object_key as string, contentType: row.content_type as string,
     byteSize: Number(row.byte_size), binaryDigest: row.binary_digest as string,
     lifecycle: row.lifecycle as ObjectReferenceRecord["lifecycle"], createdAt: iso(row.created_at as Date),
+    ...(row.publication_token ? { publicationToken: row.publication_token as string } : {}),
+    ...(row.publication_lease_expires_at ? { publicationLeaseExpiresAt: iso(row.publication_lease_expires_at as Date) } : {}),
     ...(row.expires_at ? { expiresAt: iso(row.expires_at as Date) } : {}),
     ...(row.deleted_at ? { deletedAt: iso(row.deleted_at as Date) } : {}),
   };
@@ -163,9 +165,10 @@ export class PostgresGovernanceStore implements GovernanceStore {
   }
   async createObjectReference(input: Omit<ObjectReferenceRecord, "id">): Promise<ObjectReferenceRecord> {
     const result = await this.database.query(
-      `INSERT INTO object_references (owner_session_id,object_key,content_type,byte_size,binary_digest,lifecycle,created_at,expires_at,deleted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [input.ownerSessionId, input.objectKey, input.contentType, input.byteSize, input.binaryDigest, input.lifecycle, input.createdAt, input.expiresAt ?? null, input.deletedAt ?? null],
+      `INSERT INTO object_references (owner_session_id,object_key,content_type,byte_size,binary_digest,lifecycle,created_at,expires_at,deleted_at,publication_token,publication_lease_expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [input.ownerSessionId, input.objectKey, input.contentType, input.byteSize, input.binaryDigest, input.lifecycle, input.createdAt, input.expiresAt ?? null, input.deletedAt ?? null,
+        input.publicationToken ?? null, input.publicationLeaseExpiresAt ?? null],
     );
     return objectRow(result.rows[0]);
   }
@@ -173,8 +176,46 @@ export class PostgresGovernanceStore implements GovernanceStore {
     const result = await this.database.query("SELECT * FROM object_references WHERE id=$1 AND owner_session_id=$2", [objectId, ownerSessionId]);
     return result.rows[0] ? objectRow(result.rows[0]) : undefined;
   }
+  async findObjectReferenceByKey(objectKey: string, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined> {
+    const result = await this.database.query("SELECT * FROM object_references WHERE object_key=$1 AND owner_session_id=$2", [objectKey, ownerSessionId]);
+    return result.rows[0] ? objectRow(result.rows[0]) : undefined;
+  }
+  async completeObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<boolean> {
+    const result = await this.database.query(
+      `UPDATE object_references SET lifecycle='active',publication_token=NULL,publication_lease_expires_at=NULL
+       WHERE id=$1 AND owner_session_id=$2 AND lifecycle='upload-pending' AND publication_token=$3`,
+      [input.id, input.ownerSessionId, input.publicationToken],
+    );
+    return (result.rowCount ?? 0) === 1;
+  }
+  async restartObjectPublication(input: Parameters<GovernanceStore["restartObjectPublication"]>[0]): Promise<boolean> {
+    const result = await this.database.query(
+      `UPDATE object_references
+       SET lifecycle='upload-pending',publication_token=$7,publication_lease_expires_at=$8,deleted_at=NULL
+       WHERE id=$1 AND owner_session_id=$2 AND lifecycle='deleted'
+         AND object_key=$3 AND content_type=$4 AND byte_size=$5 AND binary_digest=$6`,
+      [input.id, input.ownerSessionId, input.objectKey, input.contentType, input.byteSize, input.binaryDigest, input.publicationToken, input.publicationLeaseExpiresAt],
+    );
+    return (result.rowCount ?? 0) === 1;
+  }
+  async failObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<"active" | "cleanup-required" | "superseded"> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT lifecycle,publication_token FROM object_references WHERE id=$1 AND owner_session_id=$2 FOR UPDATE", [input.id, input.ownerSessionId]);
+      const row = selected.rows[0];
+      if (!row) { await client.query("COMMIT"); return "superseded"; }
+      if (row.lifecycle === "active") { await client.query("COMMIT"); return "active"; }
+      if (row.publication_token !== input.publicationToken || !["upload-pending", "delete-pending", "deleted"].includes(String(row.lifecycle))) {
+        await client.query("COMMIT"); return "superseded";
+      }
+      await client.query("UPDATE object_references SET lifecycle='delete-pending' WHERE id=$1", [input.id]);
+      await client.query("COMMIT");
+      return "cleanup-required";
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
   async transitionObjectReference(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly lifecycle: ObjectReferenceRecord["lifecycle"]; readonly at: string }): Promise<void> {
-    await this.database.query("UPDATE object_references SET lifecycle=$3,deleted_at=CASE WHEN $3='deleted' THEN COALESCE(deleted_at,$4::timestamptz) ELSE deleted_at END WHERE id=$1 AND owner_session_id=$2", [input.id, input.ownerSessionId, input.lifecycle, input.at]);
+    await this.database.query("UPDATE object_references SET lifecycle=$3,deleted_at=CASE WHEN $3='deleted' THEN COALESCE(deleted_at,$4::timestamptz) ELSE deleted_at END,publication_token=CASE WHEN $3='deleted' THEN NULL ELSE publication_token END,publication_lease_expires_at=CASE WHEN $3='deleted' THEN NULL ELSE publication_lease_expires_at END WHERE id=$1 AND owner_session_id=$2", [input.id, input.ownerSessionId, input.lifecycle, input.at]);
   }
   async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
     const client = await this.database.connect();
@@ -183,12 +224,14 @@ export class PostgresGovernanceStore implements GovernanceStore {
       const sessions = await this.cleanupIds(client, "anonymous_sessions", "expires_at <= $1 AND revoked_at IS NULL", input, "revoked_at=$1");
       const shares = await this.cleanupIds(client, "share_records", "expires_at <= $1 AND lifecycle='active'", input, "lifecycle='expired',deleted_at=$1");
       const pendingObjects = await client.query(
-        "SELECT * FROM object_references WHERE lifecycle='delete-pending' OR (lifecycle='active' AND expires_at <= $1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED",
+        `SELECT * FROM object_references WHERE lifecycle='delete-pending'
+          OR (lifecycle='upload-pending' AND publication_lease_expires_at <= $1)
+          OR (lifecycle='active' AND expires_at <= $1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`,
         [input.now, input.batchSize],
       );
       const objects = pendingObjects.rows.map(objectRow);
       if (!input.dryRun && objects.length > 0) {
-        await client.query("UPDATE object_references SET lifecycle='delete-pending' WHERE id = ANY($1::bigint[]) AND lifecycle='active'", [objects.map((record) => record.id)]);
+        await client.query("UPDATE object_references SET lifecycle='delete-pending' WHERE id = ANY($1::bigint[]) AND lifecycle IN ('active','upload-pending')", [objects.map((record) => record.id)]);
       }
       const idempotency = await this.deleteExpired(client, "idempotency_records", input);
       const quota = await this.deleteExpired(client, "quota_windows", input);
@@ -210,9 +253,16 @@ export class PostgresGovernanceStore implements GovernanceStore {
     return ids;
   }
   private async deleteExpired(client: Queryable, table: string, input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<number> {
-    const selected = await client.query(`SELECT id FROM ${table} WHERE expires_at <= $1 ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`, [input.now, input.batchSize]);
-    const ids = selected.rows.map((row) => id(row.id));
-    if (!input.dryRun && ids.length > 0) await client.query(`DELETE FROM ${table} WHERE id = ANY($1::bigint[])`, [ids]);
-    return ids.length;
+    if (input.dryRun) {
+      const selected = await client.query(`SELECT 1 FROM ${table} WHERE expires_at <= $1 ORDER BY expires_at LIMIT $2 FOR UPDATE SKIP LOCKED`, [input.now, input.batchSize]);
+      return selected.rows.length;
+    }
+    const deleted = await client.query(
+      `WITH selected AS (
+         SELECT ctid FROM ${table} WHERE expires_at <= $1 ORDER BY expires_at LIMIT $2 FOR UPDATE SKIP LOCKED
+       ) DELETE FROM ${table} target USING selected WHERE target.ctid=selected.ctid RETURNING 1`,
+      [input.now, input.batchSize],
+    );
+    return deleted.rows.length;
   }
 }

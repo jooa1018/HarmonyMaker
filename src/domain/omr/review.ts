@@ -5,6 +5,7 @@ import { addFractions, compareFractions, subtractFractions, type Fraction } from
 import { sourceRevisionRecordId } from "../ids";
 import type { LeadEvent, SongSourceDocument, SourceMeasure } from "../source/model";
 import { normalizeSongSourceDocument } from "../source/normalize";
+import { computeSourceProvenanceDigest } from "../source/provenance";
 import {
   computeRevisionHistoryDigest, createSourceIdRemap, createSourceRevisionProjection,
   revisionRefsEqual, type SourceIdRemap, type SourceIdRemapEntry, type SourceRevisionRecord,
@@ -208,18 +209,21 @@ export async function applyOmrCorrection(input: {
   const musicXmlSourceTargetMap = input.source.importInfo?.musicXmlSourceTargetMap
     ? await remapMusicXmlSourceTargetMap(input.source.importInfo.musicXmlSourceTargetMap, idRemap)
     : undefined;
-  const importInfo = pending.importInfo ? (() => {
+  const importInfo = pending.importInfo?.sourceKind === "omr" ? (() => {
     const { omrRuntimeWarningAcknowledgements: _discarded, ...withoutAcknowledgements } = pending.importInfo;
     void _discarded;
-    return { ...withoutAcknowledgements, ...(musicXmlSourceTargetMap ? { musicXmlSourceTargetMap } : {}) };
-  })() : undefined;
-  const source = normalizeSongSourceDocument({
+    return { ...withoutAcknowledgements, musicXmlSourceTargetMap: musicXmlSourceTargetMap! };
+  })() : pending.importInfo?.sourceKind === "musicxml"
+    ? { ...pending.importInfo, musicXmlSourceTargetMap: musicXmlSourceTargetMap! }
+    : pending.importInfo;
+  let source = normalizeSongSourceDocument({
     ...pending,
     revisionDigest,
     revisionHistory: history,
     revisionHistoryDigest: await computeRevisionHistoryDigest(history),
     ...(importInfo ? { importInfo } : {}),
   });
+  source = { ...source, sourceProvenanceDigest: await computeSourceProvenanceDigest(source) };
   const correctionDigest = await semanticDigest({ projectionSchema: "hm-omr-correction-id-v2", target, beforeProjection, patch: input.patch, correctionSource: input.correctionSource, reviewItemId: input.reviewItemId ?? null, autoRepairProposalId: input.autoRepairProposalId ?? null });
   const correction: OmrCorrectionRecord = {
     id: `omr-correction:${correctionDigest.slice(0, 32)}`,

@@ -234,6 +234,9 @@ export const CORE_OMR_QUOTA_DEFAULTS = Object.freeze({
 } as const);
 
 export const OMR_VENDOR_ADAPTER_CONTRACT_VERSION = "omr-vendor-adapter-v1" as const;
+export const MAX_OMR_CREDIT_ESTIMATE = 2_147_483_647;
+export const MAX_OMR_DAILY_CREDIT_CEILING = Number.MAX_SAFE_INTEGER;
+export const MAX_OMR_CREDIT_AGGREGATE = Number.MAX_SAFE_INTEGER;
 
 export function canonicalizeVendorCapabilities(capabilities: OmrVendorCapabilities): OmrVendorCapabilities {
   return { ...capabilities, supportedMimeTypes: [...new Set(capabilities.supportedMimeTypes)].sort() };
@@ -254,7 +257,8 @@ export function validateVendorCapabilities(capabilities: OmrVendorCapabilities):
     || !capabilities.supportedMimeTypes.includes(capabilities.transferMimeType)
     || new Set(capabilities.supportedMimeTypes).size !== capabilities.supportedMimeTypes.length
     || (capabilities.estimatedCreditPerPage !== undefined
-      && (!Number.isSafeInteger(capabilities.estimatedCreditPerPage) || capabilities.estimatedCreditPerPage <= 0))) {
+      && (!Number.isSafeInteger(capabilities.estimatedCreditPerPage) || capabilities.estimatedCreditPerPage <= 0
+        || capabilities.estimatedCreditPerPage > MAX_OMR_CREDIT_ESTIMATE))) {
     throw new RangeError("OMR_PROVIDER_CAPABILITY_MISSING");
   }
 }

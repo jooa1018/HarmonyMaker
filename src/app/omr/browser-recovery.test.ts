@@ -7,6 +7,7 @@ import {
   finishOmrStart,
   requireExplicitOmrFreshStart,
   readOmrApiJson,
+  serializeOmrCreateEnvelope,
   tryBeginOmrStart,
   type OmrBrowserStorage,
   type OmrFreshStartState,
@@ -24,22 +25,15 @@ function memoryStorage(initial: Readonly<Record<string, string>> = {}): OmrBrows
 
 const createStorageKey = "create:input";
 const recoveryStorageKey = `${createStorageKey}:recovered-handle`;
+const validRequest = (idempotencyKey: string) => ({
+  pageCount: 1, pages: [{ pageIndex: 0, pageDigest: "a".repeat(64), mimeType: "image/png" }],
+  sourceKind: "camera-photo", rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: "2026-08-19T00:00:00.000Z" },
+  providerTransferConsent: true, consentCapabilitySnapshotDigest: "b".repeat(64), idempotencyKey,
+} as const);
 
 async function exerciseAmbiguousExplicitFreshRetry(failure: Error) {
   const storage = memoryStorage({ [recoveryStorageKey]: "handle:stale" });
-  const freshRequest = {
-    pageCount: 1,
-    pages: [{ pageIndex: 0, pageDigest: "page:stable", mimeType: "image/png" }],
-    sourceKind: "camera-photo",
-    rights: {
-      basis: "user-confirmed-rights",
-      allowedUses: ["generation", "provider-transfer"],
-      confirmedAt: "2026-08-19T00:00:00.000Z",
-    },
-    providerTransferConsent: true,
-    consentCapabilitySnapshotDigest: "sha256:capability",
-    idempotencyKey: "K1",
-  } as const;
+  const freshRequest = validRequest("K1");
   const createRequest = vi.fn(() => freshRequest);
   const postedKeys: string[] = [];
   const logicalJobs = new Map<string, string>();
@@ -83,7 +77,7 @@ async function exerciseAmbiguousExplicitFreshRetry(failure: Error) {
 
   await expect(click()).rejects.toBe(failure);
   expect(freshState).toEqual({ mode: "normal" });
-  expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toEqual(freshRequest);
+  expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toMatchObject({ request: freshRequest });
   expect(storage.getItem(recoveryStorageKey)).toBeNull();
 
   await expect(click()).resolves.toEqual({ kind: "acquired", handle: "handle:K1" });
@@ -150,9 +144,9 @@ describe("OMR browser recovery authority", () => {
   });
 
   it("retires only the rejected create key and performs no automatic fresh create", async () => {
-    const oldRequest = { pageCount: 1, idempotencyKey: "old-key" };
+    const oldRequest = validRequest("old-key");
     const baseStorage = memoryStorage({
-      [createStorageKey]: JSON.stringify(oldRequest),
+      [createStorageKey]: await serializeOmrCreateEnvelope(createStorageKey, oldRequest),
       [recoveryStorageKey]: "stale-companion",
     });
     let recoveryLookup = 0;
@@ -269,14 +263,69 @@ describe("OMR browser recovery authority", () => {
   });
 
   it("keeps the old create key after an ambiguous timeout", async () => {
-    const request = { pageCount: 1, idempotencyKey: "stable-key" };
-    const storage = memoryStorage({ [createStorageKey]: JSON.stringify(request) });
+    const request = validRequest("stable-key");
+    const stored = await serializeOmrCreateEnvelope(createStorageKey, request);
+    const storage = memoryStorage({ [createStorageKey]: stored });
     const timeout = new TypeError("response lost");
     await expect(acquireOmrJob({
       storage, createStorageKey, recoveryStorageKey, forceFresh: false,
       createRequest: () => ({ idempotencyKey: "must-not-rotate" }),
       recover: vi.fn(), create: async () => { throw timeout; },
     })).rejects.toBe(timeout);
-    expect(JSON.parse(storage.getItem(createStorageKey) ?? "{}")).toEqual(request);
+    expect(storage.getItem(createStorageKey)).toBe(stored);
+  });
+
+  it("classifies malformed, obsolete, and mismatched persisted envelopes without automatic create", async () => {
+    const good = validRequest("persisted-key");
+    const { idempotencyKey: _missingKey, ...missingIdempotencyKey } = good;
+    void _missingKey;
+    const invalidRecords = [
+      "{malformed",
+      JSON.stringify({ version: "obsolete", canonicalInputIdentity: createStorageKey, requestDigest: "x", request: good }),
+      await serializeOmrCreateEnvelope(createStorageKey, missingIdempotencyKey),
+      await serializeOmrCreateEnvelope("different-page-identity", good),
+      await serializeOmrCreateEnvelope(createStorageKey, { ...good, consentCapabilitySnapshotDigest: "different-capability" }),
+      await serializeOmrCreateEnvelope(createStorageKey, { ...good, pages: [{ ...good.pages[0], pageDigest: "different-page" }] }),
+    ];
+    for (const persisted of invalidRecords) {
+      const storage = memoryStorage({ [createStorageKey]: persisted });
+      const create = vi.fn();
+      await expect(acquireOmrJob({
+        storage, createStorageKey, recoveryStorageKey, canonicalInputIdentity: createStorageKey, forceFresh: false,
+        createRequest: () => validRequest("must-not-generate"),
+        validateCreateRequest: (request) => request.consentCapabilitySnapshotDigest === good.consentCapabilitySnapshotDigest
+          && Array.isArray(request.pages) && (request.pages[0] as { readonly pageDigest?: string } | undefined)?.pageDigest === good.pages[0].pageDigest,
+        recover: vi.fn(), create,
+      })).resolves.toEqual({ kind: "fresh-start-required", reason: "invalid-persisted-create" });
+      expect(storage.getItem(createStorageKey)).toBe(persisted);
+      expect(create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("requires explicit reset after invalid local state and preserves a deterministic 4xx record until reset", async () => {
+    const storage = memoryStorage({ [createStorageKey]: "malformed" });
+    const create = vi.fn(async (request: Readonly<Record<string, unknown>>) => {
+      if (request.idempotencyKey === "K1") throw new OmrApiRequestError(400, "OMR_CREATE_INVALID", "invalid");
+      return { handle: `handle:${String(request.idempotencyKey)}` };
+    });
+    const common = {
+      storage, createStorageKey, recoveryStorageKey, canonicalInputIdentity: createStorageKey,
+      validateCreateRequest: () => true, recover: vi.fn(), create,
+    };
+    await expect(acquireOmrJob({ ...common, forceFresh: false, createRequest: () => validRequest("unused") }))
+      .resolves.toEqual({ kind: "fresh-start-required", reason: "invalid-persisted-create" });
+    await expect(acquireOmrJob({ ...common, forceFresh: true, createRequest: () => validRequest("K1") }))
+      .resolves.toEqual({ kind: "fresh-start-required", reason: "rejected-create-request" });
+    const rejectedRecord = storage.getItem(createStorageKey);
+    expect(rejectedRecord).not.toBeNull();
+    expect(create).toHaveBeenCalledTimes(1);
+    await expect(acquireOmrJob({ ...common, forceFresh: false, createRequest: () => validRequest("must-not-rotate") }))
+      .resolves.toEqual({ kind: "fresh-start-required", reason: "rejected-create-request" });
+    expect(storage.getItem(createStorageKey)).toBe(rejectedRecord);
+    expect(create).toHaveBeenCalledTimes(2);
+    await expect(acquireOmrJob({ ...common, forceFresh: true, createRequest: () => validRequest("K2") }))
+      .resolves.toEqual({ kind: "acquired", handle: "handle:K2" });
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(storage.getItem(createStorageKey)).toBeNull();
   });
 });

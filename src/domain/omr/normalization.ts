@@ -9,6 +9,7 @@ import {
 import { validateVendorNormalizationMappingArtifact, type OmrProviderResult, type VendorExportEvidenceMapping } from "./contracts";
 import type { RightsMetadata, SongSourceDocument } from "../source/model";
 import { normalizeSongSourceDocument } from "../source/normalize";
+import { computeSourceProvenanceDigest } from "../source/provenance";
 import { validateSongSourceDocumentIntegrity } from "../source/validation";
 import { importMusicXml } from "../../import/musicxml/parser";
 import { step3ImportVersionsFromRegistry, type MusicXmlImportDraft } from "../../import/musicxml/types";
@@ -147,16 +148,22 @@ export async function attachOmrReviewContext(input: {
   const context = await createInitialOmrReviewContext(input.source, input.providerResult, input.selection);
   if (validateReviewEvidenceReferences(input.reviewRecord, context.sourceEvidence, context.evidenceArchive).length > 0) throw new RangeError("OMR_REVIEW_RESOLUTION_INVALID");
   if (validateReviewEvidenceTargetBindings(input.source, input.reviewRecord, context.sourceEvidence, context.evidenceArchive).length > 0) throw new RangeError("OMR_EVIDENCE_TARGET_UNMAPPED");
+  const musicXmlSourceTargetMap = input.source.importInfo?.musicXmlSourceTargetMap;
+  if (!musicXmlSourceTargetMap) throw new RangeError("OMR_SOURCE_TARGET_MAP_REQUIRED");
   let source = normalizeSongSourceDocument({
     ...input.source,
     importInfo: {
-      ...input.source.importInfo, sourceKind: "omr", rawDigest: input.providerResult.vendorResultDigest,
+      sourceKind: "omr", rawDigest: input.providerResult.vendorResultDigest,
+      ...(input.source.importInfo?.originalFileName ? { originalFileName: input.source.importInfo.originalFileName } : {}),
+      ...(input.source.importInfo?.importedAt ? { importedAt: input.source.importInfo.importedAt } : {}),
       importerVersion: OMR_NORMALIZER_VERSION,
       providerMetadata: { vendorId: input.providerResult.vendorId, vendorResultDigest: input.providerResult.vendorResultDigest, evidenceGranularity: input.providerResult.evidence.granularity },
       omrReviewRecord: input.reviewRecord, omrEvidenceArchive: context.evidenceArchive,
+      musicXmlSourceTargetMap,
     },
     sourceEvidence: context.sourceEvidence,
   });
+  source = { ...source, sourceProvenanceDigest: await computeSourceProvenanceDigest(source) };
   if (input.acknowledgeRuntimeWarningsAt) {
     source = await acknowledgeRuntimeOmrWarnings(source, { acknowledgedAt: input.acknowledgeRuntimeWarningsAt });
   }
@@ -180,6 +187,8 @@ export async function finalizeReviewedOmrSource(input: {
   if (validateOmrReviewCompletion(input.reviewRecord).length > 0) throw new RangeError("OMR_REVIEW_REQUIRED");
   const finalized = await finalizeImportedSource({ ...input.reviewedDraft, rights: input.rights }, versions);
   if (finalized.status === "blocked") return finalized;
+  const musicXmlSourceTargetMap = finalized.source.importInfo?.musicXmlSourceTargetMap;
+  if (!musicXmlSourceTargetMap) throw new RangeError("OMR_SOURCE_TARGET_MAP_REQUIRED");
   let source = normalizeSongSourceDocument({
     ...finalized.source,
     sourceMeasures: finalized.source.sourceMeasures.map((measure) => ({
@@ -187,8 +196,9 @@ export async function finalizeReviewedOmrSource(input: {
       chordEvents: measure.chordEvents.map((chord) => ({ ...chord, source: chord.source === "manual" ? "manual" : "omr" })),
     })),
     importInfo: {
-      ...finalized.source.importInfo,
       sourceKind: "omr",
+      ...(finalized.source.importInfo?.originalFileName ? { originalFileName: finalized.source.importInfo.originalFileName } : {}),
+      ...(finalized.source.importInfo?.importedAt ? { importedAt: finalized.source.importInfo.importedAt } : {}),
       rawDigest: input.providerResult.vendorResultDigest,
       importerVersion: OMR_NORMALIZER_VERSION,
       providerMetadata: {
@@ -198,10 +208,12 @@ export async function finalizeReviewedOmrSource(input: {
       },
       omrReviewRecord: input.reviewRecord,
       omrEvidenceArchive: input.evidenceArchive,
+      musicXmlSourceTargetMap,
     },
     sourceEvidence: input.sourceEvidence,
   });
   source = { ...source, revisionDigest: await digestMusicalSource(source) };
+  source = { ...source, sourceProvenanceDigest: await computeSourceProvenanceDigest(source) };
   if (!await validateSongSourceDocumentIntegrity(source, versions.performanceExpanderVersion)) throw new RangeError("SOURCE_REVISION_INVALID");
   return { status: "complete", source };
 }

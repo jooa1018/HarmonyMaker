@@ -3,9 +3,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 vi.mock("server-only", () => ({}));
 
 import { Pool } from "pg";
-import type { OmrQuotaConfig } from "../../domain/omr/contracts";
+import type { S3Client } from "@aws-sdk/client-s3";
+import { semanticDigest } from "../../domain/digest/canonical";
+import { MAX_OMR_CREDIT_ESTIMATE, type OmrQuotaConfig } from "../../domain/omr/contracts";
 import { applyMigrations } from "../persistence/migrations";
 import type { PrivateRowId } from "../persistence/store";
+import { PostgresGovernanceStore } from "../persistence/postgres-store";
+import { S3OwnedObjectStore } from "../storage/s3-owned-object-store";
+import { CleanupService } from "../cleanup/cleanup-service";
 import { PostgresOmrStore } from "./postgres-store";
 import type { DurableOmrJobRecord, OmrStore } from "./store";
 
@@ -320,6 +325,163 @@ describe("actual PostgreSQL OMR authority", () => {
       })).resolves.toEqual({ status: "committed-exact" });
       const durable = await pool.query("SELECT state,credit_state,result_object_reference_id FROM omr_jobs WHERE id=$1", [created.job.id]);
       expect(durable.rows[0]).toMatchObject({ state: "completed", credit_state: "settled", result_object_reference_id: objectId });
+    });
+  });
+
+  it("fences expired capture and status tokens behind newer completed authority", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const ownerSessionId = await session(pool, "fencing-owner");
+      const created = await claim(store, ownerSessionId, "2026-01-01T00:00:00.000Z", "fencing", 100);
+      if (created.status !== "claimed") throw new Error(`FENCING_SEED_FAILED:${created.status}`);
+      await pool.query("UPDATE omr_jobs SET state='queued' WHERE id=$1", [created.job.id]);
+      await store.claimResultCapture({ jobId: created.job.id, leaseToken: "capture-a", leaseExpiresAt: "2026-01-01T00:00:01.000Z", now: "2026-01-01T00:00:00.000Z" });
+      const restartedStore = new PostgresOmrStore(pool);
+      await restartedStore.claimResultCapture({ jobId: created.job.id, leaseToken: "capture-b", leaseExpiresAt: "2026-01-01T00:10:00.000Z", now: "2026-01-01T00:00:02.000Z" });
+      await store.releaseResultCapture(created.job.id, "capture-a", "2026-01-01T00:00:02.500Z");
+      expect((await pool.query("SELECT result_capture_lease_token FROM omr_jobs WHERE id=$1", [created.job.id])).rows[0].result_capture_lease_token).toBe("capture-b");
+      await expect(store.failResultCapture({ jobId: created.job.id, leaseToken: "capture-a", expectedStates: ["queued"], update: { state: "failed", creditState: "released" }, now: "2026-01-01T00:00:03.000Z" })).resolves.toBe(false);
+      const resultId = await objectReference(pool, ownerSessionId, "fencing-result");
+      await expect(store.completeResultCapture({ jobId: created.job.id, leaseToken: "capture-b", update: { state: "completed", creditState: "settled", resultObjectReferenceId: resultId }, now: "2026-01-01T00:00:04.000Z" })).resolves.toBe(true);
+      await expect(store.releaseResultCapture(created.job.id, "capture-a", "2026-01-01T00:00:05.000Z")).resolves.toBeUndefined();
+      expect((await pool.query("SELECT state,credit_state,result_object_reference_id,result_capture_lease_token FROM omr_jobs WHERE id=$1", [created.job.id])).rows[0])
+        .toMatchObject({ state: "completed", credit_state: "settled", result_object_reference_id: resultId, result_capture_lease_token: null });
+
+      const second = await claim(store, ownerSessionId, "2026-01-01T01:00:00.000Z", "status-fencing", 100);
+      if (second.status !== "claimed") throw new Error(`STATUS_FENCING_SEED_FAILED:${second.status}`);
+      await pool.query("UPDATE omr_jobs SET state='queued' WHERE id=$1", [second.job.id]);
+      await store.claimStatusObservation({ jobId: second.job.id, leaseToken: "status-a", leaseExpiresAt: "2026-01-01T01:00:01.000Z", now: "2026-01-01T01:00:00.000Z" });
+      await restartedStore.claimStatusObservation({ jobId: second.job.id, leaseToken: "status-b", leaseExpiresAt: "2026-01-01T01:10:00.000Z", now: "2026-01-01T01:00:02.000Z" });
+      await store.claimResultCapture({ jobId: second.job.id, leaseToken: "status-capture", leaseExpiresAt: "2026-01-01T01:10:00.000Z", statusObservationLeaseToken: "status-b", now: "2026-01-01T01:00:03.000Z" });
+      const statusResultId = await objectReference(pool, ownerSessionId, "status-result");
+      await store.completeResultCapture({ jobId: second.job.id, leaseToken: "status-capture", update: { state: "completed", creditState: "settled", resultObjectReferenceId: statusResultId }, now: "2026-01-01T01:00:04.000Z" });
+      await expect(store.completeStatusObservation({ jobId: second.job.id, leaseToken: "status-a", expectedStates: ["queued"], update: { state: "failed", creditState: "released" }, now: "2026-01-01T01:00:05.000Z" })).resolves.toBe(false);
+      expect((await pool.query("SELECT state,credit_state,result_object_reference_id,status_observation_lease_token FROM omr_jobs WHERE id=$1", [second.job.id])).rows[0])
+        .toMatchObject({ state: "completed", credit_state: "settled", result_object_reference_id: statusResultId, status_observation_lease_token: null });
+    });
+  });
+
+  it("uses bigint accounting beyond int32 and rejects the exact per-job boundary plus one", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const largeClaim = async (key: string, estimate: number, ceiling: number) => {
+        const owner = await session(pool, `large:${key}`);
+        const durable = { ...record(owner, "2026-01-01T00:00:00.000Z", key), creditEstimate: estimate };
+        return store.claimCreate({ ownerSessionId: owner, ipOwnerHash: durable.ipOwnerHash, idempotencyKeyHash: `large:${key}`, requestDigest: `${key.padEnd(64, "0")}`.slice(0, 64) as never, record: durable, quota: { ...quota, maxConcurrentJobsPerIp: 10, dailyGlobalCreditCeiling: ceiling }, now: "2026-01-01T00:00:00.000Z" });
+      };
+      await expect(largeClaim("first", MAX_OMR_CREDIT_ESTIMATE, MAX_OMR_CREDIT_ESTIMATE * 2)).resolves.toMatchObject({ status: "claimed" });
+      await expect(largeClaim("second", MAX_OMR_CREDIT_ESTIMATE, MAX_OMR_CREDIT_ESTIMATE * 2)).resolves.toMatchObject({ status: "claimed" });
+      expect((await pool.query("SELECT sum(credit_estimate::bigint)::text AS total FROM omr_jobs")).rows[0].total).toBe(String(MAX_OMR_CREDIT_ESTIMATE * 2));
+      await expect(largeClaim("third", 1, MAX_OMR_CREDIT_ESTIMATE * 2)).resolves.toEqual({ status: "credit-denied" });
+      await expect(largeClaim("overflow", MAX_OMR_CREDIT_ESTIMATE + 1, Number.MAX_SAFE_INTEGER)).rejects.toThrow("OMR_CREDIT_DOMAIN_INVALID");
+    });
+  });
+
+  it("durably commits start/input/cancel before acknowledgement loss and preserves canonical input replay", async () => {
+    await withStore("UTC", async (pool, store) => {
+      const cases = [
+        { kind: "start" as const, initial: "uploading", update: { state: "queued" as const } },
+        { kind: "submit-input" as const, initial: "needs-input", update: { state: "processing" as const } },
+        { kind: "cancel" as const, initial: "processing", update: { state: "cancelled" as const, creditState: "released" as const } },
+      ];
+      for (const item of cases) {
+        const owner = await session(pool, `operation:${item.kind}`);
+        const created = await claim(store, owner, "2026-01-01T00:00:00.000Z", `operation-${item.kind}`, 100);
+        if (created.status !== "claimed") throw new Error(`OPERATION_SEED_FAILED:${created.status}`);
+        await pool.query("UPDATE omr_jobs SET state=$2 WHERE id=$1", [created.job.id, item.initial]);
+        const response = { kind: "vendor-specific" as const, requestId: "request:canonical", schemaId: "schema:canonical", payload: { nested: 1, alpha: true } };
+        const digest = item.kind === "submit-input"
+          ? await semanticDigest({ projectionSchema: "hm-omr-vendor-input-v1", input: response })
+          : await semanticDigest({ projectionSchema: "hm-omr-operation-request-v1", kind: item.kind, jobId: created.job.id });
+        const lease = `lease:${item.kind}`;
+        await store.claimOperation({ jobId: created.job.id, kind: item.kind, operationRequestDigest: digest, expectedStates: [item.initial as DurableOmrJobRecord["state"]], leaseToken: lease, leaseExpiresAt: "2026-01-01T00:05:00.000Z", supportsIdempotency: true, now: "2026-01-01T00:00:00.000Z" });
+        let vendorEffects = 0;
+        vendorEffects += 1;
+        const acknowledgementLoss = new Proxy(store, {
+          get(target, property, receiver) {
+            if (property === "completeOperation") return async (input: Parameters<OmrStore["completeOperation"]>[0]) => {
+              const applied = await target.completeOperation(input);
+              if (applied) throw new Error(`${item.kind} commit acknowledgement lost`);
+              return applied;
+            };
+            const value = Reflect.get(target, property, receiver) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }) as OmrStore;
+        await expect(acknowledgementLoss.completeOperation({ jobId: created.job.id, kind: item.kind, leaseToken: lease, update: item.kind === "submit-input" ? { ...item.update, acceptedInput: response, acceptedInputDigest: digest } : item.update, now: "2026-01-01T00:00:01.000Z" })).rejects.toThrow("commit acknowledgement lost");
+        const restarted = new PostgresOmrStore(pool);
+        const durable = (await pool.query("SELECT state,credit_state,accepted_input,accepted_input_digest,operation_lease_token FROM omr_jobs WHERE id=$1", [created.job.id])).rows[0];
+        expect(durable.state).toBe(item.update.state);
+        expect(durable.operation_lease_token).toBeNull();
+        if (item.kind === "submit-input") {
+          const reordered = { ...response, payload: { alpha: true, nested: 1 } };
+          expect(await semanticDigest({ projectionSchema: "hm-omr-vendor-input-v1", input: reordered })).toBe(durable.accepted_input_digest);
+          expect(durable.accepted_input).toEqual(response);
+        }
+        await expect(restarted.claimOperation({ jobId: created.job.id, kind: item.kind, operationRequestDigest: digest, expectedStates: [item.initial as DurableOmrJobRecord["state"]], leaseToken: `retry:${item.kind}`, leaseExpiresAt: "2026-01-01T00:10:00.000Z", supportsIdempotency: true, now: "2026-01-01T00:06:00.000Z" })).resolves.toMatchObject({ status: "invalid" });
+        expect(vendorEffects).toBe(1);
+      }
+    });
+  });
+
+  it("keeps a PostgreSQL publication ledger discoverable through Put/Delete acknowledgement failures and restart", async () => {
+    await withStore("UTC", async (pool) => {
+      const owner = await session(pool, "publication-owner");
+      const keys = new Set<string>();
+      let putLost = true;
+      let deleteFailed = true;
+      const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const key = String(command.input.Key);
+        if (command.constructor.name === "PutObjectCommand") { keys.add(key); if (putLost) { putLost = false; throw new TypeError("put acknowledgement lost"); } }
+        if (command.constructor.name === "DeleteObjectCommand") { if (deleteFailed) { deleteFailed = false; throw new Error("delete failed"); } keys.delete(key); }
+        return {};
+      } } as unknown as S3Client;
+      const governance = new PostgresGovernanceStore(pool);
+      const first = new S3OwnedObjectStore(fake, "integration-bucket", governance);
+      const publication = { ownerSessionId: owner, publicationId: "postgres-put-loss", bytes: Uint8Array.of(4, 5, 6), contentType: "application/octet-stream" } as const;
+      await expect(first.put(publication)).rejects.toThrow("put acknowledgement lost");
+      expect(keys.size).toBe(1);
+      const staged = (await pool.query("SELECT id,object_key,lifecycle,publication_token FROM object_references")).rows[0];
+      expect(staged).toMatchObject({ lifecycle: "upload-pending", publication_token: expect.any(String) });
+      const restarted = new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool));
+      const cleanup = new CleanupService(new PostgresGovernanceStore(pool), restarted);
+      await expect(cleanup.run({ now: new Date("2030-01-01T00:00:00.000Z") })).resolves.toMatchObject({ failures: [expect.objectContaining({ scope: expect.stringMatching(/^object:/u), message: "delete failed" })] });
+      expect(keys.size).toBe(1);
+      expect((await pool.query("SELECT lifecycle FROM object_references")).rows[0].lifecycle).toBe("delete-pending");
+      await expect(cleanup.run({ now: new Date("2030-01-01T00:01:00.000Z") })).resolves.toMatchObject({ failures: [] });
+      expect(keys.size).toBe(0);
+      expect((await pool.query("SELECT lifecycle FROM object_references")).rows[0].lifecycle).toBe("deleted");
+      const republished = await restarted.put(publication);
+      expect(republished).toMatchObject({ id: String(staged.id), objectKey: staged.object_key, lifecycle: "active" });
+      expect(keys).toEqual(new Set([staged.object_key]));
+      expect((await pool.query("SELECT count(*)::int AS count FROM object_references")).rows[0].count).toBe(1);
+    });
+  });
+
+  it("recovers PostgreSQL reference/activation acknowledgement loss as one active publication", async () => {
+    await withStore("UTC", async (pool) => {
+      for (const lostMethod of ["createObjectReference", "completeObjectPublication"] as const) {
+        await pool.query("TRUNCATE TABLE object_references RESTART IDENTITY CASCADE");
+        const owner = await session(pool, `publication-ack:${lostMethod}`);
+        const governance = new PostgresGovernanceStore(pool);
+        let loseOnce = true;
+        const unstable = new Proxy(governance, {
+          get(target, property, receiver) {
+            if (property === lostMethod) return async (...args: unknown[]) => {
+              const result = await (target[lostMethod] as (...values: unknown[]) => Promise<unknown>)(...args);
+              if (loseOnce) { loseOnce = false; throw new Error(`${lostMethod} acknowledgement lost`); }
+              return result;
+            };
+            const value = Reflect.get(target, property, receiver) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }) as PostgresGovernanceStore;
+        const commands: string[] = [];
+        const fake = { send: async (command: { constructor: { name: string } }) => { commands.push(command.constructor.name); return {}; } } as unknown as S3Client;
+        const active = await new S3OwnedObjectStore(fake, "integration-bucket", unstable).put({ ownerSessionId: owner, publicationId: `postgres-ack-loss:${lostMethod}`, bytes: Uint8Array.of(1), contentType: "application/octet-stream" });
+        expect(active.lifecycle).toBe("active");
+        expect((await pool.query("SELECT lifecycle,publication_token,publication_lease_expires_at FROM object_references")).rows)
+          .toEqual([{ lifecycle: "active", publication_token: null, publication_lease_expires_at: null }]);
+        expect(commands).toEqual(["PutObjectCommand"]);
+      }
     });
   });
 });

@@ -8,6 +8,7 @@ import { COMMON_TIME } from "../meter";
 import type { SongSourceDocument } from "../source/model";
 import { computeRevisionHistoryDigest, createSourceRevisionProjection, revisionRefsEqual } from "../source/revision";
 import { hasCanonicalSourceIdGraph, isSongSourceDocument, validateSongSourceDocumentIntegrity } from "../source/validation";
+import { computeSourceProvenanceDigest, upgradeSourceProvenance } from "../source/provenance";
 import {
   computeProviderBundleDigest, coordinateMicrounit, mapVendorEvidenceToSource,
   remapRevisionScopedTarget, validateOmrReviewCompletion, validateOmrReviewRecord,
@@ -27,6 +28,7 @@ async function sourceFixture(): Promise<SongSourceDocument> {
   let source: SongSourceDocument = {
     schemaVersion: 9, documentId: "doc:omr:test", revisionOrdinal: 0, revisionDigest: pending,
     revisionHistory: [], revisionHistoryDigest: await computeRevisionHistoryDigest([]), title: "OMR Test",
+    sourceProvenanceDigest: pending,
     defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" }, defaultTempo: { beatUnit: 4, dotted: false, bpm: 100 },
     sourceMeasures: [{
       id: "sm:0", number: 1, implicit: false, time: COMMON_TIME, duration: fraction(4),
@@ -38,9 +40,9 @@ async function sourceFixture(): Promise<SongSourceDocument> {
     sectionDefinitions: [{ id: "sd:0:1:verse:0", type: "verse", label: "Verse", sourceMeasureIds: ["sm:0"], confirmation: "confirmed" }],
     sectionOccurrences: [{ id: "so:0:1:0", sectionDefinitionId: "sd:0:1:verse:0", occurrenceIndex: 0, variant: "base", lyricVerseIndex: 1, startPerformanceMeasureIndex: 0, endPerformanceMeasureIndexExclusive: 1 }],
     phraseRegions: [], rights: { basis: "self-authored", allowedUses: ["generation", "provider-transfer"] },
-    importInfo: { sourceKind: "omr", importerVersion: "omr-normalizer-v1" },
+    importInfo: { sourceKind: "manual", importerVersion: "manual-v1" },
   };
-  source = { ...source, revisionDigest: await digestMusicalSource(source) };
+  source = { ...source, revisionDigest: await digestMusicalSource(source), sourceProvenanceDigest: await computeSourceProvenanceDigest(source) };
   return source;
 }
 
@@ -89,7 +91,6 @@ async function persistedOmrSource(source: SongSourceDocument, record: OmrReviewR
   let persisted: SongSourceDocument = {
     ...source,
     importInfo: {
-      ...source.importInfo,
       sourceKind: "omr",
       importerVersion: "omr-normalizer-v1",
       rawDigest: record.vendorResultDigest,
@@ -100,6 +101,7 @@ async function persistedOmrSource(source: SongSourceDocument, record: OmrReviewR
     },
     sourceEvidence: mapped.index,
   };
+  persisted = { ...persisted, sourceProvenanceDigest: await computeSourceProvenanceDigest(persisted) };
   const runtime = await validateRuntimeOmrReadiness(persisted, { includeAcknowledgedWarnings: true });
   if (runtime.diagnostics.some((diagnostic) => diagnostic.severity === "warning")) {
     persisted = await acknowledgeRuntimeOmrWarnings(persisted, { acknowledgedAt: "2026-01-01T00:00:00.000Z" });
@@ -326,7 +328,7 @@ describe("typed OMR correction and Source revision", () => {
     expect(await validateOmrCorrectionHistory(reloadedSource, reloadedRecord)).toEqual([]);
     expect(await validateSongSourceDocumentIntegrity(reloadedSource, "repeat-v1")).toBe(true);
 
-    const withRecord = (record: OmrReviewRecord): SongSourceDocument => ({ ...reloadedSource, importInfo: { ...reloadedSource.importInfo!, omrReviewRecord: record } });
+    const withRecord = (record: OmrReviewRecord): SongSourceDocument => ({ ...reloadedSource, importInfo: { ...reloadedSource.importInfo!, omrReviewRecord: record } } as unknown as SongSourceDocument);
     const opened = { ...reloadedRecord, reviewItems: reloadedRecord.reviewItems.map((item, index) => index === 0 ? { ...item, resolution: { status: "open" as const } } : item) };
     expect(await validateSongSourceDocumentIntegrity(withRecord(opened), "repeat-v1")).toBe(false);
     const rejected = { ...reloadedRecord, reviewItems: reloadedRecord.reviewItems.map((item, index) => index === 0 ? { ...item, resolution: { status: "rejected" as const, rejectedAlternativeIds: [item.alternatives[0].id] } } : item) };
@@ -399,7 +401,7 @@ describe("typed OMR correction and Source revision", () => {
           : item),
       };
     };
-    const sourceWithRecord = (candidate: OmrReviewRecord, base = persisted): SongSourceDocument => ({ ...base, importInfo: { ...base.importInfo!, omrReviewRecord: candidate } });
+    const sourceWithRecord = (candidate: OmrReviewRecord, base = persisted): SongSourceDocument => ({ ...base, importInfo: { ...base.importInfo!, omrReviewRecord: candidate } } as unknown as SongSourceDocument);
 
     const changedPatchBase = { ...record.corrections[0], patch: { kind: "pitch" as const, pitch: { step: "F" as const, alter: 0 as const, octave: 4 } } };
     const changedPatch = { ...changedPatchBase, id: await correctionId(changedPatchBase) };
@@ -448,10 +450,25 @@ describe("typed OMR correction and Source revision", () => {
     const applied = await manuallyCorrectOmrReviewItem({ source: original, item, patch: { kind: "pitch", pitch: { step: "D", alter: 0, octave: 4 } }, appliedAt: "2026-01-01T00:00:00.000Z" });
     const record: OmrReviewRecord = { vendorId: "hm-reference", vendorResultDigest: "4".repeat(64) as OmrReviewRecord["vendorResultDigest"], autoRepairs: [], corrections: [applied.correction], reviewItems: [applied.item] };
     const valid = await persistedOmrSource(applied.source, record);
-    const check = (candidate: SongSourceDocument) => validateSongSourceDocumentIntegrity(candidate, "repeat-v1");
+    const check = (candidate: unknown) => validateSongSourceDocumentIntegrity(candidate, "repeat-v1");
     expect(await check(valid)).toBe(true);
+    const { sourceProvenanceDigest: _legacyMissingDigest, ...legacyOmr } = valid;
+    void _legacyMissingDigest;
+    expect(await check(await upgradeSourceProvenance(legacyOmr))).toBe(true);
     expect(valid.importInfo?.omrRuntimeWarningAcknowledgements?.length).toBeGreaterThan(0);
     expect(await check(JSON.parse(JSON.stringify(valid)) as SongSourceDocument)).toBe(true);
+    expect(await check({ ...valid, importInfo: { ...valid.importInfo!, sourceKind: "musicxml" } })).toBe(false);
+    const relabelled = {
+      ...valid,
+      sourceEvidence: undefined,
+      importInfo: {
+        sourceKind: "musicxml", importerVersion: "musicxml-import-v1", rawDigest: valid.importInfo!.rawDigest,
+        musicXmlMetadata: { containerKind: "musicxml" }, musicXmlSourceTargetMap: valid.importInfo!.musicXmlSourceTargetMap,
+      },
+    };
+    expect(isSongSourceDocument(relabelled)).toBe(true);
+    expect(await check(relabelled)).toBe(false);
+    expect(await check({ ...valid, sourceProvenanceDigest: "f".repeat(64) as SemanticDigest })).toBe(false);
 
     const missingEvidenceRecord = { ...record, reviewItems: [{ ...record.reviewItems[0], evidenceIds: ["e:missing"] }] };
     expect(await check({ ...valid, importInfo: { ...valid.importInfo!, omrReviewRecord: missingEvidenceRecord } })).toBe(false);

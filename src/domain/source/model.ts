@@ -141,18 +141,42 @@ export interface PhraseRegion {
   readonly range: MusicalRange;
   readonly boundarySource: "manual" | "musicxml" | "lead-rest" | "long-note" | "section-boundary" | "automatic-split";
 }
-export interface ImportInfo {
-  readonly sourceKind: "manual" | "musicxml" | "omr";
+interface ImportInfoBase {
   readonly originalFileName?: string;
   readonly importedAt?: string;
-  readonly rawDigest?: BinaryDigest;
   readonly importerVersion: string;
-  readonly providerMetadata?: Readonly<Record<string, string>>;
-  readonly omrReviewRecord?: OmrReviewRecord;
-  readonly omrEvidenceArchive?: OmrEvidenceArchive;
-  readonly musicXmlSourceTargetMap?: MusicXmlSourceTargetMap;
+}
+export interface ManualImportInfo extends ImportInfoBase {
+  readonly sourceKind: "manual";
+  readonly rawDigest?: never;
+  readonly musicXmlMetadata?: never;
+  readonly providerMetadata?: never;
+  readonly omrReviewRecord?: never;
+  readonly omrEvidenceArchive?: never;
+  readonly musicXmlSourceTargetMap?: never;
+  readonly omrRuntimeWarningAcknowledgements?: never;
+}
+export interface MusicXmlImportInfo extends ImportInfoBase {
+  readonly sourceKind: "musicxml";
+  readonly rawDigest: BinaryDigest;
+  readonly musicXmlMetadata: Readonly<Record<string, string>>;
+  readonly musicXmlSourceTargetMap: MusicXmlSourceTargetMap;
+  readonly providerMetadata?: never;
+  readonly omrReviewRecord?: never;
+  readonly omrEvidenceArchive?: never;
+  readonly omrRuntimeWarningAcknowledgements?: never;
+}
+export interface OmrImportInfo extends ImportInfoBase {
+  readonly sourceKind: "omr";
+  readonly rawDigest: BinaryDigest;
+  readonly providerMetadata: Readonly<Record<string, string>>;
+  readonly omrReviewRecord: OmrReviewRecord;
+  readonly omrEvidenceArchive: OmrEvidenceArchive;
+  readonly musicXmlSourceTargetMap: MusicXmlSourceTargetMap;
+  readonly musicXmlMetadata?: never;
   readonly omrRuntimeWarningAcknowledgements?: readonly OmrRuntimeWarningAcknowledgement[];
 }
+export type ImportInfo = ManualImportInfo | MusicXmlImportInfo | OmrImportInfo;
 export interface SongSourceDocument {
   readonly schemaVersion: 9;
   readonly documentId: string;
@@ -161,6 +185,7 @@ export interface SongSourceDocument {
   readonly previousRevision?: SourceRevisionRef;
   readonly revisionHistory: readonly SourceRevisionRecord[];
   readonly revisionHistoryDigest: SemanticDigest;
+  readonly sourceProvenanceDigest: SemanticDigest;
   readonly title: string;
   readonly composer?: string;
   readonly defaultKey: KeySignature;

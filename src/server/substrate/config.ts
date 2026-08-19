@@ -1,3 +1,5 @@
+import { MAX_OMR_DAILY_CREDIT_CEILING } from "../../domain/omr/contracts";
+
 export const PRODUCTION_SUBSTRATE_ENVIRONMENT_VARIABLES = Object.freeze([
   "DATABASE_URL",
   "S3_ENDPOINT",
@@ -101,7 +103,8 @@ export function loadProductionOmrConfig(environment: Environment = process.env):
   if (providerMode !== "unconfigured" && providerMode !== "reference" && providerMode !== "real") throw new ProductionSubstrateConfigurationError([], "invalid OMR_PROVIDER_MODE");
   if (providerMode === "reference" && environment.NODE_ENV === "production") throw new ProductionSubstrateConfigurationError([], "reference OMR provider is prohibited in production");
   const dailyGlobalCreditCeiling = Number(environment.OMR_DAILY_GLOBAL_CREDIT_CEILING);
-  if (!Number.isSafeInteger(dailyGlobalCreditCeiling) || dailyGlobalCreditCeiling <= 0) throw new ProductionSubstrateConfigurationError([], "invalid OMR_DAILY_GLOBAL_CREDIT_CEILING");
+  if (!Number.isSafeInteger(dailyGlobalCreditCeiling) || dailyGlobalCreditCeiling <= 0
+    || dailyGlobalCreditCeiling > MAX_OMR_DAILY_CREDIT_CEILING) throw new ProductionSubstrateConfigurationError([], "invalid OMR_DAILY_GLOBAL_CREDIT_CEILING");
   return Object.freeze({
     handleHmacKey: decodeExactOmrSecret(environment, "OMR_HANDLE_HMAC_KEY"),
     vendorJobEncryptionKey: decodeExactOmrSecret(environment, "OMR_VENDOR_JOB_ENCRYPTION_KEY"),

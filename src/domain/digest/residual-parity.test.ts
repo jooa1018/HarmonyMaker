@@ -93,6 +93,7 @@ function sourceFixture(ids: FixtureIds): SongSourceDocument {
     revisionDigest: d("0"),
     revisionHistory: [],
     revisionHistoryDigest: d("1"),
+    sourceProvenanceDigest: d("2"),
     title: "display-only",
     defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" },
     defaultTempo: { beatUnit: 4, dotted: false, bpm: 80 },

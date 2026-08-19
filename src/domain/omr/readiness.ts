@@ -6,6 +6,7 @@ import { materializeImportDiagnostics, type ImportDiagnosticInput } from "../../
 import { validateOmrReviewCompletion } from "./foundation";
 import { validateOmrCorrectionHistory } from "./review";
 import { revisionRefsEqual } from "../source/revision";
+import { computeSourceProvenanceDigest } from "../source/provenance";
 
 export type RuntimeOmrReadiness = "validator-ready" | "review-required" | "blocked";
 
@@ -102,7 +103,7 @@ export async function acknowledgeRuntimeOmrWarnings(
   source: SongSourceDocument,
   input: { readonly diagnosticIds?: readonly string[]; readonly acknowledgedAt: string },
 ): Promise<SongSourceDocument> {
-  if (!source.importInfo || !Number.isFinite(Date.parse(input.acknowledgedAt))) throw new RangeError("OMR_WARNING_ACKNOWLEDGEMENT_INVALID");
+  if (source.importInfo?.sourceKind !== "omr" || !Number.isFinite(Date.parse(input.acknowledgedAt))) throw new RangeError("OMR_WARNING_ACKNOWLEDGEMENT_INVALID");
   const raw = await validateRuntimeOmrReadiness(source, { includeAcknowledgedWarnings: true });
   const warnings = raw.diagnostics.filter((diagnostic) => diagnostic.severity === "warning");
   const requested = input.diagnosticIds ?? warnings.map((diagnostic) => diagnostic.id);
@@ -117,7 +118,8 @@ export async function acknowledgeRuntimeOmrWarnings(
     ...retained,
     ...requested.map((diagnosticId) => ({ diagnosticId, sourceRevision: revision, acknowledgedAt: input.acknowledgedAt })),
   ].sort((left, right) => left.diagnosticId.localeCompare(right.diagnosticId));
-  return { ...source, importInfo: { ...source.importInfo, omrRuntimeWarningAcknowledgements } };
+  const updated = { ...source, importInfo: { ...source.importInfo, omrRuntimeWarningAcknowledgements } };
+  return { ...updated, sourceProvenanceDigest: await computeSourceProvenanceDigest(updated) };
 }
 
 export async function validateRuntimeOmrWarningAcknowledgements(source: SongSourceDocument): Promise<boolean> {

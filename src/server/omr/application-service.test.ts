@@ -4,7 +4,7 @@ import sharp from "sharp";
 vi.mock("server-only", () => ({}));
 
 import { binaryDigest, semanticDigest, type BinaryDigest, type SemanticDigest } from "../../domain/digest/canonical";
-import { computeVendorNormalizationMappingDigest, OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError } from "../../domain/omr/contracts";
+import { computeVendorNormalizationMappingDigest, MAX_OMR_CREDIT_ESTIMATE, OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OmrVendorCallError, validateVendorCapabilities } from "../../domain/omr/contracts";
 import { coordinateMicrounit } from "../../domain/omr/foundation";
 import { referenceOmrPageBytes } from "../../domain/omr/reference-fixture-data";
 import { basisPoints } from "../../domain/rates";
@@ -51,7 +51,7 @@ async function harness(statusScript: ReferenceOmrFixture["statusScript"] = [{ ki
     inspectPage, now: () => new Date(clock),
   };
   const service = new DurableOmrApplicationService(dependencies);
-  return { pageBytes, pageDigest, fixture, adapter, store, objects, service, dependencies, advance(ms: number) { clock = new Date(clock.getTime() + ms); } };
+  return { pageBytes, pageDigest, fixture, adapter, store, governance, objects, service, dependencies, advance(ms: number) { clock = new Date(clock.getTime() + ms); } };
 }
 
 const rights = { basis: "self-authored" as const, allowedUses: ["provider-transfer", "generation"] as const };
@@ -255,6 +255,180 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       { mimeType: "image/png", blobType: "image/png" },
       { mimeType: "image/png", blobType: "image/png" },
     ]);
+  });
+
+  it("recovers true start/input/cancel commit acknowledgement loss without repeating Vendor effects", async () => {
+    const storeLosingAckFor = (target: MemoryOmrStore, kind: "start" | "submit-input" | "cancel"): OmrStore => {
+      let loseOnce = true;
+      return new Proxy(target, {
+        get(store, property, receiver) {
+          if (property === "completeOperation") return async (...args: Parameters<OmrStore["completeOperation"]>) => {
+            const applied = await store.completeOperation(...args);
+            if (loseOnce && args[0].kind === kind && applied) { loseOnce = false; throw new Error(`${kind} commit acknowledgement lost`); }
+            return applied;
+          };
+          const value = Reflect.get(store, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(store) : value;
+        },
+      }) as OmrStore;
+    };
+
+    const startHarness = await harness();
+    const startHandle = await createConsentedJob(startHarness.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "true-start-ack" });
+    await startHarness.service.uploadPage(startHandle, { pageIndex: 0, pageDigest: startHarness.pageDigest, mimeType: "image/png", idempotencyKey: "true-start-ack-page", bytes: new Blob([startHarness.pageBytes.slice().buffer as ArrayBuffer]) });
+    const startService = new DurableOmrApplicationService({ ...startHarness.dependencies, store: storeLosingAckFor(startHarness.store, "start") });
+    await expect(startService.start(startHandle)).rejects.toThrow("OMR_OPERATION_PENDING");
+    expect(startHarness.store.listJobs()[0]).toMatchObject({ state: "queued", operationLeaseToken: undefined, operationLeaseExpiresAt: undefined });
+    await expect(new DurableOmrApplicationService(startHarness.dependencies).start(startHandle)).resolves.toBeUndefined();
+    expect(startHarness.adapter.callCounts.start).toBe(1);
+
+    const inputRequest = { kind: "vendor-specific" as const, requestId: "request:nested", schemaId: "schema:nested", payload: { alpha: 1, beta: true } };
+    const inputHarness = await harness([{ kind: "needs-input", request: inputRequest }]);
+    const inputHandle = await createStartedJob(inputHarness, "true-input-ack");
+    await inputHarness.service.synchronizeStatus(inputHandle);
+    const inputService = new DurableOmrApplicationService({ ...inputHarness.dependencies, store: storeLosingAckFor(inputHarness.store, "submit-input") });
+    const response = { kind: "vendor-specific" as const, requestId: "request:nested", schemaId: "schema:nested", payload: { alpha: 1, beta: true } };
+    await expect(inputService.submitInput(inputHandle, response)).rejects.toThrow("OMR_OPERATION_PENDING");
+    expect(inputHarness.store.listJobs()[0]).toMatchObject({ state: "processing", acceptedInput: response, acceptedInputDigest: expect.any(String), operationLeaseToken: undefined });
+    const reordered = { ...response, payload: { beta: true, alpha: 1 } };
+    await expect(new DurableOmrApplicationService(inputHarness.dependencies).submitInput(inputHandle, reordered)).resolves.toBeUndefined();
+    expect(inputHarness.adapter.callCounts.input).toBe(1);
+
+    const cancelHarness = await harness();
+    const cancelHandle = await createStartedJob(cancelHarness, "true-cancel-ack");
+    const cancelService = new DurableOmrApplicationService({ ...cancelHarness.dependencies, store: storeLosingAckFor(cancelHarness.store, "cancel") });
+    await expect(cancelService.cancel(cancelHandle)).rejects.toThrow("OMR_CANCEL_PENDING");
+    expect(cancelHarness.store.listJobs()[0]).toMatchObject({ state: "cancelled", creditState: "released", operationLeaseToken: undefined });
+    await expect(new DurableOmrApplicationService(cancelHarness.dependencies).cancel(cancelHandle)).resolves.toBeUndefined();
+    expect(cancelHarness.adapter.callCounts.cancel).toBe(1);
+  });
+
+  it("atomically fences expired capture/status authorities behind newer completion", async () => {
+    const h = await harness();
+    await createStartedJob(h, "authority-fencing");
+    const job = h.store.listJobs()[0];
+    await expect(h.store.claimResultCapture({ jobId: job.id, leaseToken: "capture-a", leaseExpiresAt: "2026-01-01T00:00:01.000Z", now: "2026-01-01T00:00:00.000Z" })).resolves.toMatchObject({ status: "claimed" });
+    await expect(h.store.claimResultCapture({ jobId: job.id, leaseToken: "capture-b", leaseExpiresAt: "2026-01-01T00:10:00.000Z", now: "2026-01-01T00:00:02.000Z" })).resolves.toMatchObject({ status: "claimed" });
+    await h.store.releaseResultCapture(job.id, "capture-a", "2026-01-01T00:00:02.500Z");
+    expect(h.store.listJobs()[0].resultCaptureLeaseToken).toBe("capture-b");
+    await expect(h.store.failResultCapture({ jobId: job.id, leaseToken: "capture-a", expectedStates: ["queued"], update: { state: "failed", creditState: "released" }, now: "2026-01-01T00:00:03.000Z" })).resolves.toBe(false);
+    await expect(h.store.completeResultCapture({ jobId: job.id, leaseToken: "capture-b", update: { state: "completed", creditState: "settled", resultObjectReferenceId: "result:exact" as PrivateRowId }, now: "2026-01-01T00:00:04.000Z" })).resolves.toBe(true);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: "result:exact" });
+
+    const statusHarness = await harness();
+    await createStartedJob(statusHarness, "status-authority-fencing");
+    const statusJob = statusHarness.store.listJobs()[0];
+    await statusHarness.store.claimStatusObservation({ jobId: statusJob.id, leaseToken: "status-a", leaseExpiresAt: "2026-01-01T00:00:01.000Z", now: "2026-01-01T00:00:00.000Z" });
+    await statusHarness.store.claimStatusObservation({ jobId: statusJob.id, leaseToken: "status-b", leaseExpiresAt: "2026-01-01T00:10:00.000Z", now: "2026-01-01T00:00:02.000Z" });
+    await expect(statusHarness.store.claimResultCapture({ jobId: statusJob.id, leaseToken: "status-b-capture", leaseExpiresAt: "2026-01-01T00:10:00.000Z", statusObservationLeaseToken: "status-b", now: "2026-01-01T00:00:03.000Z" })).resolves.toMatchObject({ status: "claimed" });
+    await statusHarness.store.completeResultCapture({ jobId: statusJob.id, leaseToken: "status-b-capture", update: { state: "completed", creditState: "settled", resultObjectReferenceId: "status-result" as PrivateRowId }, now: "2026-01-01T00:00:04.000Z" });
+    await expect(statusHarness.store.completeStatusObservation({ jobId: statusJob.id, leaseToken: "status-a", expectedStates: ["queued"], update: { state: "failed", creditState: "released" }, now: "2026-01-01T00:00:05.000Z" })).resolves.toBe(false);
+    expect(statusHarness.store.listJobs()[0]).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: "status-result" });
+  });
+
+  it("enforces one int32 per-job credit domain with checked safe aggregate accounting", async () => {
+    const base = await harness();
+    const maximumAdapter = new ReferenceOmrVendorAdapter([base.fixture], { estimatedCreditPerPage: MAX_OMR_CREDIT_ESTIMATE });
+    const sharedStore = new MemoryOmrStore();
+    const sharedQuota = { ...omrQuotaConfig(MAX_OMR_CREDIT_ESTIMATE * 2), maxConcurrentJobsPerSession: 10, maxConcurrentJobsPerIp: 10 };
+    const serviceFor = (sessionId: string) => new DurableOmrApplicationService({
+      ...base.dependencies, store: sharedStore, adapter: maximumAdapter, quota: sharedQuota,
+      actor: { sessionId: sessionId as PrivateRowId, ipOwnerHash: `ip:${sessionId}` },
+    });
+    await expect(createConsentedJob(serviceFor("session:max-1"), { sessionId: "session:max-1" as PrivateRowId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "credit-max-1" })).resolves.toMatch(/^v1\./u);
+    await expect(createConsentedJob(serviceFor("session:max-2"), { sessionId: "session:max-2" as PrivateRowId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "credit-max-2" })).resolves.toMatch(/^v1\./u);
+    expect(sharedStore.listJobs().reduce((sum, job) => sum + job.creditEstimate, 0)).toBe(MAX_OMR_CREDIT_ESTIMATE * 2);
+    await expect(createConsentedJob(serviceFor("session:over-ceiling"), { sessionId: "session:over-ceiling" as PrivateRowId, pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "credit-over-ceiling" })).rejects.toThrow("OMR_GLOBAL_CREDIT_CEILING_EXCEEDED");
+    await expect(createConsentedJob(serviceFor("session:multiply"), { sessionId: "session:multiply" as PrivateRowId, pageCount: 2, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "credit-multiply-overflow" })).rejects.toThrow("OMR_CREDIT_ESTIMATE_INVALID");
+    const invalidCapabilities = { ...(await maximumAdapter.getCapabilities()), estimatedCreditPerPage: MAX_OMR_CREDIT_ESTIMATE + 1 };
+    expect(() => validateVendorCapabilities(invalidCapabilities)).toThrow("OMR_PROVIDER_CAPABILITY_MISSING");
+  });
+
+  it("rejects a delayed status failure after a reclaimed worker completes the result", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "delayed-status-failure");
+    let releaseOld!: () => void;
+    let oldEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { oldEntered = resolve; });
+    let invocation = 0;
+    vi.spyOn(h.adapter, "getVendorStatus").mockImplementation(async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        oldEntered();
+        await new Promise<void>((resolve) => { releaseOld = resolve; });
+        return { kind: "failed", code: "late", message: "late terminal" };
+      }
+      return { kind: "completed" };
+    });
+    const stale = h.service.synchronizeStatus(handle);
+    await entered;
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(new DurableOmrApplicationService(h.dependencies).synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    const completed = structuredClone(h.store.listJobs()[0]);
+    releaseOld();
+    await expect(stale).resolves.toEqual({ kind: "completed" });
+    expect(h.store.listJobs()[0]).toEqual(completed);
+    expect(completed).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: expect.any(String) });
+  });
+
+  it("rejects a stale capture contract failure after a newer capture lease completes", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "delayed-capture-failure");
+    vi.spyOn(h.adapter, "getVendorStatus").mockResolvedValue({ kind: "completed" });
+    const originalExport = h.adapter.exportMusicXml.bind(h.adapter);
+    let releaseOld!: () => void;
+    let oldEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { oldEntered = resolve; });
+    let invocation = 0;
+    vi.spyOn(h.adapter, "exportMusicXml").mockImplementation(async (vendorJobId) => {
+      invocation += 1;
+      if (invocation === 1) {
+        oldEntered();
+        await new Promise<void>((resolve) => { releaseOld = resolve; });
+        return "x".repeat(PROVIDER_CAPTURE_LIMITS.musicXmlBytes + 1);
+      }
+      return originalExport(vendorJobId);
+    });
+    const stale = h.service.synchronizeStatus(handle);
+    await entered;
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(new DurableOmrApplicationService(h.dependencies).synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    const completed = structuredClone(h.store.listJobs()[0]);
+    releaseOld();
+    await expect(stale).resolves.toEqual({ kind: "completed" });
+    expect(h.store.listJobs()[0]).toEqual(completed);
+    expect(completed).toMatchObject({ state: "completed", creditState: "settled", resultObjectReferenceId: expect.any(String) });
+  });
+
+  it("deletes only a stale capture publication after a newer capture adopts its own exact object", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "capture-publication-fencing");
+    vi.spyOn(h.adapter, "getVendorStatus").mockResolvedValue({ kind: "completed" });
+    const originalExport = h.adapter.exportMusicXml.bind(h.adapter);
+    let releaseOld!: () => void;
+    let oldEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { oldEntered = resolve; });
+    let invocation = 0;
+    vi.spyOn(h.adapter, "exportMusicXml").mockImplementation(async (vendorJobId) => {
+      invocation += 1;
+      if (invocation === 1) {
+        oldEntered();
+        await new Promise<void>((resolve) => { releaseOld = resolve; });
+      }
+      return originalExport(vendorJobId);
+    });
+    const stale = h.service.synchronizeStatus(handle);
+    await entered;
+    h.advance(5 * 60 * 1_000 + 1);
+    await expect(new DurableOmrApplicationService(h.dependencies).synchronizeStatus(handle)).resolves.toEqual({ kind: "completed" });
+    const completed = structuredClone(h.store.listJobs()[0]);
+    const adoptedId = completed.resultObjectReferenceId!;
+    releaseOld();
+    await expect(stale).resolves.toEqual({ kind: "completed" });
+    expect(h.store.listJobs()[0]).toEqual(completed);
+    expect(h.governance.objects.get(adoptedId)).toMatchObject({ lifecycle: "active" });
+    expect([...h.governance.objects.values()].filter((record) => record.objectKey.includes("objects/") && record.lifecycle === "deleted")).toHaveLength(1);
+    await expect(h.objects.get(adoptedId, "session:1" as PrivateRowId)).resolves.toMatchObject({ contentType: "application/vnd.recordare.musicxml+xml" });
   });
 
   it("transactionally fences concurrent canonical duplicate uploads on different page indices", async () => {
@@ -679,6 +853,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(createSpy).toHaveBeenCalledTimes(1);
     const localObject = await h.objects.put({
       ownerSessionId: "session:1" as PrivateRowId,
+      publicationId: "test-local-object",
       bytes: new TextEncoder().encode("uncertain-local-page"), contentType: "image/png",
     });
     const uncertain = h.store.listJobs()[0];
@@ -1479,7 +1654,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
 
   it("deletes only the losing page object when exact inspection finds a newer object authority", async () => {
     const h = await harness();
-    const winningObject = await h.objects.put({ ownerSessionId: "session:1" as PrivateRowId, bytes: h.pageBytes, contentType: "image/png", expiresAt: "2026-01-02T00:00:00.000Z" });
+    const winningObject = await h.objects.put({ ownerSessionId: "session:1" as PrivateRowId, publicationId: "winning-result", bytes: h.pageBytes, contentType: "image/png", expiresAt: "2026-01-02T00:00:00.000Z" });
     const store = new Proxy(h.store, {
       get(target, property, receiver) {
         if (property === "completePage") return async (jobId: PrivateRowId, pageIndex: number, leaseToken: string, _losingObjectId: PrivateRowId, now: string) => {

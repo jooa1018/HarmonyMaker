@@ -179,7 +179,7 @@ describe("owned object-store boundary", () => {
   it("enforces ownership, integrity, opaque keys, retention metadata, and idempotent delete", async () => {
     const records = new MemoryGovernanceStore();
     const objects = new MemoryOwnedObjectStore(records);
-    const created = await objects.put({ ownerSessionId: owner, bytes: new TextEncoder().encode("bytes"), contentType: "application/octet-stream", expiresAt: "2026-02-01T00:00:00.000Z" });
+    const created = await objects.put({ ownerSessionId: owner, publicationId: "share-store-fixture", bytes: new TextEncoder().encode("bytes"), contentType: "application/octet-stream", expiresAt: "2026-02-01T00:00:00.000Z" });
     expect(created.objectKey).toMatch(/^objects\/[A-Za-z0-9_-]{20,}$/u);
     expect(created.objectKey).not.toContain(String(owner));
     expect(await objects.get(created.id, owner)).toMatchObject({ contentType: "application/octet-stream" });

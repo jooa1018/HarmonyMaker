@@ -81,6 +81,7 @@ describe("variant lifecycle and rate contracts", () => {
     const source = {
       schemaVersion: 9, documentId: "document:0", revisionOrdinal: 0, revisionDigest: digest,
       revisionHistory: [], revisionHistoryDigest: digest, title: "Fixture",
+      sourceProvenanceDigest: digest,
       defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" },
       defaultTempo: { beatUnit: 4, dotted: false, bpm: 80 }, sourceMeasures: [measure],
       performanceSequence: { expanderVersion: "repeat-v1", occurrences: [{ occurrenceId: "occurrence:0", sourceMeasureId: measure.id, sourceMeasureNumber: 1, occurrenceIndexForSource: 0, performanceIndex: 0, time: COMMON_TIME, duration: fraction(4) }] },

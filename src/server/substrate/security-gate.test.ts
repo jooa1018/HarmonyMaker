@@ -93,9 +93,9 @@ describe("C2 production boundary security gate", () => {
     const backing = new MemoryOwnedObjectStore(store);
     const expiresAt = "2025-02-01T00:00:00.000Z";
     const records = [
-      await backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(1), contentType: "application/octet-stream", expiresAt }),
-      await backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(2), contentType: "application/octet-stream", expiresAt }),
-      await backing.put({ ownerSessionId: owner, bytes: Uint8Array.of(3), contentType: "application/octet-stream", expiresAt }),
+      await backing.put({ ownerSessionId: owner, publicationId: "security-gate-1", bytes: Uint8Array.of(1), contentType: "application/octet-stream", expiresAt }),
+      await backing.put({ ownerSessionId: owner, publicationId: "security-gate-2", bytes: Uint8Array.of(2), contentType: "application/octet-stream", expiresAt }),
+      await backing.put({ ownerSessionId: owner, publicationId: "security-gate-3", bytes: Uint8Array.of(3), contentType: "application/octet-stream", expiresAt }),
     ];
     let failFirst = true;
     const failing: OwnedObjectStore = {

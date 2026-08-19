@@ -88,12 +88,14 @@ describe("production OMR configuration", () => {
       dailyGlobalCreditCeiling: 1000,
       providerMode: "unconfigured",
     });
+    expect(loadProductionOmrConfig({ ...environment, OMR_DAILY_GLOBAL_CREDIT_CEILING: String(Number.MAX_SAFE_INTEGER) }).dailyGlobalCreditCeiling).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it("fails closed for missing/invalid values and production reference mode", () => {
     expect(() => loadProductionOmrConfig({})).toThrow("missing OMR configuration");
     expect(() => loadProductionOmrConfig({ ...environment, OMR_HANDLE_HMAC_KEY: Buffer.alloc(31).toString("base64url") })).toThrow("OMR_HANDLE_HMAC_KEY");
     expect(() => loadProductionOmrConfig({ ...environment, OMR_DAILY_GLOBAL_CREDIT_CEILING: "0" })).toThrow("OMR_DAILY_GLOBAL_CREDIT_CEILING");
+    expect(() => loadProductionOmrConfig({ ...environment, OMR_DAILY_GLOBAL_CREDIT_CEILING: "9007199254740992" })).toThrow("OMR_DAILY_GLOBAL_CREDIT_CEILING");
     expect(() => loadProductionOmrConfig({ ...environment, OMR_PROVIDER_MODE: "reference" })).toThrow("prohibited in production");
   });
 });

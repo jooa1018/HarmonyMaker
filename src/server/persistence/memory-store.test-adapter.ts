@@ -135,22 +135,61 @@ export class MemoryGovernanceStore implements GovernanceStore {
     return record?.ownerSessionId === ownerSessionId ? record : undefined;
   }
 
+  async findObjectReferenceByKey(objectKey: string, ownerSessionId: PrivateRowId): Promise<ObjectReferenceRecord | undefined> {
+    return [...this.objects.values()].find((record) => record.objectKey === objectKey && record.ownerSessionId === ownerSessionId);
+  }
+
+  async completeObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<boolean> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (!record || record.lifecycle !== "upload-pending" || record.publicationToken !== input.publicationToken) return false;
+    this.objects.set(record.id, { ...record, lifecycle: "active", publicationToken: undefined, publicationLeaseExpiresAt: undefined });
+    return true;
+  }
+
+  async restartObjectPublication(input: Parameters<GovernanceStore["restartObjectPublication"]>[0]): Promise<boolean> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (!record || record.lifecycle !== "deleted" || record.objectKey !== input.objectKey || record.contentType !== input.contentType
+      || record.byteSize !== input.byteSize || record.binaryDigest !== input.binaryDigest) return false;
+    this.objects.set(record.id, {
+      ...record,
+      lifecycle: "upload-pending",
+      publicationToken: input.publicationToken,
+      publicationLeaseExpiresAt: input.publicationLeaseExpiresAt,
+      deletedAt: undefined,
+    });
+    return true;
+  }
+
+  async failObjectPublication(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly publicationToken: string; readonly at: string }): Promise<"active" | "cleanup-required" | "superseded"> {
+    const record = await this.findObjectReference(input.id, input.ownerSessionId);
+    if (!record) return "superseded";
+    if (record.lifecycle === "active") return "active";
+    if (record.publicationToken !== input.publicationToken) return "superseded";
+    if (record.lifecycle === "upload-pending" || record.lifecycle === "deleted" || record.lifecycle === "delete-pending") {
+      this.objects.set(record.id, { ...record, lifecycle: "delete-pending" });
+      return "cleanup-required";
+    }
+    return "superseded";
+  }
+
   async transitionObjectReference(input: { readonly id: PrivateRowId; readonly ownerSessionId: PrivateRowId; readonly lifecycle: ObjectReferenceRecord["lifecycle"]; readonly at: string }): Promise<void> {
     const record = await this.findObjectReference(input.id, input.ownerSessionId);
-    if (record) this.objects.set(record.id, { ...record, lifecycle: input.lifecycle, ...(input.lifecycle === "deleted" ? { deletedAt: input.at } : {}) });
+    if (record) this.objects.set(record.id, { ...record, lifecycle: input.lifecycle, ...(input.lifecycle === "deleted" ? { deletedAt: input.at, publicationToken: undefined, publicationLeaseExpiresAt: undefined } : {}) });
   }
 
   async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
     const expiredSessionIds = [...this.sessions.values()].filter((record) => record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
     const expiredShareIds = [...this.shares.values()].filter((record) => record.lifecycle === "active" && record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
-    const pendingObjectReferences = [...this.objects.values()].filter((record) => record.lifecycle === "delete-pending" || (record.lifecycle === "active" && record.expiresAt !== undefined && record.expiresAt <= input.now)).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize);
+    const pendingObjectReferences = [...this.objects.values()].filter((record) => record.lifecycle === "delete-pending"
+      || (record.lifecycle === "upload-pending" && record.publicationLeaseExpiresAt !== undefined && record.publicationLeaseExpiresAt <= input.now)
+      || (record.lifecycle === "active" && record.expiresAt !== undefined && record.expiresAt <= input.now)).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize);
     const expiredObjectIds = pendingObjectReferences.map((record) => record.id);
     const expiredIdempotency = [...this.idempotency.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
     const expiredQuota = [...this.quota.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
     if (!input.dryRun) {
       expiredSessionIds.forEach((id) => this.sessions.delete(id));
       expiredShareIds.forEach((id) => { const record = this.shares.get(id); if (record) this.shares.set(id, { ...record, lifecycle: "expired", deletedAt: input.now }); });
-      expiredObjectIds.forEach((id) => { const record = this.objects.get(id); if (record?.lifecycle === "active") this.objects.set(id, { ...record, lifecycle: "delete-pending" }); });
+      expiredObjectIds.forEach((id) => { const record = this.objects.get(id); if (record?.lifecycle === "active" || record?.lifecycle === "upload-pending") this.objects.set(id, { ...record, lifecycle: "delete-pending" }); });
       expiredIdempotency.forEach(([key]) => this.idempotency.delete(key));
       expiredQuota.forEach(([key]) => this.quota.delete(key));
     }

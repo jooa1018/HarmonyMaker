@@ -266,12 +266,21 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
       const createStorageKey = `harmonymaker:omr-create:v3:${preflight.capabilitySnapshotDigest}:${sourceKind}:${pages.map((page) => page.rawDigest).join(":")}`;
       const recoveryStorageKey = `${createStorageKey}:recovered-handle`;
       const acquisition = await acquireOmrJob<OmrPublicStatus>({
-        storage: localStorage, createStorageKey, recoveryStorageKey, forceFresh: freshIntent.forceFresh,
+        storage: localStorage, createStorageKey, recoveryStorageKey, canonicalInputIdentity: createStorageKey, forceFresh: freshIntent.forceFresh,
         createRequest: () => ({
           pageCount: pages.length, pages: pages.map((page, pageIndex) => ({ pageIndex, pageDigest: page.rawDigest, mimeType: page.mimeType })), sourceKind,
           rights: { basis: "user-confirmed-rights", allowedUses: ["generation", "provider-transfer"], confirmedAt: new Date().toISOString() },
           providerTransferConsent: true, consentCapabilitySnapshotDigest: preflight.capabilitySnapshotDigest, idempotencyKey: crypto.randomUUID(),
         }),
+        validateCreateRequest: (request) => request.pageCount === pages.length && request.sourceKind === sourceKind
+          && request.consentCapabilitySnapshotDigest === preflight.capabilitySnapshotDigest
+          && Array.isArray(request.pages) && request.pages.every((page, pageIndex) => {
+            const expected = pages[pageIndex];
+            return page !== null && typeof page === "object"
+              && (page as Readonly<Record<string, unknown>>).pageIndex === pageIndex
+              && (page as Readonly<Record<string, unknown>>).pageDigest === expected?.rawDigest
+              && (page as Readonly<Record<string, unknown>>).mimeType === expected?.mimeType;
+          }),
         recover: async (storedHandle) => (await json<{ readonly status: OmrPublicStatus }>(await fetch(`/api/omr/jobs/${encodeURIComponent(storedHandle)}`, { cache: "no-store" }))).status,
         create: async (request) => json<{ readonly handle: string }>(await fetch("/api/omr/jobs", { method: "POST", headers, body: JSON.stringify(request) })),
       });
@@ -280,7 +289,11 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         setHandleRecoveryStorageKey(undefined); setHandle(undefined); setStatus(undefined);
         setError(acquisition.reason === "stale-recovery-handle"
           ? "이전 작업을 복구할 수 없습니다. 권리와 제공자 전송 동의를 다시 확인한 뒤 ‘새 작업 시작’을 선택하세요."
-          : "이전 생성 요청은 만료되어 재사용할 수 없습니다. 권리와 제공자 전송 동의를 다시 확인한 뒤 ‘새 작업 시작’을 선택하세요.");
+          : acquisition.reason === "invalid-persisted-create"
+            ? "저장된 생성 요청이 손상되었거나 현재 입력과 맞지 않습니다. 자동 요청은 중단되었습니다. 확인 후 ‘새 작업 시작’을 선택하세요."
+            : acquisition.reason === "rejected-create-request"
+              ? "저장된 생성 요청이 서버에서 거부되었습니다. 확인 후 ‘새 작업 시작’을 선택하세요."
+              : "이전 생성 요청은 만료되어 재사용할 수 없습니다. 권리와 제공자 전송 동의를 다시 확인한 뒤 ‘새 작업 시작’을 선택하세요.");
         return;
       }
       const jobHandle = acquisition.handle;

@@ -9,6 +9,7 @@ import { digestMusicalSource } from "./source";
 import { hasCanonicalSongSourceOrder, normalizeSongSourceDocument } from "../source/normalize";
 import { computeRevisionHistoryDigest } from "../source/revision";
 import { isSongSourceDocument, validateSongSourceDocumentIntegrity } from "../source/validation";
+import { computeSourceProvenanceDigest } from "../source/provenance";
 
 const d = "0".repeat(64) as SemanticDigest;
 function sourceFixture(input: { readonly prefix: string; readonly title: string; readonly chord: string; readonly emphasis: "musicxml" | "metric" | "confirmed-manual" | "confirmed-imported" }): SongSourceDocument {
@@ -22,7 +23,7 @@ function sourceFixture(input: { readonly prefix: string; readonly title: string;
     textEvents: [], repeat: { startRepeat: false },
   };
   return {
-    schemaVersion: 9, documentId: id("doc"), revisionOrdinal: 9, revisionDigest: d, revisionHistory: [], revisionHistoryDigest: d,
+    schemaVersion: 9, documentId: id("doc"), revisionOrdinal: 9, revisionDigest: d, revisionHistory: [], revisionHistoryDigest: d, sourceProvenanceDigest: d,
     title: input.title, defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" }, defaultTempo: { beatUnit: 4, dotted: false, bpm: 80 }, sourceMeasures: [measure],
     performanceSequence: { expanderVersion: "repeat-v1", occurrences: [{ occurrenceId: id("occurrence"), sourceMeasureId: measure.id, sourceMeasureNumber: 1, occurrenceIndexForSource: 0, performanceIndex: 0, time: COMMON_TIME, duration: fraction(4) }] },
     sectionDefinitions: [{ id: id("definition"), type: "verse", label: input.title, sourceMeasureIds: [measure.id], confirmation: "confirmed" }],
@@ -101,7 +102,7 @@ describe("musical source projection", () => {
       sectionOccurrences: [{ ...raw.sectionOccurrences[0], id: "so:0:1:0", sectionDefinitionId: "sd:0:1:verse:0" }],
       phraseRegions: [{ ...raw.phraseRegions[0], id: "ph:0:0:0/1:1:0/1", sectionOccurrenceId: "so:0:1:0" }],
     };
-    const valid = { ...fixture, revisionDigest: await digestMusicalSource(fixture) };
+    const valid = { ...fixture, revisionDigest: await digestMusicalSource(fixture), sourceProvenanceDigest: await computeSourceProvenanceDigest(fixture) };
     expect(await validateSongSourceDocumentIntegrity(valid, "repeat-v1")).toBe(true);
     expect(await validateSongSourceDocumentIntegrity({ ...valid, revisionDigest: d }, "repeat-v1")).toBe(false);
     const firstLead = valid.sourceMeasures[0].leadEvents[0];

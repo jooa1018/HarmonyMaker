@@ -3,6 +3,8 @@ import type { ObjectReferenceRecord, PrivateRowId } from "../persistence/store";
 
 export interface OwnedObjectPut {
   readonly ownerSessionId: PrivateRowId;
+  /** Stable identity for retrying one logical publication without rotating its object key. */
+  readonly publicationId: string;
   readonly bytes: Uint8Array;
   readonly contentType: string;
   readonly expiresAt?: string;

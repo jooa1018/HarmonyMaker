@@ -28,6 +28,7 @@ import type {
   SourceMeasure,
   SourceTextEvent,
 } from "../../domain/source/model";
+import { computeSourceProvenanceDigest } from "../../domain/source/provenance";
 import { validateSectionPartition } from "../../domain/source/model";
 import { normalizeSongSourceDocument } from "../../domain/source/normalize";
 import { computeRevisionHistoryDigest } from "../../domain/source/revision";
@@ -692,6 +693,7 @@ async function finalizeNormalization(
       revisionDigest: pendingDigest,
       revisionHistory: [],
       revisionHistoryDigest,
+      sourceProvenanceDigest: pendingDigest,
       title: draft.title,
       ...(draft.composer ? { composer: draft.composer } : {}),
       defaultKey: draft.defaultKey,
@@ -702,22 +704,21 @@ async function finalizeNormalization(
       sectionOccurrences: normalized.sectionOccurrences,
       phraseRegions: normalized.phraseRegions,
       rights: { ...draft.rights, allowedUses: [...draft.rights.allowedUses].sort() },
-      importInfo: {
-        sourceKind: "musicxml",
-        ...(draft.originalFileName ? { originalFileName: draft.originalFileName } : {}),
-        rawDigest: draft.rawDigest,
-        importerVersion: draft.importerVersion,
-        providerMetadata: { containerKind: draft.containerKind },
-      },
     });
     source = { ...source, revisionDigest: normalized.musicalSourceDigest ?? await digestMusicalSource(source) };
     source = normalizeSongSourceDocument({
       ...source,
       importInfo: {
-        ...source.importInfo!,
+        sourceKind: "musicxml",
+        ...(source.importInfo?.originalFileName ? { originalFileName: source.importInfo.originalFileName } : {}),
+        ...(source.importInfo?.importedAt ? { importedAt: source.importInfo.importedAt } : {}),
+        rawDigest: draft.rawDigest,
+        importerVersion: draft.importerVersion,
+        musicXmlMetadata: { containerKind: draft.containerKind },
         musicXmlSourceTargetMap: await buildMusicXmlSourceTargetMap(draft, source),
       },
     });
+    source = { ...source, sourceProvenanceDigest: await computeSourceProvenanceDigest(source) };
     const valid = isSongSourceDocument(source)
       && await validateSongSourceDocumentIntegrity(source, versions.performanceExpanderVersion);
     if (!valid) {

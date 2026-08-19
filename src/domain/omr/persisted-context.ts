@@ -21,9 +21,7 @@ const GRANULARITY_RANK: Readonly<Record<EvidenceGranularity, number>> = {
 export async function validatePersistedOmrContext(source: SongSourceDocument): Promise<readonly string[]> {
   const importInfo = source.importInfo;
   if (importInfo?.sourceKind !== "omr") {
-    return importInfo?.omrReviewRecord
-      ? validateOmrCorrectionHistory(source, importInfo.omrReviewRecord)
-      : [];
+    return [];
   }
 
   const errors: string[] = [];

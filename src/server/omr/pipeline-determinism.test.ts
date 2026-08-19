@@ -178,6 +178,15 @@ describe("canonical OMR fixture pipeline determinism", () => {
         const tamperedProject = JSON.parse(encoded) as { source: { importInfo: { omrReviewRecord: { corrections: Array<{ beforeProjection: string }> } } } };
         tamperedProject.source.importInfo.omrReviewRecord.corrections[1].beforeProjection = "{}";
         await expect(importHarmonyProject(JSON.stringify(tamperedProject))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+        const relabelledProject = JSON.parse(encoded) as { source: { importInfo: Record<string, unknown> & { rawDigest: unknown; musicXmlSourceTargetMap: unknown }; sourceEvidence?: unknown } };
+        const omrImport = relabelledProject.source.importInfo;
+        relabelledProject.source.importInfo = {
+          sourceKind: "musicxml", importerVersion: "musicxml-import-v1", rawDigest: omrImport.rawDigest,
+          musicXmlMetadata: { containerKind: "musicxml" }, musicXmlSourceTargetMap: omrImport.musicXmlSourceTargetMap,
+        };
+        delete relabelledProject.source.sourceEvidence;
+        await expect(importHarmonyProject(JSON.stringify(relabelledProject))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+        await expect(generateProjectVariant(relabelledProject as unknown as typeof integrated, "standard")).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
         const generation = await generateProjectVariant(integrated, "standard");
         expect(generation.status).toBe("complete");
       }

@@ -6,6 +6,7 @@ import {
 } from "../domain/config";
 import { digestMusicalSourceComponents } from "../domain/digest/source";
 import { semanticDigest } from "../domain/digest/canonical";
+import { computeSourceProvenanceDigest } from "../domain/source/provenance";
 import { fraction, type Fraction } from "../domain/fraction";
 import {
   digestPerformanceSequence,
@@ -295,6 +296,7 @@ export async function createWagFixtureInput(options: WagFixtureOptions = {}): Pr
     phraseRegions: [phrase],
   };
   const revisionDigest = await digestMusicalSourceComponents(sourceComponents);
+  const rights = { basis: "self-authored" as const, allowedUses: ["evaluation", "generation", "share"] as const };
   const source: SongSourceDocument = {
     schemaVersion: 9,
     documentId: `fixture:${fixtureId}`,
@@ -302,9 +304,10 @@ export async function createWagFixtureInput(options: WagFixtureOptions = {}): Pr
     revisionDigest,
     revisionHistory: [],
     revisionHistoryDigest: await semanticDigest({ projectionSchema: "hm-fixture-revision-history-v1", fixtureId }),
+    sourceProvenanceDigest: await computeSourceProvenanceDigest({ rights }),
     title: fixtureId,
     ...sourceComponents,
-    rights: { basis: "self-authored", allowedUses: ["generation", "evaluation", "share"] },
+    rights,
   };
   const [sourceChordProjectionDigest, performanceSequenceDigest] = await Promise.all([
     digestSourceChordProjection(source.sourceMeasures),

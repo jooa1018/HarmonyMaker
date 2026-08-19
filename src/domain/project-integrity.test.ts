@@ -12,6 +12,7 @@ import {
   digestActivityInput, digestAnchorInput, digestGenerationInput, digestIntentInput,
 } from "./digest/stages";
 import { digestMusicalSource } from "./digest/source";
+import { computeSourceProvenanceDigest } from "./source/provenance";
 import { buildArrangementCandidate } from "./generation/candidate";
 import type { FullSongMetrics } from "./generation/model";
 import {
@@ -126,6 +127,7 @@ async function canonicalSource(): Promise<SongSourceDocument> {
     revisionDigest: d("0"),
     revisionHistory: [],
     revisionHistoryDigest: await computeRevisionHistoryDigest([]),
+    sourceProvenanceDigest: d("0"),
     title: "Fixture",
     defaultKey: { tonic: { step: "C", alter: 0 }, mode: "major" },
     defaultTempo: { beatUnit: 4, dotted: false, bpm: 80 },
@@ -169,7 +171,7 @@ async function canonicalSource(): Promise<SongSourceDocument> {
     }],
     rights: { basis: "self-authored", allowedUses: ["generation"] },
   };
-  return { ...sourceWithoutDigest, revisionDigest: await digestMusicalSource(sourceWithoutDigest) };
+  return { ...sourceWithoutDigest, revisionDigest: await digestMusicalSource(sourceWithoutDigest), sourceProvenanceDigest: await computeSourceProvenanceDigest(sourceWithoutDigest) };
 }
 
 async function emptyProject(): Promise<HarmonyProject> {

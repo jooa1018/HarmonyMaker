@@ -26,6 +26,7 @@ import type {
 } from "./model";
 import { validateRights, validateSectionPartition } from "./model";
 import { hasCanonicalSongSourceOrder } from "./normalize";
+import { computeSourceProvenanceDigest } from "./provenance";
 import {
   isSourceRevisionRef, revisionRefsEqual, validateRevisionHistory, validateRevisionHistoryIntegrity,
 } from "./revision";
@@ -57,25 +58,32 @@ function isRightsMetadata(value: unknown): value is RightsMetadata {
 
 function isImportInfo(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["sourceKind", "importerVersion"], ["originalFileName", "importedAt", "rawDigest", "providerMetadata", "omrReviewRecord", "omrEvidenceArchive", "musicXmlSourceTargetMap", "omrRuntimeWarningAcknowledgements"])
     || !["manual", "musicxml", "omr"].includes(String(value.sourceKind))
     || typeof value.importerVersion !== "string" || value.importerVersion.length === 0
     || (value.originalFileName !== undefined && typeof value.originalFileName !== "string")
-    || (value.importedAt !== undefined && typeof value.importedAt !== "string")
-    || (value.rawDigest !== undefined && !isSemanticDigest(value.rawDigest))
-    || (value.providerMetadata !== undefined && (!isPlainRecord(value.providerMetadata)
-      || !Object.values(value.providerMetadata).every((item) => typeof item === "string")))
-    || (value.omrReviewRecord !== undefined && validateOmrReviewRecord(value.omrReviewRecord).length > 0)
-    || (value.omrEvidenceArchive !== undefined && !validateOmrEvidenceArchive(value.omrEvidenceArchive))
-    || (value.musicXmlSourceTargetMap !== undefined && !isPlainRecord(value.musicXmlSourceTargetMap))
-    || (value.omrRuntimeWarningAcknowledgements !== undefined && (!Array.isArray(value.omrRuntimeWarningAcknowledgements)
-      || !value.omrRuntimeWarningAcknowledgements.every((item) => isPlainRecord(item)
+    || (value.importedAt !== undefined && (typeof value.importedAt !== "string" || !Number.isFinite(Date.parse(value.importedAt))))) return false;
+  if (value.sourceKind === "manual") {
+    return hasExactKeys(value, ["sourceKind", "importerVersion"], ["originalFileName", "importedAt"]);
+  }
+  if (value.sourceKind === "musicxml") {
+    return hasExactKeys(value, ["sourceKind", "importerVersion", "rawDigest", "musicXmlMetadata", "musicXmlSourceTargetMap"], ["originalFileName", "importedAt"])
+      && isSemanticDigest(value.rawDigest) && isPlainRecord(value.musicXmlMetadata)
+      && Object.values(value.musicXmlMetadata).every((item) => typeof item === "string")
+      && isPlainRecord(value.musicXmlSourceTargetMap);
+  }
+  return hasExactKeys(value, ["sourceKind", "importerVersion", "rawDigest", "providerMetadata", "omrReviewRecord", "omrEvidenceArchive", "musicXmlSourceTargetMap"], ["originalFileName", "importedAt", "omrRuntimeWarningAcknowledgements"])
+    && isSemanticDigest(value.rawDigest)
+    && isPlainRecord(value.providerMetadata) && Object.values(value.providerMetadata).every((item) => typeof item === "string")
+    && validateOmrReviewRecord(value.omrReviewRecord).length === 0
+    && validateOmrEvidenceArchive(value.omrEvidenceArchive)
+    && isPlainRecord(value.musicXmlSourceTargetMap)
+    && (value.omrRuntimeWarningAcknowledgements === undefined || (Array.isArray(value.omrRuntimeWarningAcknowledgements)
+      && value.omrRuntimeWarningAcknowledgements.every((item) => isPlainRecord(item)
         && hasExactKeys(item, ["diagnosticId", "sourceRevision", "acknowledgedAt"])
         && isCanonicalId(item.diagnosticId)
         && isSourceRevisionRef(item.sourceRevision)
         && typeof item.acknowledgedAt === "string"
-        && Number.isFinite(Date.parse(item.acknowledgedAt as string)))))) return false;
-  return true;
+        && Number.isFinite(Date.parse(item.acknowledgedAt as string)))));
 }
 
 function isRepeat(value: unknown): boolean {
@@ -303,13 +311,14 @@ function isSourceMeasure(value: unknown): value is SourceMeasure {
 
 export function isSongSourceDocument(value: unknown): value is SongSourceDocument {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["schemaVersion", "documentId", "revisionOrdinal", "revisionDigest", "revisionHistory", "revisionHistoryDigest", "title", "defaultKey", "defaultTempo", "sourceMeasures", "performanceSequence", "sectionDefinitions", "sectionOccurrences", "phraseRegions", "rights"], ["previousRevision", "composer", "importInfo", "sourceEvidence"])
+    || !hasExactKeys(value, ["schemaVersion", "documentId", "revisionOrdinal", "revisionDigest", "revisionHistory", "revisionHistoryDigest", "sourceProvenanceDigest", "title", "defaultKey", "defaultTempo", "sourceMeasures", "performanceSequence", "sectionDefinitions", "sectionOccurrences", "phraseRegions", "rights"], ["previousRevision", "composer", "importInfo", "sourceEvidence"])
     || value.schemaVersion !== 9
     || !isCanonicalId(value.documentId)
     || !Number.isSafeInteger(value.revisionOrdinal)
     || (value.revisionOrdinal as number) < 0
     || !isSemanticDigest(value.revisionDigest)
     || !isSemanticDigest(value.revisionHistoryDigest)
+    || !isSemanticDigest(value.sourceProvenanceDigest)
     || (value.previousRevision !== undefined && !isSourceRevisionRef(value.previousRevision))
     || !Array.isArray(value.revisionHistory)
     || typeof value.title !== "string"
@@ -336,6 +345,7 @@ export function isSongSourceDocument(value: unknown): value is SongSourceDocumen
   }).length > 0) return false;
   const current = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };
   if (source.importInfo !== undefined && !isImportInfo(source.importInfo)) return false;
+  if (source.importInfo?.sourceKind !== "omr" && source.sourceEvidence !== undefined) return false;
   if (source.sourceEvidence !== undefined && (!validateSourceEvidenceIndex(source.sourceEvidence)
     || !isSourceRevisionRef(source.sourceEvidence.sourceRevision)
     || source.sourceEvidence.sourceRevision.documentId !== current.documentId
@@ -440,5 +450,6 @@ export async function validateSongSourceDocumentIntegrity(
     current,
     value.revisionHistory,
     value.revisionHistoryDigest,
-  ) && await digestMusicalSource(value) === value.revisionDigest;
+  ) && await digestMusicalSource(value) === value.revisionDigest
+    && await computeSourceProvenanceDigest(value) === value.sourceProvenanceDigest;
 }
