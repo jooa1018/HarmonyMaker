@@ -255,6 +255,33 @@ SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
 ```
 
+## Re-saturation findings closure evidence
+
+Repository software-correctness closure is complete at code checkpoint `9dea42214d87dd32c4ad5b2be02fd014937d36a1`, descended additively from exact starting HEAD `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b`.
+
+- `P1-RESAT-01`: verify exact status/capture token fencing, expired-lease restart reclaim, stale transient/terminal/binding failure rejection, delete/cleanup races, and preserved completed result in Memory and PostgreSQL.
+- `P1-RESAT-02`: verify migration-9 publication ledger, durable intent before put, stable key retry, fake-S3 put acknowledgement loss, create/activation acknowledgement loss, failed delete, cleanup restart/reclaim, and no deletion of active/adopted objects.
+- `P1-RESAT-03`: verify manual/MusicXML/OMR discriminants, separate provenance digest, explicit legacy upgrade, and deterministic rejection of relabel/provider/review/archive/evidence/map mutations at validation, project import, local reload, and generation.
+- `P2-RESAT-01`: verify malformed/obsolete/page/capability/idempotency envelope rejection, explicit reset, browser reload, deterministic 4xx classification, and retained key on network/5xx ambiguity.
+- `P2-RESAT-02`: verify canonical nested input replay across Memory and PostgreSQL JSONB/restart with one Vendor side effect.
+- `P2-RESAT-03`: verify int32 per-job boundary, multiplication rejection, bigint aggregate above int32, safe-integer configuration boundary, UTC reserved/settled accounting, and Memory/PostgreSQL parity.
+- `P2-RESAT-04`: verify real durable complete-then-throw for start/input/cancel, cleared leases, final states, restart/read-back, and no second Vendor effect.
+
+Local gates: npm clean install (`451` added, `452` audited, zero vulnerabilities), typecheck, lint, 66 files/674 tests, actual ephemeral PostgreSQL 17.9 migrations 1–9 and 1 file/12 tests, build, and diff check all passed. Segment B 101-run, OMR 101-run, six frozen hashes, and the exact 99-code registry passed with zero protected production musical-path change.
+
+Code-checkpoint remote evidence: Actions run `32207987858`, quality job `95934820489`, SHA `9dea42214d87dd32c4ad5b2be02fd014937d36a1`, success; Vercel `DA6H9gRB7gnHraaQxrjZJKSVR181`, GitHub deployment `5974748420`, status `52477537126`, success, preview `https://harmony-maker-nedbdqmty-ecctom1.vercel.app`. The documentation-only descendant receives its own exact-SHA Actions/Vercel verification and is reported externally because a commit cannot contain its own SHA.
+
+Still external and not claimed here: real provider selection/credentials and recognition accuracy; provider pricing/refund/retention/deletion contracts; rights-safe Dev/sealed corpus calibration; production live PostgreSQL/S3; iPhone Safari and Kakao in-app device verification; Ultra and Step 11.
+
+```text
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
 The separate Segment D saturation audit remains unperformed. Real-provider selection/credentials, provider accuracy/refund authority, rights-safe corpus calibration, live PostgreSQL/S3, and physical iPhone/Kakao verification remain external and incomplete. Ultra and Step 11 were not started.
 
 ## Saturation-findings closure verification checkpoint

@@ -184,6 +184,38 @@ SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
 ```
 
+## Segment D re-saturation findings final closure
+
+This implementation closure started from exact remote HEAD `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b`; implementation checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529` and Segment C base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` remain ancestors. Code/test checkpoint `9dea42214d87dd32c4ad5b2be02fd014937d36a1` closes all seven audit findings.
+
+`P1-RESAT-01` now uses exact durable status-observation tokens and atomic result-capture failure completion in both Memory and PostgreSQL. Expired authorities are reclaimable after restart, status-to-capture transfer is atomic, and stale failure/release writes cannot change a newer lease or completed result. `P1-RESAT-02` stages a durable `upload-pending` publication before S3 put, binds a stable logical publication to one exact key, recovers insert/activation acknowledgement loss by exact read-back, and makes failed put/delete cleanup restart-discoverable. Publication/capture lease identities prevent stale compensation from deleting an adopted object. `P1-RESAT-03` replaces the optional-field import shape with manual/MusicXML/OMR discriminants and adds a separate `sourceProvenanceDigest`; the musical source digest is unchanged. Legacy sources require the explicit `upgradeSourceProvenance` path and are never silently coerced.
+
+`P2-RESAT-01` adds a versioned, digested browser create envelope and explicit reset for malformed/obsolete/mismatched local state while retaining valid keys across network/5xx ambiguity. `P2-RESAT-02` persists and compares a canonical Vendor-input semantic digest. `P2-RESAT-03` defines an int32 per-job ceiling, a safe-integer daily/aggregate domain, checked Memory accounting, bigint PostgreSQL aggregation, and boundary validation. `P2-RESAT-04` applies then throws from the real `completeOperation` boundary for start/input/cancel and verifies durable replay after restart.
+
+Additive migration `009_omr_resaturation_closure.sql` adds status-observation authority, accepted-input digest, staged object-publication authority, indexes/checks, and the exact credit bound. Migrations 1–8 are unchanged. The actual PostgreSQL 17.9 campaign applied migrations 1–9 and passed 1 file/12 tests. Fake S3 covered put-applied/ack-lost, activation/reference acknowledgement loss, exact-key restart, delete failure, retry, and active-object fencing.
+
+Fresh local validation passed npm 10.8.2 on Node 24: `npm ci` added 451 and audited 452 packages with zero vulnerabilities; typecheck, lint, 66 files/674 tests, PostgreSQL 1 file/12 tests, Next.js 16.3.0 build, and `git diff --check` passed. Separate Segment B and OMR 101-run campaigns and the six-hash/99-code frozen authority campaign passed; protected production musical paths have zero diff from Segment C.
+
+Code-checkpoint GitHub Actions run `32207987858`, quality job `95934820489`, passed every required step with 66/674 and PostgreSQL 1/12. Vercel deployment `DA6H9gRB7gnHraaQxrjZJKSVR181` succeeded for the same SHA (GitHub deployment `5974748420`, status `52477537126`, preview `https://harmony-maker-nedbdqmty-ecctom1.vercel.app`). The exact documentation-inclusive SHA is the documentation-only commit containing this section and is resolved and verified in the final external report, avoiding a self-referential hash in committed content.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+Ultra, Step 11, real-provider integration, corpus calibration, production live PostgreSQL/S3, and physical-device verification were not started.
+
 `UNRESOLVED_P0=0`, `UNRESOLVED_P1=0`, `UNRESOLVED_P2=0`, and no additional P0/P1/P2 was found. Acceptance remains deliberately withheld because a separate full Segment D saturation audit is the next authorized stage. That audit, Ultra, Step 11, real-provider integration, corpus calibration, live PostgreSQL/S3, and physical-device verification were not started.
 
 ## Segment D saturation-findings targeted closure

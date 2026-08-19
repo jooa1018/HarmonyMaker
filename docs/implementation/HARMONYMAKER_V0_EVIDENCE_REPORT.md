@@ -668,3 +668,53 @@ SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
 CYBER_SECURITY_AUDIT = NOT_PERFORMED
 ```
+
+## Re-saturation findings final implementation evidence
+
+Baseline `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b` matched the clean remote branch at 0/0 divergence; code checkpoint `9dea42214d87dd32c4ad5b2be02fd014937d36a1` is additive and preserves the specified implementation and Segment C ancestors.
+
+| Finding | Root closure | Production evidence | Verdict |
+|---|---|---|---|
+| P1-RESAT-01 | Generic stale writes replaced by atomic exact-token status/capture completion | Memory + PostgreSQL expired-token reclaim, stale release/failure, delayed status/capture, completed object preservation | CLOSED |
+| P1-RESAT-02 | Durable staged publication exists before S3 object; stable publication/key and fenced activation/cleanup | Migration 9, Memory/PostgreSQL ledger, fake S3 apply-then-throw, DB ack loss, delete failure, restart/republication | CLOSED |
+| P1-RESAT-03 | True import discriminants plus independent provenance integrity | direct mutation, explicit legacy upgrade, project export/import, local persistence reload, generation boundary | CLOSED |
+| P2-RESAT-01 | Versioned/digested local create envelope and explicit reset | malformed/obsolete/mismatch/4xx/network/5xx/reload/fresh tests | CLOSED |
+| P2-RESAT-02 | Canonical semantic accepted-input digest | nested reorder, JSONB reload, commit-ack loss, restart, one Vendor input | CLOSED |
+| P2-RESAT-03 | One int32-per-job/safe-aggregate numeric domain | capability/config/multiplication/Memory checks and PostgreSQL bigint boundary tests | CLOSED |
+| P2-RESAT-04 | True complete-operation commit then acknowledgement loss | start/input/cancel Memory service plus actual PostgreSQL restart/read-back | CLOSED |
+
+Migration inventory is now deterministic 1–9; inventory/checksum tests and a full PostgreSQL 17.9 apply passed. Migrations 1–8 were not edited. The connected cleanup campaign also closed an in-scope composite-key expiry defect exposed by staged-publication cleanup; no additional unresolved finding remains.
+
+```text
+npm ci                       PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck            PASS
+npm run lint                 PASS
+npm test                     PASS — 66 files/674 tests
+npm run test:postgres        PASS — PostgreSQL 17.9, migrations 1–9, 1 file/12 tests
+npm run build                PASS — Next.js 16.3.0
+git diff --check             PASS
+Segment B 101-run            PASS
+OMR 101-run                  PASS
+frozen/99-code authority     PASS — six hashes exact, protected production path diff 0
+```
+
+Remote code-checkpoint evidence is Actions run `32207987858`, quality job `95934820489`, all required steps success with 66/674 and 1/12; Vercel deployment `DA6H9gRB7gnHraaQxrjZJKSVR181`, GitHub deployment `5974748420`, status `52477537126`, success, preview `https://harmony-maker-nedbdqmty-ecctom1.vercel.app`. The containing documentation-only commit is the final handoff HEAD; its exact self SHA and terminal Actions/Vercel IDs are reported after push in the final report.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+ADDITIONAL_NEW_P0 = 0
+ADDITIONAL_NEW_P1 = 0
+ADDITIONAL_NEW_P2 = 0
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```

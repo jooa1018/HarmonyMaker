@@ -801,3 +801,47 @@ SEGMENT_D_ACCEPTED = NO
 ULTRA_AUDIT_READY = NO
 CYBER_SECURITY_AUDIT = NOT_PERFORMED
 ```
+
+## Re-saturation findings final closure handoff
+
+Starting remote HEAD `2d9fd69de1cdd0e02aba0a45b2fbcf79a566ba0b` matched exactly with a clean 0/0 worktree. The last implementation/test commit is `9dea42214d87dd32c4ad5b2be02fd014937d36a1`; this section is contained by its documentation-only descendant.
+
+```text
+P1-RESAT-01  CLOSED — durable status token + atomic token-bound capture failure, Memory/PostgreSQL
+P1-RESAT-02  CLOSED — staged publication ledger, stable key, ack recovery, restartable exact cleanup
+P1-RESAT-03  CLOSED — discriminated provenance + independent sourceProvenanceDigest
+P2-RESAT-01  CLOSED — versioned/digested browser state + explicit reset, ambiguity key retention
+P2-RESAT-02  CLOSED — canonical acceptedInputDigest across Memory/JSONB/restart
+P2-RESAT-03  CLOSED — int32 job credit + safe aggregate/bigint parity
+P2-RESAT-04  CLOSED — true start/input/cancel complete-then-throw evidence
+
+Migration 9             PASS — status/capture, input digest, publication ledger, credit checks
+Migration inventory     PASS — 1 through 9, checksums exact, full PostgreSQL apply
+Fake S3                 PASS — put ack loss, DB ack loss, delete failure, restart, stable key
+Local suite             PASS — 66 files/674 tests
+PostgreSQL 17.9         PASS — 1 file/12 tests
+typecheck/lint/build     PASS
+git diff --check        PASS
+Segment B 101/OMR 101   PASS
+frozen authority        PASS — six hashes, 99 codes, protected production diff 0
+```
+
+GitHub Actions code-checkpoint run `32207987858`, quality job `95934820489`, and Vercel deployment `DA6H9gRB7gnHraaQxrjZJKSVR181` all succeeded for SHA `9dea42214d87dd32c4ad5b2be02fd014937d36a1`; GitHub deployment/status are `5974748420`/`52477537126`, preview `https://harmony-maker-nedbdqmty-ecctom1.vercel.app`. Exact terminal evidence for this self-containing documentation commit is reported after push in the final handoff.
+
+No Ultra, Step 11, real provider, credentials, corpus calibration, production live PostgreSQL/S3, or physical-device work was started. Those remain external verification, not unresolved repository software findings.
+
+```text
+P1_RESAT_01 = CLOSED
+P1_RESAT_02 = CLOSED
+P1_RESAT_03 = CLOSED
+P2_RESAT_01 = CLOSED
+P2_RESAT_02 = CLOSED
+P2_RESAT_03 = CLOSED
+P2_RESAT_04 = CLOSED
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 0
+UNRESOLVED_P2 = 0
+SEGMENT_D_RESATURATION_FINDINGS_CLOSED = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
