@@ -28,6 +28,7 @@ import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreat
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
 import {
   authoritativeWorkspaceProject,
+  deleteWorkspaceProjectAndNavigate,
   WorkspaceRouteController,
 } from "../../product/workspace-route-state";
 import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
@@ -306,7 +307,10 @@ export function WorkspaceClient() {
       if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다.");
     }
   };
-  const deleteLocal = async () => { if (!projectId) return; await new IndexedDbProjectStore().delete(projectId); router.push("/"); };
+  const deleteLocal = async () => {
+    if (!projectId) return;
+    await deleteWorkspaceProjectAndNavigate(routeController, projectId, () => router.push("/"));
+  };
 
   const createShare = async (explicitFreshIntent = false) => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;

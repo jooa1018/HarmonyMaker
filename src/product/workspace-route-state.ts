@@ -101,6 +101,11 @@ export interface WorkspaceRouteSaveOutcome {
   readonly record: LocalProjectRecord;
 }
 
+export interface WorkspaceRouteDeleteOutcome {
+  readonly applied: boolean;
+  readonly deletedProjectId: string;
+}
+
 /**
  * The executable route authority used by the browser workspace. It owns the
  * deferred LocalProjectStore completion fence as well as the pure state
@@ -203,6 +208,15 @@ export class WorkspaceRouteController {
     };
   }
 
+  async deleteProject(currentRequestedId: string): Promise<WorkspaceRouteDeleteOutcome> {
+    const authority = this.beginMutation(currentRequestedId);
+    await this.store.delete(authority.projectId);
+    return {
+      applied: this.mutationStillCurrent(currentRequestedId, authority.projectId),
+      deletedProjectId: authority.projectId,
+    };
+  }
+
   async runMutation(
     currentRequestedId: string,
     operation: (authority: WorkspaceMutationAuthority) => Promise<HarmonyProject>,
@@ -215,4 +229,15 @@ export class WorkspaceRouteController {
     }
     return this.saveProject(currentRequestedId, project, updatedAt, authority.projectId);
   }
+}
+
+/** Delete the exact loaded record and navigate only while that route authority is still current. */
+export async function deleteWorkspaceProjectAndNavigate(
+  controller: WorkspaceRouteController,
+  currentRequestedId: string,
+  navigate: () => void,
+): Promise<WorkspaceRouteDeleteOutcome> {
+  const outcome = await controller.deleteProject(currentRequestedId);
+  if (outcome.applied) navigate();
+  return outcome;
 }

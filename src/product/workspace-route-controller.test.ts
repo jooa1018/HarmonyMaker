@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { HarmonyProject } from "../domain/project";
 import type { LocalProjectRecord, LocalProjectStore } from "./local-project-store";
-import { authoritativeWorkspaceProject, WorkspaceRouteController } from "./workspace-route-state";
+import {
+  authoritativeWorkspaceProject,
+  deleteWorkspaceProjectAndNavigate,
+  WorkspaceRouteController,
+} from "./workspace-route-state";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -27,7 +31,9 @@ const record = (projectId: string, title = projectId): LocalProjectRecord => ({
 class ControllableProjectStore implements LocalProjectStore {
   readonly loads = new Map<string, Deferred<LocalProjectRecord | undefined>>();
   readonly saves: LocalProjectRecord[] = [];
+  readonly deletes: string[] = [];
   saveBarrier?: Deferred<void>;
+  deleteBarrier?: Deferred<void>;
 
   load(projectId: string): Promise<LocalProjectRecord | undefined> {
     const operation = deferred<LocalProjectRecord | undefined>();
@@ -41,7 +47,10 @@ class ControllableProjectStore implements LocalProjectStore {
   }
 
   async list(): Promise<readonly Pick<LocalProjectRecord, "projectId" | "updatedAt">[]> { return []; }
-  async delete(): Promise<void> { /* test adapter */ }
+  async delete(projectId: string): Promise<void> {
+    this.deletes.push(projectId);
+    await this.deleteBarrier?.promise;
+  }
 }
 
 async function load(controller: WorkspaceRouteController, store: ControllableProjectStore, projectId: string, value = record(projectId)) {
@@ -148,5 +157,37 @@ describe("executable workspace route operation controller", () => {
     store.loads.get("B")!.resolve(record("A"));
     expect(await operation).toMatchObject({ status: "corrupt", requestedId: "B", applied: true });
     expect(controller.state).toEqual({ requestedId: "B", loadStatus: "corrupt" });
+  });
+
+  it("deletes exact A but ignores its delayed navigation completion after B loads", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    const navigate = vi.fn();
+    await load(controller, store, "A");
+    store.deleteBarrier = deferred<void>();
+
+    const deletion = deleteWorkspaceProjectAndNavigate(controller, "A", navigate);
+    expect(store.deletes).toEqual(["A"]);
+    const pendingB = controller.request("B");
+    store.loads.get("B")!.resolve(record("B"));
+    await pendingB;
+    store.deleteBarrier.resolve();
+
+    expect(await deletion).toEqual({ applied: false, deletedProjectId: "A" });
+    expect(store.deletes).toEqual(["A"]);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(authoritativeWorkspaceProject(controller.state, "B")?.source.title).toBe("B");
+  });
+
+  it("navigates exactly once after deleting the still-current A authority", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    const navigate = vi.fn();
+    await load(controller, store, "A");
+
+    await expect(deleteWorkspaceProjectAndNavigate(controller, "A", navigate))
+      .resolves.toEqual({ applied: true, deletedProjectId: "A" });
+    expect(store.deletes).toEqual(["A"]);
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 });
