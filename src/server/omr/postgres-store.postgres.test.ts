@@ -100,6 +100,51 @@ class PostgresControllableGenerationS3 {
   }
 }
 
+class PostgresRejectedDeferredGenerationS3 {
+  readonly objects = new Map<string, PostgresFakeMaterializedObject>();
+  readonly putStarted = [deferred(), deferred()];
+  readonly materializationGates = [deferred(), deferred()];
+  readonly materialized = [deferred(), deferred()];
+  readonly deletes: Array<{ readonly key: string; readonly generation?: string }> = [];
+  failDeleteGeneration?: string;
+  private failedDelete = false;
+  private putCalls = 0;
+
+  async send(command: { readonly constructor: { readonly name: string }; readonly input: Record<string, unknown> }): Promise<Record<string, unknown>> {
+    const key = String(command.input.Key);
+    if (command.constructor.name === "PutObjectCommand") {
+      const index = this.putCalls;
+      this.putCalls += 1;
+      const object = {
+        bytes: Uint8Array.from(command.input.Body as Uint8Array),
+        contentType: String(command.input.ContentType),
+        metadata: command.input.Metadata as Record<string, string>,
+      };
+      this.putStarted[index]?.resolve();
+      void this.materializationGates[index]?.promise.then(() => {
+        this.objects.set(key, object);
+        this.materialized[index]?.resolve();
+      });
+      throw new TypeError(`postgres response lost for generation ${index + 1}`);
+    }
+    if (command.constructor.name === "HeadObjectCommand") {
+      const object = this.objects.get(key);
+      if (!object) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+      return { ContentLength: object.bytes.byteLength, ContentType: object.contentType, Metadata: object.metadata };
+    }
+    if (command.constructor.name === "DeleteObjectCommand") {
+      const generation = this.objects.get(key)?.metadata["hm-publication-generation"];
+      this.deletes.push({ key, ...(generation ? { generation } : {}) });
+      if (!this.failedDelete && this.failDeleteGeneration !== undefined && generation === this.failDeleteGeneration) {
+        this.failedDelete = true;
+        throw new Error(`postgres generation ${generation} delete failed`);
+      }
+      this.objects.delete(key);
+    }
+    return {};
+  }
+}
+
 function record(ownerSessionId: PrivateRowId, now: string, key: string): Omit<DurableOmrJobRecord, "id"> {
   const consentDigest = "a".repeat(64) as DurableOmrJobRecord["capabilitySnapshotDigest"];
   return {
@@ -478,34 +523,47 @@ describe("actual PostgreSQL OMR authority", () => {
   it("keeps a PostgreSQL publication ledger discoverable through Put/Delete acknowledgement failures and restart", async () => {
     await withStore("UTC", async (pool) => {
       const owner = await session(pool, "publication-owner");
-      const keys = new Set<string>();
+      const objects = new Map<string, PostgresFakeMaterializedObject>();
       let putLost = true;
       let deleteFailed = true;
       const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
         const key = String(command.input.Key);
-        if (command.constructor.name === "PutObjectCommand") { keys.add(key); if (putLost) { putLost = false; throw new TypeError("put acknowledgement lost"); } }
-        if (command.constructor.name === "DeleteObjectCommand") { if (deleteFailed) { deleteFailed = false; throw new Error("delete failed"); } keys.delete(key); }
+        if (command.constructor.name === "PutObjectCommand") {
+          objects.set(key, {
+            bytes: Uint8Array.from(command.input.Body as Uint8Array),
+            contentType: String(command.input.ContentType),
+            metadata: command.input.Metadata as Record<string, string>,
+          });
+          if (putLost) { putLost = false; throw new TypeError("put acknowledgement lost"); }
+        }
+        if (command.constructor.name === "HeadObjectCommand") {
+          const object = objects.get(key);
+          if (!object) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+          return { ContentLength: object.bytes.byteLength, ContentType: object.contentType, Metadata: object.metadata };
+        }
+        if (command.constructor.name === "DeleteObjectCommand") { if (deleteFailed) { deleteFailed = false; throw new Error("delete failed"); } objects.delete(key); }
         return {};
       } } as unknown as S3Client;
       const governance = new PostgresGovernanceStore(pool);
       const first = new S3OwnedObjectStore(fake, "integration-bucket", governance);
       const publication = { ownerSessionId: owner, publicationId: "postgres-put-loss", bytes: Uint8Array.of(4, 5, 6), contentType: "application/octet-stream" } as const;
       await expect(first.put(publication)).rejects.toThrow("put acknowledgement lost");
-      expect(keys.size).toBe(1);
+      expect(objects.size).toBe(1);
       const staged = (await pool.query("SELECT id,object_key,lifecycle,publication_token FROM object_references")).rows[0];
       expect(staged).toMatchObject({ lifecycle: "upload-pending", publication_token: expect.any(String) });
       const restarted = new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool));
       const cleanup = new CleanupService(new PostgresGovernanceStore(pool), restarted);
       await expect(cleanup.run({ now: new Date("2030-01-01T00:00:00.000Z") })).resolves.toMatchObject({ failures: [expect.objectContaining({ scope: expect.stringMatching(/^object:/u), message: "delete failed" })] });
-      expect(keys.size).toBe(1);
+      expect(objects.size).toBe(1);
       expect((await pool.query("SELECT lifecycle,publication_put_may_still_complete,publication_predecessor_token,publication_cleanup_token FROM object_references")).rows[0])
-        .toEqual({ lifecycle: "tombstone-pending", publication_put_may_still_complete: false, publication_predecessor_token: null, publication_cleanup_token: null });
+        .toEqual({ lifecycle: "tombstone-pending", publication_put_may_still_complete: true, publication_predecessor_token: null, publication_cleanup_token: null });
       await expect(cleanup.run({ now: new Date("2030-01-01T00:01:00.000Z") })).resolves.toMatchObject({ failures: [] });
-      expect(keys.size).toBe(0);
-      expect((await pool.query("SELECT lifecycle FROM object_references")).rows[0].lifecycle).toBe("deleted");
+      expect(objects.size).toBe(0);
+      expect((await pool.query("SELECT lifecycle,publication_token,publication_put_may_still_complete FROM object_references")).rows[0])
+        .toMatchObject({ lifecycle: "tombstone-pending", publication_token: staged.publication_token, publication_put_may_still_complete: true });
       const republished = await restarted.put(publication);
-      expect(republished).toMatchObject({ id: String(staged.id), objectKey: staged.object_key, lifecycle: "active" });
-      expect(keys).toEqual(new Set([staged.object_key]));
+      expect(republished).toMatchObject({ id: String(staged.id), objectKey: staged.object_key, lifecycle: "active", publicationGeneration: 2 });
+      expect(new Set(objects.keys())).toEqual(new Set([staged.object_key]));
       expect((await pool.query("SELECT count(*)::int AS count FROM object_references")).rows[0].count).toBe(1);
     });
   });
@@ -739,6 +797,177 @@ describe("actual PostgreSQL OMR authority", () => {
       expect(s3.objects.size).toBe(0);
       expect(s3.deletes.filter((item) => item.generation === "2")).toHaveLength(1);
       expect(new Set(s3.deletes.map((item) => item.key))).toEqual(new Set([stagedA.object_key]));
+    });
+  });
+
+  it("persists rejected PostgreSQL Put uncertainty through cleanup claim fencing and restart", async () => {
+    await withStore("UTC", async (pool) => {
+      const s3 = new PostgresRejectedDeferredGenerationS3();
+      const fake = s3 as unknown as S3Client;
+      const owner = await session(pool, "postgres-rejected-late");
+      const publication = { ownerSessionId: owner, publicationId: "postgres-rejected-late", bytes: Uint8Array.of(1, 9), contentType: "application/octet-stream" } as const;
+      const rejected = expect(new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)).put(publication))
+        .rejects.toThrow("postgres response lost for generation 1");
+      await s3.putStarted[0].promise;
+      await rejected;
+
+      let row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({
+        lifecycle: "upload-pending",
+        publication_generation: "1",
+        publication_token: expect.any(String),
+        publication_put_may_still_complete: true,
+      });
+      const token = row.publication_token;
+      const claimsStore = new PostgresGovernanceStore(pool);
+      const selected = await claimsStore.cleanup({ now: "2030-01-01T00:00:00.000Z", batchSize: 10, dryRun: false });
+      const candidate = selected.pendingObjectReferences[0];
+      const claims = await Promise.all(["rejected-cleanup-a", "rejected-cleanup-b"].map((publicationCleanupToken) => claimsStore.claimObjectPublicationCleanup({
+        id: candidate.id,
+        ownerSessionId: owner,
+        objectKey: candidate.objectKey,
+        publicationGeneration: candidate.publicationGeneration!,
+        publicationCleanupToken,
+        publicationCleanupLeaseExpiresAt: "2030-01-01T00:05:00.000Z",
+        now: "2030-01-01T00:00:00.000Z",
+      })));
+      expect([...claims].sort()).toEqual([false, true]);
+      await claimsStore.releaseObjectPublicationCleanup({
+        id: candidate.id,
+        ownerSessionId: owner,
+        publicationGeneration: candidate.publicationGeneration!,
+        publicationCleanupToken: claims[0] ? "rejected-cleanup-a" : "rejected-cleanup-b",
+      });
+
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({
+        lifecycle: "tombstone-pending",
+        publication_generation: "1",
+        publication_token: token,
+        publication_put_may_still_complete: true,
+      });
+      expect(row.publication_delete_confirmed_at).not.toBeNull();
+      expect(s3.objects.size).toBe(0);
+      expect(s3.deletes).toEqual([{ key: row.object_key }]);
+
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:01:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "tombstone-pending", publication_token: token, publication_put_may_still_complete: true });
+      expect(s3.deletes).toHaveLength(1);
+
+      s3.materializationGates[0].resolve();
+      await s3.materialized[0].promise;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:02:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "deleted", publication_generation: "1", publication_put_may_still_complete: false });
+      expect(row.publication_token).toBeNull();
+      expect(s3.objects.size).toBe(0);
+      expect(s3.deletes.filter((item) => item.generation === "1")).toHaveLength(1);
+    });
+  });
+
+  it("reconciles PostgreSQL generations A and B after both Put promises reject before materialization", async () => {
+    await withStore("UTC", async (pool) => {
+      const s3 = new PostgresRejectedDeferredGenerationS3();
+      const fake = s3 as unknown as S3Client;
+      const owner = await session(pool, "postgres-rejected-generations");
+      const publication = { ownerSessionId: owner, publicationId: "postgres-rejected-generations", bytes: Uint8Array.of(2, 8), contentType: "application/octet-stream" } as const;
+      const rejectedA = expect(new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)).put(publication))
+        .rejects.toThrow("postgres response lost for generation 1");
+      await s3.putStarted[0].promise;
+      await rejectedA;
+      let row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      const tokenA = row.publication_token;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+
+      const rejectedB = expect(new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)).put(publication))
+        .rejects.toThrow("postgres response lost for generation 2");
+      await s3.putStarted[1].promise;
+      await rejectedB;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2031-01-01T00:00:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      const tokenB = row.publication_token;
+      expect(row).toMatchObject({
+        lifecycle: "tombstone-pending",
+        publication_generation: "2",
+        publication_token: expect.any(String),
+        publication_put_may_still_complete: true,
+        publication_predecessor_token: tokenA,
+        publication_predecessor_generation: "1",
+      });
+
+      s3.materializationGates[0].resolve();
+      await s3.materialized[0].promise;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2031-01-01T00:01:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({
+        lifecycle: "tombstone-pending",
+        publication_generation: "2",
+        publication_token: tokenB,
+        publication_put_may_still_complete: true,
+      });
+      expect(row.publication_predecessor_token).toBeNull();
+      expect(s3.objects.size).toBe(0);
+      expect(s3.deletes.filter((item) => item.generation === "1")).toHaveLength(1);
+
+      s3.materializationGates[1].resolve();
+      await s3.materialized[1].promise;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2031-01-01T00:02:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "deleted", publication_generation: "2", publication_put_may_still_complete: false });
+      expect(row.publication_token).toBeNull();
+      expect(row.publication_predecessor_token).toBeNull();
+      expect(s3.objects.size).toBe(0);
+      expect(s3.deletes.filter((item) => item.generation === "2")).toHaveLength(1);
+    });
+  });
+
+  it("retains PostgreSQL authority when deleting a rejected Put's late materialization fails", async () => {
+    await withStore("UTC", async (pool) => {
+      const s3 = new PostgresRejectedDeferredGenerationS3();
+      s3.failDeleteGeneration = "1";
+      const fake = s3 as unknown as S3Client;
+      const owner = await session(pool, "postgres-rejected-delete-retry");
+      const publication = { ownerSessionId: owner, publicationId: "postgres-rejected-delete-retry", bytes: Uint8Array.of(3, 7), contentType: "application/octet-stream" } as const;
+      const rejected = expect(new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)).put(publication))
+        .rejects.toThrow("postgres response lost for generation 1");
+      await s3.putStarted[0].promise;
+      await rejected;
+      let row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      const token = row.publication_token;
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+      s3.materializationGates[0].resolve();
+      await s3.materialized[0].promise;
+
+      const failed = await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:01:00.000Z") });
+      expect(failed.failures).toEqual([expect.objectContaining({ message: "postgres generation 1 delete failed" })]);
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({
+        lifecycle: "tombstone-pending",
+        publication_generation: "1",
+        publication_token: token,
+        publication_put_may_still_complete: false,
+      });
+      expect(row.publication_cleanup_token).toBeNull();
+      expect(s3.objects.size).toBe(1);
+
+      await new CleanupService(new PostgresGovernanceStore(pool), new S3OwnedObjectStore(fake, "integration-bucket", new PostgresGovernanceStore(pool)))
+        .run({ now: new Date("2030-01-01T00:02:00.000Z") });
+      row = (await pool.query("SELECT * FROM object_references")).rows[0];
+      expect(row).toMatchObject({ lifecycle: "deleted", publication_generation: "1", publication_put_may_still_complete: false });
+      expect(row.publication_token).toBeNull();
+      expect(s3.objects.size).toBe(0);
+      expect(s3.deletes.filter((item) => item.generation === "1")).toHaveLength(2);
     });
   });
 

@@ -65,6 +65,53 @@ class ControllableGenerationS3 {
   }
 }
 
+class RejectedDeferredGenerationS3 {
+  readonly objects = new Map<string, FakeMaterializedObject>();
+  readonly putStarted = [deferred(), deferred()];
+  readonly materializationGates = [deferred(), deferred()];
+  readonly materialized = [deferred(), deferred()];
+  readonly putMetadata: Record<string, string>[] = [];
+  readonly deletes: Array<{ readonly key: string; readonly generation?: string }> = [];
+  failDeleteGeneration?: string;
+  private failedDelete = false;
+  private putCalls = 0;
+
+  async send(command: { readonly constructor: { readonly name: string }; readonly input: Record<string, unknown> }): Promise<Record<string, unknown>> {
+    const key = String(command.input.Key);
+    if (command.constructor.name === "PutObjectCommand") {
+      const index = this.putCalls;
+      this.putCalls += 1;
+      const object = {
+        bytes: Uint8Array.from(command.input.Body as Uint8Array),
+        contentType: String(command.input.ContentType),
+        metadata: command.input.Metadata as Record<string, string>,
+      };
+      this.putMetadata.push(object.metadata);
+      this.putStarted[index]?.resolve();
+      void this.materializationGates[index]?.promise.then(() => {
+        this.objects.set(key, object);
+        this.materialized[index]?.resolve();
+      });
+      throw new TypeError(`response lost for generation ${index + 1}`);
+    }
+    if (command.constructor.name === "HeadObjectCommand") {
+      const object = this.objects.get(key);
+      if (!object) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+      return { ContentLength: object.bytes.byteLength, ContentType: object.contentType, Metadata: object.metadata };
+    }
+    if (command.constructor.name === "DeleteObjectCommand") {
+      const generation = this.objects.get(key)?.metadata["hm-publication-generation"];
+      this.deletes.push({ key, ...(generation ? { generation } : {}) });
+      if (!this.failedDelete && this.failDeleteGeneration !== undefined && generation === this.failDeleteGeneration) {
+        this.failedDelete = true;
+        throw new Error(`generation ${generation} delete failed`);
+      }
+      this.objects.delete(key);
+    }
+    return {};
+  }
+}
+
 describe("production S3-compatible request construction", () => {
   it("uses private point operations only and verifies metadata", async () => {
     const commands: Array<{ constructor: { name: string }; input: Record<string, unknown> }> = [];
@@ -123,15 +170,23 @@ describe("production S3-compatible request construction", () => {
   });
 
   it("keeps Put acknowledgement loss discoverable and resumes the exact key after restart", async () => {
-    const objects = new Map<string, Uint8Array>();
-    let putThrows = true;
+    const objects = new Map<string, FakeMaterializedObject>();
     const calls: string[] = [];
     const fake = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
       calls.push(command.constructor.name);
       const key = String(command.input.Key);
       if (command.constructor.name === "PutObjectCommand") {
-        objects.set(key, Uint8Array.from(command.input.Body as Uint8Array));
-        if (putThrows) { putThrows = false; throw new TypeError("put acknowledgement lost"); }
+        objects.set(key, {
+          bytes: Uint8Array.from(command.input.Body as Uint8Array),
+          contentType: String(command.input.ContentType),
+          metadata: command.input.Metadata as Record<string, string>,
+        });
+        throw new TypeError("put acknowledgement lost");
+      }
+      if (command.constructor.name === "HeadObjectCommand") {
+        const object = objects.get(key);
+        if (!object) throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+        return { ContentLength: object.bytes.byteLength, ContentType: object.contentType, Metadata: object.metadata };
       }
       if (command.constructor.name === "DeleteObjectCommand") objects.delete(key);
       return {};
@@ -141,7 +196,12 @@ describe("production S3-compatible request construction", () => {
     const firstProcess = new S3OwnedObjectStore(fake, "private-bucket", records);
     const publication = { ownerSessionId: owner, publicationId: "restart-stable-publication", bytes: Uint8Array.of(7, 8, 9), contentType: "application/octet-stream" } as const;
     await expect(firstProcess.put(publication)).rejects.toThrow("put acknowledgement lost");
-    expect([...records.objects.values()]).toEqual([expect.objectContaining({ lifecycle: "upload-pending", publicationToken: expect.any(String) })]);
+    expect([...records.objects.values()]).toEqual([expect.objectContaining({
+      lifecycle: "upload-pending",
+      publicationToken: expect.any(String),
+      publicationGeneration: 1,
+      publicationPutMayStillComplete: true,
+    })]);
     expect(objects.size).toBe(1);
 
     const restarted = new S3OwnedObjectStore(fake, "private-bucket", records);
@@ -150,7 +210,8 @@ describe("production S3-compatible request construction", () => {
     expect(objects.size).toBe(1);
     expect([...records.objects.values()]).toHaveLength(1);
     expect([...records.objects.values()][0]).toMatchObject({ lifecycle: "active", objectKey: recovered.objectKey });
-    expect(calls.filter((name) => name === "PutObjectCommand")).toHaveLength(2);
+    expect(calls.filter((name) => name === "PutObjectCommand")).toHaveLength(1);
+    expect(calls.filter((name) => name === "HeadObjectCommand")).toHaveLength(1);
     expect(calls.filter((name) => name === "DeleteObjectCommand")).toHaveLength(0);
   });
 
@@ -337,6 +398,155 @@ describe("production S3-compatible request construction", () => {
     await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records)).run({ now: new Date("2030-01-01T00:01:00.000Z") });
     expect(objects.size).toBe(0);
     expect([...records.objects.values()][0].lifecycle).toBe("deleted");
+  });
+
+  it("keeps a rejected dispatched Put uncertain until its late materialization is deleted after restart", async () => {
+    const s3 = new RejectedDeferredGenerationS3();
+    const fake = s3 as unknown as S3Client;
+    const records = new MemoryGovernanceStore();
+    const owner = "rejected-late-owner" as PrivateRowId;
+    const publication = { ownerSessionId: owner, publicationId: "rejected-late", bytes: Uint8Array.of(1, 9), contentType: "application/octet-stream" } as const;
+    const rejected = expect(new S3OwnedObjectStore(fake, "private-bucket", records).put(publication))
+      .rejects.toThrow("response lost for generation 1");
+    await s3.putStarted[0].promise;
+    await rejected;
+
+    const staged = [...records.objects.values()][0];
+    expect(staged).toMatchObject({
+      lifecycle: "upload-pending",
+      publicationGeneration: 1,
+      publicationToken: expect.any(String),
+      publicationPutMayStillComplete: true,
+    });
+    const token = staged.publicationToken;
+    const cleanupAfterRestart = new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records));
+    await cleanupAfterRestart.run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    expect(records.objects.get(staged.id)).toMatchObject({
+      lifecycle: "tombstone-pending",
+      publicationGeneration: 1,
+      publicationToken: token,
+      publicationPutMayStillComplete: true,
+      publicationDeleteConfirmedAt: expect.any(String),
+    });
+    expect(s3.objects.size).toBe(0);
+    expect(s3.deletes).toEqual([{ key: staged.objectKey }]);
+
+    await cleanupAfterRestart.run({ now: new Date("2030-01-01T00:01:00.000Z") });
+    expect(records.objects.get(staged.id)).toMatchObject({ lifecycle: "tombstone-pending", publicationToken: token, publicationPutMayStillComplete: true });
+    expect(s3.deletes).toHaveLength(1);
+
+    s3.materializationGates[0].resolve();
+    await s3.materialized[0].promise;
+    expect(s3.objects.size).toBe(1);
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2030-01-01T00:02:00.000Z") });
+    expect(s3.objects.size).toBe(0);
+    expect(s3.deletes.filter((item) => item.generation === "1")).toHaveLength(1);
+    expect(records.objects.get(staged.id)).toMatchObject({
+      lifecycle: "deleted",
+      publicationGeneration: 1,
+      publicationToken: undefined,
+      publicationPutMayStillComplete: false,
+    });
+  });
+
+  it("reconciles rejected-before-materialization generations A and B independently", async () => {
+    const s3 = new RejectedDeferredGenerationS3();
+    const fake = s3 as unknown as S3Client;
+    const records = new MemoryGovernanceStore();
+    const owner = "rejected-generations-owner" as PrivateRowId;
+    const publication = { ownerSessionId: owner, publicationId: "rejected-generations", bytes: Uint8Array.of(2, 8), contentType: "application/octet-stream" } as const;
+    const rejectedA = expect(new S3OwnedObjectStore(fake, "private-bucket", records).put(publication))
+      .rejects.toThrow("response lost for generation 1");
+    await s3.putStarted[0].promise;
+    await rejectedA;
+    const stagedA = [...records.objects.values()][0];
+    const tokenA = stagedA.publicationToken;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+
+    const rejectedB = expect(new S3OwnedObjectStore(fake, "private-bucket", records).put(publication))
+      .rejects.toThrow("response lost for generation 2");
+    await s3.putStarted[1].promise;
+    await rejectedB;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2031-01-01T00:00:00.000Z") });
+    const stagedB = records.objects.get(stagedA.id)!;
+    const tokenB = stagedB.publicationToken;
+    expect(stagedB).toMatchObject({
+      lifecycle: "tombstone-pending",
+      publicationGeneration: 2,
+      publicationToken: expect.any(String),
+      publicationPutMayStillComplete: true,
+      publicationPredecessorToken: tokenA,
+      publicationPredecessorGeneration: 1,
+    });
+
+    s3.materializationGates[0].resolve();
+    await s3.materialized[0].promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2031-01-01T00:01:00.000Z") });
+    expect(records.objects.get(stagedA.id)).toMatchObject({
+      lifecycle: "tombstone-pending",
+      publicationGeneration: 2,
+      publicationToken: tokenB,
+      publicationPutMayStillComplete: true,
+      publicationPredecessorToken: undefined,
+    });
+    expect(s3.objects.size).toBe(0);
+    expect(s3.deletes.filter((item) => item.generation === "1")).toHaveLength(1);
+
+    s3.materializationGates[1].resolve();
+    await s3.materialized[1].promise;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2031-01-01T00:02:00.000Z") });
+    expect(s3.objects.size).toBe(0);
+    expect(s3.deletes.filter((item) => item.generation === "2")).toHaveLength(1);
+    expect(s3.putMetadata.map((metadata) => metadata["hm-publication-generation"])).toEqual(["1", "2"]);
+    expect(records.objects.get(stagedA.id)).toMatchObject({
+      lifecycle: "deleted",
+      publicationGeneration: 2,
+      publicationToken: undefined,
+      publicationPutMayStillComplete: false,
+      publicationPredecessorToken: undefined,
+    });
+  });
+
+  it("retains rejected Put authority when exact late-materialization deletion fails", async () => {
+    const s3 = new RejectedDeferredGenerationS3();
+    s3.failDeleteGeneration = "1";
+    const fake = s3 as unknown as S3Client;
+    const records = new MemoryGovernanceStore();
+    const owner = "rejected-delete-retry-owner" as PrivateRowId;
+    const publication = { ownerSessionId: owner, publicationId: "rejected-delete-retry", bytes: Uint8Array.of(3, 7), contentType: "application/octet-stream" } as const;
+    const rejected = expect(new S3OwnedObjectStore(fake, "private-bucket", records).put(publication))
+      .rejects.toThrow("response lost for generation 1");
+    await s3.putStarted[0].promise;
+    await rejected;
+    const staged = [...records.objects.values()][0];
+    const token = staged.publicationToken;
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2030-01-01T00:00:00.000Z") });
+    s3.materializationGates[0].resolve();
+    await s3.materialized[0].promise;
+
+    const failed = await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2030-01-01T00:01:00.000Z") });
+    expect(failed.failures).toEqual([expect.objectContaining({ message: "generation 1 delete failed" })]);
+    expect(s3.objects.size).toBe(1);
+    expect(records.objects.get(staged.id)).toMatchObject({
+      lifecycle: "tombstone-pending",
+      publicationGeneration: 1,
+      publicationToken: token,
+      publicationPutMayStillComplete: false,
+      publicationCleanupToken: undefined,
+    });
+
+    await new CleanupService(records, new S3OwnedObjectStore(fake, "private-bucket", records))
+      .run({ now: new Date("2030-01-01T00:02:00.000Z") });
+    expect(s3.objects.size).toBe(0);
+    expect(s3.deletes.filter((item) => item.generation === "1")).toHaveLength(2);
+    expect(records.objects.get(staged.id)).toMatchObject({ lifecycle: "deleted", publicationToken: undefined, publicationPutMayStillComplete: false });
   });
 
   it("reconciles two in-flight generations independently when predecessor A materializes before current B", async () => {

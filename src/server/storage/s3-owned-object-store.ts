@@ -11,6 +11,12 @@ function validContentType(value: string): boolean { return /^[a-z0-9][a-z0-9.+-]
 const PUBLICATION_LEASE_MS = 5 * 60 * 1_000;
 const PUBLICATION_CLEANUP_LEASE_MS = 5 * 60 * 1_000;
 
+type ObjectPutOutcome = "definitive-not-dispatched" | "outcome-uncertain";
+
+function classifyObjectPutFailure(dispatchStarted: boolean): ObjectPutOutcome {
+  return dispatchStarted ? "outcome-uncertain" : "definitive-not-dispatched";
+}
+
 interface PublicationAuthority {
   readonly publicationToken: string;
   readonly publicationGeneration: number;
@@ -92,6 +98,21 @@ export class S3OwnedObjectStore implements OwnedObjectStore {
         if (prior.lifecycle !== "upload-pending" || !prior.publicationToken || prior.publicationGeneration === undefined) throw new RangeError("OBJECT_PUBLICATION_PENDING");
         publicationToken = prior.publicationToken;
         publicationGeneration = prior.publicationGeneration;
+        if (prior.publicationPutMayStillComplete === true) {
+          const materialized = await this.inspectMaterializedPublication(prior);
+          if (materialized.kind !== "current") throw new RangeError("OBJECT_PUBLICATION_PENDING");
+          const disposition = await this.records.completeObjectPublication({
+            id: prior.id, ownerSessionId: input.ownerSessionId, objectKey,
+            publicationToken, publicationGeneration, at: createdAt.toISOString(),
+          });
+          const recovered = await this.records.findObjectReference(prior.id, input.ownerSessionId);
+          if (disposition === "active" && recovered?.lifecycle === "active" && exact(recovered)) return recovered;
+          if (disposition === "delete-required") {
+            await this.deletePublication(prior.id, input.ownerSessionId, createdAt, { publicationToken, publicationGeneration });
+            throw new Error("OBJECT_PUBLICATION_DELETED");
+          }
+          throw new RangeError("OBJECT_PUBLICATION_PENDING");
+        }
         const begun = await this.records.beginObjectPublicationAttempt({
           id: prior.id, ownerSessionId: input.ownerSessionId, publicationToken, publicationGeneration,
           publicationLeaseExpiresAt: publicationInput.publicationLeaseExpiresAt, at: createdAt.toISOString(),
@@ -112,12 +133,13 @@ export class S3OwnedObjectStore implements OwnedObjectStore {
         publicationGeneration = inspected!.publicationGeneration!;
       }
     }
-    const materializationAuthority = await publicationAuthorityDigest({
-      ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,
-      byteSize: bytes.byteLength, binaryDigest: digest, publicationToken, publicationGeneration,
-    });
+    let dispatchStarted = false;
     try {
-      await this.client.send(new PutObjectCommand({
+      const materializationAuthority = await publicationAuthorityDigest({
+        ownerSessionId: input.ownerSessionId, objectKey, contentType: input.contentType,
+        byteSize: bytes.byteLength, binaryDigest: digest, publicationToken, publicationGeneration,
+      });
+      const command = new PutObjectCommand({
         Bucket: this.bucket, Key: objectKey, Body: bytes, ContentType: input.contentType,
         Metadata: {
           "hm-sha256": digest,
@@ -126,18 +148,20 @@ export class S3OwnedObjectStore implements OwnedObjectStore {
           "hm-publication-authority-digest": materializationAuthority,
           ...(input.expiresAt ? { "hm-expires-at": input.expiresAt } : {}),
         },
-      }));
+      });
+      dispatchStarted = true;
+      await this.client.send(command);
     } catch (error) {
-      const disposition = await this.records.settleObjectPublicationPut({
-        id: reference.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken, publicationGeneration, at: new Date().toISOString(),
-      }).catch(() => "superseded" as const);
-      if (disposition === "active") {
-        const active = await this.records.findObjectReference(reference.id, input.ownerSessionId).catch(() => undefined);
-        if (exact(active) && active?.lifecycle === "active") return active;
+      if (classifyObjectPutFailure(dispatchStarted) === "definitive-not-dispatched") {
+        const disposition = await this.records.settleObjectPublicationPut({
+          id: reference.id, ownerSessionId: input.ownerSessionId, objectKey, publicationToken, publicationGeneration, at: new Date().toISOString(),
+        }).catch(() => "superseded" as const);
+        if (disposition === "delete-required") {
+          await this.deletePublication(reference.id, input.ownerSessionId, new Date(), { publicationToken, publicationGeneration }).catch(() => undefined);
+        }
       }
-      if (disposition === "delete-required") {
-        await this.deletePublication(reference.id, input.ownerSessionId, new Date(), { publicationToken, publicationGeneration }).catch(() => undefined);
-      }
+      const active = await this.records.findObjectReference(reference.id, input.ownerSessionId).catch(() => undefined);
+      if (exact(active) && active?.lifecycle === "active") return active;
       throw error;
     }
     let publicationDisposition: "active" | "delete-required" | "superseded";
