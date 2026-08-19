@@ -332,6 +332,91 @@ describe("Product Core workspace, render, playback, and state", () => {
 });
 
 describe("candidate-bound edits and EditedArrangementSnapshot", () => {
+  it("rejects stale retained Candidate/Edit/Snapshot tampering through validation, transfer, and IndexedDB reload", async () => {
+    const fixture = await projectWithVerifiedSnapshot();
+    const freshVariant = fixture.project.variants.standard;
+    if (!freshVariant || freshVariant.lifecycle !== "generation-attempted") throw new Error("missing stale aggregate fixture");
+    const lockCandidate = freshVariant.generationResult.candidates.find((candidate) => candidate.id === fixture.snapshot.baseCandidateId)!;
+    const [lockTrackId, lockEvent] = Object.entries(lockCandidate.generatedEventsByTrack)
+      .flatMap(([trackPlanId, events]) => events.flatMap((event) => event.kind === "note" ? [[trackPlanId, event] as const] : []))[0];
+    const staleProject = replaceStageLocks(fixture.project, "standard", "solver", [{
+      id: "lk:standard:pitch:stale-integrity:0",
+      presetId: "standard",
+      kind: "pitch",
+      phraseId: fixture.project.source.phraseRegions[0].id,
+      trackPlanId: lockTrackId,
+      position: lockEvent.range.start,
+      pitch: lockEvent.pitch,
+    }]);
+    const original = staleProject.variants.standard;
+    if (!original || original.lifecycle !== "generation-attempted" || original.staleness?.staleFrom !== "generation") throw new Error("production staleness fixture failed");
+    const candidateIndex = original.generationResult.candidates.findIndex((candidate) => candidate.id === fixture.snapshot.baseCandidateId);
+    if (candidateIndex < 0) throw new Error("missing stale Candidate fixture");
+
+    type GeneratedVariant = typeof original;
+    const stale = (variant: GeneratedVariant): HarmonyProject => {
+      const { activeArrangement, ...withoutActive } = variant;
+      void activeArrangement;
+      return {
+        ...staleProject,
+        variants: { ...staleProject.variants, standard: {
+          ...withoutActive,
+        } },
+      };
+    };
+    const mutateCandidate = (transform: (candidate: GeneratedVariant["generationResult"]["candidates"][number]) => GeneratedVariant["generationResult"]["candidates"][number]): GeneratedVariant => ({
+      ...original,
+      generationResult: {
+        ...original.generationResult,
+        candidates: original.generationResult.candidates.map((candidate, index) => index === candidateIndex ? transform(candidate) : candidate),
+      },
+    });
+    const cases: readonly [string, GeneratedVariant][] = [
+      ["Candidate metrics", mutateCandidate((candidate) => ({ ...candidate, metrics: { ...candidate.metrics, hardDiagnosticCount: candidate.metrics.hardDiagnosticCount + 1 } }))],
+      ["Candidate diagnostics", mutateCandidate((candidate) => ({ ...candidate, diagnostics: [...candidate.diagnostics, { id: "dg:EDIT_SNAPSHOT_INVALID:stale:0", code: "EDIT_SNAPSHOT_INVALID", severity: "error", messageKo: "forged" }] }))],
+      ["Candidate canonicalPathKey", mutateCandidate((candidate) => ({ ...candidate, canonicalPathKey: `${candidate.canonicalPathKey}|forged` }))],
+      ["OutputEdit payload", {
+        ...original,
+        outputEdits: original.outputEdits.map((edit, index) => index === 0 && edit.kind === "replace-pitch"
+          ? { ...edit, pitch: { ...edit.pitch, octave: edit.pitch.octave + 1 } }
+          : edit),
+      }],
+      ["Snapshot material", {
+        ...original,
+        editedSnapshots: original.editedSnapshots.map((snapshot, index) => index === 0
+          ? { ...snapshot, metrics: { ...snapshot.metrics, hardDiagnosticCount: snapshot.metrics.hardDiagnosticCount + 1 } }
+          : snapshot),
+      }],
+      ["Snapshot applied edit order", {
+        ...original,
+        editedSnapshots: original.editedSnapshots.map((snapshot, index) => index === 0
+          ? { ...snapshot, appliedEditIds: [...snapshot.appliedEditIds].reverse() }
+          : snapshot),
+      }],
+    ];
+
+    const registry = await loadProductExecutionRegistry();
+    expect((await validateHarmonyProject(stale(original), registry)).status).toBe("complete");
+    await expect(exportHarmonyProject(stale(original))).resolves.toContain('"staleFrom":"generation"');
+    for (const [label, variant] of cases) {
+      const tampered = stale(variant);
+      expect((await validateHarmonyProject(tampered, registry)).status, label).toBe("blocked");
+      await expect(exportHarmonyProject(tampered), label).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+      await expect(importHarmonyProject(JSON.stringify(tampered)), label).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+      await expect(new MemoryLocalProjectStore().save({ projectId: `stale-${label}`, updatedAt: "2026-08-19T00:00:00.000Z", project: tampered }), label)
+        .rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+
+      const browserDatabase = memoryIndexedDb();
+      browserDatabase.rows.set(`stale-${label}`, {
+        projectId: `stale-${label}`,
+        updatedAt: "2026-08-19T00:00:00.000Z",
+        encoded: JSON.stringify(tampered),
+      });
+      await expect(new IndexedDbProjectStore(browserDatabase.factory).load(`stale-${label}`), label)
+        .rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+    }
+  }, 60_000);
+
   it("rejects the snapshot field-by-field tamper matrix at every persistence and render authority gate", async () => {
     const fixture = await projectWithVerifiedSnapshot();
     const replacementDigest = "f".repeat(64) as EditedArrangementSnapshot["contentDigest"];

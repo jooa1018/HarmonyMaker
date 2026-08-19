@@ -915,7 +915,7 @@ describe("persisted HarmonyProject integrity gate", () => {
     expect((await validateHarmonyProject(freshAnchorLocks, executionRegistry)).status).toBe("blocked");
   });
 
-  it("allows an old resolver only as previousTimeline", async () => {
+  it("does not let previousTimeline staleness bypass the current resolver authority", async () => {
     const oldRegistry = registryWith({
       versions: { chordTimelineResolverVersion: "chord-resolver-v0" },
     });
@@ -924,7 +924,7 @@ describe("persisted HarmonyProject integrity gate", () => {
       withHistoricalAuthorities(oldProject),
       "intent",
     );
-    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("blocked");
     if (preserved.chordTimelineState.status !== "stale") throw new Error("missing previous timeline");
     const disguisedAsResolved: HarmonyProject = {
       ...preserved,
@@ -937,7 +937,7 @@ describe("persisted HarmonyProject integrity gate", () => {
     expect((await validateHarmonyProject(disguisedAsResolved, executionRegistry)).status).toBe("blocked");
   });
 
-  it("allows an old atomizer only as previousAtomization", async () => {
+  it("does not let previousAtomization staleness bypass the current atomizer authority", async () => {
     const oldRegistry = registryWith({
       versions: { sourceLeadAtomizerVersion: "atomizer-v0" },
     });
@@ -953,12 +953,12 @@ describe("persisted HarmonyProject integrity gate", () => {
         diagnostics: [],
       },
     }, "intent");
-    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("blocked");
     const disguisedAsResolved = withVariantStaleness(oldProject, "intent");
     expect((await validateHarmonyProject(disguisedAsResolved, executionRegistry)).status).toBe("blocked");
   });
 
-  it("allows historical downstream provenance to differ from a replaced fresh upstream plan", async () => {
+  it("rejects retained downstream provenance that differs from a replaced upstream plan", async () => {
     const project = await generationProject();
     const variant = generatedVariant(project);
     const ordinals: PlanOrdinalRegistry = {
@@ -1018,7 +1018,7 @@ describe("persisted HarmonyProject integrity gate", () => {
     };
 
     expect(isHarmonyProjectShape(preserved)).toBe(true);
-    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+    expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("blocked");
   });
 
   const staleStageCases = [{
@@ -1043,12 +1043,12 @@ describe("persisted HarmonyProject integrity gate", () => {
   }] as const;
 
   it.each(staleStageCases)(
-    "applies the $staleFrom freshness boundary for $label artifacts",
+    "does not let $staleFrom staleness bypass current $label authority",
     async ({ staleFrom, registry }) => {
       const historicalProject = await generationProject(registry);
       const preserved = withVariantStaleness(historicalProject, staleFrom);
       expect(isHarmonyProjectShape(preserved)).toBe(true);
-      expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("complete");
+      expect((await validateHarmonyProject(preserved, executionRegistry)).status).toBe("blocked");
       expect((await validateHarmonyProject(
         historicalProject,
         executionRegistry,

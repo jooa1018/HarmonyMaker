@@ -1,0 +1,152 @@
+import { describe, expect, it } from "vitest";
+
+import type { HarmonyProject } from "../domain/project";
+import type { LocalProjectRecord, LocalProjectStore } from "./local-project-store";
+import { authoritativeWorkspaceProject, WorkspaceRouteController } from "./workspace-route-state";
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+}
+
+const project = (title: string) => ({ source: { title } }) as HarmonyProject;
+const record = (projectId: string, title = projectId): LocalProjectRecord => ({
+  projectId,
+  updatedAt: `2026-08-19T00:00:0${title.length % 10}.000Z`,
+  project: project(title),
+});
+
+class ControllableProjectStore implements LocalProjectStore {
+  readonly loads = new Map<string, Deferred<LocalProjectRecord | undefined>>();
+  readonly saves: LocalProjectRecord[] = [];
+  saveBarrier?: Deferred<void>;
+
+  load(projectId: string): Promise<LocalProjectRecord | undefined> {
+    const operation = deferred<LocalProjectRecord | undefined>();
+    this.loads.set(projectId, operation);
+    return operation.promise;
+  }
+
+  async save(value: LocalProjectRecord): Promise<void> {
+    this.saves.push(value);
+    await this.saveBarrier?.promise;
+  }
+
+  async list(): Promise<readonly Pick<LocalProjectRecord, "projectId" | "updatedAt">[]> { return []; }
+  async delete(): Promise<void> { /* test adapter */ }
+}
+
+async function load(controller: WorkspaceRouteController, store: ControllableProjectStore, projectId: string, value = record(projectId)) {
+  const operation = controller.request(projectId);
+  store.loads.get(projectId)!.resolve(value);
+  await operation;
+}
+
+describe("executable workspace route operation controller", () => {
+  it("executes A→B slow/missing/corrupt/back without displaying or mutating A under B", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    await load(controller, store, "A");
+    expect(authoritativeWorkspaceProject(controller.state, "A")?.source.title).toBe("A");
+
+    const slowB = controller.request("B");
+    expect(controller.state).toEqual({ requestedId: "B", loadStatus: "loading" });
+    expect(() => controller.beginMutation("B")).toThrow("WORKSPACE_PROJECT_AUTHORITY_UNAVAILABLE");
+    store.loads.get("B")!.resolve(undefined);
+    await slowB;
+    expect(controller.state).toEqual({ requestedId: "B", loadStatus: "missing" });
+
+    const corruptB = controller.request("B");
+    store.loads.get("B")!.reject(new Error("corrupt IndexedDB value"));
+    await corruptB;
+    expect(controller.state).toEqual({ requestedId: "B", loadStatus: "corrupt" });
+
+    await load(controller, store, "A", record("A", "A-back"));
+    expect(authoritativeWorkspaceProject(controller.state, "A")?.source.title).toBe("A-back");
+  });
+
+  it("ignores an old A completion after B and a slow B completion after B→A back", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    const pendingA = controller.request("A");
+    const oldA = store.loads.get("A")!;
+    const pendingB = controller.request("B");
+    const slowB = store.loads.get("B")!;
+    const backA = controller.request("A");
+    const newA = store.loads.get("A")!;
+
+    oldA.resolve(record("A", "old-A"));
+    await pendingA;
+    expect(controller.state).toEqual({ requestedId: "A", loadStatus: "loading" });
+    slowB.resolve(record("B", "late-B"));
+    await pendingB;
+    expect(controller.state).toEqual({ requestedId: "A", loadStatus: "loading" });
+    newA.resolve(record("A", "new-A"));
+    await backA;
+    expect(authoritativeWorkspaceProject(controller.state, "A")?.source.title).toBe("new-A");
+  });
+
+  it.each(["save", "generation", "edit", "share", "select"])(
+    "rejects %s mutation while B is loading",
+    async () => {
+      const store = new ControllableProjectStore();
+      const controller = new WorkspaceRouteController(store);
+      await load(controller, store, "A");
+      void controller.request("B");
+      expect(() => controller.beginMutation("B")).toThrow("WORKSPACE_PROJECT_AUTHORITY_UNAVAILABLE");
+    },
+  );
+
+  it("writes an in-flight save to the exact loaded A key/value and never applies it to B", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    await load(controller, store, "A");
+    store.saveBarrier = deferred<void>();
+    const savedA = project("A-saved");
+    const save = controller.saveProject("A", savedA, "2026-08-19T01:00:00.000Z", "A");
+    await Promise.resolve();
+    expect(store.saves).toEqual([{ projectId: "A", updatedAt: "2026-08-19T01:00:00.000Z", project: savedA }]);
+
+    const pendingB = controller.request("B");
+    store.loads.get("B")!.resolve(record("B"));
+    await pendingB;
+    store.saveBarrier.resolve();
+    expect(await save).toEqual({ applied: false, record: store.saves[0] });
+    expect(authoritativeWorkspaceProject(controller.state, "B")?.source.title).toBe("B");
+  });
+
+  it.each(["generation", "edit", "share"])(
+    "fences a deferred %s result after A→B without an IndexedDB write",
+    async () => {
+      const store = new ControllableProjectStore();
+      const controller = new WorkspaceRouteController(store);
+      await load(controller, store, "A");
+      const completion = deferred<HarmonyProject>();
+      const mutation = controller.runMutation("A", async () => completion.promise, "2026-08-19T02:00:00.000Z");
+      const pendingB = controller.request("B");
+      store.loads.get("B")!.resolve(record("B"));
+      await pendingB;
+      completion.resolve(project("forged-B-retarget"));
+      expect(await mutation).toEqual({ applied: false, superseded: true });
+      expect(store.saves).toEqual([]);
+      expect(authoritativeWorkspaceProject(controller.state, "B")?.source.title).toBe("B");
+    },
+  );
+
+  it("classifies a mismatched IndexedDB record key as corrupt", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    const operation = controller.request("B");
+    store.loads.get("B")!.resolve(record("A"));
+    expect(await operation).toMatchObject({ status: "corrupt", requestedId: "B", applied: true });
+    expect(controller.state).toEqual({ requestedId: "B", loadStatus: "corrupt" });
+  });
+});

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ChangeEvent } from "react";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { ArrangementPresetId } from "../../domain/config";
 import type { ChordToneSpec } from "../../domain/chord/model";
@@ -28,11 +28,7 @@ import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreat
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
 import {
   authoritativeWorkspaceProject,
-  authoritativeWorkspaceSaveRecord,
-  initialWorkspaceRouteState,
-  reduceWorkspaceRoute,
-  requireWorkspaceMutationAuthority,
-  workspaceMutationStillCurrent,
+  WorkspaceRouteController,
 } from "../../product/workspace-route-state";
 import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
@@ -79,9 +75,10 @@ export function WorkspaceClient() {
   const search = useSearchParams();
   const router = useRouter();
   const projectId = search.get("project") ?? "";
-  const [routeState, dispatchRoute] = useReducer(reduceWorkspaceRoute, projectId, initialWorkspaceRouteState);
-  const routeAuthorityRef = useRef({ routeState, projectId });
-  useLayoutEffect(() => { routeAuthorityRef.current = { routeState, projectId }; }, [projectId, routeState]);
+  const projectStore = useMemo(() => new IndexedDbProjectStore(), []);
+  const routeController = useMemo(() => new WorkspaceRouteController(projectStore), [projectStore]);
+  const [routeState, setRouteState] = useState(routeController.state);
+  useLayoutEffect(() => routeController.subscribe(setRouteState), [routeController]);
   const project = authoritativeWorkspaceProject(routeState, projectId);
   const [projection, setProjection] = useState<ScoreProjection>("full");
   const [messageState, setMessageState] = useState<{ readonly projectId: string; readonly value: string }>(() => ({
@@ -119,40 +116,29 @@ export function WorkspaceClient() {
   const shareRecoveryStore = useMemo(() => new IndexedDbShareCreateRecoveryStore(), []);
 
   const saveProject = useCallback(async (next: HarmonyProject, status = "이 브라우저에 저장했습니다.", expectedProjectId?: string) => {
-    const current = routeAuthorityRef.current;
-    const authority = requireWorkspaceMutationAuthority(current.routeState, current.projectId, expectedProjectId);
-    await new IndexedDbProjectStore().save(authoritativeWorkspaceSaveRecord(
-      current.routeState,
-      current.projectId,
+    const outcome = await routeController.saveProject(
+      projectId,
       next,
       new Date().toISOString(),
-    ));
-    const after = routeAuthorityRef.current;
-    if (!workspaceMutationStillCurrent(after.routeState, after.projectId, authority.projectId)) return;
-    dispatchRoute({ type: "saved", requestedId: authority.projectId, loadedId: authority.projectId, project: next });
-    setMessage(status);
-  }, [setMessage]);
+      expectedProjectId,
+    );
+    if (outcome.applied) setMessage(status);
+  }, [projectId, routeController, setMessage]);
 
   useEffect(() => {
-    dispatchRoute({ type: "request", requestedId: projectId });
-    if (!projectId) return;
     let active = true;
-    void new IndexedDbProjectStore().load(projectId).then((record) => {
-      if (!active) return;
-      if (!record) {
-        dispatchRoute({ type: "missing", requestedId: projectId });
+    void routeController.request(projectId).then((outcome) => {
+      if (!active || !outcome.applied) return;
+      if (outcome.status === "missing") {
         setMessage("이 브라우저에서 프로젝트를 찾을 수 없습니다.");
-      } else {
-        dispatchRoute({ type: "loaded", requestedId: projectId, loadedId: record.projectId, project: record.project });
-        setMessage(`로컬 저장본 ${new Date(record.updatedAt).toLocaleString()} 로드 완료`);
+      } else if (outcome.status === "corrupt") {
+        setMessage("IndexedDB 프로젝트를 열지 못했거나 저장본이 손상되었습니다.");
+      } else if (outcome.status === "loaded") {
+        setMessage(`로컬 저장본 ${new Date(outcome.record.updatedAt).toLocaleString()} 로드 완료`);
       }
-    }).catch(() => {
-      if (!active) return;
-      dispatchRoute({ type: "corrupt", requestedId: projectId });
-      setMessage("IndexedDB 프로젝트를 열지 못했거나 저장본이 손상되었습니다.");
     });
     return () => { active = false; };
-  }, [projectId, setMessage]);
+  }, [projectId, routeController, setMessage]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -214,7 +200,7 @@ export function WorkspaceClient() {
 
   const generate = async () => {
     if (!project) return;
-    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
     setBusy(true); setMessage(`${regenerationBoundary(project.variants[presetId] ?? { lifecycle: "empty", presetId, diagnostics: [] }) === "none" ? "Intent" : "stale boundary"}부터 정본 lifecycle을 실행하는 중…`);
     try {
       const outcome = await generateProjectVariant(project, presetId);
@@ -222,8 +208,7 @@ export function WorkspaceClient() {
       else await saveProject(outcome.project, `${outcome.status} · 후보 ${outcome.execution.generation.result.candidates.length}개 · 독립 Validator 통과 결과 저장`, operationProjectId);
       setShareUrl(undefined);
     } catch (error) {
-      const current = routeAuthorityRef.current;
-      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "생성에 실패했습니다.");
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "생성에 실패했습니다.");
     }
     finally { setBusy(false); }
   };
@@ -274,7 +259,7 @@ export function WorkspaceClient() {
 
   const applyOutputEdit = async () => {
     if (!project || !variant || variant.lifecycle !== "generation-attempted" || variant.staleness || !activeCandidate || !selectedEditTarget) return;
-    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
     const event = selectedEditTarget.event;
     const pitch = parsePitch(pitchText);
     if ((editKind === "replace-pitch" || editKind === "replace-event-note") && !pitch) { setMessage("편집 음정을 C4, Bb3처럼 입력해 주세요."); return; }
@@ -303,8 +288,7 @@ export function WorkspaceClient() {
       const nextVariant = { ...variant, outputEdits, editedSnapshots: upsertEditedSnapshotHistory(variant.editedSnapshots, result.snapshot), activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
       await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`, operationProjectId);
     } catch (error) {
-      const current = routeAuthorityRef.current;
-      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다.");
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다.");
     }
     finally { setBusy(false); }
   };
@@ -316,18 +300,17 @@ export function WorkspaceClient() {
   const exportProject = async () => { if (project) download(`${safeName(project.source.title)}.harmonymaker.json`, await exportHarmonyProject(project), "application/json"); };
   const importProject = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
     try { await saveProject(await importHarmonyProject(await file.text()), "정본 프로젝트 파일을 검증하고 로드했습니다.", operationProjectId); }
     catch (error) {
-      const current = routeAuthorityRef.current;
-      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다.");
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다.");
     }
   };
   const deleteLocal = async () => { if (!projectId) return; await new IndexedDbProjectStore().delete(projectId); router.push("/"); };
 
   const createShare = async (explicitFreshIntent = false) => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
-    const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
     if (!shareOperationGate.tryBegin()) return;
     setBusy(true); setShareUrl(undefined);
     try {
@@ -347,8 +330,7 @@ export function WorkspaceClient() {
           now: new Date(),
         });
         if (envelope.operationLifecycle === "completed" && envelope.createdResponse) {
-          const current = routeAuthorityRef.current;
-          if (!workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) return;
+          if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
           setStoredShare(envelope.createdResponse);
           setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
           await saveProject(withRights, "IndexedDB의 완료된 ShareStore 생성 권위를 복구했습니다.", operationProjectId);
@@ -381,16 +363,14 @@ export function WorkspaceClient() {
         if (outcome.kind === "rejected") throw new RangeError(outcome.code);
         const recovered = outcome.response;
         await completeShareCreateRecovery({ store: shareRecoveryStore, envelope, response: recovered, now: new Date() });
-        const current = routeAuthorityRef.current;
-        if (!workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) return;
+        if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
         setStoredShare(recovered);
         setShareFreshAllowed(false);
         setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(recovered.token)}`);
         await saveProject(withRights, "암호화 ShareStore에 저장했고 복구·삭제 권위를 IndexedDB에 보존했습니다.", operationProjectId);
       }
     } catch (error) {
-      const current = routeAuthorityRef.current;
-      if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다.");
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다.");
     }
     finally { shareOperationGate.finish(); setBusy(false); }
   };
