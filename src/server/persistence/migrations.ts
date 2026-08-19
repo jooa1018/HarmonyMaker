@@ -1,5 +1,3 @@
-import "server-only";
-
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 
@@ -376,6 +374,31 @@ CREATE INDEX IF NOT EXISTS object_publication_generations_cleanup_idx
   WHERE deleted_at IS NULL;
 `;
 
+export const SHARE_MODERATION_LIFECYCLE_SQL = String.raw`
+ALTER TABLE abuse_reports
+  ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS claim_token text,
+  ADD COLUMN IF NOT EXISTS claim_expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS claimed_by text,
+  ADD COLUMN IF NOT EXISTS resolution text,
+  ADD COLUMN IF NOT EXISTS resolved_at timestamptz,
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+UPDATE abuse_reports SET updated_at = created_at WHERE updated_at IS NULL;
+ALTER TABLE abuse_reports ALTER COLUMN updated_at SET NOT NULL;
+ALTER TABLE abuse_reports DROP CONSTRAINT IF EXISTS abuse_reports_status_check;
+ALTER TABLE abuse_reports ADD CONSTRAINT abuse_reports_status_check CHECK (status IN ('pending','claimed','resolved'));
+ALTER TABLE abuse_reports DROP CONSTRAINT IF EXISTS abuse_reports_moderation_state_check;
+ALTER TABLE abuse_reports ADD CONSTRAINT abuse_reports_moderation_state_check CHECK (
+  (status = 'pending' AND claim_token IS NULL AND claim_expires_at IS NULL AND claimed_by IS NULL AND resolution IS NULL AND resolved_at IS NULL)
+  OR (status = 'claimed' AND claim_token IS NOT NULL AND claim_expires_at IS NOT NULL AND claimed_by IS NOT NULL AND resolution IS NULL AND resolved_at IS NULL)
+  OR (status = 'resolved' AND claim_token IS NULL AND claim_expires_at IS NULL AND claimed_by IS NOT NULL AND resolution IN ('dismissed','takedown') AND resolved_at IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS abuse_reports_moderation_queue_idx ON abuse_reports (status, created_at, id);
+CREATE INDEX IF NOT EXISTS abuse_reports_claim_expiry_idx ON abuse_reports (claim_expires_at, id) WHERE status = 'claimed';
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS abuse_report_id bigint REFERENCES abuse_reports(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS audit_events_abuse_report_idx ON audit_events (abuse_report_id, created_at, id) WHERE abuse_report_id IS NOT NULL;
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
@@ -388,6 +411,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 9, name: "omr_resaturation_closure", sql: OMR_RESATURATION_CLOSURE_SQL },
   { version: 10, name: "object_publication_late_put_fencing", sql: OBJECT_PUBLICATION_LATE_PUT_FENCING_SQL },
   { version: 11, name: "object_publication_physical_key_isolation", sql: OBJECT_PUBLICATION_PHYSICAL_KEY_ISOLATION_SQL },
+  { version: 12, name: "share_moderation_lifecycle", sql: SHARE_MODERATION_LIFECYCLE_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {
@@ -448,4 +472,27 @@ export async function applyMigrations(pool: Pool): Promise<readonly number[]> {
   } finally {
     client.release();
   }
+}
+
+export async function verifyMigrationsWithClient(
+  client: MigrationClient,
+  migrations: readonly Migration[] = MIGRATIONS,
+): Promise<void> {
+  validateMigrationInventory(migrations);
+  let rows: readonly Record<string, unknown>[];
+  try {
+    rows = (await client.query("SELECT version, name, checksum FROM schema_migrations ORDER BY version")).rows;
+  } catch { throw new RangeError("MIGRATION_REQUIRED"); }
+  if (rows.length !== migrations.length) throw new RangeError("MIGRATION_REQUIRED");
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const expected = migrations[index];
+    if (row.version !== expected.version || row.name !== expected.name || row.checksum !== migrationChecksum(expected)) {
+      throw new RangeError("MIGRATION_HISTORY_DIVERGED");
+    }
+  }
+}
+
+export async function verifyMigrations(pool: Pool): Promise<void> {
+  await verifyMigrationsWithClient(pool);
 }

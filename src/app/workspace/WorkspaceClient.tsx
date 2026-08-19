@@ -23,6 +23,8 @@ import { exportHarmonyProject, importHarmonyProject } from "../../product/projec
 import { canDefaultExportOrShare, projectRenderDocument, selectActiveCandidate, selectActiveSnapshot, type MaterializedArrangement, type ScoreProjection } from "../../product/render";
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
+import { classifyShareCreateTransportFailure, readShareCreateApiResponse } from "../../product/share-create-api";
+import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, ShareCreateOperationGate } from "../../product/share-create-recovery";
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
 import {
   authoritativeWorkspaceProject,
@@ -105,11 +107,16 @@ export function WorkspaceClient() {
   const [tieStart, setTieStart] = useState(false);
   const [tieStop, setTieStop] = useState(false);
   const [shareUrlState, setShareUrlState] = useState<{ readonly projectId: string; readonly value?: string }>({ projectId });
-  const [storedShareState, setStoredShareState] = useState<{ readonly projectId: string; readonly value?: { token: string; ownerDeleteSecret: string; csrfToken: string } }>({ projectId });
+  const [storedShareState, setStoredShareState] = useState<{ readonly projectId: string; readonly value?: { token: string; ownerDeleteSecret: string } }>({ projectId });
+  const [shareFreshAllowedState, setShareFreshAllowedState] = useState<{ readonly projectId: string; readonly value: boolean }>({ projectId, value: false });
   const shareUrl = shareUrlState.projectId === projectId ? shareUrlState.value : undefined;
   const storedShare = storedShareState.projectId === projectId ? storedShareState.value : undefined;
+  const shareFreshAllowed = shareFreshAllowedState.projectId === projectId && shareFreshAllowedState.value;
   const setShareUrl = useCallback((value: string | undefined) => setShareUrlState({ projectId, ...(value ? { value } : {}) }), [projectId]);
-  const setStoredShare = useCallback((value: { token: string; ownerDeleteSecret: string; csrfToken: string } | undefined) => setStoredShareState({ projectId, ...(value ? { value } : {}) }), [projectId]);
+  const setStoredShare = useCallback((value: { token: string; ownerDeleteSecret: string } | undefined) => setStoredShareState({ projectId, ...(value ? { value } : {}) }), [projectId]);
+  const setShareFreshAllowed = useCallback((value: boolean) => setShareFreshAllowedState({ projectId, value }), [projectId]);
+  const shareOperationGate = useMemo(() => new ShareCreateOperationGate(), []);
+  const shareRecoveryStore = useMemo(() => new IndexedDbShareCreateRecoveryStore(), []);
 
   const saveProject = useCallback(async (next: HarmonyProject, status = "이 브라우저에 저장했습니다.", expectedProjectId?: string) => {
     const current = routeAuthorityRef.current;
@@ -146,6 +153,18 @@ export function WorkspaceClient() {
     });
     return () => { active = false; };
   }, [projectId, setMessage]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let active = true;
+    void shareRecoveryStore.load(projectId).then((envelope) => {
+      if (!active || envelope?.operationLifecycle !== "completed" || !envelope.createdResponse) return;
+      setStoredShare(envelope.createdResponse);
+      setShareFreshAllowed(envelope.freshIntentAuthority?.reason === "retired-replay");
+      setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [projectId, shareRecoveryStore, setShareFreshAllowed, setShareUrl, setStoredShare]);
 
   const presetId = project?.selectedPresetId ?? "standard";
   const variant = project?.variants[presetId];
@@ -306,9 +325,10 @@ export function WorkspaceClient() {
   };
   const deleteLocal = async () => { if (!projectId) return; await new IndexedDbProjectStore().delete(projectId); router.push("/"); };
 
-  const createShare = async () => {
+  const createShare = async (explicitFreshIntent = false) => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
     const operationProjectId = requireWorkspaceMutationAuthority(routeAuthorityRef.current.routeState, projectId).projectId;
+    if (!shareOperationGate.tryBegin()) return;
     setBusy(true); setShareUrl(undefined);
     try {
       const withRights = confirmShareRights(project, new Date().toISOString());
@@ -318,29 +338,70 @@ export function WorkspaceClient() {
         const url = `${window.location.origin}/share#p=${encoded}`;
         setShareUrl(url); await saveProject(withRights, `URL share ${new TextEncoder().encode(encoded).byteLength} bytes · 서버 저장 없음`, operationProjectId);
       } else {
+        let envelope = await prepareShareCreateRecovery({
+          store: shareRecoveryStore,
+          projectId,
+          canonicalRequest: { payload, rightsBasis: project.source.rights.basis },
+          explicitFreshIntent,
+          generateId: () => crypto.randomUUID(),
+          now: new Date(),
+        });
+        if (envelope.operationLifecycle === "completed" && envelope.createdResponse) {
+          const current = routeAuthorityRef.current;
+          if (!workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) return;
+          setStoredShare(envelope.createdResponse);
+          setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
+          await saveProject(withRights, "IndexedDB의 완료된 ShareStore 생성 권위를 복구했습니다.", operationProjectId);
+          return;
+        }
         const sessionResponse = await fetch("/api/session", { method: "POST" });
-        const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; error?: { messageKo?: string } };
-        if (!sessionResponse.ok || !session.csrfToken) throw new Error(session.error?.messageKo ?? "서버 저장 기능을 사용할 수 없습니다.");
-        const response = await fetch("/api/shares", { method: "POST", headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken }, body: JSON.stringify({ payload, rightsBasis: project.source.rights.basis, idempotencyKey: crypto.randomUUID() }) });
-        const body = await response.json() as { ok: boolean; share?: { token: string; ownerDeleteSecret: string }; error?: { messageKo?: string } };
-        if (!response.ok || !body.share) throw new Error(body.error?.messageKo ?? "ShareStore 저장에 실패했습니다.");
+        const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; sessionAuthority?: string; expiresAt?: string; error?: { messageKo?: string } };
+        if (!sessionResponse.ok || !session.csrfToken || !session.sessionAuthority || !session.expiresAt) throw new Error(session.error?.messageKo ?? "서버 저장 기능을 사용할 수 없습니다.");
+        envelope = await bindShareCreateSession({ store: shareRecoveryStore, envelope, sessionAuthority: session.sessionAuthority, sessionExpiresAt: session.expiresAt, now: new Date() });
+        let outcome;
+        try {
+          const response = await fetch("/api/shares", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken },
+            body: JSON.stringify({ ...envelope.canonicalRequest, idempotencyKey: envelope.idempotencyKey }),
+          });
+          outcome = await readShareCreateApiResponse(response);
+        } catch (error) { outcome = classifyShareCreateTransportFailure(error); }
+        if (outcome.kind === "retain") {
+          setMessage(`ShareStore 응답이 확정되지 않았습니다(${outcome.code}). 저장된 동일 요청/K1으로만 복구합니다.`);
+          return;
+        }
+        if (outcome.kind === "fresh-allowed") {
+          envelope = await allowShareCreateFreshIntent({ store: shareRecoveryStore, envelope, reason: "retired-replay", now: new Date() });
+          setShareFreshAllowed(true);
+          setMessage("이전 공유가 확정적으로 만료되었습니다. 명시적 새 요청을 시작할 수 있습니다.");
+          return;
+        }
+        if (outcome.kind === "conflict") throw new RangeError("SHARE_CREATE_RECOVERY_CONFLICT");
+        if (outcome.kind === "rejected") throw new RangeError(outcome.code);
+        const recovered = outcome.response;
+        await completeShareCreateRecovery({ store: shareRecoveryStore, envelope, response: recovered, now: new Date() });
         const current = routeAuthorityRef.current;
-        if (!workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) throw new RangeError("WORKSPACE_PROJECT_AUTHORITY_SUPERSEDED");
-        setStoredShare({ ...body.share, csrfToken: session.csrfToken });
-        setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(body.share.token)}`);
-        await saveProject(withRights, "암호화 ShareStore에 저장했습니다. 삭제 비밀은 이 화면에만 유지됩니다.", operationProjectId);
+        if (!workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) return;
+        setStoredShare(recovered);
+        setShareFreshAllowed(false);
+        setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(recovered.token)}`);
+        await saveProject(withRights, "암호화 ShareStore에 저장했고 복구·삭제 권위를 IndexedDB에 보존했습니다.", operationProjectId);
       }
     } catch (error) {
       const current = routeAuthorityRef.current;
       if (workspaceMutationStillCurrent(current.routeState, current.projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다.");
     }
-    finally { setBusy(false); }
+    finally { shareOperationGate.finish(); setBusy(false); }
   };
 
   const deleteStoredShare = async () => {
     if (!storedShare) return;
-    const response = await fetch(`/api/shares/${encodeURIComponent(storedShare.token)}`, { method: "DELETE", headers: { "content-type": "application/json", "x-csrf-token": storedShare.csrfToken }, body: JSON.stringify({ ownerDeleteSecret: storedShare.ownerDeleteSecret }) });
-    if (response.ok) { setStoredShare(undefined); setShareUrl(undefined); setMessage("ShareStore 공유를 소유자 삭제했습니다."); }
+    const bootstrap = await fetch("/api/session", { method: "POST" });
+    const session = await bootstrap.json() as { csrfToken?: string };
+    if (!bootstrap.ok || !session.csrfToken) { setMessage("ShareStore 삭제 권한을 확인하지 못했습니다."); return; }
+    const response = await fetch(`/api/shares/${encodeURIComponent(storedShare.token)}`, { method: "DELETE", headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken }, body: JSON.stringify({ ownerDeleteSecret: storedShare.ownerDeleteSecret }) });
+    if (response.ok) { await shareRecoveryStore.delete(projectId); setStoredShare(undefined); setShareFreshAllowed(false); setShareUrl(undefined); setMessage("ShareStore 공유를 소유자 삭제했고 로컬 복구 권위를 제거했습니다."); }
     else setMessage("ShareStore 공유를 삭제하지 못했습니다.");
   };
 
@@ -395,6 +456,6 @@ export function WorkspaceClient() {
 
     <section className="panel"><h2>5. Export · local save · project transfer</h2><div className={styles.controls}><button type="button" disabled={!materialized || !canDefaultExportOrShare(materialized)} onClick={exportMusicXml}>MusicXML 다운로드</button><button type="button" onClick={() => void saveProject(project)}>로컬 저장</button><button type="button" onClick={() => void exportProject()}>프로젝트 내보내기</button><label className={styles.fileButton}>프로젝트 가져오기<input hidden type="file" accept="application/json,.json" onChange={(event) => void importProject(event)} /></label><button type="button" onClick={() => void deleteLocal()}>로컬 삭제</button></div></section>
 
-    <section className="panel"><h2>6. 읽기 전용 연습 공유</h2><p>현재 권리 근거: <strong>{project.source.rights.basis}</strong>. 공유 버튼은 share 권리를 명시적으로 확인하고 compact PracticeShare v3만 만듭니다.</p><button className="primary" type="button" disabled={busy || !materialized || !canDefaultExportOrShare(materialized)} onClick={() => void createShare()}>권리 확인 후 공유 만들기</button>{shareUrl ? <p className="status"><a href={shareUrl}>{shareUrl}</a></p> : null}{storedShare ? <button type="button" onClick={() => void deleteStoredShare()}>ShareStore 공유 소유자 삭제</button> : null}</section>
+    <section className="panel"><h2>6. 읽기 전용 연습 공유</h2><p>현재 권리 근거: <strong>{project.source.rights.basis}</strong>. 공유 버튼은 share 권리를 명시적으로 확인하고 compact PracticeShare v4를 만듭니다.</p><button className="primary" type="button" disabled={busy || !materialized || !canDefaultExportOrShare(materialized)} onClick={() => void createShare(false)}>권리 확인 후 공유 만들기 / 복구</button>{shareFreshAllowed ? <button type="button" disabled={busy} onClick={() => void createShare(true)}>만료된 요청 대신 명시적으로 새 공유 만들기</button> : null}{shareUrl ? <p className="status"><a href={shareUrl}>{shareUrl}</a></p> : null}{storedShare ? <button type="button" onClick={() => void deleteStoredShare()}>ShareStore 공유 소유자 삭제</button> : null}</section>
   </>;
 }

@@ -1,5 +1,5 @@
 import type {
-  AbuseReportInput, CleanupResult, DurableShareRecord, GovernanceStore,
+  AbuseReportInput, AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, CleanupResult, DurableShareRecord, GovernanceStore,
   IdempotencyClaim, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
 } from "./store";
 
@@ -16,7 +16,7 @@ export class MemoryGovernanceStore implements GovernanceStore {
   private sequence = 0;
   readonly sessions = new Map<PrivateRowId, SessionRecord>();
   readonly shares = new Map<PrivateRowId, DurableShareRecord>();
-  readonly reports: AbuseReportInput[] = [];
+  readonly reports: AbuseReportRecord[] = [];
   readonly audits: Array<Readonly<Record<string, unknown>>> = [];
   readonly objects = new Map<PrivateRowId, ObjectReferenceRecord>();
   readonly objectPublicationGenerations = new Map<string, ObjectPublicationGenerationRecord>();
@@ -122,7 +122,44 @@ export class MemoryGovernanceStore implements GovernanceStore {
     });
   }
 
-  async createAbuseReport(input: AbuseReportInput): Promise<void> { this.reports.push(structuredClone(input)); }
+  async createAbuseReport(input: AbuseReportInput): Promise<AbuseReportRecord> {
+    const record: AbuseReportRecord = { ...structuredClone(input), id: this.id(), status: "pending", updatedAt: input.createdAt };
+    this.reports.push(record);
+    return structuredClone(record);
+  }
+  async listAbuseReports(input: { readonly status?: AbuseReportStatus; readonly limit: number }): Promise<readonly AbuseReportRecord[]> {
+    return this.reports.filter((record) => input.status === undefined || record.status === input.status)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || Number(left.id) - Number(right.id))
+      .slice(0, input.limit).map((record) => structuredClone(record));
+  }
+  async claimAbuseReport(input: { readonly id: PrivateRowId; readonly moderatorId: string; readonly claimToken: string; readonly now: string; readonly claimExpiresAt: string }): Promise<AbuseReportRecord | undefined> {
+    const index = this.reports.findIndex((record) => record.id === input.id);
+    const current = this.reports[index];
+    if (!current || (current.status !== "pending" && !(current.status === "claimed" && (current.claimExpiresAt ?? input.now) <= input.now))) return undefined;
+    const claimed: AbuseReportRecord = {
+      ...current, status: "claimed", claimToken: input.claimToken, claimExpiresAt: input.claimExpiresAt,
+      claimedBy: input.moderatorId, updatedAt: input.now,
+    };
+    this.reports[index] = claimed;
+    this.audits.push({ eventKind: "share-moderation-claim", ...(claimed.shareRecordId ? { shareRecordId: claimed.shareRecordId } : {}), abuseReportId: claimed.id, outcome: input.moderatorId, createdAt: input.now });
+    return structuredClone(claimed);
+  }
+  async resolveAbuseReport(input: { readonly id: PrivateRowId; readonly claimToken: string; readonly resolution: AbuseReportResolution; readonly now: string }): Promise<AbuseReportRecord | undefined> {
+    const index = this.reports.findIndex((record) => record.id === input.id);
+    const current = this.reports[index];
+    if (!current || current.status !== "claimed" || current.claimToken !== input.claimToken || (current.claimExpiresAt ?? input.now) <= input.now) return undefined;
+    if (input.resolution === "takedown" && current.shareRecordId) {
+      const share = this.shares.get(current.shareRecordId);
+      if (share?.lifecycle === "active") this.shares.set(share.id, { ...share, lifecycle: "disabled", disabledAt: input.now });
+    }
+    const resolved: AbuseReportRecord = {
+      ...current, status: "resolved", claimToken: undefined, claimExpiresAt: undefined,
+      resolution: input.resolution, resolvedAt: input.now, updatedAt: input.now,
+    };
+    this.reports[index] = resolved;
+    this.audits.push({ eventKind: "share-moderation-resolve", ...(resolved.shareRecordId ? { shareRecordId: resolved.shareRecordId } : {}), abuseReportId: resolved.id, outcome: input.resolution, createdAt: input.now });
+    return structuredClone(resolved);
+  }
   async createAudit(input: Readonly<Record<string, unknown>> & { readonly eventKind: string; readonly outcome: string; readonly createdAt: string }): Promise<void> { this.audits.push(structuredClone(input)); }
 
   async createObjectReference(input: Omit<ObjectReferenceRecord, "id">): Promise<ObjectReferenceRecord> {

@@ -52,6 +52,19 @@ export interface AbuseReportInput {
   readonly createdAt: string;
 }
 
+export type AbuseReportStatus = "pending" | "claimed" | "resolved";
+export type AbuseReportResolution = "dismissed" | "takedown";
+export interface AbuseReportRecord extends AbuseReportInput {
+  readonly id: PrivateRowId;
+  readonly status: AbuseReportStatus;
+  readonly updatedAt: string;
+  readonly claimToken?: string;
+  readonly claimExpiresAt?: string;
+  readonly claimedBy?: string;
+  readonly resolution?: AbuseReportResolution;
+  readonly resolvedAt?: string;
+}
+
 export interface ObjectReferenceRecord {
   readonly id: PrivateRowId;
   readonly ownerSessionId: PrivateRowId;
@@ -144,10 +157,14 @@ export interface GovernanceStore {
     readonly lifecycle: Exclude<ShareLifecycle, "active">;
     readonly at: string;
   }): Promise<void>;
-  createAbuseReport(input: AbuseReportInput): Promise<void>;
+  createAbuseReport(input: AbuseReportInput): Promise<AbuseReportRecord>;
+  listAbuseReports(input: { readonly status?: AbuseReportStatus; readonly limit: number }): Promise<readonly AbuseReportRecord[]>;
+  claimAbuseReport(input: { readonly id: PrivateRowId; readonly moderatorId: string; readonly claimToken: string; readonly now: string; readonly claimExpiresAt: string }): Promise<AbuseReportRecord | undefined>;
+  resolveAbuseReport(input: { readonly id: PrivateRowId; readonly claimToken: string; readonly resolution: AbuseReportResolution; readonly now: string }): Promise<AbuseReportRecord | undefined>;
   createAudit(input: {
     readonly eventKind: string;
     readonly shareRecordId?: PrivateRowId;
+    readonly abuseReportId?: PrivateRowId;
     readonly objectReferenceId?: PrivateRowId;
     readonly outcome: string;
     readonly createdAt: string;

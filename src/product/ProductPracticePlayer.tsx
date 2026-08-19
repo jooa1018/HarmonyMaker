@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PracticeSettings } from "../domain/share";
 import type { TempoSpec } from "../domain/source/model";
 import { audibleTrackIds, PRACTICE_SPEEDS, quarterSeconds, type PlaybackPlan, type PracticeSpeed } from "./playback-plan";
 
@@ -26,25 +27,45 @@ export function disposeOwnedAudioSession(session: OwnedAudioSession | undefined)
   void session.context.close().catch(() => undefined);
 }
 
-export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = false }: {
+export interface PracticePlayerInitialState {
+  readonly speed: PracticeSpeed;
+  readonly solo?: string;
+  readonly bandEnabled: boolean;
+}
+
+export function resolvePracticePlayerInitialState(plan: Pick<PlaybackPlan, "trackIds">, settings?: PracticeSettings): PracticePlayerInitialState {
+  const solo = settings?.selectedTrackIndex === undefined ? undefined : plan.trackIds[settings.selectedTrackIndex];
+  return {
+    speed: settings?.speedPercent ?? 100,
+    ...(solo ? { solo } : {}),
+    bandEnabled: settings?.accompanimentEnabled ?? true,
+  };
+}
+
+export function ProductPracticePlayer({ abc, plan, tempo, identity, initialSettings, readOnly = false }: {
   readonly abc: string;
   readonly plan: PlaybackPlan;
   readonly tempo: TempoSpec;
   readonly identity: string;
+  readonly initialSettings?: PracticeSettings;
   readonly readOnly?: boolean;
 }) {
   const scoreRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<ActiveAudio | undefined>(undefined);
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const resolvedInitial = resolvePracticePlayerInitialState(plan, initialSettings);
   const [scoreReadyIdentity, setScoreReadyIdentity] = useState<string>();
   const [phase, setPhase] = useState<"ready" | "playing" | "paused" | "finished">("ready");
   const [positionQuarter, setPositionQuarter] = useState(0);
   const [cursorEventId, setCursorEventId] = useState<string>();
-  const [speed, setSpeed] = useState<PracticeSpeed>(100);
+  const [speed, setSpeed] = useState<PracticeSpeed>(resolvedInitial.speed);
   const [muted, setMuted] = useState<ReadonlySet<string>>(new Set());
-  const [solo, setSolo] = useState<string>();
-  const [bandEnabled, setBandEnabled] = useState(true);
+  const [solo, setSolo] = useState<string | undefined>(resolvedInitial.solo);
+  const [bandEnabled, setBandEnabled] = useState(resolvedInitial.bandEnabled);
   const [error, setError] = useState<string>();
+  const initialSpeed = initialSettings?.speedPercent ?? 100;
+  const initialSolo = initialSettings?.selectedTrackIndex === undefined ? undefined : plan.trackIds[initialSettings.selectedTrackIndex];
+  const initialBandEnabled = initialSettings?.accompanimentEnabled ?? true;
 
   const audible = useMemo(() => new Set(audibleTrackIds(plan, { muted, ...(solo ? { solo } : {}), bandEnabled })), [bandEnabled, muted, plan, solo]);
 
@@ -63,6 +84,14 @@ export function ProductPracticePlayer({ abc, plan, tempo, identity, readOnly = f
     setCursorEventId(undefined);
     setError(undefined);
   }, [stopNodes]);
+
+  useEffect(() => {
+    reset();
+    setMuted(new Set());
+    setSpeed(initialSpeed);
+    setSolo(initialSolo);
+    setBandEnabled(initialBandEnabled);
+  }, [identity, initialBandEnabled, initialSolo, initialSpeed, reset]);
 
   useEffect(() => {
     let disposed = false;

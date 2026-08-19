@@ -4,7 +4,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { Pool } from "pg";
 
 import { CleanupService } from "../cleanup/cleanup-service";
-import { applyMigrations } from "../persistence/migrations";
+import { verifyMigrations } from "../persistence/migrations";
 import { PostgresGovernanceStore } from "../persistence/postgres-store";
 import { PostgresOmrStore } from "../omr/postgres-store";
 import { ShareStoreService } from "../share/share-store";
@@ -48,7 +48,8 @@ export function getProductionServices(): Promise<ProductionServices> {
       };
     }
     const pool = new Pool({ connectionString: config.database.connectionString, max: 10 });
-    await applyMigrations(pool);
+    try { await verifyMigrations(pool); }
+    catch (error) { await pool.end().catch(() => undefined); throw error; }
     const store = new PostgresGovernanceStore(pool);
     const s3 = new S3Client({
       endpoint: config.objectStore.endpoint, region: config.objectStore.region,

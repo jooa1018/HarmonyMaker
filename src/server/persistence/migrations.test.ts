@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { applyMigrationsWithClient, MIGRATIONS, migrationChecksum, validateMigrationInventory } from "./migrations";
+import { applyMigrationsWithClient, MIGRATIONS, migrationChecksum, validateMigrationInventory, verifyMigrationsWithClient } from "./migrations";
 
 class MigrationClientFake {
   readonly calls: string[] = [];
@@ -22,7 +22,7 @@ class MigrationClientFake {
 describe("versioned PostgreSQL migrations", () => {
   it("has a monotonic inventory with durable constraints and Segment-D-only foundation", () => {
     expect(() => validateMigrationInventory(MIGRATIONS)).not.toThrow();
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     const sql = MIGRATIONS[0].sql;
     for (const required of ["anonymous_sessions", "quota_windows", "idempotency_records", "share_records", "object_references", "omr_jobs", "omr_pages", "omr_evidence", "omr_review_metadata", "REFERENCES", "UNIQUE", "expires_at"]) expect(sql).toContain(required);
     expect(sql).not.toContain("vendor_name");
@@ -39,13 +39,26 @@ describe("versioned PostgreSQL migrations", () => {
     for (const required of ["status_observation_lease_token", "accepted_input_digest", "publication_token", "upload-pending", "2147483647"]) expect(MIGRATIONS[8].sql).toContain(required);
     for (const required of ["publication_generation", "publication_put_may_still_complete", "publication_predecessor_token", "publication_cleanup_token", "tombstone-pending"]) expect(MIGRATIONS[9].sql).toContain(required);
     for (const required of ["logical_publication_key", "object_publication_generations", "physical_object_key", "outcome-uncertain", "cleanup_lease_expires_at"]) expect(MIGRATIONS[10].sql).toContain(required);
+    for (const required of ["abuse_reports_status_check", "claim_token", "claim_expires_at", "claimed_by", "resolution", "abuse_report_id"]) expect(MIGRATIONS[11].sql).toContain(required);
   });
 
   it("applies transactionally once and safely re-applies", async () => {
     const client = new MigrationClientFake();
-    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     await expect(applyMigrationsWithClient(client)).resolves.toEqual([]);
+    await expect(verifyMigrationsWithClient(client)).resolves.toBeUndefined();
     expect(client.calls.filter((call) => call === "COMMIT")).toHaveLength(2);
+  });
+
+  it("runtime verification is read-only and rejects stale schema", async () => {
+    const current = new MigrationClientFake();
+    current.applied.push(...MIGRATIONS.map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration) })));
+    await expect(verifyMigrationsWithClient(current)).resolves.toBeUndefined();
+    expect(current.calls).toEqual([expect.stringMatching(/^SELECT version/u)]);
+    const stale = new MigrationClientFake();
+    stale.applied.push(...current.applied.slice(0, -1));
+    await expect(verifyMigrationsWithClient(stale)).rejects.toThrow("MIGRATION_REQUIRED");
+    expect(stale.calls).toEqual([expect.stringMatching(/^SELECT version/u)]);
   });
 
   it("rejects skipped/reordered history and rolls back failures", async () => {

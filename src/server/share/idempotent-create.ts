@@ -5,7 +5,10 @@ import type { PracticeSharePayload } from "../../domain/share";
 import type { RightsBasis } from "../../domain/source/model";
 import type { PrivateRowId } from "../persistence/store";
 import { SHARE_CREATE_PER_HOUR, type QuotaAndIdempotencyService } from "../security/quota";
-import type { ShareCreationChoice, ShareStoreService } from "./share-store";
+import { SHARE_DEFAULT_TTL_DAYS, type ShareCreationChoice, type ShareStoreService } from "./share-store";
+
+/** Keeps the completed replay past share expiry, so K1 can be retired explicitly instead of becoming a blind fresh effect. */
+export const SHARE_CREATE_REPLAY_RETENTION_DAYS = SHARE_DEFAULT_TTL_DAYS + 30;
 
 export interface ShareCreateCoordinationResult {
   readonly status: 200 | 201 | 409 | 429;
@@ -26,9 +29,19 @@ export async function createShareIdempotently(input: {
   readonly forceStore?: boolean;
 }): Promise<ShareCreateCoordinationResult> {
   const operation = "share-create-v1";
-  const claim = await input.quota.claimIdempotency({ sessionId: input.sessionId, operation, key: input.idempotencyKey, requestDigest: input.requestDigest, now: input.now });
-  if (claim.status === "replay") return { status: 200, body: input.shares.replayIdempotentCreate(claim.response) };
-  if (claim.status !== "claimed") return { status: 409, body: { ok: false, error: { code: "IDEMPOTENCY_CONFLICT", messageKo: "같은 요청 키를 처리 중이거나 내용이 다릅니다." } } };
+  const claim = await input.quota.claimIdempotency({
+    sessionId: input.sessionId, operation, key: input.idempotencyKey, requestDigest: input.requestDigest, now: input.now,
+    retentionSeconds: SHARE_CREATE_REPLAY_RETENTION_DAYS * 86_400,
+  });
+  if (claim.status === "replay") {
+    const replay = input.shares.replayIdempotentCreate(claim.response);
+    if (replay.share.kind === "store" && replay.share.expiresAt <= input.now.toISOString()) {
+      return { status: 409, body: { ok: false, error: { code: "SHARE_CREATE_REPLAY_RETIRED", messageKo: "이전 공유가 만료되어 새 요청을 시작할 수 있습니다." } } };
+    }
+    return { status: 200, body: replay };
+  }
+  if (claim.status === "pending") return { status: 409, body: { ok: false, error: { code: "IDEMPOTENCY_PENDING", messageKo: "같은 공유 생성 요청이 처리 중입니다." } } };
+  if (claim.status === "conflict") return { status: 409, body: { ok: false, error: { code: "IDEMPOTENCY_CONFLICT", messageKo: "같은 요청 키의 내용이 일치하지 않습니다." } } };
   const release = () => input.quota.releaseIdempotency({ sessionId: input.sessionId, operation, keyHash: claim.keyHash, claimCreatedAt: claim.claimCreatedAt });
   const allowed = await input.quota.consumeHourly({ ownerKind: "session", owner: input.sessionQuotaOwner, policyKey: operation, limit: SHARE_CREATE_PER_HOUR, now: input.now });
   if (!allowed) {

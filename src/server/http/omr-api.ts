@@ -10,46 +10,17 @@ import { getProductionServices } from "../substrate/services";
 import { SESSION_COOKIE_NAME } from "../security/session";
 import { getProductionOmrApplicationService } from "../omr/production-service";
 import { authorizeMutation } from "./api";
+import { readBoundedStructuredJson } from "./bounded-json";
 
 const RIGHTS_BASES: readonly RightsBasis[] = ["self-authored", "public-domain", "licensed", "user-confirmed-rights"];
 const SOURCE_KINDS: readonly InputSourceKind[] = ["digital-pdf", "scanned-pdf", "camera-photo"];
 
 export async function readBoundedJson(request: NextRequest, maxBytes = 64 * 1024): Promise<unknown> {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null) {
-    if (!/^(0|[1-9][0-9]*)$/u.test(contentLength)) throw new RangeError("OMR_REQUEST_INVALID");
-    const declared = Number(contentLength);
-    if (!Number.isSafeInteger(declared)) throw new RangeError("OMR_REQUEST_INVALID");
-    if (declared > maxBytes) throw new RangeError("OMR_REQUEST_TOO_LARGE");
-  }
-  if (!request.body) throw new RangeError("OMR_REQUEST_INVALID");
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byteLength += value.byteLength;
-      if (byteLength > maxBytes) {
-        await reader.cancel("OMR_REQUEST_TOO_LARGE").catch(() => undefined);
-        throw new RangeError("OMR_REQUEST_TOO_LARGE");
-      }
-      chunks.push(Uint8Array.from(value));
-    }
-  } catch (error) {
-    if (error instanceof RangeError && error.message === "OMR_REQUEST_TOO_LARGE") throw error;
-    throw new RangeError("OMR_REQUEST_INVALID");
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  let text: string;
-  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { throw new RangeError("OMR_REQUEST_INVALID"); }
-  try { return JSON.parse(text); } catch { throw new RangeError("OMR_REQUEST_INVALID"); }
+  return readBoundedStructuredJson(request, {
+    maxBytes,
+    invalidCode: "OMR_REQUEST_INVALID",
+    tooLargeCode: "OMR_REQUEST_TOO_LARGE",
+  });
 }
 
 function clientIp(request: NextRequest): string {

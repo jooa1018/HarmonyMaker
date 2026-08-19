@@ -1,14 +1,15 @@
-import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
+import { strFromU8, strToU8 } from "fflate";
 
 import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
 import { decodePracticeShare, encodePracticeShare, isPracticeSharePayload, type PracticeSharePayload } from "../../domain/share";
+import { compressPracticeShare, decompressPracticeShare, practiceSharePlaintext, PRACTICE_SHARE_MAX_COMPRESSED_BYTES } from "../../domain/share-compression";
 import type { RightsBasis } from "../../domain/source/model";
-import type { DurableShareRecord, GovernanceStore, PrivateRowId } from "../persistence/store";
+import type { AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, DurableShareRecord, GovernanceStore, PrivateRowId } from "../persistence/store";
 import { decryptAeadV1, encryptAeadV1, generateOpaqueToken, keyedTokenHash, timingSafeHashEquals } from "../security/crypto-core";
 
 export const SHARE_DEFAULT_TTL_DAYS = 180;
 export const SHARE_MAX_PLAINTEXT_BYTES = 256 * 1024;
-export const URL_SHARE_MAX_ENCODED_BYTES = 6000;
+export const URL_SHARE_MAX_ENCODED_BYTES = PRACTICE_SHARE_MAX_COMPRESSED_BYTES;
 const SHARE_UNAVAILABLE = "SHARE_UNAVAILABLE";
 
 export type ShareCreationChoice =
@@ -17,16 +18,19 @@ export type ShareCreationChoice =
 export interface ShareCreateResponse { readonly ok: true; readonly share: ShareCreationChoice }
 interface PreparedShareCreation { readonly choice: ShareCreationChoice; readonly durableRecord?: Omit<DurableShareRecord, "id"> }
 
-function payloadBytes(payload: PracticeSharePayload): Uint8Array { return strToU8(encodePracticeShare(payload)); }
+function payloadBytes(payload: PracticeSharePayload): Uint8Array { return practiceSharePlaintext(payload); }
 
 export function encodeUrlShare(payload: PracticeSharePayload): string {
-  const compressed = gzipSync(payloadBytes(payload), { level: 9 });
+  const compressed = compressPracticeShare(payload);
   return Buffer.from(compressed).toString("base64url");
 }
 export function decodeUrlShare(encoded: string): PracticeSharePayload {
-  if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) throw new RangeError("SHARE_PAYLOAD_INVALID");
-  try { return decodePracticeShare(strFromU8(gunzipSync(Buffer.from(encoded, "base64url")))); }
-  catch { throw new RangeError("SHARE_PAYLOAD_INVALID"); }
+  if (!/^[A-Za-z0-9_-]+$/u.test(encoded) || Buffer.byteLength(encoded, "utf8") > URL_SHARE_MAX_ENCODED_BYTES) throw new RangeError("SHARE_PAYLOAD_INVALID");
+  try { return decompressPracticeShare(Buffer.from(encoded, "base64url")); }
+  catch (error) {
+    if (error instanceof RangeError && error.message === "SHARE_PAYLOAD_TOO_LARGE") throw error;
+    throw new RangeError("SHARE_PAYLOAD_INVALID");
+  }
 }
 
 export class ShareStoreService {
@@ -40,9 +44,14 @@ export class ShareStoreService {
 
   private tokenHash(token: string): string { return keyedTokenHash(token, this.tokenHashKey, "share-token-v1"); }
   private deleteVerifier(secret: string): string { return keyedTokenHash(secret, this.deleteHashKey, "share-owner-delete-v1"); }
+  private authorizeInternal(authorization: string): void {
+    const expected = Buffer.from(this.internalOperationsKey).toString("base64url");
+    if (!timingSafeHashEquals(expected, authorization)) throw new RangeError("INTERNAL_AUTHORITY_INVALID");
+  }
 
   private async prepare(input: { readonly ownerSessionId: PrivateRowId; readonly payload: PracticeSharePayload; readonly rightsBasis: RightsBasis; readonly now?: Date; readonly forceStore?: boolean }): Promise<PreparedShareCreation> {
     if (!isPracticeSharePayload(input.payload) || input.payload.rightsShareConfirmed !== true) throw new RangeError("SHARE_RIGHTS_REQUIRED");
+    const plaintext = payloadBytes(input.payload);
     const encodedUrl = encodeUrlShare(input.payload);
     const decoded = decodeUrlShare(encodedUrl);
     if (encodePracticeShare(decoded) !== encodePracticeShare(input.payload)) throw new RangeError("SHARE_ROUNDTRIP_FAILED");
@@ -50,7 +59,6 @@ export class ShareStoreService {
     if (!input.forceStore && Buffer.byteLength(encodedUrl, "utf8") <= URL_SHARE_MAX_ENCODED_BYTES) {
       return { choice: { kind: "url", fragment: encodedUrl, payloadDigest } };
     }
-    const plaintext = payloadBytes(input.payload);
     if (plaintext.byteLength > SHARE_MAX_PLAINTEXT_BYTES) throw new RangeError("SHARE_PAYLOAD_TOO_LARGE");
     const token = generateOpaqueToken();
     const ownerDeleteSecret = generateOpaqueToken();
@@ -61,7 +69,7 @@ export class ShareStoreService {
       tokenHash: this.tokenHash(token),
       deleteSecretVerifier: this.deleteVerifier(ownerDeleteSecret),
       payloadDigest,
-      encryptedPayload: encryptAeadV1(plaintext, this.encryptionKey, { associatedDataVersion: "practice-share-v3" }),
+      encryptedPayload: encryptAeadV1(plaintext, this.encryptionKey, { associatedDataVersion: `practice-share-v${input.payload.schemaVersion}` }),
       plaintextSize: plaintext.byteLength,
       rightsBasis: input.rightsBasis,
       lifecycle: "active",
@@ -138,18 +146,51 @@ export class ShareStoreService {
   async report(input: { readonly token: string; readonly reporterSessionId?: PrivateRowId; readonly category: string; readonly detail?: string; readonly now?: Date }): Promise<{ readonly accepted: true }> {
     if (!/^[a-z][a-z0-9-]{1,31}$/u.test(input.category) || (input.detail?.length ?? 0) > 500) throw new RangeError("ABUSE_REPORT_INVALID");
     const record = await this.store.findShareByTokenHash(this.tokenHash(input.token));
-    await this.store.createAbuseReport({
+    const report = await this.store.createAbuseReport({
       reporterSessionId: input.reporterSessionId,
       ...(record ? { shareRecordId: record.id } : {}),
       opaqueReferenceHash: this.tokenHash(input.token), category: input.category,
       ...(input.detail ? { detail: input.detail } : {}), createdAt: (input.now ?? new Date()).toISOString(),
     });
+    await this.store.createAudit({ eventKind: "share-abuse-report", ...(record ? { shareRecordId: record.id } : {}), abuseReportId: report.id, outcome: "accepted", createdAt: report.createdAt });
     return { accepted: true };
   }
 
+  async listModerationReports(input: { readonly authorization: string; readonly status?: AbuseReportStatus; readonly limit?: number }): Promise<readonly AbuseReportRecord[]> {
+    this.authorizeInternal(input.authorization);
+    const limit = input.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new RangeError("MODERATION_REQUEST_INVALID");
+    return this.store.listAbuseReports({ ...(input.status ? { status: input.status } : {}), limit });
+  }
+
+  async claimModerationReport(input: { readonly authorization: string; readonly reportId: PrivateRowId; readonly moderatorId: string; readonly now?: Date }): Promise<{ readonly report: AbuseReportRecord; readonly claimToken: string }> {
+    this.authorizeInternal(input.authorization);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@-]{1,127}$/u.test(input.moderatorId)) throw new RangeError("MODERATION_REQUEST_INVALID");
+    const now = input.now ?? new Date();
+    const claimToken = generateOpaqueToken(24);
+    const report = await this.store.claimAbuseReport({
+      id: input.reportId,
+      moderatorId: input.moderatorId,
+      claimToken,
+      now: now.toISOString(),
+      claimExpiresAt: new Date(now.getTime() + 5 * 60 * 1_000).toISOString(),
+    });
+    if (!report) throw new RangeError("MODERATION_CLAIM_CONFLICT");
+    return { report, claimToken };
+  }
+
+  async resolveModerationReport(input: { readonly authorization: string; readonly reportId: PrivateRowId; readonly claimToken: string; readonly resolution: AbuseReportResolution; readonly now?: Date }): Promise<AbuseReportRecord> {
+    this.authorizeInternal(input.authorization);
+    if (!/^[A-Za-z0-9_-]{16,256}$/u.test(input.claimToken) || (input.resolution !== "dismissed" && input.resolution !== "takedown")) {
+      throw new RangeError("MODERATION_REQUEST_INVALID");
+    }
+    const report = await this.store.resolveAbuseReport({ id: input.reportId, claimToken: input.claimToken, resolution: input.resolution, now: (input.now ?? new Date()).toISOString() });
+    if (!report) throw new RangeError("MODERATION_CLAIM_CONFLICT");
+    return report;
+  }
+
   async takedown(input: { readonly token: string; readonly authorization: string; readonly now?: Date }): Promise<void> {
-    const expected = Buffer.from(this.internalOperationsKey).toString("base64url");
-    if (!timingSafeHashEquals(expected, input.authorization)) throw new RangeError("INTERNAL_AUTHORITY_INVALID");
+    this.authorizeInternal(input.authorization);
     const record = await this.store.findShareByTokenHash(this.tokenHash(input.token));
     if (!record) return;
     const now = input.now ?? new Date();

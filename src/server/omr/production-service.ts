@@ -143,3 +143,30 @@ export async function getProductionOmrApplicationService(input: {
     },
   });
 }
+
+/** Scheduler-only composition. It can reclaim local/current rows without inventing a real provider adapter. */
+export async function getProductionOmrCleanupApplicationService(): Promise<DurableOmrApplicationService> {
+  const [services, config] = await Promise.all([getProductionServices(), Promise.resolve(loadProductionOmrConfig())]);
+  if (config.providerMode === "reference") {
+    const providers = await defaultProviderRegistry(config);
+    return createProductionOmrApplicationService({
+      store: services.omrStore, objects: services.objects, providers,
+      handleHmacKey: config.handleHmacKey, vendorJobEncryptionKey: config.vendorJobEncryptionKey,
+      quota: omrQuotaConfig(config.dailyGlobalCreditCeiling),
+      actor: { sessionId: "0" as PrivateRowId, ipOwnerHash: services.quota.ipHash("scheduled-cleanup") },
+      inspectPage: async () => { throw new RangeError("OMR_SCHEDULER_UPLOAD_PROHIBITED"); },
+    });
+  }
+  const unavailableAdapter = new Proxy({} as OmrVendorAdapter, {
+    get: () => async () => { throw new RangeError("OMR_PROVIDER_BINDING_UNAVAILABLE"); },
+  });
+  return new DurableOmrApplicationService({
+    store: services.omrStore, objects: services.objects, adapter: unavailableAdapter,
+    providerBindingId: "omr-provider:scheduler-unconfigured", providerVendorId: "scheduler-unconfigured",
+    adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter: () => undefined,
+    handleHmacKey: config.handleHmacKey, vendorJobEncryptionKey: config.vendorJobEncryptionKey,
+    quota: omrQuotaConfig(config.dailyGlobalCreditCeiling),
+    actor: { sessionId: "0" as PrivateRowId, ipOwnerHash: services.quota.ipHash("scheduled-cleanup") },
+    inspectPage: async () => { throw new RangeError("OMR_SCHEDULER_UPLOAD_PROHIBITED"); },
+  });
+}

@@ -6,6 +6,7 @@ export const OMR_QUOTA_POLICY = Object.freeze({ maxConcurrentJobsPerSession: 1, 
 export const SHARE_CREATE_PER_HOUR = 12;
 export const SHARE_READ_PER_HOUR = 120;
 export const ABUSE_REPORT_PER_HOUR = 6;
+export const SESSION_CREATE_PER_HOUR = 12;
 export const IDEMPOTENCY_PENDING_LEASE_SECONDS = 300;
 
 export function normalizeIpAddress(value: string): string {
