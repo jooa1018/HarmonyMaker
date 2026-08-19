@@ -55,10 +55,15 @@ async function setup() {
     }),
     now,
   });
-  const create = async (target: DurableOmrApplicationService, key: string, sourceKind: "camera-photo" | "scanned-pdf" = "camera-photo") => {
+  const create = async (
+    target: DurableOmrApplicationService,
+    sessionId: string,
+    key: string,
+    sourceKind: "camera-photo" | "scanned-pdf" = "camera-photo",
+  ) => {
     const preflight = await target.getProviderPreflight();
     return target.createJob({
-      sessionId: "browser-session-label",
+      sessionId,
       pageCount: 1,
       pages: [{ pageIndex: 0, pageDigest, mimeType: "image/png" }],
       sourceKind,
@@ -76,9 +81,9 @@ describe("cross-session OMR create recovery", () => {
     const h = await setup();
     const first = h.service("session:1");
     const replacement = h.service("session:2");
-    const handle = await h.create(first, "cross-session-create-key");
+    const handle = await h.create(first, "session:1", "cross-session-create-key");
 
-    await expect(h.create(replacement, "cross-session-create-key")).resolves.toBe(handle);
+    await expect(h.create(replacement, "session:2", "cross-session-create-key")).resolves.toBe(handle);
     expect(h.adapter.callCounts.create).toBe(1);
     expect(h.baseStore.listJobs()).toHaveLength(1);
     await expect(replacement.synchronizeStatus(handle)).resolves.toEqual({ kind: "created" });
@@ -86,8 +91,8 @@ describe("cross-session OMR create recovery", () => {
 
   it("rejects a different request digest presented with the recovered K", async () => {
     const h = await setup();
-    await h.create(h.service("session:1"), "cross-session-conflict-key");
-    await expect(h.create(h.service("session:2"), "cross-session-conflict-key", "scanned-pdf"))
+    await h.create(h.service("session:1"), "session:1", "cross-session-conflict-key");
+    await expect(h.create(h.service("session:2"), "session:2", "cross-session-conflict-key", "scanned-pdf"))
       .rejects.toThrow("OMR_IDEMPOTENCY_CONFLICT");
     expect(h.adapter.callCounts.create).toBe(1);
     expect(h.baseStore.listJobs()).toHaveLength(1);
@@ -98,15 +103,15 @@ describe("cross-session OMR create recovery", () => {
     const one = h.service("session:1");
     const two = h.service("session:2");
     const results = await Promise.allSettled([
-      h.create(one, "cross-session-race-key"),
-      h.create(two, "cross-session-race-key"),
+      h.create(one, "session:1", "cross-session-race-key"),
+      h.create(two, "session:2", "cross-session-race-key"),
     ]);
     const fulfilled = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
     const rejected = results.flatMap((result) => result.status === "rejected" ? [String(result.reason)] : []);
     expect(fulfilled.length).toBeGreaterThanOrEqual(1);
     expect(rejected.every((message) => message.includes("OMR_IDEMPOTENCY_PENDING"))).toBe(true);
 
-    const replay = await h.create(two, "cross-session-race-key");
+    const replay = await h.create(two, "session:2", "cross-session-race-key");
     expect(new Set([...fulfilled, replay]).size).toBe(1);
     expect(h.adapter.callCounts.create).toBe(1);
     expect(h.baseStore.listJobs()).toHaveLength(1);
