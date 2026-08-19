@@ -16,6 +16,9 @@ export type ShareCreationChoice =
   | { readonly kind: "url"; readonly fragment: string; readonly payloadDigest: SemanticDigest }
   | { readonly kind: "store"; readonly token: string; readonly ownerDeleteSecret: string; readonly payloadDigest: SemanticDigest; readonly expiresAt: string };
 export interface ShareCreateResponse { readonly ok: true; readonly share: ShareCreationChoice }
+export type ShareOwnerReconciliation =
+  | { readonly status: "active" }
+  | { readonly status: "retired"; readonly reason: "expired" | "owner-deleted" };
 interface PreparedShareCreation { readonly choice: ShareCreationChoice; readonly durableRecord?: Omit<DurableShareRecord, "id"> }
 
 function payloadBytes(payload: PracticeSharePayload): Uint8Array { return practiceSharePlaintext(payload); }
@@ -145,6 +148,16 @@ export class ShareStoreService {
     if (!record || !timingSafeHashEquals(record.deleteSecretVerifier, supplied)) throw new RangeError(SHARE_UNAVAILABLE);
     await this.store.transitionShare({ id: record.id, lifecycle: "deleted", at: now.toISOString() });
     await this.store.createAudit({ eventKind: "share-owner-delete", shareRecordId: record.id, outcome: "accepted", createdAt: now.toISOString() });
+  }
+
+  async reconcileOwnerAuthority(token: string, ownerDeleteSecret: string, now = new Date()): Promise<ShareOwnerReconciliation> {
+    const record = await this.store.findShareByTokenHash(this.tokenHash(token));
+    const supplied = this.deleteVerifier(ownerDeleteSecret);
+    const matches = timingSafeHashEquals(record?.deleteSecretVerifier ?? "0".repeat(64), supplied);
+    if (!record || !matches || record.lifecycle === "disabled") throw new RangeError(SHARE_UNAVAILABLE);
+    if (record.lifecycle === "deleted") return { status: "retired", reason: "owner-deleted" };
+    if (record.lifecycle === "expired" || record.expiresAt <= now.toISOString()) return { status: "retired", reason: "expired" };
+    return { status: "active" };
   }
 
   async report(input: { readonly token: string; readonly reporterSessionId?: PrivateRowId; readonly category: string; readonly detail?: string; readonly now?: Date }): Promise<{ readonly accepted: true }> {

@@ -516,6 +516,21 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await expect(h.service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
   });
 
+  it("reports isolated scheduler item failures without hiding the attempted claim", async () => {
+    const h = await harness();
+    await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "cleanup-summary-failure" });
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    const internal = h.service as unknown as { deleteRecord: (...input: readonly unknown[]) => Promise<never> };
+    vi.spyOn(internal, "deleteRecord").mockRejectedValueOnce(new RangeError("OMR_DELETE_FAULT_INJECTED"));
+    await expect(h.service.cleanupExpiredJobsForScheduler()).resolves.toEqual({
+      attemptedJobs: 1,
+      completedJobs: 0,
+      failedJobs: 1,
+      results: [],
+      failures: [{ jobId: "1", code: "OMR_DELETE_FAULT_INJECTED" }],
+    });
+  });
+
   it("binds informed transfer consent to the exact provider capability snapshot", async () => {
     const h = await harness();
     const consented = await h.service.getProviderPreflight();

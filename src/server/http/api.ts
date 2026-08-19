@@ -81,6 +81,14 @@ export function parseShareDeleteBody(value: unknown): { readonly ownerDeleteSecr
   return { ownerDeleteSecret: record.ownerDeleteSecret };
 }
 
+export function parseShareOwnerReconcileBody(value: unknown): { readonly ownerDeleteSecret: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("SHARE_OWNER_RECONCILE_INVALID");
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 1 || typeof record.ownerDeleteSecret !== "string"
+    || !/^[A-Za-z0-9_-]{22,256}$/u.test(record.ownerDeleteSecret)) throw new RangeError("SHARE_OWNER_RECONCILE_INVALID");
+  return { ownerDeleteSecret: record.ownerDeleteSecret };
+}
+
 export function parseAbuseReportBody(value: unknown): { readonly category: string; readonly detail?: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("ABUSE_REPORT_INVALID");
   const record = value as Record<string, unknown>;

@@ -7,7 +7,7 @@ export const SCHEDULED_CLEANUP_BATCH_SIZE = 25;
 export const SCHEDULED_CLEANUP_RUNTIME_BUDGET_MS = 25_000;
 
 export interface ScheduledOmrCleanup {
-  cleanupExpiredJobs(limit: number): Promise<readonly { readonly jobId: unknown; readonly result: unknown }[]>;
+  cleanupExpiredJobs(limit: number): Promise<{ readonly attemptedJobs: number; readonly completedJobs: number; readonly failedJobs: number }>;
 }
 
 export interface ScheduledCleanupResult {
@@ -16,10 +16,14 @@ export interface ScheduledCleanupResult {
   readonly completedAt: string;
   readonly runtimeBudgetMs: number;
   readonly batchSize: number;
-  readonly generic: { readonly status: "fulfilled"; readonly expiredSessions: number; readonly expiredShares: number; readonly expiredObjects: number; readonly failures: number }
+  readonly generic: { readonly status: "fulfilled"; readonly expiredSessions: number; readonly expiredShares: number; readonly expiredObjects: number; readonly attemptedItems: number; readonly completedItems: number; readonly failedItems: number }
     | { readonly status: "rejected"; readonly code: string };
-  readonly omr: { readonly status: "fulfilled"; readonly completedJobs: number }
+  readonly omr: { readonly status: "fulfilled"; readonly attemptedJobs: number; readonly completedJobs: number; readonly failedJobs: number }
     | { readonly status: "rejected"; readonly code: string };
+}
+
+export function scheduledCleanupHttpStatus(result: Pick<ScheduledCleanupResult, "ok">): 200 | 207 {
+  return result.ok ? 200 : 207;
 }
 
 export function authorizeScheduledCleanup(request: Request, environment: Readonly<Record<string, string | undefined>> = process.env): void {
@@ -65,18 +69,29 @@ export async function runScheduledCleanup(input: {
     bounded("GENERIC", () => input.generic.run({ now: startedAt, batchSize })),
     bounded("OMR", () => input.omr.cleanupExpiredJobs(batchSize)),
   ]);
+  const genericResult: ScheduledCleanupResult["generic"] = generic.status === "fulfilled"
+    ? {
+      status: "fulfilled",
+      expiredSessions: generic.value.expiredSessionIds.length,
+      expiredShares: generic.value.expiredShareIds.length,
+      expiredObjects: generic.value.expiredObjectIds.length,
+      attemptedItems: generic.value.pendingObjectReferences.length,
+      completedItems: Math.max(0, generic.value.pendingObjectReferences.length - generic.value.failures.length),
+      failedItems: generic.value.failures.length,
+    }
+    : { status: "rejected", code: errorCode(generic.reason) };
+  const omrResult: ScheduledCleanupResult["omr"] = omr.status === "fulfilled"
+    ? { status: "fulfilled", attemptedJobs: omr.value.attemptedJobs, completedJobs: omr.value.completedJobs, failedJobs: omr.value.failedJobs }
+    : { status: "rejected", code: errorCode(omr.reason) };
   const result: ScheduledCleanupResult = {
-    ok: generic.status === "fulfilled" && omr.status === "fulfilled",
+    ok: genericResult.status === "fulfilled" && genericResult.failedItems === 0
+      && omrResult.status === "fulfilled" && omrResult.failedJobs === 0,
     startedAt: startedAt.toISOString(),
     completedAt: now().toISOString(),
     runtimeBudgetMs,
     batchSize,
-    generic: generic.status === "fulfilled"
-      ? { status: "fulfilled", expiredSessions: generic.value.expiredSessionIds.length, expiredShares: generic.value.expiredShareIds.length, expiredObjects: generic.value.expiredObjectIds.length, failures: generic.value.failures.length }
-      : { status: "rejected", code: errorCode(generic.reason) },
-    omr: omr.status === "fulfilled"
-      ? { status: "fulfilled", completedJobs: omr.value.length }
-      : { status: "rejected", code: errorCode(omr.reason) },
+    generic: genericResult,
+    omr: omrResult,
   };
   console.info(JSON.stringify({ event: "scheduled-cleanup", ...result }));
   return result;

@@ -5,6 +5,8 @@ vi.mock("server-only", () => ({}));
 import { Pool } from "pg";
 import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
 import type { PracticeSharePayload } from "../../domain/share";
+import { classifyShareCreateApiResult, completedShareRecoveryTransport } from "../../product/share-create-api";
+import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, MemoryShareCreateRecoveryStore, prepareShareCreateRecovery } from "../../product/share-create-recovery";
 import { applyMigrations } from "../persistence/migrations";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import { PostgresGovernanceStore } from "../persistence/postgres-store";
@@ -134,7 +136,7 @@ async function runShareSessionConformance(makeHarness: () => Promise<Harness>): 
     }
     expect(await harness.auditKinds()).toEqual(expect.arrayContaining(["share-abuse-report", "share-moderation-claim", "share-moderation-resolve", "share-owner-delete"]));
 
-    const cleanupAt = new Date(now.getTime() + 181 * 86_400_000).toISOString();
+    const cleanupAt = new Date(now.getTime() + 211 * 86_400_000).toISOString();
     const cleanup = await Promise.all([
       harness.store.cleanup({ now: cleanupAt, batchSize: 100, dryRun: false }),
       harness.store.cleanup({ now: cleanupAt, batchSize: 100, dryRun: false }),
@@ -148,6 +150,83 @@ async function runShareSessionConformance(makeHarness: () => Promise<Harness>): 
 describe("Memory/PostgreSQL share-session conformance", () => {
   it("runs the exact conformance campaign against Memory", async () => { await runShareSessionConformance(memoryHarness); });
   it("runs the exact conformance campaign against actual PostgreSQL 17", async () => { await runShareSessionConformance(postgresHarness); }, 30_000);
+});
+
+describe("actual PostgreSQL browser share-create recovery", () => {
+  it("prewrites K1, recovers a lost commit acknowledgement after reload, and owner-deletes the one effect", async () => {
+    const harness = await postgresHarness();
+    try {
+      const sessions = new AnonymousSessionService(harness.store, key(1), key(2), false);
+      const quota = new QuotaAndIdempotencyService(harness.store, key(3));
+      const shares = new ShareStoreService(harness.store, key(4), key(5), key(6), key(7));
+      const issued = await sessions.issue(now);
+      const browser = new MemoryShareCreateRecoveryStore();
+      const canonicalRequest = { payload: payload("browser-pg-response-loss"), rightsBasis: "self-authored" as const };
+      const identifiers = ["request-key-browser-pg-K1", "intent-browser-pg-K1"];
+      let envelope = await prepareShareCreateRecovery({
+        store: browser,
+        projectId: "project:browser-pg",
+        canonicalRequest,
+        explicitFreshIntent: false,
+        generateId: () => identifiers.shift() ?? "unexpected-identifier",
+        now,
+      });
+      expect(await harness.activeShareCount()).toBe(0);
+      envelope = await bindShareCreateSession({ store: browser, envelope, sessionAuthority: sessions.authorityFor(issued.record), sessionExpiresAt: issued.record.expiresAt, now });
+      expect(await browser.load("project:browser-pg")).toMatchObject({ operationLifecycle: "pending", idempotencyKey: "request-key-browser-pg-K1" });
+
+      const request = {
+        quota, shares, sessionId: issued.record.id, sessionQuotaOwner: issued.record.tokenHash,
+        payload: envelope.canonicalRequest.payload, rightsBasis: envelope.canonicalRequest.rightsBasis,
+        idempotencyKey: envelope.idempotencyKey, requestDigest: envelope.requestDigest, now, forceStore: true,
+      };
+      const committedAcknowledgementLost = await createShareIdempotently(request);
+      expect(committedAcknowledgementLost.status).toBe(201);
+      expect(await harness.activeShareCount()).toBe(1);
+      expect((await browser.load("project:browser-pg"))?.operationLifecycle).toBe("pending");
+
+      const reloaded = await prepareShareCreateRecovery({
+        store: browser,
+        projectId: "project:browser-pg",
+        canonicalRequest: { payload: payload("regenerated-must-not-replace-frozen-request"), rightsBasis: "self-authored" },
+        explicitFreshIntent: false,
+        generateId: () => "must-not-rotate",
+        now: new Date(now.getTime() + 1_000),
+      });
+      expect(reloaded.idempotencyKey).toBe("request-key-browser-pg-K1");
+      expect(reloaded.canonicalRequest.payload.title).toBe("browser-pg-response-loss");
+      const replay = await createShareIdempotently({ ...request, now: new Date(now.getTime() + 1_000) });
+      const outcome = classifyShareCreateApiResult(replay.status, replay.body);
+      expect(outcome.kind).toBe("completed");
+      if (outcome.kind !== "completed") throw new Error("expected completed replay");
+      await completeShareCreateRecovery({ store: browser, envelope: reloaded, response: outcome.response, now: new Date(now.getTime() + 1_000) });
+      const recovered = await browser.load("project:browser-pg");
+      expect(recovered).toMatchObject({
+        operationLifecycle: "completed",
+        idempotencyKey: "request-key-browser-pg-K1",
+        createdResponse: outcome.response,
+        completedAuthorities: [outcome.response],
+      });
+      expect(replay).toEqual({ ...committedAcknowledgementLost, status: 200 });
+      expect(await harness.activeShareCount()).toBe(1);
+
+      if (!recovered) throw new Error("browser recovery envelope missing");
+      const rotatedSession = await sessions.issue(new Date(now.getTime() + 31 * 86_400_000));
+      expect(completedShareRecoveryTransport(recovered, sessions.authorityFor(rotatedSession.record))).toBe("owner-reconcile");
+      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000))).resolves.toEqual({ status: "active" });
+      const expiredAt = new Date(now.getTime() + 181 * 86_400_000);
+      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, expiredAt)).resolves.toEqual({ status: "retired", reason: "expired" });
+      const retired = await allowShareCreateFreshIntent({ store: browser, envelope: recovered, reason: "retired-replay", now: expiredAt });
+      const freshIds = ["request-key-browser-pg-K2", "intent-browser-pg-K2"];
+      const fresh = await prepareShareCreateRecovery({ store: browser, projectId: "project:browser-pg", canonicalRequest: { payload: payload("fresh-after-expiry"), rightsBasis: "self-authored" }, explicitFreshIntent: true, generateId: () => freshIds.shift() ?? "unexpected-fresh-id", now: new Date(expiredAt.getTime() + 1) });
+      expect(retired.freshIntentAuthority).toMatchObject({ reason: "retired-replay" });
+      expect(fresh).toMatchObject({ operationLifecycle: "pending", idempotencyKey: "request-key-browser-pg-K2", completedAuthorities: [{ token: outcome.response.token, idempotencyKey: "request-key-browser-pg-K1" }] });
+
+      await shares.ownerDelete(outcome.response.token, outcome.response.ownerDeleteSecret, expiredAt);
+      await expect(shares.read(outcome.response.token, expiredAt)).rejects.toThrow("SHARE_UNAVAILABLE");
+      expect(await harness.activeShareCount()).toBe(0);
+    } finally { await harness.close(); }
+  }, 30_000);
 });
 
 describe("PostgreSQL harness lifecycle", () => {

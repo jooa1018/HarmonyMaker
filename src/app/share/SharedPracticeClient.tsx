@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { PracticeSharePayload } from "../../domain/share";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
@@ -10,6 +10,7 @@ import { buildPlaybackPlan } from "../../product/playback-plan";
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { decodeProductUrlShare } from "../../product/share-url";
 import { reduceShareLocatorLoad, resolveShareLocator } from "../../product/share-locator";
+import { submitStoredShareReport, type DisplayedStoredShareAuthority } from "../../product/share-report";
 import { materializeSharedPracticeSafely } from "../../product/shared-practice";
 
 export function SharedPracticeClient() {
@@ -17,6 +18,8 @@ export function SharedPracticeClient() {
   const token = search.get("token") ?? undefined;
   const [hashState, setHashState] = useState<{ readonly ready: boolean; readonly value: string }>({ ready: false, value: "" });
   const [loadState, dispatchLoad] = useReducer(reduceShareLocatorLoad, { status: "idle" });
+  const displayedStoredAuthorityRef = useRef<DisplayedStoredShareAuthority | undefined>(undefined);
+  const reportAbortRef = useRef<AbortController | undefined>(undefined);
   const payload: PracticeSharePayload | undefined = loadState.status === "loaded" ? loadState.payload : undefined;
   const [message, setMessage] = useState("공유 payload를 검증하는 중…");
   const materialization = useMemo(() => payload ? materializeSharedPracticeSafely(payload) : undefined, [payload]);
@@ -33,18 +36,40 @@ export function SharedPracticeClient() {
   }, []);
 
   const locatorResult = useMemo(() => hashState.ready ? resolveShareLocator(token, hashState.value) : undefined, [hashState, token]);
+  const locatorLoading = locatorResult?.status === "valid"
+    && (loadState.status !== "loaded" || loadState.key !== locatorResult.key);
+  const presentedMessage = locatorResult?.status === "invalid"
+    ? locatorResult.code === "SHARE_LOCATOR_CONFLICT" ? "저장형 token과 inline payload를 동시에 사용할 수 없습니다." : "공유 위치 정보가 올바르지 않습니다."
+    : locatorLoading
+      ? "공유 payload를 검증하는 중…"
+      : payload && materialization?.status === "unavailable"
+      ? "이 공유의 연습 자료를 안전하게 구성할 수 없습니다."
+      : message;
+
+  useLayoutEffect(() => {
+    const next = loadState.status === "loaded" && loadState.locator.kind === "stored"
+      && locatorResult?.status === "valid" && locatorResult.key === loadState.key
+      ? { key: loadState.key, token: loadState.locator.token }
+      : undefined;
+    const previous = displayedStoredAuthorityRef.current;
+    if (previous && (previous.key !== next?.key || previous.token !== next?.token)) {
+      reportAbortRef.current?.abort();
+      reportAbortRef.current = undefined;
+    }
+    displayedStoredAuthorityRef.current = next;
+  }, [loadState, locatorResult]);
+
+  useEffect(() => () => reportAbortRef.current?.abort(), []);
 
   useEffect(() => {
     if (!locatorResult) return;
     if (locatorResult.status === "invalid") {
       dispatchLoad({ type: "failure", code: locatorResult.code });
-      setMessage(locatorResult.code === "SHARE_LOCATOR_CONFLICT" ? "저장형 token과 inline payload를 동시에 사용할 수 없습니다." : "공유 위치 정보가 올바르지 않습니다.");
       return;
     }
     let active = true;
     const { key, locator } = locatorResult;
     dispatchLoad({ type: "begin", key, locator });
-    setMessage("공유 payload를 검증하는 중…");
     const load = async () => {
       try {
         if (locator.kind === "inline") {
@@ -63,10 +88,6 @@ export function SharedPracticeClient() {
   }, [locatorResult]);
 
   useEffect(() => {
-    if (payload && materialization?.status === "unavailable") setMessage("이 공유의 연습 자료를 안전하게 구성할 수 없습니다.");
-  }, [materialization, payload]);
-
-  useEffect(() => {
     if (!document) return;
     let active = true;
     const digest = document.effectiveChordTimeline.digest;
@@ -80,21 +101,21 @@ export function SharedPracticeClient() {
 
   const report = async () => {
     if (loadState.status !== "loaded" || loadState.locator.kind !== "stored") return;
-    const reportKey = loadState.key;
-    const reportToken = loadState.locator.token;
-    try {
-      const bootstrap = await fetch("/api/session", { method: "POST" });
-      const session = await bootstrap.json() as { csrfToken?: string };
-      if (!bootstrap.ok || !session.csrfToken) throw new Error();
-      const response = await fetch(`/api/shares/${encodeURIComponent(reportToken)}/report`, { method: "POST", headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken }, body: JSON.stringify({ category: "rights-or-abuse" }) });
-      if (!response.ok) throw new Error();
-      dispatchLoad({ type: "reported", key: reportKey }); setMessage("신고를 접수했습니다. 공유 존재 여부에 대한 추가 정보는 공개하지 않습니다.");
-    } catch { setMessage("신고를 접수하지 못했습니다."); }
+    const authority = { key: loadState.key, token: loadState.locator.token };
+    reportAbortRef.current?.abort();
+    const controller = new AbortController();
+    reportAbortRef.current = controller;
+    const outcome = await submitStoredShareReport({ authority, currentAuthority: () => displayedStoredAuthorityRef.current, signal: controller.signal });
+    if (reportAbortRef.current !== controller) return;
+    reportAbortRef.current = undefined;
+    if (outcome === "accepted") {
+      dispatchLoad({ type: "reported", key: authority.key }); setMessage("신고를 접수했습니다. 공유 존재 여부에 대한 추가 정보는 공개하지 않습니다.");
+    } else if (outcome === "failed") setMessage("신고를 접수하지 못했습니다.");
   };
 
   return <>
     <header><p className="eyebrow">PRACTICE SHARE · READ ONLY</p><h1>{payload?.title ?? "공유 연습 악보"}</h1><p>후보, 잠금, 진단, 원본 파일 없이 선택된 연습 artifact만 표시합니다.</p><p><Link href="/">HarmonyMaker 시작으로</Link></p></header>
-    <p className={`status${payload ? "" : " error"}`} aria-live="polite">{message}</p>
+    <p className={`status${payload ? "" : " error"}`} aria-live="polite">{presentedMessage}</p>
     {payload && abc && plan && loadState.status === "loaded" ? <><section className="panel"><dl><div><dt>Preset</dt><dd>{payload.presetId}</dd></div><div><dt>Rights</dt><dd>{payload.rightsShareConfirmed ? "공유 확인됨" : "차단"}</dd></div><div><dt>Artifact</dt><dd><code>{payload.arrangementArtifactDigest}</code></dd></div></dl></section><ProductPracticePlayer key={loadState.key} abc={abc} plan={plan} tempo={payload.tempo} identity={loadState.key} initialSettings={payload.playbackDefaults} readOnly />{loadState.locator.kind === "stored" ? <section className="panel"><h2>공유 신고</h2><button type="button" disabled={loadState.reported} onClick={() => void report()}>{loadState.reported ? "접수됨" : "권리 또는 악용 신고"}</button></section> : null}</> : null}
   </>;
 }

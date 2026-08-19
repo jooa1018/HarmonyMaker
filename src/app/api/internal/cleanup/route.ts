@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { authorizeScheduledCleanup, runScheduledCleanup } from "../../../../server/cleanup/scheduled-cleanup";
+import { authorizeScheduledCleanup, runScheduledCleanup, scheduledCleanupHttpStatus } from "../../../../server/cleanup/scheduled-cleanup";
 import { mapApiFailure } from "../../../../server/http/api";
 import { getProductionOmrCleanupApplicationService } from "../../../../server/omr/production-service";
 import { getProductionServices } from "../../../../server/substrate/services";
@@ -14,8 +14,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const services = await getProductionServices();
     const result = await runScheduledCleanup({
       generic: services.cleanup,
-      omr: { cleanupExpiredJobs: async (limit) => (await getProductionOmrCleanupApplicationService()).cleanupExpiredJobs(limit) },
+      omr: { cleanupExpiredJobs: async (limit) => (await getProductionOmrCleanupApplicationService()).cleanupExpiredJobsForScheduler(limit) },
     });
-    return NextResponse.json(result, { status: result.ok ? 200 : 207 });
+    return NextResponse.json(result, { status: scheduledCleanupHttpStatus(result) });
   } catch (error) { return mapApiFailure(error); }
 }

@@ -1,10 +1,16 @@
-import type { StoredShareCreateResponse } from "./share-create-recovery";
+import type { ShareCreateRecoveryEnvelope, StoredShareCreateResponse } from "./share-create-recovery";
 
 export type ShareCreateApiOutcome =
   | { readonly kind: "completed"; readonly response: StoredShareCreateResponse }
   | { readonly kind: "retain"; readonly code: "NETWORK_UNCERTAIN" | "RESPONSE_UNCERTAIN" | "REQUEST_TIMEOUT" | "RATE_LIMITED" | "SERVER_TRANSIENT" | "IDEMPOTENCY_PENDING" }
   | { readonly kind: "fresh-allowed"; readonly code: "SHARE_CREATE_REPLAY_RETIRED" }
   | { readonly kind: "conflict"; readonly code: "IDEMPOTENCY_CONFLICT" }
+  | { readonly kind: "rejected"; readonly code: string };
+
+export type ShareOwnerReconcileApiOutcome =
+  | { readonly kind: "active" }
+  | { readonly kind: "fresh-allowed"; readonly code: "SHARE_CREATE_REPLAY_RETIRED"; readonly reason: "expired" | "owner-deleted" }
+  | { readonly kind: "retain"; readonly code: "NETWORK_UNCERTAIN" | "RESPONSE_UNCERTAIN" | "REQUEST_TIMEOUT" | "SERVER_TRANSIENT" }
   | { readonly kind: "rejected"; readonly code: string };
 
 function errorCode(body: unknown): string | undefined {
@@ -44,6 +50,74 @@ export async function readShareCreateApiResponse(response: Response): Promise<Sh
   return classifyShareCreateApiResult(response.status, body);
 }
 
-export function classifyShareCreateTransportFailure(_error: unknown): ShareCreateApiOutcome {
+export function classifyShareCreateTransportFailure(error: unknown): ShareCreateApiOutcome {
+  void error;
   return { kind: "retain", code: "NETWORK_UNCERTAIN" };
+}
+
+function reconciliationReason(body: unknown): "expired" | "owner-deleted" | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const error = (body as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const reason = (error as Record<string, unknown>).reason;
+  return reason === "expired" || reason === "owner-deleted" ? reason : undefined;
+}
+
+export function serializedShareCreateRecoveryRequest(envelope: ShareCreateRecoveryEnvelope): string {
+  return JSON.stringify({ ...envelope.canonicalRequest, idempotencyKey: envelope.idempotencyKey });
+}
+
+export async function dispatchShareCreateRecovery(input: {
+  readonly envelope: ShareCreateRecoveryEnvelope;
+  readonly csrfToken: string;
+  readonly fetcher?: typeof fetch;
+  readonly signal?: AbortSignal;
+}): Promise<ShareCreateApiOutcome> {
+  try {
+    const response = await (input.fetcher ?? fetch)("/api/shares", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": input.csrfToken },
+      body: serializedShareCreateRecoveryRequest(input.envelope),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return readShareCreateApiResponse(response);
+  } catch (error) { return classifyShareCreateTransportFailure(error); }
+}
+
+export function completedShareRecoveryTransport(envelope: ShareCreateRecoveryEnvelope, currentSessionAuthority: string): "idempotent-replay" | "owner-reconcile" {
+  return envelope.operationLifecycle === "completed" && envelope.createdResponse
+    && envelope.sessionAuthority !== currentSessionAuthority
+    ? "owner-reconcile"
+    : "idempotent-replay";
+}
+
+export function classifyShareOwnerReconcileApiResult(status: number, body: unknown): ShareOwnerReconcileApiOutcome {
+  if (status === 200 && body && typeof body === "object" && !Array.isArray(body)
+    && (body as Record<string, unknown>).ok === true && (body as Record<string, unknown>).state === "active") return { kind: "active" };
+  const code = errorCode(body);
+  const reason = reconciliationReason(body);
+  if (status === 409 && code === "SHARE_CREATE_REPLAY_RETIRED" && reason) return { kind: "fresh-allowed", code, reason };
+  if (status === 408) return { kind: "retain", code: "REQUEST_TIMEOUT" };
+  if (status >= 500) return { kind: "retain", code: "SERVER_TRANSIENT" };
+  if (status === 200) return { kind: "retain", code: "RESPONSE_UNCERTAIN" };
+  return { kind: "rejected", code: code ?? "SHARE_OWNER_RECONCILE_REJECTED" };
+}
+
+export async function dispatchShareOwnerReconciliation(input: {
+  readonly envelope: ShareCreateRecoveryEnvelope;
+  readonly fetcher?: typeof fetch;
+}): Promise<ShareOwnerReconcileApiOutcome> {
+  const responseAuthority = input.envelope.createdResponse;
+  if (input.envelope.operationLifecycle !== "completed" || !responseAuthority) return { kind: "rejected", code: "SHARE_OWNER_RECONCILE_INVALID" };
+  try {
+    const response = await (input.fetcher ?? fetch)(`/api/shares/${encodeURIComponent(responseAuthority.token)}/reconcile`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ownerDeleteSecret: responseAuthority.ownerDeleteSecret }),
+    });
+    let body: unknown;
+    try { body = await response.json(); }
+    catch { body = undefined; }
+    return classifyShareOwnerReconcileApiResult(response.status, body);
+  } catch { return { kind: "retain", code: "NETWORK_UNCERTAIN" }; }
 }

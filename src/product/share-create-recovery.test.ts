@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PracticeSharePayload } from "../domain/share";
+import { completedShareRecoveryTransport, dispatchShareOwnerReconciliation } from "./share-create-api";
 import {
   allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery,
   MemoryShareCreateRecoveryStore, prepareShareCreateRecovery, ShareCreateOperationGate,
@@ -30,8 +31,8 @@ describe("durable browser ShareStore create authority", () => {
     const store = new MemoryShareCreateRecoveryStore();
     const first = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("clock:00:00"), explicitFreshIntent: false, generateId: ids("request-key-K1", "intent-K1"), now });
     expect(first).toMatchObject({ idempotencyKey: "request-key-K1", operationLifecycle: "pending", canonicalRequest: { payload: { title: "clock:00:00" } } });
-    for (const _ambiguousOutcome of ["no-effect-network", "timeout", "5xx", "reload-after-clock-change"] as const) {
-      const reloaded = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("clock:23:59"), explicitFreshIntent: false, generateId: ids("must-not-rotate", "must-not-rotate-intent"), now: new Date(now.getTime() + 86_400_000) });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const reloaded = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("clock:23:59"), explicitFreshIntent: false, generateId: ids("must-not-rotate", "must-not-rotate-intent"), now: new Date(now.getTime() + 86_400_000 + attempt) });
       expect(reloaded.idempotencyKey).toBe("request-key-K1");
       expect(reloaded.canonicalRequest.payload.title).toBe("clock:00:00");
     }
@@ -52,9 +53,35 @@ describe("durable browser ShareStore create authority", () => {
     let first = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("first"), explicitFreshIntent: false, generateId: ids("request-key-K1", "intent-K1"), now });
     first = await completeShareCreateRecovery({ store, envelope: first, response: { token: "first-share-token", ownerDeleteSecret: "first-delete-secret" }, now });
     await expect(prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("second"), explicitFreshIntent: true, generateId: ids("request-key-K2", "intent-K2"), now })).rejects.toThrow("SHARE_CREATE_FRESH_INTENT_NOT_AUTHORIZED");
-    first = await allowShareCreateFreshIntent({ store, envelope: first, reason: "retired-replay", now });
+    await allowShareCreateFreshIntent({ store, envelope: first, reason: "retired-replay", now });
     const fresh = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("second"), explicitFreshIntent: true, generateId: ids("request-key-K2", "intent-K2"), now });
     expect(fresh).toMatchObject({ idempotencyKey: "request-key-K2", canonicalRequest: { payload: { title: "second" } }, completedAuthorities: [{ token: "first-share-token", ownerDeleteSecret: "first-delete-secret", idempotencyKey: "request-key-K1" }] });
+  });
+
+  it("reconciles completed owner authority after session rotation and creates K2 only after exact retirement", async () => {
+    const store = new MemoryShareCreateRecoveryStore();
+    let completed = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("expired"), explicitFreshIntent: false, generateId: ids("request-key-K1", "intent-K1"), now });
+    completed = await bindShareCreateSession({ store, envelope: completed, sessionAuthority: "a".repeat(64), sessionExpiresAt: "2026-01-31T00:00:00.000Z", now });
+    completed = await completeShareCreateRecovery({ store, envelope: completed, response: { token: "expired-share-token", ownerDeleteSecret: "expired-delete-secret" }, now });
+    expect(completedShareRecoveryTransport(completed, "b".repeat(64))).toBe("owner-reconcile");
+    const fetcher = async (url: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(url)).toBe("/api/shares/expired-share-token/reconcile");
+      expect(JSON.parse(String(init?.body))).toEqual({ ownerDeleteSecret: "expired-delete-secret" });
+      return new Response(JSON.stringify({ ok: false, error: { code: "SHARE_CREATE_REPLAY_RETIRED", reason: "expired" } }), { status: 409 });
+    };
+    const outcome = await dispatchShareOwnerReconciliation({ envelope: completed, fetcher });
+    expect(outcome).toEqual({ kind: "fresh-allowed", code: "SHARE_CREATE_REPLAY_RETIRED", reason: "expired" });
+    if (outcome.kind !== "fresh-allowed") throw new Error("expected retired replay");
+    completed = await allowShareCreateFreshIntent({ store, envelope: completed, reason: "retired-replay", now: new Date(now.getTime() + 181 * 86_400_000) });
+    const fresh = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest("fresh"), explicitFreshIntent: true, generateId: ids("request-key-K2", "intent-K2"), now: new Date(now.getTime() + 181 * 86_400_000 + 1) });
+    expect(fresh).toMatchObject({ idempotencyKey: "request-key-K2", operationLifecycle: "pending", completedAuthorities: [{ token: "expired-share-token", idempotencyKey: "request-key-K1" }] });
+  });
+
+  it("rejects a completed replay that changes token or owner delete authority", async () => {
+    const store = new MemoryShareCreateRecoveryStore();
+    let completed = await prepareShareCreateRecovery({ store, projectId: "project:A", canonicalRequest: canonicalRequest(), explicitFreshIntent: false, generateId: ids("request-key-K1", "intent-K1"), now });
+    completed = await completeShareCreateRecovery({ store, envelope: completed, response: { token: "same-share-token", ownerDeleteSecret: "same-delete-secret" }, now });
+    await expect(completeShareCreateRecovery({ store, envelope: completed, response: { token: "other-share-token", ownerDeleteSecret: "other-delete-secret" }, now })).rejects.toThrow("SHARE_CREATE_REPLAY_AUTHORITY_MISMATCH");
   });
 
   it("fences session replacement and rapid duplicate clicks", async () => {

@@ -23,7 +23,7 @@ import { exportHarmonyProject, importHarmonyProject } from "../../product/projec
 import { canDefaultExportOrShare, projectRenderDocument, selectActiveCandidate, selectActiveSnapshot, type MaterializedArrangement, type ScoreProjection } from "../../product/render";
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
-import { classifyShareCreateTransportFailure, readShareCreateApiResponse } from "../../product/share-create-api";
+import { completedShareRecoveryTransport, dispatchShareCreateRecovery, dispatchShareOwnerReconciliation } from "../../product/share-create-api";
 import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, ShareCreateOperationGate } from "../../product/share-create-recovery";
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
 import {
@@ -333,26 +333,36 @@ export function WorkspaceClient() {
           generateId: () => crypto.randomUUID(),
           now: new Date(),
         });
-        if (envelope.operationLifecycle === "completed" && envelope.createdResponse) {
-          if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
-          setStoredShare(envelope.createdResponse);
-          setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
-          await saveProject(withRights, "IndexedDB의 완료된 ShareStore 생성 권위를 복구했습니다.", operationProjectId);
-          return;
-        }
         const sessionResponse = await fetch("/api/session", { method: "POST" });
         const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; sessionAuthority?: string; expiresAt?: string; error?: { messageKo?: string } };
         if (!sessionResponse.ok || !session.csrfToken || !session.sessionAuthority || !session.expiresAt) throw new Error(session.error?.messageKo ?? "서버 저장 기능을 사용할 수 없습니다.");
+        if (completedShareRecoveryTransport(envelope, session.sessionAuthority) === "owner-reconcile") {
+          const reconciliation = await dispatchShareOwnerReconciliation({ envelope });
+          if (reconciliation.kind === "active") {
+            if (!envelope.createdResponse) throw new RangeError("SHARE_OWNER_RECONCILE_INVALID");
+            if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
+            setStoredShare(envelope.createdResponse);
+            setShareFreshAllowed(false);
+            setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
+            await saveProject(withRights, "소유자 복구 권위로 기존 ShareStore 공유가 active임을 확인했습니다.", operationProjectId);
+            return;
+          }
+          if (reconciliation.kind === "fresh-allowed") {
+            envelope = await allowShareCreateFreshIntent({ store: shareRecoveryStore, envelope, reason: reconciliation.reason === "owner-deleted" ? "owner-deleted" : "retired-replay", now: new Date() });
+            setShareFreshAllowed(true);
+            setMessage(reconciliation.reason === "owner-deleted"
+              ? "소유자 삭제가 확정되었습니다. 명시적 새 공유 요청을 시작할 수 있습니다."
+              : "이전 공유 만료가 확정되었습니다. 명시적 새 공유 요청을 시작할 수 있습니다.");
+            return;
+          }
+          if (reconciliation.kind === "retain") {
+            setMessage(`ShareStore 소유자 복구 결과가 확정되지 않았습니다(${reconciliation.code}). 새 공유는 시작하지 않습니다.`);
+            return;
+          }
+          throw new RangeError(reconciliation.code);
+        }
         envelope = await bindShareCreateSession({ store: shareRecoveryStore, envelope, sessionAuthority: session.sessionAuthority, sessionExpiresAt: session.expiresAt, now: new Date() });
-        let outcome;
-        try {
-          const response = await fetch("/api/shares", {
-            method: "POST",
-            headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken },
-            body: JSON.stringify({ ...envelope.canonicalRequest, idempotencyKey: envelope.idempotencyKey }),
-          });
-          outcome = await readShareCreateApiResponse(response);
-        } catch (error) { outcome = classifyShareCreateTransportFailure(error); }
+        const outcome = await dispatchShareCreateRecovery({ envelope, csrfToken: session.csrfToken });
         if (outcome.kind === "retain") {
           setMessage(`ShareStore 응답이 확정되지 않았습니다(${outcome.code}). 저장된 동일 요청/K1으로만 복구합니다.`);
           return;

@@ -210,7 +210,7 @@ export async function bindShareCreateSession(input: {
 export async function allowShareCreateFreshIntent(input: {
   readonly store: ShareCreateRecoveryStore;
   readonly envelope: ShareCreateRecoveryEnvelope;
-  readonly reason: Exclude<ShareFreshIntentReason, "owner-deleted">;
+  readonly reason: ShareFreshIntentReason;
   readonly now: Date;
 }): Promise<ShareCreateRecoveryEnvelope> {
   const next = { ...input.envelope, freshIntentAuthority: { reason: input.reason, grantedAt: input.now.toISOString() }, updatedAt: input.now.toISOString() } as const;
@@ -225,6 +225,11 @@ export async function completeShareCreateRecovery(input: {
   readonly now: Date;
 }): Promise<ShareCreateRecoveryEnvelope> {
   if (!validResponse(input.response)) throw new RangeError("SHARE_CREATE_RECOVERY_INVALID");
+  if (input.envelope.operationLifecycle === "completed" && input.envelope.createdResponse
+    && (input.envelope.createdResponse.token !== input.response.token
+      || input.envelope.createdResponse.ownerDeleteSecret !== input.response.ownerDeleteSecret)) {
+    throw new RangeError("SHARE_CREATE_REPLAY_AUTHORITY_MISMATCH");
+  }
   const authority: StoredCompletedShareAuthority = { ...input.response, idempotencyKey: input.envelope.idempotencyKey, requestDigest: input.envelope.requestDigest, completedAt: input.now.toISOString() };
   const completedAuthorities = [...input.envelope.completedAuthorities.filter((candidate) => candidate.token !== authority.token), authority];
   const next: ShareCreateRecoveryEnvelope = {

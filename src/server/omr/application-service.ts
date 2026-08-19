@@ -119,6 +119,25 @@ export interface OmrApplicationDependencies {
   readonly now?: () => Date;
 }
 
+export interface OmrCleanupItemFailure {
+  readonly jobId: PrivateRowId;
+  readonly code: string;
+}
+
+export interface OmrCleanupBatchSummary {
+  readonly attemptedJobs: number;
+  readonly completedJobs: number;
+  readonly failedJobs: number;
+  readonly results: readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[];
+  readonly failures: readonly OmrCleanupItemFailure[];
+}
+
+function cleanupItemFailureCode(error: unknown): string {
+  return error instanceof Error && /^[A-Z][A-Z0-9_:-]{1,127}$/u.test(error.message)
+    ? error.message
+    : "OMR_CLEANUP_ITEM_FAILED";
+}
+
 type ExistingJobAdapterResolution =
   | { readonly status: "available"; readonly adapter: OmrVendorAdapter }
   | { readonly status: "binding-unavailable"; readonly code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
@@ -937,17 +956,23 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     return this.deleteRecord(job, now);
   }
 
-  async cleanupExpiredJobs(limit = 50): Promise<readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[]> {
+  async cleanupExpiredJobsForScheduler(limit = 50): Promise<OmrCleanupBatchSummary> {
     const now = this.now();
     const leaseToken = generateOpaqueToken(24);
     const expired = await this.dependencies.store.claimCleanup({ now: now.toISOString(), limit, leaseToken, leaseExpiresAt: new Date(now.getTime() + CLEANUP_LEASE_MS).toISOString() });
     const results: Array<{ readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }> = [];
+    const failures: OmrCleanupItemFailure[] = [];
     for (const job of expired) {
       try { results.push({ jobId: job.id, result: await this.deleteRecord(job, now, leaseToken) }); }
-      catch {
+      catch (error) {
+        failures.push({ jobId: job.id, code: cleanupItemFailureCode(error) });
         await this.recordAuditBestEffort(job.id, "job-delete", "cleanup-isolated-failure", now.toISOString());
       }
     }
-    return results;
+    return { attemptedJobs: expired.length, completedJobs: results.length, failedJobs: failures.length, results, failures };
+  }
+
+  async cleanupExpiredJobs(limit = 50): Promise<readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[]> {
+    return (await this.cleanupExpiredJobsForScheduler(limit)).results;
   }
 }

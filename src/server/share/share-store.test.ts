@@ -12,6 +12,7 @@ import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter"
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
 import { QuotaAndIdempotencyService, SHARE_CREATE_PER_HOUR } from "../security/quota-core";
+import { AnonymousSessionService } from "../security/session-core";
 import { createShareIdempotently, SHARE_CREATE_REPLAY_RETENTION_DAYS } from "./idempotent-create";
 import { readShareWithIpQuota } from "./quota-read";
 import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS, URL_SHARE_MAX_ENCODED_BYTES } from "./share-store-core";
@@ -158,6 +159,31 @@ describe("ShareStore and URL share", () => {
     await service.ownerDelete(created.token, created.ownerDeleteSecret, now);
     await expect(service.read(created.token, now)).rejects.toThrow("SHARE_UNAVAILABLE");
     await expect(service.ownerDelete(created.token, created.ownerDeleteSecret, now)).resolves.toBeUndefined();
+  });
+
+  it("reconciles owner authority after session rotation without allowing moderation takedown bypass", async () => {
+    const store = new MemoryGovernanceStore();
+    const service = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const sessions = new AnonymousSessionService(store, key(5), key(6), false);
+    const initialSession = await sessions.issue(now);
+    const rotatedSession = await sessions.issue(new Date(now.getTime() + 31 * 86_400_000));
+    expect(sessions.authorityFor(rotatedSession.record)).not.toBe(sessions.authorityFor(initialSession.record));
+    const active = await service.create({ ownerSessionId: initialSession.record.id, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (active.kind !== "store") return;
+    await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000))).resolves.toEqual({ status: "active" });
+    await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 181 * 86_400_000))).resolves.toEqual({ status: "retired", reason: "expired" });
+    await expect(service.reconcileOwnerAuthority(active.token, "wrong-owner-secret-000000", now)).rejects.toThrow("SHARE_UNAVAILABLE");
+    await expect(service.reconcileOwnerAuthority("unknown-share-token-000000", active.ownerDeleteSecret, now)).rejects.toThrow("SHARE_UNAVAILABLE");
+
+    const deleted = await service.create({ ownerSessionId: owner, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (deleted.kind !== "store") return;
+    await service.ownerDelete(deleted.token, deleted.ownerDeleteSecret, now);
+    await expect(service.reconcileOwnerAuthority(deleted.token, deleted.ownerDeleteSecret, now)).resolves.toEqual({ status: "retired", reason: "owner-deleted" });
+
+    const disabled = await service.create({ ownerSessionId: owner, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (disabled.kind !== "store") return;
+    await service.takedown({ token: disabled.token, authorization: Buffer.from(key(4)).toString("base64url"), now });
+    await expect(service.reconcileOwnerAuthority(disabled.token, disabled.ownerDeleteSecret, now)).rejects.toThrow("SHARE_UNAVAILABLE");
   });
 
   it("accepts abuse reports without token enumeration and authorizes idempotent takedown", async () => {

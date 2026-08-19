@@ -60,7 +60,6 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
   const [solo, setSolo] = useState<string | undefined>(resolvedInitial.solo);
   const [bandEnabled, setBandEnabled] = useState(resolvedInitial.bandEnabled);
   const [error, setError] = useState<string>();
-
   const audible = useMemo(() => new Set(audibleTrackIds(plan, { muted, ...(solo ? { solo } : {}), bandEnabled })), [bandEnabled, muted, plan, solo]);
 
   const stopNodes = useCallback((reason: PracticeAudioReleaseReason) => {
