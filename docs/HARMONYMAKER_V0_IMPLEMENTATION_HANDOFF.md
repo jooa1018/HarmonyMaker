@@ -270,3 +270,37 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This section supersedes the earlier browser-closure claim only for the newly identified caller-state ambiguity. It does not claim a full re-saturation audit. Re-saturation, Ultra, Step 11, real-provider integration, corpus calibration, production live services, and physical-device verification were not started.
+
+## Full Segment D software-correctness re-saturation audit
+
+The independent, audit-only re-saturation started from exact remote HEAD `59fc68573f8bef2ba48568bf23d23e726dfac300`, with implementation checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529` and Segment C base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` both present in its ancestry. All three required passes and all eleven lifecycle matrices were completed. This was a software correctness/reliability audit; no cybersecurity assessment was performed.
+
+The audit found no P0, three P1, and four P2 residuals:
+
+- `P1-RESAT-01`: unfenced generic status/result-capture failure transitions can let a stale worker overwrite a newer result-capture lease and discard a valid completion;
+- `P1-RESAT-02`: an S3 put followed by governance-reference failure and failed compensation delete leaves an object with no durable cleanup authority;
+- `P1-RESAT-03`: `ImportInfo.sourceKind` is not enforced as a provenance discriminant, so incomplete OMR context can be relabelled `musicxml` and pass project readiness/generation;
+- `P2-RESAT-01`: malformed or obsolete persisted browser create JSON has no bounded, explicit recovery path for the same input;
+- `P2-RESAT-02`: accepted Vendor input replay uses order-sensitive `JSON.stringify`, diverging from PostgreSQL JSONB semantic key ordering;
+- `P2-RESAT-03`: the declared JavaScript safe-integer credit domain is wider than PostgreSQL `integer` and `::int` aggregation, and Memory summation has no overflow guard;
+- `P2-RESAT-04`: start/input/cancel tests inject failure before `completeOperation`; they do not exercise a real durable apply followed by acknowledgement loss.
+
+Four temporary fault-injection tests reproduced both stale-worker variants, the untracked S3 orphan, and the OMR provenance discriminant bypass. A read-only PostgreSQL 17.9 query also confirmed JSONB key reordering. Every temporary source edit was removed before this documentation-only handoff.
+
+Fresh verification passed `npm ci` (447 packages added, 448 audited, zero vulnerabilities), typecheck, lint, 66 files/663 default tests, an actual ephemeral PostgreSQL 17.9 run with migrations 1–8 and 1 file/7 tests, Next.js 16.3.0 production build, and `git diff --check`. Separate Segment B and OMR 101-run campaigns passed, as did the 2-file/7-test frozen-authority campaign. The five manifest-listed byte hashes are exact, the freeze manifest is unchanged, the 99-code registry is exact, and protected musical-authority paths have zero diff from Segment C. The only Product Core production delta remains the legitimate common integrity/readiness precondition.
+
+The prior targeted findings remain closed on their original invariants, but they do not close these independent roots. The full audit is complete; because P1 residuals remain, `SEGMENT_D_ACCEPTED=NO` and `ULTRA_AUDIT_READY=NO`. The containing additive documentation-only commit is the final audit HEAD reported with exact-SHA GitHub Actions and Vercel evidence.
+
+```text
+AUDIT_TYPE = SOFTWARE_CORRECTNESS_RELIABILITY_ONLY
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+P0_RESAT_COUNT = 0
+P1_RESAT_COUNT = 3
+P2_RESAT_COUNT = 4
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 3
+UNRESOLVED_P2 = 4
+SEGMENT_D_RESATURATION_AUDIT_COMPLETE = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```

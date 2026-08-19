@@ -737,3 +737,67 @@ ULTRA_AUDIT_READY = NO
 ```
 
 This closes only P1-SAT-01-B. Full re-saturation, Ultra, Step 11, real-provider integration, corpus calibration, production live PostgreSQL/S3, and physical-device verification were not started.
+
+## Full software-correctness re-saturation audit
+
+The full audit began from exact clean branch HEAD `59fc68573f8bef2ba48568bf23d23e726dfac300`; implementation checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529` and Segment C base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` are ancestors. It completed static authority review, the full failure-state matrix, and the test-gap pass without changing production code, tests, migrations, dependencies, or configuration. Cybersecurity was explicitly out of scope and not performed.
+
+```text
+Matrix outcomes
+  CREATE_BROWSER                  COMPLETE_WITH_P2_RESAT_01
+  PAGE_OBJECT                    COMPLETE_WITH_P1_RESAT_02
+  OPERATIONS                     COMPLETE_WITH_P2_RESAT_02_AND_04
+  STATUS_CAPTURE                 COMPLETE_WITH_P1_RESAT_01
+  PROVIDER_ROTATION              COMPLETE_NO_NEW_FINDING
+  DELETE_CLEANUP                 COMPLETE_WITH_P1_RESAT_02
+  QUOTA_CREDIT                   COMPLETE_WITH_P2_RESAT_03
+  OBJECT_DB_DURABILITY           COMPLETE_WITH_P1_RESAT_02
+  OMR_REVIEW_PERSISTENCE         COMPLETE_WITH_P1_RESAT_03
+  PRODUCT_FLOW                   COMPLETE_WITH_P1_RESAT_03
+  FROZEN_AUTHORITY               COMPLETE_PASS
+
+Existing closure revalidation
+  P1-01..P1-07                   CLOSED_CONFIRMED
+  P2-01..P2-05                   CLOSED_CONFIRMED
+  P1-SAT-01                      CLOSED_CONFIRMED
+  P1-SAT-02                      CLOSED_CONFIRMED
+  P1-SAT-03                      CLOSED_CONFIRMED
+  P2-SAT-04                      CLOSED_CONFIRMED
+  CREATE_CERTAINTY/REPLAY        CLOSED_CONFIRMED
+  STALE_CREATE_FENCING           CLOSED_CONFIRMED
+  BROWSER_FRESH_AMBIGUITY        CLOSED_CONFIRMED
+  BROWSER_RECOVERY               PARTIAL — P2-RESAT-01
+  PAGE_COMMIT_ACK                CLOSED_CONFIRMED
+  RESULT_COMMIT_ACK              CLOSED_CONFIRMED
+  PROVIDER_ROTATION              CLOSED_CONFIRMED
+  DELETE_CLEANUP                 CLOSED_CONFIRMED on prior OMR roots; P1-RESAT-02 is independent
+  QUOTA_CREDIT                   PARTIAL — P2-RESAT-03; ordinary policy remains closed
+  POSTGRES_PARITY                PARTIAL — P2-RESAT-02/03
+  PROJECT_READINESS              REOPENED — P1-RESAT-03
+
+Validation
+  npm ci                         PASS — 447 added, 448 audited, 0 vulnerabilities
+  typecheck / lint / build       PASS
+  default suite                  PASS — 66 files/663 tests
+  PostgreSQL 17.9                PASS — migrations 1–8, 1 file/7 tests
+  Segment B 101 / OMR 101        PASS
+  frozen authority               PASS — 2 files/7 tests, 0 protected-path diff
+  git diff --check               PASS
+```
+
+Four temporary fault-injection tests reproduced two stale status/capture overwrite sequences, the S3 orphan sequence, and the OMR source-kind bypass. One read-only PostgreSQL JSONB check confirmed the input-order parity premise. All temporary source edits and the ephemeral PostgreSQL cluster were removed.
+
+The complete finding records and required regressions are in `HARMONYMAKER_V0_EVIDENCE_REPORT.md`. The final audit documentation commit changes these four documentation files only and receives its own exact-SHA CI/Vercel evidence. Green automation does not close the findings.
+
+```text
+P0_RESAT_COUNT = 0
+P1_RESAT_COUNT = 3
+P2_RESAT_COUNT = 4
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 3
+UNRESOLVED_P2 = 4
+SEGMENT_D_RESATURATION_AUDIT_COMPLETE = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+```

@@ -504,3 +504,167 @@ UTC/streaming and prior P1/P2 regression                PASS
 Local validation used npm 11.6.2 and the committed lockfile: `npm ci` added 451 packages, audited 452, and found zero vulnerabilities; typecheck, lint, default tests, PostgreSQL integration, production build, and `git diff --check` passed. The PostgreSQL service was local, ephemeral, and removed after the test; it is not production evidence.
 
 `P1_SAT_01_BROWSER_RECOVERY=CLOSED`, `P1_SAT_02_COMMIT_ACK=CLOSED`, all additional and unresolved P0/P1/P2 counts are zero, `TARGETED_SATURATION_FINDINGS_CLOSED=YES`, and `SEGMENT_D_RESATURATION_AUDIT_READY=YES`. `SEGMENT_D_ACCEPTED=NO` and `ULTRA_AUDIT_READY=NO` remain unchanged pending a separately authorized full re-saturation audit. No out-of-scope external or Ultra work was performed.
+
+## Full Segment D software-correctness re-saturation evidence
+
+Baseline verification fetched the remote and proved branch existence, exact local/remote HEAD `59fc68573f8bef2ba48568bf23d23e726dfac300`, clean worktree, `0/0` divergence, no rewind, implementation checkpoint `fc9ce7f930cf31f29a458b7d81f0306b26156529` ancestry, and Segment C base `bfadfad1d4bc04e11d348c1270976802a1dc4acc` ancestry. The 92-path Segment D diff was inventoried (81 paths under `src`, including 22 test paths, plus four handoff/evidence paths), and unchanged authority-bearing dependencies were read where needed. All three passes and eleven matrices completed. Cybersecurity was outside scope and was not assessed.
+
+### P1-RESAT-01
+
+```text
+TITLE = Stale status/capture failure can overwrite newer result authority
+SEVERITY = P1
+INVARIANT = A stale worker cannot terminalize a job or release credit after a newer result-capture authority has been claimed.
+ROOT_CAUSE = captureCompleted releases its own lease and then uses an unfenced generic transition; synchronizeStatus also applies a delayed Vendor observation through the same generic transition. Store transition validates only the lifecycle edge, not the observation version or result-capture token.
+EXACT_FILES = src/server/omr/application-service.ts; src/server/omr/store.ts; src/server/omr/postgres-store.ts
+EXACT_FUNCTIONS = DurableOmrApplicationService.captureCompleted; synchronizeStatus; transitionUnlessSuperseded; MemoryOmrStore.transition/releaseResultCapture/completeResultCapture; PostgresOmrStore.transition/releaseResultCapture/completeResultCapture
+FAILURE_SEQUENCE = (1) capture worker A expires, worker B claims a new result lease, A returns a terminal contract failure, A's token-bound release no-ops, then A's generic failed transition succeeds and B's valid completion is rejected. (2) delayed status worker A begins before worker B claims/captures; B holds the newer lease, A later returns a terminal contract failure and the generic transition fails the job before B can commit.
+PRODUCT_OR_PROVIDER_IMPACT = A normal completed Vendor result can be discarded, the public job becomes falsely failed, credit is released, and a valid newer worker loses authority.
+CURRENT_TEST_GAP = Existing tests cover stale completion-token rejection and current-worker success, but not stale terminal failure after lease expiry or a delayed status observation racing a newer capture lease; actual PostgreSQL is also absent.
+MINIMAL_REQUIRED_FIX = Add version/observation fencing to status transitions and a token-bound atomic fail/retry result-capture operation. A stale observer must no-op against a newer lease/result authority.
+REGRESSION_TESTS_REQUIRED = Memory and actual PostgreSQL tests for both reproduced sequences, plus restart and delete/cleanup interleavings.
+INDEPENDENT_OR_PRIOR_ROOT = Independent residual; prior page/result commit-ack exact-read-back remains closed.
+```
+
+Temporary probe results: the expired-capture sequence passed as a reproducer (`1` file, `1` probe passed, `59` skipped), and the delayed-status sequence passed as a reproducer with the same count. Each asserted the final false `failed` state and rejection of worker B's otherwise valid result.
+
+### P1-RESAT-02
+
+```text
+TITLE = S3 put/reference compensation can create an untracked permanent object
+SEVERITY = P1
+INVARIANT = Every successful object put must either become durably referenced or retain a bounded durable cleanup authority.
+ROOT_CAUSE = S3OwnedObjectStore.put writes the opaque S3 key before GovernanceStore.createObjectReference. If reference creation fails, deletion is best effort; if that delete also fails, no row, lease, outbox, or deterministic pending-upload ledger records the key. Cleanup enumerates governance references only.
+EXACT_FILES = src/server/storage/s3-owned-object-store.ts; src/server/persistence/store.ts; src/server/persistence/postgres-store.ts; src/server/cleanup/cleanup-service.ts; src/server/persistence/migrations/001_segment_c_foundation.sql
+EXACT_FUNCTIONS = S3OwnedObjectStore.put; GovernanceStore.createObjectReference/cleanup; PostgresGovernanceStore.createObjectReference/cleanup; CleanupService.run
+FAILURE_SEQUENCE = S3 PutObject succeeds; governance reference insertion throws; compensating DeleteObject throws; process ends/restarts; no object_references row exists and cleanup can never discover the key.
+PRODUCT_OR_PROVIDER_IMPACT = An external stored object can remain permanently orphaned with retention/cost exposure and no bounded retry authority.
+CURRENT_TEST_GAP = Existing S3 tests cover normal put/get/delete and delete retry only after a reference exists; they omit reference-insert failure plus compensation-delete failure and restart.
+MINIMAL_REQUIRED_FIX = Persist a pending-upload/orphan cleanup record before publication, or use a deterministic idempotent key plus durable outbox/inspection protocol that survives all acknowledgement-loss points.
+REGRESSION_TESTS_REQUIRED = Fake-S3 and actual-PostgreSQL fault injection for put success/reference failure/delete failure, restart, lease reclaim, eventual delete, and adopted-object non-deletion.
+INDEPENDENT_OR_PRIOR_ROOT = Independent pre-governance publication root; page/result commit acknowledgement remains closed.
+```
+
+The temporary S3 probe passed as a reproducer (`1` file, `1` probe passed, `2` skipped): the remote key remained while governance reference count was zero.
+
+### P1-RESAT-03
+
+```text
+TITLE = OMR provenance can be relabelled as MusicXML and bypass readiness
+SEVERITY = P1
+INVARIANT = Incomplete or unresolved OMR-derived content cannot enter Product Core generation by changing only a provenance discriminant.
+ROOT_CAUSE = ImportInfo validation accepts the same optional OMR fields for every sourceKind; validatePersistedOmrContext returns early for non-OMR; the musical revision digest excludes import provenance/sourceKind; project integrity therefore accepts an otherwise identical source after sourceKind is changed to musicxml.
+EXACT_FILES = src/domain/source/model.ts; src/domain/source/validation.ts; src/domain/omr/persisted-context.ts; src/domain/omr/import-identity.ts; src/domain/digest/source.ts; src/domain/project-integrity.ts; src/product/workspace.ts
+EXACT_FUNCTIONS = isImportInfo; isSongSourceDocument; validatePersistedOmrContext; validateMusicXmlSourceTargetMap; digestMusicalSource/digestMusicalSourceComponents; validateSongSourceDocumentIntegrity; validateHarmonyProject/validateHarmonyProjectIntegrity; generateProjectVariant
+FAILURE_SEQUENCE = Build a source with OMR provenance and missing/incomplete OMR review context; sourceKind=omr blocks readiness; change only sourceKind to musicxml while retaining the same current content, revision digest, and source-target map; validation becomes complete and generation proceeds.
+PRODUCT_OR_PROVIDER_IMPACT = Persisted OMR content that has not satisfied review/provenance readiness can be approved as a normal generation input.
+CURRENT_TEST_GAP = Existing tests cover missing/tampered context while sourceKind remains omr, but never mutate only the discriminant through direct validation, project import, IndexedDB reload, and generation.
+MINIMAL_REQUIRED_FIX = Use a truly discriminated ImportInfo model with required/forbidden provenance fields, and bind provenance kind/context identity into project/source integrity without changing frozen musical selection.
+REGRESSION_TESTS_REQUIRED = Direct source, archive import, browser persistence reload, and Product Core tests that relabel incomplete OMR provenance and must remain blocked.
+INDEPENDENT_OR_PRIOR_ROOT = Independent persistence-boundary root; the previously added normal OMR readiness gate is present but bypassable.
+```
+
+The temporary project probe passed as a reproducer (`1` file, `1` probe passed, `25` skipped): `omr` was blocked, while the sole `sourceKind=musicxml` change made the same project complete and generation-capable.
+
+### P2-RESAT-01
+
+```text
+TITLE = Corrupt or obsolete browser create state has no explicit recovery path
+SEVERITY = P2
+INVARIANT = A normal user can recover stale local browser state without manually editing localStorage or automatically rotating a possibly committed key.
+ROOT_CAUSE = acquireOmrJob directly JSON.parse's persisted create JSON and performs no schema/canonical-request validation. Parse failures and non-retired server 4xx responses preserve the record, while OmrClient leaves fresh state normal.
+EXACT_FILES = src/app/omr/browser-recovery.ts; src/app/omr/OmrClient.tsx
+EXACT_FUNCTIONS = acquireOmrJob; OmrClient.start
+FAILURE_SEQUENCE = Same input derives the same storage key; stored JSON is malformed or from an obsolete request schema; every click throws before a usable create or receives the same generic rejection; no explicit reset action is offered.
+PRODUCT_OR_PROVIDER_IMPACT = The same input is recoverably stuck; selecting another input, clearing site data, or manually editing storage works, so this is P2 rather than P1.
+CURRENT_TEST_GAP = Browser tests cover active/stale handles, exact retired replay, ambiguity, and K1 reuse, but not malformed/obsolete stored requests at the component caller.
+MINIMAL_REQUIRED_FIX = Validate the persisted envelope and expose an explicit ambiguity-safe recovery/reset state; do not automatically discard a key that may have committed.
+REGRESSION_TESTS_REQUIRED = Malformed JSON, structurally stale JSON, generic 4xx, reload, and user-confirmed reset tests at acquisition and caller-state levels.
+INDEPENDENT_OR_PRIOR_ROOT = Sibling stale-local-state gap; the K1/K2 fresh-ambiguity defect remains closed.
+```
+
+### P2-RESAT-02
+
+```text
+TITLE = Accepted Vendor input replay is order-sensitive across PostgreSQL JSONB
+SEVERITY = P2
+INVARIANT = Semantic replay of the exact accepted input behaves identically in Memory and PostgreSQL after response loss/restart.
+ROOT_CAUSE = submitInput compares JSON.stringify(job.acceptedInput) to JSON.stringify(input). PostgreSQL JSONB canonicalizes object key order while Memory preserves insertion order.
+EXACT_FILES = src/server/omr/application-service.ts; src/server/omr/postgres-store.ts; src/server/persistence/migrations/004_omr_core.sql
+EXACT_FUNCTIONS = DurableOmrApplicationService.submitInput; PostgresOmrStore row mapping; accepted_input JSONB persistence
+FAILURE_SEQUENCE = Vendor-specific input commits, the response is lost, PostgreSQL reloads the semantic object in JSONB order, and the same client payload arrives in original order; string comparison reports OMR_VENDOR_INPUT_CONFLICT although the durable operation is already accepted.
+PRODUCT_OR_PROVIDER_IMPACT = The in-page retry is rejected; browser reload/status recovery is a workaround and the Vendor effect is not duplicated.
+CURRENT_TEST_GAP = Memory-only replay coverage and PostgreSQL store tests do not exercise semantically equal, differently ordered accepted_input through the production service.
+MINIMAL_REQUIRED_FIX = Compare the typed payload by canonical semantic digest/equality and persist that digest with operation authority.
+REGRESSION_TESTS_REQUIRED = Memory/actual-PostgreSQL parity with nested vendor payload key permutations and apply-then-throw acknowledgement loss.
+INDEPENDENT_OR_PRIOR_ROOT = Independent semantic-equality parity root.
+```
+
+A read-only PostgreSQL 17.9 check confirmed JSONB rewrites `{z,a}` payload order to `{a,z}` and reorders surrounding fields.
+
+### P2-RESAT-03
+
+```text
+TITLE = Credit numeric domain differs between application, Memory, and PostgreSQL
+SEVERITY = P2
+INVARIANT = Credit accounting stays exact and policy-equivalent over the entire accepted numeric domain.
+ROOT_CAUSE = Configuration and provider validation accept any positive JavaScript safe integer; migration 004 stores credit_estimate as PostgreSQL integer and claimCreate casts counts/sum to ::int; Memory reduces unbounded numeric sums without a safe-integer guard.
+EXACT_FILES = src/domain/omr/contracts.ts; src/server/substrate/config.ts; src/server/omr/application-service.ts; src/server/omr/store.ts; src/server/omr/postgres-store.ts; src/server/persistence/migrations/004_omr_core.sql
+EXACT_FUNCTIONS = assertOmrVendorCapabilities; loadProductionOmrConfig; omrQuotaConfig; DurableOmrApplicationService.createJob; MemoryOmrStore.claimCreate; PostgresOmrStore.claimCreate
+FAILURE_SEQUENCE = A syntactically valid deployment ceiling or provider estimate exceeds int32, or aggregate day credit exceeds int32; PostgreSQL insert/aggregate overflows while Memory accepts/evaluates it, and sufficiently large Memory sums can cease to be exact.
+PRODUCT_OR_PROVIDER_IMPACT = Boundary configuration can fail closed or produce store-parity drift; current reference estimates are small, so no ordinary-path bypass was demonstrated.
+CURRENT_TEST_GAP = Tests cover ordinary values and UTC windows, not numeric domain edges/overflow parity.
+MINIMAL_REQUIRED_FIX = Define one explicit bounded integer domain, reject out-of-domain configuration/capabilities before use, and use bigint/numeric aggregation with checked conversion if the domain requires it.
+REGRESSION_TESTS_REQUIRED = Boundary and aggregate overflow tests in Memory and actual PostgreSQL.
+INDEPENDENT_OR_PRIOR_ROOT = Independent numeric hardening root; ordinary UTC/quota/settled-credit closures remain closed.
+```
+
+### P2-RESAT-04
+
+```text
+TITLE = Start/input/cancel commit-ack tests stop before durable apply
+SEVERITY = P2
+INVARIANT = Operation acknowledgement loss after a real durable commit is regression-proven, not inferred from precommit failure.
+ROOT_CAUSE = The test proxy labelled post-effect crash throws before calling target.completeOperation. It covers Vendor-effect/local-precommit failure, not database apply followed by lost acknowledgement; no actual PostgreSQL operation commit-ack test exists.
+EXACT_FILES = src/server/omr/application-service.test.ts; src/server/omr/postgres-store.postgres.test.ts; src/server/omr/application-service.ts
+EXACT_FUNCTIONS = the start/input/cancel post-effect-crash test; DurableOmrApplicationService.start/submitInput/cancel; OmrStore.completeOperation
+FAILURE_SEQUENCE = Missing test sequence: target.completeOperation commits, wrapper throws, service retries/restarts, and exact queued/processing/acceptedInput/cancelled authority must be recovered without a second Vendor effect.
+PRODUCT_OR_PROVIDER_IMPACT = Static control-flow review did not demonstrate a production violation; this is an evidence gap on a material durability boundary.
+CURRENT_TEST_GAP = All three operations omit true apply-then-throw and actual PostgreSQL restart/read-back coverage.
+MINIMAL_REQUIRED_FIX = Add exact operation completion inspection/read-back if required by tests, or prove the current durable-state replay path with true apply-then-throw tests for all three operations.
+REGRESSION_TESTS_REQUIRED = Memory wrapper that commits then throws plus actual PostgreSQL commit/restart/retry tests for idempotent and non-idempotent capabilities.
+INDEPENDENT_OR_PRIOR_ROOT = Test-evidence gap on the operation durability surface, not a reopened page/result commit-ack root.
+```
+
+### Audit campaigns and gate
+
+```text
+npm ci                                      PASS — 447 added, 448 audited, 0 vulnerabilities
+npm run typecheck                           PASS
+npm run lint                                PASS
+npm test                                    PASS — 66 files/663 tests
+npm run test:postgres                       PASS — PostgreSQL 17.9, migrations 1–8, 1 file/7 tests
+npm run build                               PASS — Next.js 16.3.0
+git diff --check                            PASS
+Segment B determinism                       PASS — 1 targeted test, 101 complete executions
+OMR determinism                             PASS — 1 targeted test, 101 permutations
+frozen authority                            PASS — 2 files/7 tests
+protected musical-authority diff            PASS — 0
+temporary production/test probe diff        PASS — 0 remaining
+CYBER_SECURITY_AUDIT                        NOT_PERFORMED
+```
+
+Prior `P1-01..P1-07`, `P2-01..P2-05`, `P1-SAT-01..03`, and `P2-SAT-04` remain `CLOSED_CONFIRMED` for their exact original invariants. Create certainty/replay/later success/stale fencing, Provider A/B isolation, unavailable historical binding, page/result commit acknowledgement, postcommit audit failure, ordinary delete/cleanup/exposure/settled credit, UTC accounting, and bounded streaming also remain closed. Aggregate browser recovery, PostgreSQL parity, quota numeric completeness, and project readiness are `PARTIAL` or `REOPENED` only because of the independent findings above.
+
+```text
+P0_RESAT_COUNT = 0
+P1_RESAT_COUNT = 3
+P2_RESAT_COUNT = 4
+UNRESOLVED_P0 = 0
+UNRESOLVED_P1 = 3
+UNRESOLVED_P2 = 4
+SEGMENT_D_RESATURATION_AUDIT_COMPLETE = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+```

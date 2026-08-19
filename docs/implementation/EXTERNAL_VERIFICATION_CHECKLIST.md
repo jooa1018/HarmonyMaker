@@ -360,3 +360,27 @@ ULTRA_AUDIT_READY = NO
 ```
 
 Do not infer provider or production certification from these checks. Full re-saturation, Ultra, Step 11, real-provider work, corpus calibration, production live PostgreSQL/S3, and physical-device verification remain outside this closure.
+
+## Full re-saturation audit follow-up
+
+The audit-only software-correctness re-saturation of exact baseline `59fc68573f8bef2ba48568bf23d23e726dfac300` is complete. It performed no cybersecurity assessment and made no production, test, migration, dependency, or configuration change. Repository validation remains green, but green CI does not close the following implementation work:
+
+1. Fence terminal status and capture-failure transitions to the exact observation/lease authority, including Memory and actual PostgreSQL stale-worker regressions (`P1-RESAT-01`).
+2. Give an S3 object durable cleanup authority before or atomically with publication, including the put/reference/compensation triple-failure and restart (`P1-RESAT-02`).
+3. Make `ImportInfo` a true provenance discriminant and bind OMR provenance to persisted source/project integrity across import, reload, and generation (`P1-RESAT-03`).
+4. Add an explicit, ambiguity-safe browser recovery action for malformed/obsolete persisted create requests without automatically rotating a possibly committed idempotency key (`P2-RESAT-01`).
+5. Compare accepted Vendor input canonically across Memory and PostgreSQL JSONB, including commit-ack retry (`P2-RESAT-02`).
+6. Define and enforce one bounded credit numeric domain across configuration, provider capabilities, Memory, schema, and PostgreSQL aggregation (`P2-RESAT-03`).
+7. Add true apply-then-throw start/input/cancel tests, including actual PostgreSQL restart/read-back (`P2-RESAT-04`).
+
+These repository findings are separate from the still-unperformed external verification: real provider selection and credentials; provider recognition accuracy; pricing/refund, retention/deletion, and idempotency/reconciliation contracts; a rights-safe Dev corpus of at least 36 pages and sealed corpus of at least 24 pages; production live PostgreSQL and S3-compatible storage; physical iPhone Safari; and Kakao in-app browser.
+
+```text
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+P0_RESAT_COUNT = 0
+P1_RESAT_COUNT = 3
+P2_RESAT_COUNT = 4
+SEGMENT_D_RESATURATION_AUDIT_COMPLETE = YES
+SEGMENT_D_ACCEPTED = NO
+ULTRA_AUDIT_READY = NO
+```
