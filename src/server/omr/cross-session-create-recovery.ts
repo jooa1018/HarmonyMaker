@@ -13,6 +13,7 @@ export interface OmrCreateRecoveryAuthority {
 }
 
 export interface OmrCreateRecoveryRegistry {
+  withCreateLock<T>(idempotencyKeyHash: string, operation: () => Promise<T>): Promise<T>;
   lookupCreate(idempotencyKeyHash: string): Promise<OmrCreateRecoveryAuthority | undefined>;
   recordCreate(input: OmrCreateRecoveryAuthority & { readonly idempotencyKeyHash: string }): Promise<void>;
   grantSessionAlias(jobId: PrivateRowId, sessionId: PrivateRowId, now: string): Promise<void>;
@@ -22,6 +23,21 @@ export interface OmrCreateRecoveryRegistry {
 export class MemoryOmrCreateRecoveryRegistry implements OmrCreateRecoveryRegistry {
   private readonly creates = new Map<string, OmrCreateRecoveryAuthority>();
   private readonly aliases = new Map<PrivateRowId, Set<PrivateRowId>>();
+  private readonly gates = new Map<string, Promise<void>>();
+
+  async withCreateLock<T>(idempotencyKeyHash: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.gates.get(idempotencyKeyHash) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const queued = previous.then(() => gate);
+    this.gates.set(idempotencyKeyHash, queued);
+    await previous;
+    try { return await operation(); }
+    finally {
+      release();
+      if (this.gates.get(idempotencyKeyHash) === queued) this.gates.delete(idempotencyKeyHash);
+    }
+  }
 
   async lookupCreate(idempotencyKeyHash: string): Promise<OmrCreateRecoveryAuthority | undefined> {
     const value = this.creates.get(idempotencyKeyHash);
@@ -56,11 +72,24 @@ export class MemoryOmrCreateRecoveryRegistry implements OmrCreateRecoveryRegistr
 export class PostgresOmrCreateRecoveryRegistry implements OmrCreateRecoveryRegistry {
   constructor(private readonly database: Pool) {}
 
+  async withCreateLock<T>(idempotencyKeyHash: string, operation: () => Promise<T>): Promise<T> {
+    const client = await this.database.connect();
+    const lockDomain = `hm-omr-create-recovery-v1:${idempotencyKeyHash}`;
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [lockDomain]);
+      return await operation();
+    } finally {
+      await client.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [lockDomain]).catch(() => undefined);
+      client.release();
+    }
+  }
+
   async lookupCreate(idempotencyKeyHash: string): Promise<OmrCreateRecoveryAuthority | undefined> {
     const result = await this.database.query(
       `SELECT i.owner_session_id,i.job_id,i.request_digest
        FROM omr_create_idempotency i
-       WHERE i.key_hash=$1`,
+       WHERE i.key_hash=$1
+       ORDER BY i.job_id`,
       [idempotencyKeyHash],
     );
     if (!result.rows[0]) return undefined;
@@ -72,30 +101,43 @@ export class PostgresOmrCreateRecoveryRegistry implements OmrCreateRecoveryRegis
     };
   }
 
-  async recordCreate(): Promise<void> {
-    // PostgreSQL uses omr_create_idempotency itself as the global recovery
-    // ledger. Migration 015 makes key_hash globally unique.
+  async recordCreate(_input: OmrCreateRecoveryAuthority & { readonly idempotencyKeyHash: string }): Promise<void> {
+    // omr_create_idempotency is the durable recovery ledger. The per-key
+    // advisory lock serializes every production claim before this row exists.
   }
 
   async grantSessionAlias(jobId: PrivateRowId, sessionId: PrivateRowId, now: string): Promise<void> {
-    await this.database.query(
-      `INSERT INTO omr_job_session_aliases (job_id,session_id,created_at,last_used_at)
-       VALUES ($1,$2,$3,$3)
-       ON CONFLICT (job_id,session_id) DO UPDATE SET last_used_at=EXCLUDED.last_used_at`,
+    const result = await this.database.query(
+      `INSERT INTO idempotency_records (
+         session_id,operation,key_hash,request_digest,state,response_json,
+         created_at,claim_expires_at,expires_at
+       )
+       SELECT $2,'omr-session-alias-v1',$1,j.owner_session_id::text,'complete',
+         jsonb_build_object('ownerSessionId',j.owner_session_id::text),$3,$3,j.expires_at
+       FROM omr_jobs j WHERE j.id=$1
+       ON CONFLICT (session_id,operation,key_hash) DO UPDATE SET
+         request_digest=EXCLUDED.request_digest,
+         response_json=EXCLUDED.response_json,
+         claim_expires_at=EXCLUDED.claim_expires_at,
+         expires_at=EXCLUDED.expires_at`,
       [jobId, sessionId, now],
     );
+    if (result.rowCount !== 1) throw new RangeError("OMR_CREATE_RECOVERY_INVALID");
   }
 
   async aliasOwnerCandidates(sessionId: PrivateRowId): Promise<readonly PrivateRowId[]> {
     const result = await this.database.query(
-      `SELECT DISTINCT j.owner_session_id
-       FROM omr_job_session_aliases a
-       JOIN omr_jobs j ON j.id=a.job_id
-       WHERE a.session_id=$1
-       ORDER BY j.owner_session_id`,
+      `SELECT DISTINCT response_json->>'ownerSessionId' AS owner_session_id
+       FROM idempotency_records
+       WHERE session_id=$1 AND operation='omr-session-alias-v1'
+         AND state='complete' AND expires_at > now()
+         AND jsonb_typeof(response_json)='object'
+       ORDER BY owner_session_id`,
       [sessionId],
     );
-    return result.rows.map((row) => String(row.owner_session_id) as PrivateRowId);
+    return result.rows.flatMap((row) => typeof row.owner_session_id === "string"
+      ? [row.owner_session_id as PrivateRowId]
+      : []);
   }
 }
 
@@ -115,15 +157,11 @@ async function recoverCreate(
   return recovered;
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && (error as { readonly code?: unknown }).code === "23505");
-}
-
 /**
  * Adds one global high-entropy K1 recovery authority without changing the
  * ordinary OmrStore state machine. The original job owner remains the durable
- * object owner; a replacement anonymous session receives an explicit job
- * alias only after presenting the same K1 hash and exact request digest.
+ * object owner; a replacement anonymous session receives a bounded durable
+ * job alias only after presenting the same K1 hash and exact request digest.
  */
 export function withCrossSessionOmrCreateRecovery(
   base: OmrStore,
@@ -135,19 +173,20 @@ export function withCrossSessionOmrCreateRecovery(
     return await recoverCreate(base, registry, input) ?? direct;
   };
 
-  const claimCreate: OmrStore["claimCreate"] = async (input) => {
-    const recovered = await recoverCreate(base, registry, {
-      ownerSessionId: input.ownerSessionId,
-      idempotencyKeyHash: input.idempotencyKeyHash,
-      requestDigest: input.requestDigest,
-      vendorCreateLeaseExpiresAt: input.record.vendorCreateLeaseExpiresAt,
-      now: input.now,
-    });
-    if (recovered) {
-      if (recovered.status === "missing") throw new RangeError("OMR_CREATE_RECOVERY_INVALID");
-      return recovered as OmrCreateClaim;
-    }
-    try {
+  const claimCreate: OmrStore["claimCreate"] = async (input) => registry.withCreateLock(
+    input.idempotencyKeyHash,
+    async () => {
+      const recovered = await recoverCreate(base, registry, {
+        ownerSessionId: input.ownerSessionId,
+        idempotencyKeyHash: input.idempotencyKeyHash,
+        requestDigest: input.requestDigest,
+        vendorCreateLeaseExpiresAt: input.record.vendorCreateLeaseExpiresAt,
+        now: input.now,
+      });
+      if (recovered) {
+        if (recovered.status === "missing") throw new RangeError("OMR_CREATE_RECOVERY_INVALID");
+        return recovered as OmrCreateClaim;
+      }
       const claimed = await base.claimCreate(input);
       if (claimed.status === "claimed") {
         await registry.recordCreate({
@@ -158,19 +197,8 @@ export function withCrossSessionOmrCreateRecovery(
         });
       }
       return claimed;
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error;
-      const concurrent = await recoverCreate(base, registry, {
-        ownerSessionId: input.ownerSessionId,
-        idempotencyKeyHash: input.idempotencyKeyHash,
-        requestDigest: input.requestDigest,
-        vendorCreateLeaseExpiresAt: input.record.vendorCreateLeaseExpiresAt,
-        now: input.now,
-      });
-      if (!concurrent || concurrent.status === "missing") throw error;
-      return concurrent as OmrCreateClaim;
-    }
-  };
+    },
+  );
 
   const findOwnedByHandleHash: OmrStore["findOwnedByHandleHash"] = async (handleHash, ownerSessionId, includeInactive) => {
     const direct = await base.findOwnedByHandleHash(handleHash, ownerSessionId, includeInactive);
