@@ -22,9 +22,9 @@ function deferred<T>(): Deferred<T> {
 }
 
 const project = (title: string) => ({ source: { title } }) as HarmonyProject;
-const record = (projectId: string, title = projectId): LocalProjectRecord => ({
+const record = (projectId: string, title = projectId, updatedAt = `2026-08-19T00:00:0${title.length % 10}.000Z`): LocalProjectRecord => ({
   projectId,
-  updatedAt: `2026-08-19T00:00:0${title.length % 10}.000Z`,
+  updatedAt,
   project: project(title),
 });
 
@@ -32,6 +32,7 @@ class ControllableProjectStore implements LocalProjectStore {
   readonly loads = new Map<string, Deferred<LocalProjectRecord | undefined>>();
   readonly saves: LocalProjectRecord[] = [];
   readonly deletes: string[] = [];
+  readonly current = new Map<string, LocalProjectRecord>();
   saveBarrier?: Deferred<void>;
   deleteBarrier?: Deferred<void>;
 
@@ -44,17 +45,37 @@ class ControllableProjectStore implements LocalProjectStore {
   async save(value: LocalProjectRecord): Promise<void> {
     this.saves.push(value);
     await this.saveBarrier?.promise;
+    this.current.set(value.projectId, value);
+  }
+
+  async saveIfCurrent(value: LocalProjectRecord, expectedUpdatedAt: string, isStillCurrent: () => boolean = () => true): Promise<boolean> {
+    const current = this.current.get(value.projectId);
+    if (!current || current.updatedAt !== expectedUpdatedAt || !isStillCurrent()) return false;
+    this.saves.push(value);
+    await this.saveBarrier?.promise;
+    this.current.set(value.projectId, value);
+    return true;
   }
 
   async list(): Promise<readonly Pick<LocalProjectRecord, "projectId" | "updatedAt">[]> { return []; }
   async delete(projectId: string): Promise<void> {
     this.deletes.push(projectId);
     await this.deleteBarrier?.promise;
+    this.current.delete(projectId);
+  }
+  async deleteIfCurrent(projectId: string, expectedUpdatedAt: string, isStillCurrent: () => boolean = () => true): Promise<boolean> {
+    const current = this.current.get(projectId);
+    if (!current || current.updatedAt !== expectedUpdatedAt || !isStillCurrent()) return false;
+    this.deletes.push(projectId);
+    await this.deleteBarrier?.promise;
+    this.current.delete(projectId);
+    return true;
   }
 }
 
 async function load(controller: WorkspaceRouteController, store: ControllableProjectStore, projectId: string, value = record(projectId)) {
   const operation = controller.request(projectId);
+  store.current.set(projectId, value);
   store.loads.get(projectId)!.resolve(value);
   await operation;
 }
@@ -98,7 +119,9 @@ describe("executable workspace route operation controller", () => {
     slowB.resolve(record("B", "late-B"));
     await pendingB;
     expect(controller.state).toEqual({ requestedId: "A", loadStatus: "loading" });
-    newA.resolve(record("A", "new-A"));
+    const currentA = record("A", "new-A");
+    store.current.set("A", currentA);
+    newA.resolve(currentA);
     await backA;
     expect(authoritativeWorkspaceProject(controller.state, "A")?.source.title).toBe("new-A");
   });
@@ -125,7 +148,9 @@ describe("executable workspace route operation controller", () => {
     expect(store.saves).toEqual([{ projectId: "A", updatedAt: "2026-08-19T01:00:00.000Z", project: savedA }]);
 
     const pendingB = controller.request("B");
-    store.loads.get("B")!.resolve(record("B"));
+    const currentB = record("B");
+    store.current.set("B", currentB);
+    store.loads.get("B")!.resolve(currentB);
     await pendingB;
     store.saveBarrier.resolve();
     expect(await save).toEqual({ applied: false, record: store.saves[0] });
@@ -141,7 +166,9 @@ describe("executable workspace route operation controller", () => {
       const completion = deferred<HarmonyProject>();
       const mutation = controller.runMutation("A", async () => completion.promise, "2026-08-19T02:00:00.000Z");
       const pendingB = controller.request("B");
-      store.loads.get("B")!.resolve(record("B"));
+      const currentB = record("B");
+      store.current.set("B", currentB);
+      store.loads.get("B")!.resolve(currentB);
       await pendingB;
       completion.resolve(project("forged-B-retarget"));
       expect(await mutation).toEqual({ applied: false, superseded: true });
@@ -149,6 +176,55 @@ describe("executable workspace route operation controller", () => {
       expect(authoritativeWorkspaceProject(controller.state, "B")?.source.title).toBe("B");
     },
   );
+
+  it("fences a deferred same-ID result after a newer A revision loads", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    await load(controller, store, "A", record("A", "A-v0", "2026-08-19T00:00:00.000Z"));
+    const completion = deferred<HarmonyProject>();
+    const mutation = controller.runMutation("A", async () => completion.promise, "2026-08-19T02:00:00.000Z");
+
+    const reload = controller.request("A");
+    const newer = record("A", "A-v1", "2026-08-19T01:00:00.000Z");
+    store.current.set("A", newer);
+    store.loads.get("A")!.resolve(newer);
+    await reload;
+    completion.resolve(project("A-v0-late"));
+
+    expect(await mutation).toEqual({ applied: false, superseded: true });
+    expect(store.saves).toEqual([]);
+    expect(authoritativeWorkspaceProject(controller.state, "A")?.source.title).toBe("A-v1");
+  });
+
+  it("fences a deferred first-A result after an A→B→A ABA route sequence", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    await load(controller, store, "A", record("A", "A-first", "2026-08-19T00:00:00.000Z"));
+    const completion = deferred<HarmonyProject>();
+    const mutation = controller.runMutation("A", async () => completion.promise, "2026-08-19T03:00:00.000Z");
+
+    await load(controller, store, "B", record("B", "B", "2026-08-19T01:00:00.000Z"));
+    await load(controller, store, "A", record("A", "A-second", "2026-08-19T02:00:00.000Z"));
+    completion.resolve(project("A-first-late"));
+
+    expect(await mutation).toEqual({ applied: false, superseded: true });
+    expect(store.saves).toEqual([]);
+    expect(authoritativeWorkspaceProject(controller.state, "A")?.source.title).toBe("A-second");
+  });
+
+  it("lets exactly one same-revision compare-and-set save win", async () => {
+    const store = new ControllableProjectStore();
+    const controller = new WorkspaceRouteController(store);
+    await load(controller, store, "A", record("A", "A-v0", "2026-08-19T00:00:00.000Z"));
+    const authority = controller.beginMutation("A").projectId;
+
+    const first = await controller.saveProject("A", project("A-v1"), "2026-08-19T01:00:00.000Z", authority);
+    const second = await controller.saveProject("A", project("A-v2"), "2026-08-19T01:00:00.000Z", authority);
+
+    expect(first.applied).toBe(true);
+    expect(second.applied).toBe(false);
+    expect(store.current.get("A")?.project.source.title).toBe("A-v1");
+  });
 
   it("classifies a mismatched IndexedDB record key as corrupt", async () => {
     const store = new ControllableProjectStore();
@@ -169,7 +245,9 @@ describe("executable workspace route operation controller", () => {
     const deletion = deleteWorkspaceProjectAndNavigate(controller, "A", navigate);
     expect(store.deletes).toEqual(["A"]);
     const pendingB = controller.request("B");
-    store.loads.get("B")!.resolve(record("B"));
+    const currentB = record("B");
+    store.current.set("B", currentB);
+    store.loads.get("B")!.resolve(currentB);
     await pendingB;
     store.deleteBarrier.resolve();
 
