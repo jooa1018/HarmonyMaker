@@ -52,11 +52,15 @@ export class ShareStoreService {
   private async prepare(input: { readonly ownerSessionId: PrivateRowId; readonly payload: PracticeSharePayload; readonly rightsBasis: RightsBasis; readonly now?: Date; readonly forceStore?: boolean }): Promise<PreparedShareCreation> {
     if (!isPracticeSharePayload(input.payload) || input.payload.rightsShareConfirmed !== true) throw new RangeError("SHARE_RIGHTS_REQUIRED");
     const plaintext = payloadBytes(input.payload);
+    let canonicalDecoded: PracticeSharePayload;
+    try { canonicalDecoded = decodePracticeShare(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)); }
+    catch { throw new RangeError("SHARE_PAYLOAD_INVALID"); }
+    if (encodePracticeShare(canonicalDecoded) !== encodePracticeShare(input.payload)) throw new RangeError("SHARE_ROUNDTRIP_FAILED");
     const encodedUrl = encodeUrlShare(input.payload);
-    const decoded = decodeUrlShare(encodedUrl);
-    if (encodePracticeShare(decoded) !== encodePracticeShare(input.payload)) throw new RangeError("SHARE_ROUNDTRIP_FAILED");
     const payloadDigest = await semanticDigest(input.payload);
     if (!input.forceStore && Buffer.byteLength(encodedUrl, "utf8") <= URL_SHARE_MAX_ENCODED_BYTES) {
+      const decoded = decodeUrlShare(encodedUrl);
+      if (encodePracticeShare(decoded) !== encodePracticeShare(input.payload)) throw new RangeError("SHARE_ROUNDTRIP_FAILED");
       return { choice: { kind: "url", fragment: encodedUrl, payloadDigest } };
     }
     if (plaintext.byteLength > SHARE_MAX_PLAINTEXT_BYTES) throw new RangeError("SHARE_PAYLOAD_TOO_LARGE");

@@ -14,7 +14,7 @@ import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.tes
 import { QuotaAndIdempotencyService, SHARE_CREATE_PER_HOUR } from "../security/quota-core";
 import { createShareIdempotently, SHARE_CREATE_REPLAY_RETENTION_DAYS } from "./idempotent-create";
 import { readShareWithIpQuota } from "./quota-read";
-import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS } from "./share-store-core";
+import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS, URL_SHARE_MAX_ENCODED_BYTES } from "./share-store-core";
 
 const digest = "0".repeat(64) as SemanticDigest;
 const key = (fill: number) => Uint8Array.from({ length: 32 }, () => fill);
@@ -51,6 +51,21 @@ function payloadV4(measureCount = 8): PracticeSharePayload {
         : { kind: "generated-harmony", label: index === 1 ? "Upper / H1" : "Lower / H2", harmonyRole: index === 1 ? "H1" : "H2", placementRoles: [index === 1 ? "upper" : "lower"], events: track.events }),
     },
   };
+}
+
+function deterministicNoise(seed: number, length: number): string {
+  let state = seed >>> 0;
+  let result = "";
+  for (let index = 0; index < length; index += 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    result += String.fromCharCode(33 + (state % 90));
+  }
+  return result;
+}
+
+function storeSizedPayload(): PracticeSharePayload {
+  const base = payloadV4(64);
+  return { ...base, lyrics: base.lyrics.map((token, index) => ({ ...token, text: deterministicNoise(index + 1, 512) })) };
 }
 
 describe("ShareStore and URL share", () => {
@@ -110,6 +125,21 @@ describe("ShareStore and URL share", () => {
     expect(raw).not.toContain(durable.token);
     expect(raw).not.toContain(durable.ownerDeleteSecret);
     expect(raw).not.toContain("Fixture 64");
+  });
+
+  it("routes an over-URL-cap but bounded payload through idempotent durable creation without forceStore", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const largePayload = storeSizedPayload();
+    expect(new TextEncoder().encode(encodeUrlShare(largePayload)).byteLength).toBeGreaterThan(URL_SHARE_MAX_ENCODED_BYTES);
+    const requestDigest = await semanticDigest({ payload: largePayload, rightsBasis: "self-authored" });
+    const created = await createShareIdempotently({
+      quota, shares, sessionId: owner, sessionQuotaOwner: "session-over-url-cap", payload: largePayload,
+      rightsBasis: "self-authored", idempotencyKey: "request-key-over-url-cap", requestDigest, now,
+    });
+    expect(created).toMatchObject({ status: 201, body: { ok: true, share: { kind: "store" } } });
+    expect(store.shares.size).toBe(1);
   });
 
   it("fails closed for tampering, expiry, wrong delete secret, deletion, and unauthorized takedown", async () => {
