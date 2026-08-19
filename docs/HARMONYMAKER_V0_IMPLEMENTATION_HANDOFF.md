@@ -469,6 +469,62 @@ ULTRA_AUDIT_READY = YES
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started. Provider/corpus/live-service/device evidence remains external.
 
+## Segment D deployment contract freeze and final bounded acceptance audit
+
+This audit-only freeze started from exact remote HEAD `80d598e6567a5d96e50604c561287b7f7cd94fb9`, clean worktree and `0/0` local/remote divergence. Production code remains exactly code checkpoint `85e8913c7095caacee6a41661fe20485343b3124`; the starting HEAD is its four-document-only direct descendant.
+
+### V0_INITIAL_PRODUCTION_DEPLOYMENT_CONTRACT
+
+1. Initial HarmonyMaker v0 production starts with a clean PostgreSQL database and clean S3-compatible storage.
+2. Migrations `1` through current latest are applied sequentially before application traffic is admitted.
+3. Persistent data from an intermediate pre-production migration, local development, or ephemeral CI fixture is outside the production compatibility contract.
+4. The exact migration/version at the first live production start must be recorded as the future production upgrade baseline.
+5. Every migration after that recorded baseline must preserve existing production durable-data compatibility.
+6. Current repository acceptance covers fresh `1 -> latest`, the latest schema and application code, and repository-supported restart/retry/concurrency paths.
+7. Hypothetical arbitrary data created at an undeployed historical intermediate schema is not a Segment D P0/P1 gate blocker.
+8. Fresh-migration failure, current-schema corruption, supported-path loss/duplication/false authority, active-object loss, current restart/retry failure, or a post-baseline compatibility regression remains a gate blocker.
+
+Deployment evidence contains one GitHub deployment labelled `Production` at SHA `6b579da524c802f92d5f6dd52d1e230640273cc0`; that tree contains only `docs/HARMONYMAKER_SPEC_v2.3.1.md`, predates every application, PostgreSQL, S3, and migration path, and its GitHub deployment record has `production_environment=false`. All 94 later recorded deployments are Vercel `Preview`; no release exists. Repository handoff/evidence consistently records production-live PostgreSQL/S3 as unperformed external verification. Therefore there is no repository/deployment evidence of pre-011 production PostgreSQL or S3 durable data and no supported pre-011 production baseline.
+
+`P1-RESAT-02-F` is consequently `NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`. Its hypothetical legacy-readability impact would be material if that unsupported durable state existed, but it is not reachable from the frozen deployment contract or current-schema creation lifecycle and requires unsupported historical state:
+
+```text
+SUPPORTED_DEPLOYMENT_REACHABLE = NO
+CURRENT_SCHEMA_REACHABLE = NO
+MATERIAL_PRODUCT_IMPACT = YES (conditional on the unsupported legacy premise)
+REQUIRES_UNSUPPORTED_HISTORICAL_STATE = YES
+```
+
+A new Segment D gate finding must be reachable, current-schema reachable, materially affect the product, and not require unsupported historical state (`YES/YES/YES/NO`). The bounded audit covered create certainty/idempotency, browser recovery, provider binding, page/start/input/cancel, status/result capture, commit acknowledgement, generation-isolated object publication with ambiguous Put/Delete and cleanup restart, quota/credit, persisted OMR readiness, Memory/PostgreSQL parity, fresh migrations `1 -> 11`, and frozen musical authority. No supported P0/P1 or nonblocking new P2 was found.
+
+```text
+npm ci                         PASS — 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS — zero warnings/errors
+npm test                       PASS — 66 files/689 tests
+npm run test:postgres          PASS — actual PostgreSQL 17.11, fresh migrations 1–11, 1 file/22 tests
+npm run build                  PASS — Next.js 16.3.0
+git diff --check               PASS
+Segment B 101-run              PASS — 1 targeted test, 5 skipped
+OMR 101-run                    PASS — 1 file/1 test
+frozen authority               PASS — 2 files/7 tests, six hashes and 99 codes exact
+production diff from 85e8913  0
+```
+
+```text
+P1_RESAT_02_F = NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH
+SUPPORTED_P0 = 0
+SUPPORTED_P1 = 0
+NONBLOCKING_P2 = 0
+HISTORICAL_NA_FINDINGS = 1
+SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT = COMPLETE
+SEGMENT_D_GATE_FROZEN = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+The additive commit containing this section changes only the four authorized documents; its exact SHA and terminal GitHub Actions/Vercel evidence are reported after push. Gate reopening now requires a concrete reproducible defect in an actually supported path, P0/P1 material impact, and exact current-code evidence. Ultra and Step 11 were not started. Real-provider/commercial contract, rights-safe corpus, production-live PostgreSQL/S3, and physical iPhone/Kakao verification remain external.
+
 ## Final ambiguous Delete / physical-key isolation closure
 
 This software-reliability-only closure started from exact remote HEAD `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e`, with a clean worktree, `0/0` divergence, and verified ancestors `9684b3fd230bb52e4b4a6664aeff3d9beabfea2e` and `bfadfad1d4bc04e11d348c1270976802a1dc4acc`. Additive implementation-and-test checkpoint `85e8913c7095caacee6a41661fe20485343b3124` closes `P1-RESAT-02-E`.
@@ -511,3 +567,7 @@ ULTRA_AUDIT_READY = YES
 ```
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or physical-device work was started. Provider/corpus/live-service/device evidence remains external.
+
+### Final authority ordering
+
+The later-written **Segment D deployment contract freeze and final bounded acceptance audit** section is the final gate authority over the preceding chronological closure record: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, `SUPPORTED_P0=0`, `SUPPORTED_P1=0`, `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`.

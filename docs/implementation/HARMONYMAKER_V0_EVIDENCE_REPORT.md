@@ -815,6 +815,47 @@ ULTRA_AUDIT_READY = YES
 
 External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.
 
+## Deployment contract freeze and final supported-path evidence
+
+| Evidence | Result |
+|---|---|
+| Starting authority | Remote/local exact `80d598e6567a5d96e50604c561287b7f7cd94fb9`, clean, divergence `0/0`; direct documentation-only child of code checkpoint `85e8913c7095caacee6a41661fe20485343b3124` |
+| Initial production contract | Clean PostgreSQL + clean S3-compatible storage; sequential migrations `1 -> latest` before traffic; record first live migration/version as all-future-upgrade baseline |
+| Historical data policy | Pre-production intermediate migration fixtures, local data, and ephemeral CI data are unsupported; compatibility is mandatory from the recorded first-production baseline onward |
+| Deployment-history search | 95 GitHub deployments: 94 `Preview`; one early `Production` label at `6b579da...` whose complete tree is one documentation file and predates application, persistence, S3, and migrations; no releases |
+| Live durable evidence | Repository handoffs repeatedly classify production-live PostgreSQL/S3 as unperformed external verification; no evidence of pre-011 production PostgreSQL or S3 durable data exists |
+| P1-RESAT-02-F | `NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`; unsupported/current reachability `NO/NO`, conditional materiality `YES`, unsupported historical prerequisite `YES` |
+| Gate severity rule | A blocker must be supported-reachable/current/material and not require unsupported historical state: `YES/YES/YES/NO` |
+| Current publication | Generation-specific physical keys, exact ledger, ambiguous Put/Delete outcome, three-generation isolation, cleanup restart, active read protection remain covered |
+| Current supported matrix | create/replay/browser/provider/page/operations/status/capture/commit-ack/publication/cleanup/quota/readiness/Memory-PostgreSQL/frozen paths reviewed; no supported P0/P1 or new P2 |
+| Production code | No changes; diff between code checkpoint and starting/final audit code is zero |
+
+```text
+npm ci                         PASS — npm 11.6.2, 451 added, 452 audited, 0 vulnerabilities
+npm run typecheck              PASS
+npm run lint                   PASS
+npm test                       PASS — 66 files/689 tests
+npm run test:postgres          PASS — actual PostgreSQL 17.11, fresh migrations 1–11, 1 file/22 tests
+npm run build                  PASS — Next.js 16.3.0
+git diff --check               PASS
+Segment B 101-run              PASS — 1 targeted/5 skipped
+OMR 101-run                    PASS — 1/1
+frozen authority               PASS — 2 files/7 tests, six hashes and 99 codes exact
+```
+
+```text
+SUPPORTED_P0 = 0
+SUPPORTED_P1 = 0
+NONBLOCKING_P2 = 0
+HISTORICAL_NA_FINDINGS = 1
+SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT = COMPLETE
+SEGMENT_D_GATE_FROZEN = YES
+SEGMENT_D_ACCEPTED = YES
+ULTRA_AUDIT_READY = YES
+```
+
+The containing additive commit modifies only the four authorized handoff/evidence documents. Its immutable SHA and exact terminal GitHub Actions/Vercel evidence are recorded in the external completion report after push. Production-live services, real-provider/commercial contracts, rights-safe corpus and physical-device evidence remain external; Ultra and Step 11 were not started.
+
 ## P1-RESAT-02-E ambiguous Delete / physical-key isolation evidence
 
 The exact starting remote HEAD was `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e`; the worktree was clean and local/remote divergence was `0/0`. Additive code checkpoint `85e8913c7095caacee6a41661fe20485343b3124` is the implementation authority.
@@ -916,3 +957,7 @@ ULTRA_AUDIT_READY = YES
 ```
 
 External provider, corpus, production-live-service, and physical-device verification remains outside this repository-only closure. Ultra and Step 11 were not started.
+
+### Final authority ordering
+
+The **Deployment contract freeze and final supported-path evidence** section is the final evidence authority over the preceding chronological closure record: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, supported P0/P1 `0/0`, historical N/A `1`, and `SEGMENT_D_GATE_FROZEN=YES`.

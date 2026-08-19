@@ -571,3 +571,24 @@ ULTRA_AUDIT_READY = YES
 ```
 
 External verification still remaining, and not part of this repository-only closure: real-provider selection/credentials/recognition accuracy and commercial/retention/idempotency contracts; rights-safe Dev `>=36` and sealed `>=24` corpora; production live PostgreSQL/S3; physical iPhone Safari; and Kakao in-app browser.
+
+## Segment D deployment-contract freeze checklist
+
+Baseline: exact clean remote HEAD `80d598e6567a5d96e50604c561287b7f7cd94fb9`, divergence `0/0`; production code remains checkpoint `85e8913c7095caacee6a41661fe20485343b3124`.
+
+- [x] `V0_INITIAL_PRODUCTION_DEPLOYMENT_CONTRACT` requires clean PostgreSQL and clean S3-compatible storage for first production start.
+- [x] Migrations `1 -> latest` must complete before initial traffic; the first live migration/version becomes the mandatory future upgrade baseline.
+- [x] Compatibility after that recorded production baseline is mandatory.
+- [x] Undeployed intermediate migration fixtures, local data, and ephemeral CI data are outside the production compatibility contract.
+- [x] The sole historical GitHub `Production` label points to SHA `6b579da524c802f92d5f6dd52d1e230640273cc0`, whose entire tree is one documentation file and contains no application/DB/S3 path; its deployment record says `production_environment=false`.
+- [x] All 94 later GitHub/Vercel deployment records are `Preview`; there are no releases and no repository/deployment evidence of pre-011 production PostgreSQL/S3 durable data.
+- [x] `P1-RESAT-02-F = NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH` (`SUPPORTED_DEPLOYMENT_REACHABLE=NO`, `CURRENT_SCHEMA_REACHABLE=NO`, conditional `MATERIAL_PRODUCT_IMPACT=YES`, `REQUIRES_UNSUPPORTED_HISTORICAL_STATE=YES`).
+- [x] A gate blocker now requires the exact matrix `YES/YES/YES/NO` for supported reachability, current-schema reachability, material impact, and unsupported-historical-state dependency.
+- [x] Current generation-specific keys, exact ledger, ambiguous Put/Delete authority, three-generation isolation, current Head/Get, cleanup restart/reclaim, and active-current protection remain green.
+- [x] Fresh actual PostgreSQL 17.11 migrations `1 -> 11` passed with 1 file/22 integration tests.
+- [x] Clean install, typecheck, lint, 66-file/689-test default suite, build, and diff check passed.
+- [x] Segment B 101-run, OMR 101-run, and frozen authority 2 files/7 tests passed; production diff from code checkpoint is zero.
+- [x] `SUPPORTED_P0=0`, `SUPPORTED_P1=0`, `NONBLOCKING_P2=0`, `HISTORICAL_NA_FINDINGS=1`.
+- [x] `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, `ULTRA_AUDIT_READY=YES`.
+
+The documentation-only containing commit receives exact-SHA GitHub Actions and Vercel terminal verification after push. Reopening requires a concrete reproducible current-code defect on a supported deployment path with P0/P1 material impact. Still external: real provider and commercial/retention evidence, rights-safe Dev/sealed corpora, production-live PostgreSQL/S3, physical iPhone Safari, and Kakao in-app browser. Ultra and Step 11 were not started.

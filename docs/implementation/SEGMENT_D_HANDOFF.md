@@ -949,6 +949,60 @@ ULTRA_AUDIT_READY = YES
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.
 
+### Final authority ordering
+
+The **Deployment contract freeze / final Segment D acceptance handoff** section is the final gate authority over the preceding chronological closure record: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`.
+
+## Deployment contract freeze / final Segment D acceptance handoff
+
+This bounded audit began at exact clean remote HEAD `80d598e6567a5d96e50604c561287b7f7cd94fb9`, divergence `0/0`. Production code remains checkpoint `85e8913c7095caacee6a41661fe20485343b3124`; this audit changes documentation/gate policy only.
+
+```text
+V0_INITIAL_PRODUCTION_DEPLOYMENT_CONTRACT
+initial database             clean PostgreSQL
+initial object storage       clean S3-compatible storage
+schema before traffic        sequential migrations 1 -> latest (currently 11)
+future compatibility base    exact first live migration/version, recorded at deployment
+post-baseline upgrades       preserve all production durable data
+unsupported history          undeployed intermediate migration/local/ephemeral fixture data
+current acceptance           latest code/schema + fresh apply + supported restart/retry/concurrency
+still blocking               supported-path loss, duplication, false authority, active loss,
+                             current restart failure, fresh-apply failure, post-baseline regression
+```
+
+Repository/deployment history supplies no pre-011 production durable-data evidence. The one deployment labelled `Production` is SHA `6b579da524c802f92d5f6dd52d1e230640273cc0`; its entire Git tree is a single documentation file, it predates the application/persistence/S3/migration implementation, and GitHub records `production_environment=false`. Every later deployment record (94) is `Preview`, there are no releases, and repository handoffs classify production-live PostgreSQL/S3 as unperformed external verification.
+
+Therefore `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`:
+
+```text
+SUPPORTED_DEPLOYMENT_REACHABLE          NO
+CURRENT_SCHEMA_REACHABLE                NO
+MATERIAL_PRODUCT_IMPACT                 YES — only if unsupported legacy durable state existed
+REQUIRES_UNSUPPORTED_HISTORICAL_STATE   YES
+```
+
+Future findings reopen the gate only with `YES/YES/YES/NO` for those four fields and concrete exact-current-code reproduction. The final supported-path audit reviewed create certainty/idempotency; browser replay/fresh recovery; provider binding; page/start/input/cancel; status/result capture; commit acknowledgement; generation-isolated publication including ambiguous Put/Delete, cleanup/restart and active reads; quota/credit; project readiness; fresh migrations; Memory/PostgreSQL parity; and frozen musical authority.
+
+```text
+local default suite           PASS — 66 files/689 tests
+actual PostgreSQL 17.11       PASS — fresh migrations 1–11, 1 file/22 tests
+typecheck/lint/build/diff     PASS
+Segment B 101 / OMR 101       PASS
+frozen authority              PASS — 2 files/7 tests, six hashes, 99 codes
+production code diff          0
+
+SUPPORTED_P0                  0
+SUPPORTED_P1                  0
+NONBLOCKING_P2                0
+HISTORICAL_NA_FINDINGS        1
+SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT   COMPLETE
+SEGMENT_D_GATE_FROZEN         YES
+SEGMENT_D_ACCEPTED            YES
+ULTRA_AUDIT_READY             YES
+```
+
+The additive documentation-only commit containing this section is the final handoff-inclusive remote HEAD and receives exact-SHA Actions/Vercel verification after push. Production-live PostgreSQL/S3, real provider/commercial evidence, rights-safe corpus, and physical iPhone/Kakao verification remain external. Ultra and Step 11 were not started.
+
 ## Final ambiguous Delete / physical-key isolation handoff
 
 Starting remote HEAD `0da22cdb2f937a3fdcc063090c3a7d10b5217d6e` matched exactly, clean and `0/0`. Code checkpoint `85e8913c7095caacee6a41661fe20485343b3124` closes the sole reopened `P1-RESAT-02-E` branch.
@@ -1057,3 +1111,7 @@ ULTRA_AUDIT_READY = YES
 ```
 
 No Ultra, Step 11, real provider, corpus calibration, production live service, or device verification was started. External provider/corpus/live-service/device evidence remains separately outstanding.
+
+### Final frozen-gate authority
+
+The **Deployment contract freeze / final Segment D acceptance handoff** section is the final authority over every chronological closure section above: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`.
