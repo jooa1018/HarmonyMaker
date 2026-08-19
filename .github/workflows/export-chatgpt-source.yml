@@ -1,5 +1,6 @@
 name: Export ChatGPT closure source
 
+# Temporary CI-only source snapshot for independent closure validation.
 on:
   push:
     branches:
