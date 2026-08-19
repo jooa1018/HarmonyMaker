@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt/harmonymaker-ultra-p1-closure
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
