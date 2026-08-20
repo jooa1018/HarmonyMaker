@@ -141,15 +141,21 @@ export function upsertEditedSnapshotHistory(
   return [...snapshots.filter((item) => item.id !== snapshot.id), snapshot];
 }
 
+function uniqueSnapshots(snapshots: readonly EditedArrangementSnapshot[]): readonly EditedArrangementSnapshot[] {
+  const byId = new Map<string, EditedArrangementSnapshot>();
+  for (const snapshot of snapshots) byId.set(snapshot.id, snapshot);
+  return [...byId.values()];
+}
+
 export interface CompactedEditedArrangementHistory {
   readonly outputEdits: readonly ArrangementOutputEdit[];
   readonly editedSnapshots: readonly EditedArrangementSnapshot[];
 }
 
 /**
- * Keeps the active snapshot and as much recent history as fits the explicit
- * current-schema bounds. Edits that no retained snapshot references are
- * discarded; edit ordinals remain immutable and may therefore be sparse.
+ * Keeps the active snapshot and as much newest valid history as fits the explicit
+ * current-schema bounds. Unreferenced edits are discarded, while edit ordinals
+ * remain immutable and may therefore be sparse.
  */
 export function compactEditedArrangementHistory(input: {
   readonly outputEdits: readonly ArrangementOutputEdit[];
@@ -157,28 +163,28 @@ export function compactEditedArrangementHistory(input: {
   readonly activeSnapshotId: string;
 }): CompactedEditedArrangementHistory {
   const editById = new Map(input.outputEdits.map((edit) => [edit.id, edit]));
-  const lastSnapshotIndex = new Map<string, number>();
-  input.editedSnapshots.forEach((snapshot, index) => lastSnapshotIndex.set(snapshot.id, index));
-  const snapshots = input.editedSnapshots.filter((snapshot, index) => lastSnapshotIndex.get(snapshot.id) === index);
+  const snapshots = uniqueSnapshots(input.editedSnapshots);
   const active = snapshots.find((snapshot) => snapshot.id === input.activeSnapshotId);
   if (!active) throw new RangeError("EDIT_HISTORY_ACTIVE_SNAPSHOT_MISSING");
 
-  const retainedIds = new Set<string>();
+  const retainedSnapshots: EditedArrangementSnapshot[] = [];
+  const retainedSnapshotIds = new Set<string>();
   const retainedEditIds = new Set<string>();
   const candidates = [active, ...[...snapshots].reverse().filter((snapshot) => snapshot.id !== active.id)];
   for (const snapshot of candidates) {
-    if (retainedIds.size >= MAX_EDITED_SNAPSHOTS_PER_VARIANT) break;
+    if (retainedSnapshots.length >= MAX_EDITED_SNAPSHOTS_PER_VARIANT) break;
     const snapshotEditIds = [...new Set(snapshot.appliedEditIds)];
     if (snapshotEditIds.some((editId) => !editById.has(editId))) {
       if (snapshot.id === active.id) throw new RangeError("EDIT_HISTORY_ACTIVE_EDIT_MISSING");
       continue;
     }
-    const additional = snapshotEditIds.filter((editId) => !retainedEditIds.has(editId));
-    if (retainedEditIds.size + additional.length > MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT) {
+    const additionalEditIds = snapshotEditIds.filter((editId) => !retainedEditIds.has(editId));
+    if (retainedEditIds.size + additionalEditIds.length > MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT) {
       if (snapshot.id === active.id) throw new RangeError("EDIT_HISTORY_LIMIT_EXCEEDED");
       continue;
     }
-    retainedIds.add(snapshot.id);
+    retainedSnapshots.push(snapshot);
+    retainedSnapshotIds.add(snapshot.id);
     for (const editId of snapshotEditIds) retainedEditIds.add(editId);
   }
 
@@ -186,7 +192,7 @@ export function compactEditedArrangementHistory(input: {
     outputEdits: input.outputEdits
       .filter((edit) => retainedEditIds.has(edit.id))
       .sort((left, right) => left.editOrdinal - right.editOrdinal || left.id.localeCompare(right.id)),
-    editedSnapshots: snapshots.filter((snapshot) => retainedIds.add(snapshot.id)),
+    editedSnapshots: snapshots.filter((snapshot) => retainedSnapshotIds.has(snapshot.id)),
   };
 }
 

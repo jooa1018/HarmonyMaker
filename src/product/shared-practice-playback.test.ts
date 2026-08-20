@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SemanticDigest } from "../domain/digest/canonical";
-import { isPracticeSharePayload, type PracticeSharePayload } from "../domain/share";
+import { isPracticeSharePayload, type PracticeSharePayload, type PracticeSharePayloadV3 } from "../domain/share";
 import { buildPlaybackPlan, buildPlaybackPlanSafely } from "./playback-plan";
 import { resolvePracticePlayerInitialState } from "./ProductPracticePlayer";
 import { materializeSharedPractice, materializeSharedPracticeSafely } from "./shared-practice";
@@ -42,19 +42,25 @@ describe("public PracticeShare playback timing boundary", () => {
   });
 
   it("resolves a legacy selectedTrackIndex against original payload ordering before source-first reconstruction", () => {
-    const base = payload([{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }]);
-    if (base.schemaVersion !== 4) throw new Error("expected v4 share fixture");
-    const candidate: PracticeSharePayload = {
-      ...base,
+    const candidate: PracticeSharePayloadV3 = {
+      schemaVersion: 3,
+      title: "Legacy track order",
+      tempo: { beatUnit: 4, dotted: false, bpm: 80 },
+      key: { tonic: { step: "C", alter: 0 }, mode: "major" },
+      presetId: "standard",
+      arrangementArtifactDigest: digest,
+      effectiveChordTimelineDigest: digest,
       arrangement: {
         measures: [{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }],
         tracks: [
-          { kind: "generated-harmony", label: "Upper / H1", harmonyRole: "H1", placementRoles: ["upper"], events: [] },
+          { kind: "generated-harmony", label: "Upper / H1", events: [] },
           { kind: "source-lead", label: "Lead", events: [] },
-          { kind: "generated-harmony", label: "Lower / H2", harmonyRole: "H2", placementRoles: ["lower"], events: [] },
+          { kind: "generated-harmony", label: "Lower / H2", events: [] },
         ],
       },
+      lyrics: [],
       playbackDefaults: { selectedTrackIndex: 0, speedPercent: 125 },
+      rightsShareConfirmed: true,
     };
     expect(isPracticeSharePayload(candidate)).toBe(true);
     const materialized = materializeSharedPractice(candidate);

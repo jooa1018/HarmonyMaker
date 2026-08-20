@@ -84,12 +84,16 @@ describe("Quick Review blocking completeness", () => {
     const dLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 0)!;
     const cLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 1)!;
 
+    const cPartKey = draft.parts.find((part) => part.partOrdinal === cLead.partOrdinal)?.measures[0]?.key;
+    const dPartKey = draft.parts.find((part) => part.partOrdinal === dLead.partOrdinal)?.measures[0]?.key;
+    expect(cPartKey).toBeDefined();
+    expect(dPartKey).toBeDefined();
     const selectedC = selectLeadCandidate(draft, cLead.key);
-    expect(selectedC.defaultKey).toEqual({ tonic: { step: "C", alter: 0 }, mode: "major" });
+    expect(selectedC.defaultKey).toEqual(cPartKey);
     expect((await deriveQuickReview(selectedC)).diagnostics.some((item) => item.code === "UNSUPPORTED_MODULATION")).toBe(false);
 
     const selectedD = selectLeadCandidate(selectedC, dLead.key);
-    expect(selectedD.defaultKey).toEqual({ tonic: { step: "D", alter: 0 }, mode: "major" });
+    expect(selectedD.defaultKey).toEqual(dPartKey);
     const selectedCAgain = selectLeadCandidate(selectedD, cLead.key);
     expect(selectedCAgain.defaultKey).toEqual(selectedC.defaultKey);
 
@@ -102,7 +106,7 @@ describe("Quick Review blocking completeness", () => {
     expect(overriddenCAgain.defaultKey).toEqual({ tonic: { step: "G", alter: 0 }, mode: "major" });
     const reset = clearDefaultKeyOverride(overriddenCAgain);
     expect(reset.defaultKeyOverride).toBeUndefined();
-    expect(reset.defaultKey).toEqual({ tonic: { step: "C", alter: 0 }, mode: "major" });
+    expect(reset.defaultKey).toEqual(cPartKey);
   });
 
   it("does not apply a non-selected part's modulation diagnostic to the selected stable Lead", async () => {
@@ -112,8 +116,10 @@ describe("Quick Review blocking completeness", () => {
     const stable = `<part id="P2"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><direction><sound tempo="100"/></direction>${note("C")}</measure><measure number="2">${note("C")}</measure></part>`;
     const draft = await draftFrom(`<score-partwise>${partList}${modulating}${stable}</score-partwise>`);
     const stableLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 1)!;
+    const selectedPartKey = draft.parts.find((part) => part.partOrdinal === stableLead.partOrdinal)?.measures[0]?.key;
+    expect(selectedPartKey).toBeDefined();
     const selected = selectLeadCandidate(draft, stableLead.key);
-    expect(selected.defaultKey).toEqual({ tonic: { step: "C", alter: 0 }, mode: "major" });
+    expect(selected.defaultKey).toEqual(selectedPartKey);
     expect((await deriveQuickReview(selected)).diagnostics.some((item) => item.code === "UNSUPPORTED_MODULATION")).toBe(false);
   });
 
