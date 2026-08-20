@@ -1,0 +1,36 @@
+name: Apply ChatGPT P2 replay script
+
+on:
+  push:
+    branches:
+      - chatgpt/harmonymaker-ultra-p2-closure
+    paths:
+      - scripts/apply-p2-replay.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/harmonymaker-ultra-p2-closure
+          fetch-depth: 0
+      - name: Apply replay lifecycle authority
+        run: python scripts/apply-p2-replay.py
+      - name: Commit replay closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply-p2-replay.py
+          if git diff --quiet; then
+            echo "No replay changes required"
+            exit 0
+          fi
+          git config user.name "ChatGPT"
+          git config user.email "chatgpt@openai.com"
+          git add -A
+          git commit -m "fix: honor current Share lifecycle on replay"
+          git push origin HEAD:chatgpt/harmonymaker-ultra-p2-closure
