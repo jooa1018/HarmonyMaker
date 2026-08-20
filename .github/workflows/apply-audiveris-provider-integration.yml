@@ -5,7 +5,7 @@ on:
     branches:
       - chatgpt/harmonymaker-audiveris-provider
     paths:
-      - scripts/apply-audiveris-provider-patch.py.part04
+      - scripts/audiveris-overlay.b64.part04
 
 permissions:
   contents: write
@@ -22,9 +22,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat scripts/apply-audiveris-provider-patch.py.part* > /tmp/apply-audiveris-provider-patch.py
-          python /tmp/apply-audiveris-provider-patch.py
-          rm -f scripts/apply-audiveris-provider-patch.py.part*
+          cat scripts/audiveris-overlay.b64.part* | base64 -d > /tmp/audiveris-overlay.tar.gz
+          tar -xzf /tmp/audiveris-overlay.tar.gz -C .
+          rm -f scripts/audiveris-overlay.b64.part*
+          rm -f scripts/provider-integration.patch.b64.part00
+          rm -f scripts/apply-chatgpt-omr-client-patch.mjs
+          rm -rf scripts/chatgpt-patches
+          rm -f .github/workflows/apply-audiveris-provider-integration.yml
+          rm -f .github/workflows/apply-chatgpt-p1-patches.yml
+          rm -f .github/workflows/export-chatgpt-source.yml
+          rm -f .github/workflows/export-provider-source.yml
       - name: Commit integrated provider
         shell: bash
         run: |
