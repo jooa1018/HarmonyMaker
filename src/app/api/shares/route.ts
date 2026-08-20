@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 import { authorizeMutation, mapApiFailure, parseShareCreateBody, readBoundedShareJson } from "../../../server/http/api";
-import { createShareIdempotently } from "../../../server/share/idempotent-create";
+import { createShareIdempotently, ensureCurrentShareCreateReplay } from "../../../server/share/idempotent-create";
 
 export const runtime = "nodejs";
 
@@ -14,6 +14,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       payload: body.payload, rightsBasis: body.rightsBasis, idempotencyKey: body.idempotencyKey,
       requestDigest: body.requestDigest, now: new Date(),
     });
-    return NextResponse.json(result.body, { status: result.status });
+    const currentResult = await ensureCurrentShareCreateReplay({ result: result, shares: services.shares, now });
+    return NextResponse.json(currentResult.body, { status: currentResult.status });
   } catch (error) { return mapApiFailure(error); }
 }

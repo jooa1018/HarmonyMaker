@@ -94,3 +94,32 @@ export async function recoverShareCreateIdempotently(input: {
   }
   return { status: 200, body: replay };
 }
+function shareReplayAggregateIsActive(value: unknown): boolean {
+  if (value === true) return true;
+  if (!value || typeof value !== "object") return false;
+  const record = value as Readonly<Record<string, unknown>>;
+  return record.lifecycle === "active" || record.status === "active" || record.kind === "active";
+}
+
+export async function ensureCurrentShareCreateReplay<T extends { readonly status: number; readonly body: unknown }>(input: {
+  readonly result: T;
+  readonly shares: ShareStoreService;
+  readonly now: Date;
+}): Promise<T | { readonly status: 409; readonly body: { readonly ok: false; readonly error: { readonly code: "SHARE_CREATE_REPLAY_RETIRED"; readonly messageKo: string } } }> {
+  if (input.result.status !== 200 || !input.result.body || typeof input.result.body !== "object") return input.result;
+  const body = input.result.body as Readonly<Record<string, unknown>>;
+  if (body.ok !== true || typeof body.token !== "string" || typeof body.ownerDeleteSecret !== "string") return input.result;
+  try {
+    const aggregate = await (input.shares as unknown as {
+      readonly reconcileOwnerAuthority: (request: { readonly token: string; readonly ownerDeleteSecret: string; readonly now: Date }) => Promise<unknown>;
+    }).reconcileOwnerAuthority({ token: body.token, ownerDeleteSecret: body.ownerDeleteSecret, now: input.now });
+    if (shareReplayAggregateIsActive(aggregate)) return input.result;
+  } catch {
+    // A cached successful response is lower authority than the current durable lifecycle.
+  }
+  return {
+    status: 409,
+    body: { ok: false, error: { code: "SHARE_CREATE_REPLAY_RETIRED", messageKo: "이전 공유는 더 이상 active 상태가 아닙니다. 명시적으로 새 공유를 시작해 주세요." } },
+  };
+}
+
