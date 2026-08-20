@@ -23,6 +23,7 @@ jobs:
           rm -f scripts/provider-integration.patch.b64.part00
           rm -f scripts/apply-chatgpt-omr-client-patch.mjs
           rm -rf scripts/chatgpt-patches
+          rm -f .github/workflows/audiveris-provider.yml
           rm -f .github/workflows/apply-audiveris-provider-integration.yml
           rm -f .github/workflows/apply-chatgpt-p1-patches.yml
           rm -f .github/workflows/export-chatgpt-source.yml
