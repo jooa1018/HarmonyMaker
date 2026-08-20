@@ -1,0 +1,47 @@
+name: Apply ChatGPT P2 wave
+
+on:
+  push:
+    branches:
+      - chatgpt/harmonymaker-ultra-p2-closure
+    paths:
+      - scripts/p2-wave1.patch.b64.part3
+      - scripts/p2-wave2.patch.b64.part3
+      - scripts/p2-wave3.patch.b64.part3
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/harmonymaker-ultra-p2-closure
+          fetch-depth: 0
+      - name: Apply pending deterministic patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          for wave in 1 2 3; do
+            if [[ -f "scripts/p2-wave${wave}.patch.b64.part3" ]]; then
+              cat scripts/p2-wave${wave}.patch.b64.part* | base64 -d > "/tmp/p2-wave${wave}.patch"
+              git apply -p1 --check "/tmp/p2-wave${wave}.patch"
+              git apply -p1 "/tmp/p2-wave${wave}.patch"
+              rm -f scripts/p2-wave${wave}.patch.b64.part*
+            fi
+          done
+      - name: Commit patched files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "No patch changes required"
+            exit 0
+          fi
+          git config user.name "ChatGPT"
+          git config user.email "chatgpt@openai.com"
+          git add -A
+          git commit -m "fix: close Ultra P2 wave"
+          git push origin HEAD:chatgpt/harmonymaker-ultra-p2-closure
