@@ -68,16 +68,21 @@ export function trackRoleHasPlacement(metadata: ProductTrackRoleMetadata, role: 
 }
 
 export function practiceShareTrackRoles(
-  tracks: readonly { readonly kind: "source-lead" | "generated-harmony"; readonly label: string }[],
+  tracks: readonly (
+    | { readonly kind: "source-lead"; readonly label: string }
+    | { readonly kind: "generated-harmony"; readonly label: string; readonly harmonyRole?: CandidateHarmonyRole; readonly placementRoles?: readonly VocalPlacementRole[] }
+  )[],
 ): ProductTrackRoleRegistry {
   const generated = tracks.filter((track) => track.kind === "generated-harmony").map((track): ProductTrackRoleMetadata => {
-    const match = /^(Upper|Lower|Upper\/Lower) \/ (H[12])$/u.exec(track.label);
-    if (!match) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
-    const placementText = match[1];
-    const harmonyRole = match[2] as CandidateHarmonyRole;
-    const placements = placementText === "Upper/Lower"
-      ? [{ phraseId: "share:phrase:upper", placementRole: "upper" as const }, { phraseId: "share:phrase:lower", placementRole: "lower" as const }]
-      : [{ phraseId: "share:phrase:0", placementRole: placementText.toLowerCase() as VocalPlacementRole }];
+    let harmonyRole = track.harmonyRole;
+    let placementRoles = track.placementRoles;
+    if (!harmonyRole || !placementRoles) {
+      const match = /^(Upper|Lower|Upper\/Lower) \/ (H[12])$/u.exec(track.label);
+      if (!match) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
+      harmonyRole = match[2] as CandidateHarmonyRole;
+      placementRoles = match[1] === "Upper/Lower" ? ["upper", "lower"] : [match[1].toLowerCase() as VocalPlacementRole];
+    }
+    const placements = placementRoles.map((placementRole, index) => ({ phraseId: `share:phrase:${index}`, placementRole }));
     return { trackPlanId: `share:track:${harmonyRole.toLowerCase()}`, harmonyRole, placements, label: track.label };
   });
   if (new Set(generated.map((entry) => entry.harmonyRole)).size !== generated.length) throw new RangeError("SHARE_TRACK_ROLE_INVALID");

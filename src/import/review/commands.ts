@@ -34,9 +34,17 @@ export function selectLeadCandidate(
   draft: MusicXmlImportDraft,
   candidateKey: string,
 ): MusicXmlImportDraft {
-  return draft.leadCandidates.some((candidate) => candidate.key === candidateKey)
-    ? { ...draft, selectedLeadStaffKey: candidateKey }
-    : draft;
+  const candidate = draft.leadCandidates.find((item) => item.key === candidateKey);
+  if (!candidate) return draft;
+  const selectedLeadKey = draft.parts.find((part) => part.partOrdinal === candidate.partOrdinal)
+    ?.measures[0]?.key;
+  const { defaultKey: _previousPartKey, ...withoutDefaultKey } = draft;
+  void _previousPartKey;
+  return {
+    ...withoutDefaultKey,
+    selectedLeadStaffKey: candidateKey,
+    ...(selectedLeadKey ? { defaultKey: selectedLeadKey } : {}),
+  };
 }
 
 export function setDefaultKey(

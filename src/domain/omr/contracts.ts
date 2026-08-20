@@ -99,6 +99,77 @@ export type VendorInputResponse =
   | { readonly kind: "confirm-page-order"; readonly requestId: string; readonly pageIndices: readonly number[] }
   | { readonly kind: "vendor-specific"; readonly requestId: string; readonly schemaId: string; readonly payload: Readonly<Record<string, string | number | boolean>> };
 
+export const VENDOR_INPUT_REQUEST_LIMITS = Object.freeze({
+  requestIdLength: 128,
+  choices: 64,
+  choiceLength: 128,
+  schemaIdLength: 128,
+  payloadEntries: 32,
+  payloadKeyLength: 128,
+  payloadStringLength: 4_096,
+  payloadBytes: 8_192,
+});
+
+function boundedVendorRequestId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0
+    && value.length <= VENDOR_INPUT_REQUEST_LIMITS.requestIdLength
+    && new TextEncoder().encode(value).byteLength <= VENDOR_INPUT_REQUEST_LIMITS.requestIdLength;
+}
+
+function boundedUtf8(value: unknown, maxBytes: number, allowEmpty = false): value is string {
+  return typeof value === "string" && (allowEmpty || value.length > 0)
+    && value.length <= maxBytes && new TextEncoder().encode(value).byteLength <= maxBytes;
+}
+
+/** Runtime codec for untrusted provider status payloads. */
+export function validateVendorInputRequest(value: unknown, pageCount: number): VendorInputRequest {
+  if (!isPlainRecord(value) || !boundedVendorRequestId(value.requestId)
+    || !Number.isSafeInteger(pageCount) || pageCount < 1) {
+    throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+  }
+  if (value.kind === "select-instrument") {
+    if (!hasExactKeys(value, ["kind", "requestId", "choices"])
+      || !Array.isArray(value.choices) || value.choices.length < 1
+      || value.choices.length > VENDOR_INPUT_REQUEST_LIMITS.choices
+      || value.choices.some((choice) => !boundedUtf8(choice, VENDOR_INPUT_REQUEST_LIMITS.choiceLength))
+      || new Set(value.choices).size !== value.choices.length) {
+      throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+    }
+    return { kind: value.kind, requestId: value.requestId, choices: [...value.choices] as string[] };
+  }
+  if (value.kind === "confirm-page-order") {
+    if (!hasExactKeys(value, ["kind", "requestId", "pageIndices"])
+      || !Array.isArray(value.pageIndices) || value.pageIndices.length !== pageCount
+      || value.pageIndices.some((pageIndex) => !Number.isSafeInteger(pageIndex)
+        || Number(pageIndex) < 0 || Number(pageIndex) >= pageCount)
+      || new Set(value.pageIndices).size !== pageCount) {
+      throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+    }
+    return { kind: value.kind, requestId: value.requestId, pageIndices: [...value.pageIndices] as number[] };
+  }
+  if (value.kind === "vendor-specific") {
+    if (!hasExactKeys(value, ["kind", "requestId", "schemaId", "payload"])
+      || !boundedUtf8(value.schemaId, VENDOR_INPUT_REQUEST_LIMITS.schemaIdLength)
+      || !isPlainRecord(value.payload)) throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+    const entries = Object.entries(value.payload);
+    if (entries.length > VENDOR_INPUT_REQUEST_LIMITS.payloadEntries
+      || entries.some(([key, item]) => !boundedUtf8(key, VENDOR_INPUT_REQUEST_LIMITS.payloadKeyLength)
+        || !["string", "number", "boolean"].includes(typeof item)
+        || (typeof item === "string" && !boundedUtf8(item, VENDOR_INPUT_REQUEST_LIMITS.payloadStringLength, true))
+        || (typeof item === "number" && !Number.isSafeInteger(item)))
+      || new TextEncoder().encode(JSON.stringify(value.payload)).byteLength > VENDOR_INPUT_REQUEST_LIMITS.payloadBytes) {
+      throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+    }
+    return {
+      kind: value.kind,
+      requestId: value.requestId,
+      schemaId: value.schemaId,
+      payload: structuredClone(value.payload) as Readonly<Record<string, string | number | boolean>>,
+    };
+  }
+  throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+}
+
 export type VendorOmrStatus =
   | { readonly kind: "created" }
   | { readonly kind: "queued" }
@@ -133,7 +204,10 @@ export type VendorDeleteResult =
 export type OmrDeleteResult = {
   readonly localHandleDeleted: boolean;
   readonly vendor: VendorDeleteResult;
-};
+} & (
+  | { readonly cleanupState: "resolved" }
+  | { readonly cleanupState: "pending"; readonly nextAttemptAt?: string }
+);
 
 export interface OmrVendorAdapter {
   getCapabilities(): Promise<OmrVendorCapabilities>;
@@ -234,6 +308,7 @@ export const CORE_OMR_QUOTA_DEFAULTS = Object.freeze({
 } as const);
 
 export const OMR_VENDOR_ADAPTER_CONTRACT_VERSION = "omr-vendor-adapter-v1" as const;
+export const OMR_VENDOR_CREATE_DEFINITIVE_REJECTION = "OMR_VENDOR_CREATE_DEFINITIVE_REJECTION" as const;
 export const MAX_OMR_CREDIT_ESTIMATE = 2_147_483_647;
 export const MAX_OMR_DAILY_CREDIT_CEILING = Number.MAX_SAFE_INTEGER;
 export const MAX_OMR_CREDIT_AGGREGATE = Number.MAX_SAFE_INTEGER;

@@ -43,6 +43,15 @@ export type IdempotencyClaim =
   | { readonly status: "pending" }
   | { readonly status: "conflict" };
 
+export type IdempotencyRecoveryLookup =
+  | { readonly status: "missing" }
+  | { readonly status: "pending" }
+  | { readonly status: "conflict" }
+  | { readonly status: "ambiguous" }
+  | { readonly status: "expired" }
+  | { readonly status: "retired-no-effect" }
+  | { readonly status: "replay"; readonly response: unknown };
+
 export interface AbuseReportInput {
   readonly reporterSessionId?: PrivateRowId;
   readonly shareRecordId?: PrivateRowId;
@@ -50,6 +59,19 @@ export interface AbuseReportInput {
   readonly category: string;
   readonly detail?: string;
   readonly createdAt: string;
+}
+
+export type AbuseReportStatus = "pending" | "claimed" | "resolved";
+export type AbuseReportResolution = "dismissed" | "takedown";
+export interface AbuseReportRecord extends AbuseReportInput {
+  readonly id: PrivateRowId;
+  readonly status: AbuseReportStatus;
+  readonly updatedAt: string;
+  readonly claimToken?: string;
+  readonly claimExpiresAt?: string;
+  readonly claimedBy?: string;
+  readonly resolution?: AbuseReportResolution;
+  readonly resolvedAt?: string;
 }
 
 export interface ObjectReferenceRecord {
@@ -116,6 +138,13 @@ export interface GovernanceStore {
     readonly claimExpiresAt: string;
     readonly expiresAt: string;
   }): Promise<IdempotencyClaim>;
+  /** Global K1 recovery never creates an effect; an expired pending claim is atomically fenced and retired. */
+  recoverIdempotency(input: {
+    readonly operation: string;
+    readonly keyHash: string;
+    readonly requestDigest: string;
+    readonly now: string;
+  }): Promise<IdempotencyRecoveryLookup>;
   completeIdempotency(input: {
     readonly sessionId: PrivateRowId;
     readonly operation: string;
@@ -144,10 +173,14 @@ export interface GovernanceStore {
     readonly lifecycle: Exclude<ShareLifecycle, "active">;
     readonly at: string;
   }): Promise<void>;
-  createAbuseReport(input: AbuseReportInput): Promise<void>;
+  createAbuseReport(input: AbuseReportInput): Promise<AbuseReportRecord>;
+  listAbuseReports(input: { readonly status?: AbuseReportStatus; readonly limit: number }): Promise<readonly AbuseReportRecord[]>;
+  claimAbuseReport(input: { readonly id: PrivateRowId; readonly moderatorId: string; readonly claimToken: string; readonly now: string; readonly claimExpiresAt: string }): Promise<AbuseReportRecord | undefined>;
+  resolveAbuseReport(input: { readonly id: PrivateRowId; readonly claimToken: string; readonly resolution: AbuseReportResolution; readonly now: string }): Promise<AbuseReportRecord | undefined>;
   createAudit(input: {
     readonly eventKind: string;
     readonly shareRecordId?: PrivateRowId;
+    readonly abuseReportId?: PrivateRowId;
     readonly objectReferenceId?: PrivateRowId;
     readonly outcome: string;
     readonly createdAt: string;

@@ -7,12 +7,12 @@ import type { AeadEnvelopeV1 } from "../security/crypto-core";
 import type { PrivateRowId } from "../persistence/store";
 import type {
   OmrCreateClaim, OmrOperationClaim, OmrPageClaim, OmrStore,
-  DurableOmrJobRecord, OmrDurableCompletionInspection, OmrPageCompletionExpectation,
+  DurableOmrJobRecord, DurableOmrProviderDeleteOperation, OmrDurableCompletionInspection, OmrPageCompletionExpectation,
   OmrPageRecord, OmrResultCompletionExpectation,
 } from "./store";
 import {
   ACTIVE_OMR_LIFECYCLE_STATES, VENDOR_CLEANUP_EXPOSURE_STATES, isCreateReplayUsable,
-  isLegalOmrTransition, utcAccountingWindow,
+  isLegalOmrTransition, mergeOmrJobDeleteFinalization, utcAccountingWindow,
 } from "./store";
 
 const ACTIVE_VENDOR_EXPOSURE_SQL = `(state = ANY($4::text[])
@@ -40,6 +40,38 @@ function pageRow(row: Record<string, unknown>): OmrPageRecord {
     ...(row.upload_lease_expires_at ? { uploadLeaseExpiresAt: iso(row.upload_lease_expires_at) } : {}),
     ...(row.processed_object_reference_id === null || row.processed_object_reference_id === undefined ? {} : { objectReferenceId: id(row.processed_object_reference_id) }),
   };
+}
+
+function providerDeleteOperationRow(row: Record<string, unknown>): DurableOmrProviderDeleteOperation {
+  return {
+    jobId: id(row.job_id),
+    operationId: row.operation_id as string,
+    operationGeneration: Number(row.operation_generation),
+    providerBindingId: row.provider_binding_id as string,
+    adapterContractVersion: row.adapter_contract_version as string,
+    vendorId: row.vendor_id as string,
+    vendorJobIdEnvelope: json<AeadEnvelopeV1>(row.vendor_job_id_envelope),
+    idempotencyKey: row.idempotency_key as string,
+    supportsDeletion: row.supports_deletion as boolean,
+    supportsIdempotency: row.supports_idempotency as boolean,
+    dispatchOutcome: row.dispatch_outcome as DurableOmrProviderDeleteOperation["dispatchOutcome"],
+    result: row.result_json ? json(row.result_json) : undefined,
+    claimToken: row.claim_token ? row.claim_token as string : undefined,
+    claimLeaseExpiresAt: row.claim_lease_expires_at ? iso(row.claim_lease_expires_at) : undefined,
+    nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : undefined,
+    reconciliationRequired: row.reconciliation_required as boolean,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function sameAeadEnvelope(left: AeadEnvelopeV1, right: AeadEnvelopeV1): boolean {
+  return left.version === right.version
+    && left.algorithm === right.algorithm
+    && left.nonce === right.nonce
+    && left.ciphertext === right.ciphertext
+    && left.authenticationTag === right.authenticationTag
+    && left.associatedDataVersion === right.associatedDataVersion;
 }
 
 function jobRow(row: Record<string, unknown>, pages: readonly OmrPageRecord[]): DurableOmrJobRecord {
@@ -84,6 +116,7 @@ function jobRow(row: Record<string, unknown>, pages: readonly OmrPageRecord[]): 
     ...(row.status_observation_lease_expires_at ? { statusObservationLeaseExpiresAt: iso(row.status_observation_lease_expires_at) } : {}),
     ...(row.cleanup_lease_token ? { cleanupLeaseToken: row.cleanup_lease_token as string } : {}),
     ...(row.cleanup_lease_expires_at ? { cleanupLeaseExpiresAt: iso(row.cleanup_lease_expires_at) } : {}),
+    ...(row.cleanup_last_attempt_at ? { cleanupLastAttemptAt: iso(row.cleanup_last_attempt_at) } : {}),
     ...(row.reconciliation_kind ? { reconciliationKind: row.reconciliation_kind as DurableOmrJobRecord["reconciliationKind"] } : {}),
     ...(row.retry_kind ? { retryKind: row.retry_kind as DurableOmrJobRecord["retryKind"] } : {}),
     ...(row.retry_attempt === null || row.retry_attempt === undefined ? {} : { retryAttempt: row.retry_attempt as number }),
@@ -133,6 +166,7 @@ const JOB_UPDATE_MAPPINGS: ReadonlyArray<{ key: keyof DurableOmrJobRecord; colum
   { key: "statusObservationLeaseExpiresAt", column: "status_observation_lease_expires_at" },
   { key: "cleanupLeaseToken", column: "cleanup_lease_token" },
   { key: "cleanupLeaseExpiresAt", column: "cleanup_lease_expires_at" },
+  { key: "cleanupLastAttemptAt", column: "cleanup_last_attempt_at" },
   { key: "reconciliationKind", column: "reconciliation_kind" },
   { key: "retryKind", column: "retry_kind" },
   { key: "retryAttempt", column: "retry_attempt" },
@@ -449,9 +483,48 @@ export class PostgresOmrStore implements OmrStore {
   }
 
   async failPage(jobId: PrivateRowId, pageIndex: number, leaseToken: string, outcome: "failed" | "reconciliation-required", now: string): Promise<void> {
-    await this.database.query("UPDATE omr_pages SET upload_state=$4,upload_lease_token=NULL,upload_lease_expires_at=NULL WHERE job_id=$1 AND page_ordinal=$2 AND upload_lease_token=$3", [jobId, pageIndex, leaseToken, outcome]);
-    if (outcome === "reconciliation-required") await this.database.query("UPDATE omr_jobs SET state='reconciliation-required',reconciliation_kind='page-upload',updated_at=$2 WHERE id=$1 AND state IN ('created','uploading')", [jobId, now]);
-    await this.database.query("UPDATE omr_jobs SET updated_at=$2 WHERE id=$1", [jobId, now]);
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const job = await client.query("SELECT state FROM omr_jobs WHERE id=$1 FOR UPDATE", [jobId]);
+      if (!job.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (!["created", "uploading"].includes(String(job.rows[0].state))) {
+        await client.query("COMMIT");
+        return;
+      }
+      const page = await client.query(
+        "SELECT upload_state,upload_lease_token FROM omr_pages WHERE job_id=$1 AND page_ordinal=$2 FOR UPDATE",
+        [jobId, pageIndex],
+      );
+      if (!page.rows[0] || page.rows[0].upload_state !== "pending"
+        || page.rows[0].upload_lease_token !== leaseToken) {
+        await client.query("COMMIT");
+        return;
+      }
+      const failed = await client.query(
+        `UPDATE omr_pages SET upload_state=$4,upload_lease_token=NULL,upload_lease_expires_at=NULL
+         WHERE job_id=$1 AND page_ordinal=$2 AND upload_state='pending' AND upload_lease_token=$3`,
+        [jobId, pageIndex, leaseToken, outcome],
+      );
+      if (failed.rowCount !== 1) throw new RangeError("OMR_PAGE_FAILURE_SUPERSEDED");
+      if (outcome === "reconciliation-required" && ["created", "uploading"].includes(job.rows[0].state)) {
+        const transitioned = await client.query(
+          `UPDATE omr_jobs SET state='reconciliation-required',reconciliation_kind='page-upload',updated_at=$2
+           WHERE id=$1 AND state=$3`,
+          [jobId, now, job.rows[0].state],
+        );
+        if (transitioned.rowCount !== 1) throw new RangeError("OMR_PAGE_FAILURE_SUPERSEDED");
+      } else {
+        const touched = await client.query("UPDATE omr_jobs SET updated_at=$2 WHERE id=$1 AND state=$3", [jobId, now, job.rows[0].state]);
+        if (touched.rowCount !== 1) throw new RangeError("OMR_PAGE_FAILURE_SUPERSEDED");
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async claimOperation(input: Parameters<OmrStore["claimOperation"]>[0]): Promise<OmrOperationClaim> {
@@ -658,6 +731,104 @@ export class PostgresOmrStore implements OmrStore {
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 
+  async getProviderDeleteOperation(jobId: PrivateRowId): Promise<DurableOmrProviderDeleteOperation | undefined> {
+    const result = await this.database.query("SELECT * FROM omr_provider_delete_operations WHERE job_id=$1", [jobId]);
+    return result.rows[0] ? providerDeleteOperationRow(result.rows[0]) : undefined;
+  }
+
+  async claimProviderDelete(input: Parameters<OmrStore["claimProviderDelete"]>[0]) {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const job = await client.query("SELECT id FROM omr_jobs WHERE id=$1 FOR UPDATE", [input.jobId]);
+      if (!job.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      let selected = await client.query("SELECT * FROM omr_provider_delete_operations WHERE job_id=$1 FOR UPDATE", [input.jobId]);
+      if (!selected.rows[0]) {
+        await client.query(
+          `INSERT INTO omr_provider_delete_operations (
+             job_id,operation_id,operation_generation,provider_binding_id,adapter_contract_version,
+             vendor_id,vendor_job_id_envelope,idempotency_key,supports_deletion,supports_idempotency,
+             dispatch_outcome,reconciliation_required,created_at,updated_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'not-dispatched',false,$11,$11)`,
+          [input.jobId, input.operationId, input.operationGeneration, input.providerBindingId,
+            input.adapterContractVersion, input.vendorId, JSON.stringify(input.vendorJobIdEnvelope),
+            input.idempotencyKey, input.supportsDeletion, input.supportsIdempotency, input.now],
+        );
+        selected = await client.query("SELECT * FROM omr_provider_delete_operations WHERE job_id=$1 FOR UPDATE", [input.jobId]);
+      }
+      let operation = providerDeleteOperationRow(selected.rows[0]);
+      const exact = operation.operationId === input.operationId
+        && operation.operationGeneration === input.operationGeneration
+        && operation.providerBindingId === input.providerBindingId
+        && operation.adapterContractVersion === input.adapterContractVersion
+        && operation.vendorId === input.vendorId
+        && sameAeadEnvelope(operation.vendorJobIdEnvelope, input.vendorJobIdEnvelope)
+        && operation.idempotencyKey === input.idempotencyKey
+        && operation.supportsDeletion === input.supportsDeletion
+        && operation.supportsIdempotency === input.supportsIdempotency;
+      if (!exact) throw new RangeError("OMR_PROVIDER_DELETE_AUTHORITY_CONFLICT");
+      if (operation.dispatchOutcome === "acknowledged-deleted"
+        || operation.dispatchOutcome === "acknowledged-not-supported") {
+        await client.query("COMMIT");
+        return { status: "terminal" as const, operation };
+      }
+      if (operation.reconciliationRequired
+        || (operation.dispatchOutcome === "outcome-uncertain" && !operation.supportsIdempotency)) {
+        await client.query("COMMIT");
+        return { status: "reconciliation-required" as const, operation };
+      }
+      if (operation.nextAttemptAt && operation.nextAttemptAt > input.now) {
+        await client.query("COMMIT");
+        return { status: "not-due" as const, operation };
+      }
+      if (operation.claimToken && (operation.claimLeaseExpiresAt ?? "") > input.now) {
+        await client.query("COMMIT");
+        return { status: "pending" as const, operation };
+      }
+      const claimed = await client.query(
+        `UPDATE omr_provider_delete_operations
+         SET claim_token=$2,claim_lease_expires_at=$3,updated_at=$4
+         WHERE job_id=$1 AND operation_id=$5 AND operation_generation=$6 RETURNING *`,
+        [input.jobId, input.claimToken, input.claimLeaseExpiresAt, input.now, input.operationId, input.operationGeneration],
+      );
+      if (claimed.rowCount !== 1) throw new RangeError("OMR_PROVIDER_DELETE_AUTHORITY_CONFLICT");
+      operation = providerDeleteOperationRow(claimed.rows[0]);
+      await client.query("COMMIT");
+      return { status: "claimed" as const, operation };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async beginProviderDeleteDispatch(input: Parameters<OmrStore["beginProviderDeleteDispatch"]>[0]): Promise<boolean> {
+    const result = await this.database.query(
+      `UPDATE omr_provider_delete_operations
+       SET dispatch_outcome='outcome-uncertain',result_json=NULL,next_attempt_at=NULL,
+           reconciliation_required=false,updated_at=$5
+       WHERE job_id=$1 AND operation_id=$2 AND operation_generation=$3 AND claim_token=$4
+         AND claim_lease_expires_at>$5`,
+      [input.jobId, input.operationId, input.operationGeneration, input.claimToken, input.now],
+    );
+    return result.rowCount === 1;
+  }
+
+  async completeProviderDelete(input: Parameters<OmrStore["completeProviderDelete"]>[0]): Promise<boolean> {
+    const result = await this.database.query(
+      `UPDATE omr_provider_delete_operations
+       SET dispatch_outcome=$5,result_json=$6,claim_token=NULL,claim_lease_expires_at=NULL,
+           next_attempt_at=$7,reconciliation_required=$8,updated_at=$9
+       WHERE job_id=$1 AND operation_id=$2 AND operation_generation=$3 AND claim_token=$4
+         AND claim_lease_expires_at>$9`,
+      [input.jobId, input.operationId, input.operationGeneration, input.claimToken,
+        input.dispatchOutcome, input.result === undefined ? null : JSON.stringify(input.result),
+        input.nextAttemptAt ?? null, input.reconciliationRequired, input.now],
+    );
+    return result.rowCount === 1;
+  }
+
   async transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void> {
     const client = await this.database.connect();
     try {
@@ -671,8 +842,75 @@ export class PostgresOmrStore implements OmrStore {
   }
 
   async markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void> {
-    const result = await this.database.query("UPDATE omr_jobs SET handle_active=false,state='delete-pending',deleted_at=COALESCE(deleted_at,$2),credit_state=CASE WHEN credit_state='settled' THEN 'settled' WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN 'reserved' ELSE 'released' END,updated_at=$2 WHERE id=$1 AND handle_active=true", [jobId, now]);
-    if (result.rowCount !== 1) throw new RangeError("OMR_JOB_UNAVAILABLE");
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT state,handle_active FROM omr_jobs WHERE id=$1 FOR UPDATE", [jobId]);
+      if (!selected.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      const state = selected.rows[0].state as DurableOmrJobRecord["state"];
+      const handleActive = selected.rows[0].handle_active as boolean;
+      if (state === "deleted" || (!handleActive && state === "delete-pending")) {
+        await client.query("COMMIT");
+        return;
+      }
+      if (!isLegalOmrTransition(state, "delete-pending")) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      await client.query(
+        "UPDATE omr_jobs SET handle_active=false,state='delete-pending',deleted_at=COALESCE(deleted_at,$2),credit_state=CASE WHEN credit_state='settled' THEN 'settled' WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN 'reserved' ELSE 'released' END,updated_at=$2 WHERE id=$1",
+        [jobId, now],
+      );
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async finalizeJobDelete(input: Parameters<OmrStore["finalizeJobDelete"]>[0]) {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query("SELECT * FROM omr_jobs WHERE id=$1 FOR UPDATE", [input.jobId]);
+      if (!selected.rows[0]) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      const pages = await client.query("SELECT * FROM omr_pages WHERE job_id=$1 ORDER BY page_ordinal", [input.jobId]);
+      const job = jobRow(selected.rows[0], pages.rows.map(pageRow));
+      if (job.state === "deleted") {
+        await client.query("COMMIT");
+        return { status: "terminal" as const, job };
+      }
+      if (input.cleanupLeaseToken !== undefined) {
+        if (job.cleanupLeaseToken !== input.cleanupLeaseToken
+          || (job.cleanupLeaseExpiresAt ?? "") <= input.now) {
+          await client.query("COMMIT");
+          return { status: "superseded" as const, job };
+        }
+      }
+      const operationSelection = await client.query(
+        "SELECT * FROM omr_provider_delete_operations WHERE job_id=$1 FOR UPDATE",
+        [input.jobId],
+      );
+      const operation = operationSelection.rows[0]
+        ? providerDeleteOperationRow(operationSelection.rows[0])
+        : undefined;
+      if (input.providerDeleteAuthority === undefined) {
+        if (operation) {
+          await client.query("COMMIT");
+          return { status: "superseded" as const, job };
+        }
+      } else if (!operation
+        || operation.operationId !== input.providerDeleteAuthority.operationId
+        || operation.operationGeneration !== input.providerDeleteAuthority.operationGeneration) {
+        await client.query("COMMIT");
+        return { status: "superseded" as const, job };
+      }
+      const merged = mergeOmrJobDeleteFinalization(
+        job,
+        input.update,
+        operation,
+        input.now,
+        input.cleanupLeaseToken !== undefined,
+      );
+      if (!isLegalOmrTransition(job.state, merged.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      await updateLockedJob(client, input.jobId, merged, input.now);
+      await client.query("COMMIT");
+      return { status: "applied" as const, job: merged };
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 
   async recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void> {
@@ -696,13 +934,13 @@ export class PostgresOmrStore implements OmrStore {
              (vendor_delete_state <> 'deleted' AND COALESCE(vendor_delete_next_attempt_at,$1) <= $1)
              OR (local_delete_state <> 'deleted' AND COALESCE(local_delete_next_attempt_at,$1) <= $1)
            ))
-         ) ORDER BY expires_at,id FOR UPDATE SKIP LOCKED LIMIT $2`,
+         ) ORDER BY cleanup_last_attempt_at NULLS FIRST,expires_at,id FOR UPDATE SKIP LOCKED LIMIT $2`,
         [now, limit],
       );
       const records: DurableOmrJobRecord[] = [];
       for (const row of selected.rows) {
         const jobId = id(row.id);
-        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state=CASE WHEN credit_state='settled' THEN 'settled' WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN 'reserved' ELSE 'released' END,cleanup_lease_token=$3,cleanup_lease_expires_at=$4,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
+        await client.query("UPDATE omr_jobs SET state=CASE WHEN state='delete-pending' THEN state ELSE 'expired' END,handle_active=false,credit_state=CASE WHEN credit_state='settled' THEN 'settled' WHEN credit_state='reserved' AND (vendor_create_outcome_state='outcome-uncertain' OR (vendor_create_outcome_state='confirmed' AND vendor_delete_state<>'deleted')) THEN 'reserved' ELSE 'released' END,cleanup_lease_token=$3,cleanup_lease_expires_at=$4,cleanup_last_attempt_at=$2,updated_at=$2 WHERE id=$1", [jobId, now, input.leaseToken, input.leaseExpiresAt]);
         const loaded = await loadJob(client, jobId); if (loaded) records.push(loaded);
       }
       await client.query("COMMIT");

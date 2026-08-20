@@ -8,6 +8,7 @@ import { getProductionServices } from "../substrate/services";
 import { loadProductionOmrConfig, type ProductionOmrConfig } from "../substrate/config";
 import { decodeOmrImagePage } from "./page-decoder";
 import { DurableOmrApplicationService, omrQuotaConfig, type OmrApplicationActor, type OmrPageInspection } from "./application-service";
+import { withCrossSessionOmrCreateRecovery, type OmrCreateRecoveryRegistry } from "./cross-session-create-recovery";
 import { ReferenceOmrVendorAdapter } from "./reference-adapter";
 import { REFERENCE_OMR_FIXTURES } from "./reference-fixtures";
 import { createOmrVendorAdapter } from "./vendor-factory";
@@ -77,6 +78,7 @@ export async function createProductionOmrProviderRegistry(input: {
 
 export function createProductionOmrApplicationService(input: {
   readonly store: OmrStore;
+  readonly createRecoveryRegistry?: OmrCreateRecoveryRegistry;
   readonly objects: OwnedObjectStore;
   readonly providers: ProductionOmrProviderRegistry;
   readonly handleHmacKey: Uint8Array;
@@ -87,8 +89,11 @@ export function createProductionOmrApplicationService(input: {
   readonly now?: () => Date;
 }): DurableOmrApplicationService {
   const active = input.providers.active;
+  const store = input.createRecoveryRegistry
+    ? withCrossSessionOmrCreateRecovery(input.store, input.createRecoveryRegistry)
+    : input.store;
   return new DurableOmrApplicationService({
-    store: input.store,
+    store,
     objects: input.objects,
     adapter: active.adapter,
     providerBindingId: active.bindingId,
@@ -132,7 +137,8 @@ export async function getProductionOmrApplicationService(input: {
   const [services, config] = await Promise.all([getProductionServices(), Promise.resolve(loadProductionOmrConfig())]);
   const providers = await defaultProviderRegistry(config);
   return createProductionOmrApplicationService({
-    store: services.omrStore, objects: services.objects, providers,
+    store: services.omrStore, createRecoveryRegistry: services.omrCreateRecovery,
+    objects: services.objects, providers,
     handleHmacKey: config.handleHmacKey, vendorJobEncryptionKey: config.vendorJobEncryptionKey,
     quota: omrQuotaConfig(config.dailyGlobalCreditCeiling),
     actor: { sessionId: input.sessionId, ipOwnerHash: services.quota.ipHash(input.clientIp) },
@@ -141,5 +147,33 @@ export async function getProductionOmrApplicationService(input: {
       const decoded = await decodeOmrImagePage({ bytes, declaredMimeType: mimeType, pageIndex });
       return { bytes: decoded.bytes, digest: decoded.pageDigest, mimeType: decoded.mimeType, width: decoded.width, height: decoded.height, quality: decoded.quality };
     },
+  });
+}
+
+/** Scheduler-only composition. It can reclaim local/current rows without inventing a real provider adapter. */
+export async function getProductionOmrCleanupApplicationService(): Promise<DurableOmrApplicationService> {
+  const [services, config] = await Promise.all([getProductionServices(), Promise.resolve(loadProductionOmrConfig())]);
+  if (config.providerMode === "reference") {
+    const providers = await defaultProviderRegistry(config);
+    return createProductionOmrApplicationService({
+      store: services.omrStore, createRecoveryRegistry: services.omrCreateRecovery,
+      objects: services.objects, providers,
+      handleHmacKey: config.handleHmacKey, vendorJobEncryptionKey: config.vendorJobEncryptionKey,
+      quota: omrQuotaConfig(config.dailyGlobalCreditCeiling),
+      actor: { sessionId: "0" as PrivateRowId, ipOwnerHash: services.quota.ipHash("scheduled-cleanup") },
+      inspectPage: async () => { throw new RangeError("OMR_SCHEDULER_UPLOAD_PROHIBITED"); },
+    });
+  }
+  const unavailableAdapter = new Proxy({} as OmrVendorAdapter, {
+    get: () => async () => { throw new RangeError("OMR_PROVIDER_BINDING_UNAVAILABLE"); },
+  });
+  return new DurableOmrApplicationService({
+    store: services.omrStore, objects: services.objects, adapter: unavailableAdapter,
+    providerBindingId: "omr-provider:scheduler-unconfigured", providerVendorId: "scheduler-unconfigured",
+    adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter: () => undefined,
+    handleHmacKey: config.handleHmacKey, vendorJobEncryptionKey: config.vendorJobEncryptionKey,
+    quota: omrQuotaConfig(config.dailyGlobalCreditCeiling),
+    actor: { sessionId: "0" as PrivateRowId, ipOwnerHash: services.quota.ipHash("scheduled-cleanup") },
+    inspectPage: async () => { throw new RangeError("OMR_SCHEDULER_UPLOAD_PROHIBITED"); },
   });
 }

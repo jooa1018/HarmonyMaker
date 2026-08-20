@@ -26,6 +26,10 @@ export interface PlaybackPlan {
   readonly trackLabels: Readonly<Record<string, string>>;
 }
 
+export type PlaybackPlanConstructionOutcome =
+  | { readonly status: "available"; readonly value: PlaybackPlan }
+  | { readonly status: "unavailable"; readonly code: "PLAYBACK_PLAN_UNAVAILABLE" };
+
 function value(value: Fraction): number { return value.n / value.d; }
 function measureStarts(document: ArrangementRenderDocument): readonly Fraction[] {
   const starts: Fraction[] = [];
@@ -73,6 +77,18 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,
     trackLabels,
   };
+}
+
+export function buildPlaybackPlanSafely(
+  document: ArrangementRenderDocument,
+  trackRoles: ProductTrackRoleRegistry,
+  accompaniment?: DeterministicAccompaniment,
+): PlaybackPlanConstructionOutcome {
+  try {
+    return { status: "available", value: buildPlaybackPlan(document, trackRoles, accompaniment) };
+  } catch {
+    return { status: "unavailable", code: "PLAYBACK_PLAN_UNAVAILABLE" };
+  }
 }
 
 export function quarterSeconds(tempo: TempoSpec, speed: PracticeSpeed): number {

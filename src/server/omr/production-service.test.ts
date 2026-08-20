@@ -229,7 +229,7 @@ describe("production OMR provider composition", () => {
     h.advance(24 * 60 * 60 * 1_000 + 1);
 
     await expect(h.serviceFor(generation2).cleanupExpiredJobs()).resolves.toEqual([{
-      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } },
+      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" },
     }]);
     expect(aCreate).toHaveBeenCalledTimes(2);
     expect(aCreate.mock.calls[1][0]).toEqual(aCreate.mock.calls[0][0]);
@@ -364,7 +364,7 @@ describe("production OMR provider composition", () => {
 
     await expect(h.serviceFor(generation2).cleanupExpiredJobs()).resolves.toEqual([{
       jobId: "1",
-      result: { localHandleDeleted: true, vendor: expect.objectContaining({ status: "failed", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" }) },
+      result: { localHandleDeleted: true, vendor: expect.objectContaining({ status: "failed", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" }), cleanupState: "pending", nextAttemptAt: expect.any(String) },
     }]);
     expect(bDelete).not.toHaveBeenCalled(); expect(bRetention).not.toHaveBeenCalled();
     const pending = h.store.listJobs()[0];

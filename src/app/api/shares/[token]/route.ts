@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { authorizeMutation, mapApiFailure } from "../../../../server/http/api";
+import { authorizeMutation, mapApiFailure, parseShareDeleteBody, readBoundedShareJson, SHARE_SMALL_REQUEST_MAX_BYTES } from "../../../../server/http/api";
 import { readShareWithIpQuota } from "../../../../server/share/quota-read";
 import { getProductionServices } from "../../../../server/substrate/services";
 
@@ -21,9 +21,8 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
   try {
     const { services } = await authorizeMutation(request);
     const { token } = await context.params;
-    const body: unknown = await request.json();
-    if (!body || typeof body !== "object" || typeof (body as Record<string, unknown>).ownerDeleteSecret !== "string") throw new RangeError("SHARE_DELETE_INVALID");
-    await services.shares.ownerDelete(token, (body as { ownerDeleteSecret: string }).ownerDeleteSecret);
+    const body = parseShareDeleteBody(await readBoundedShareJson(request, SHARE_SMALL_REQUEST_MAX_BYTES));
+    await services.shares.ownerDelete(token, body.ownerDeleteSecret);
     return NextResponse.json({ ok: true });
   } catch (error) { return mapApiFailure(error); }
 }

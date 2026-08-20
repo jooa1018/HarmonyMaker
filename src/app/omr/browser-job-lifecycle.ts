@@ -1,0 +1,202 @@
+import type { OmrDeleteResult, OmrPublicStatus } from "../../domain/omr/contracts";
+
+export const OMR_MONITOR_SESSION_BUDGET_MS = 60_000;
+export const OMR_MONITOR_MAX_SYNC_ATTEMPTS = 80;
+const OMR_UPLOAD_BINDING_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000] as const;
+
+export interface OmrBrowserMonitorGeneration {
+  readonly jobHandle: string;
+  readonly manifestDigest: string;
+  readonly lifecycle: "create-pending" | "bound" | "completed" | "terminal" | "delete-pending";
+}
+
+export function abortOmrBrowserAuthorityRequests(input: {
+  readonly monitor?: AbortController;
+  readonly recovery?: AbortController;
+}): void {
+  input.monitor?.abort();
+  input.recovery?.abort();
+}
+
+const MONITOR_TERMINAL = new Set<OmrPublicStatus["kind"]>([
+  "completed", "failed", "cancelled", "needs-input", "cancel-failed", "reconciliation-required",
+]);
+
+export function isOmrMonitorTerminal(status: OmrPublicStatus): boolean {
+  return MONITOR_TERMINAL.has(status.kind);
+}
+
+export function nextOmrMonitorTarget(status: OmrPublicStatus, nowEpochMs: number): number | undefined {
+  if (!Number.isFinite(nowEpochMs)) throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
+  if (isOmrMonitorTerminal(status)) return undefined;
+  if (status.kind !== "retry-pending") return nowEpochMs + 750;
+  const retryAt = Date.parse(status.nextAttemptAt);
+  if (!Number.isFinite(retryAt)) throw new RangeError("OMR_BROWSER_RETRY_TIME_INVALID");
+  return Math.max(nowEpochMs, retryAt);
+}
+
+export function scheduleOmrMonitorRetryResume<TTimer>(input: {
+  readonly status: OmrPublicStatus;
+  readonly nowEpochMs: number;
+  readonly setTimer: (callback: () => void, delayMs: number) => TTimer;
+  readonly clearTimer: (timer: TTimer) => void;
+  readonly resume: () => void;
+}): () => void {
+  if (!Number.isFinite(input.nowEpochMs)) throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
+  if (input.status.kind !== "retry-pending") return () => undefined;
+  const target = nextOmrMonitorTarget(input.status, input.nowEpochMs);
+  if (target === undefined) return () => undefined;
+  let active = true;
+  const timer = input.setTimer(() => { if (active) input.resume(); }, Math.max(0, target - input.nowEpochMs));
+  return () => { active = false; input.clearTimer(timer); };
+}
+
+export function isOmrMonitorRetryDue(status: OmrPublicStatus, nowEpochMs: number): boolean {
+  if (!Number.isFinite(nowEpochMs)) throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
+  return status.kind === "retry-pending"
+    && (nextOmrMonitorTarget(status, nowEpochMs) ?? Number.POSITIVE_INFINITY) <= nowEpochMs;
+}
+
+export function shouldStartOmrMonitorNow(status: OmrPublicStatus, nowEpochMs: number): boolean {
+  return !isOmrMonitorTerminal(status)
+    && (status.kind !== "retry-pending" || isOmrMonitorRetryDue(status, nowEpochMs));
+}
+
+function monitorAbortError(): DOMException {
+  return new DOMException("OMR_BROWSER_MONITOR_SUPERSEDED", "AbortError");
+}
+
+export function assertOmrBrowserMonitorGeneration(input: {
+  readonly authority: OmrBrowserMonitorGeneration;
+  readonly currentAuthority: () => OmrBrowserMonitorGeneration | undefined;
+  readonly signal: AbortSignal;
+}): void {
+  const current = input.currentAuthority();
+  if (input.signal.aborted
+    || current?.jobHandle !== input.authority.jobHandle
+    || current.manifestDigest !== input.authority.manifestDigest
+    || current.lifecycle !== input.authority.lifecycle) {
+    throw monitorAbortError();
+  }
+}
+
+export async function runOmrBrowserRecoverySession(input: {
+  readonly authority: OmrBrowserMonitorGeneration;
+  readonly currentAuthority: () => OmrBrowserMonitorGeneration | undefined;
+  readonly signal: AbortSignal;
+  readonly recover: (signal: AbortSignal) => Promise<OmrPublicStatus>;
+  readonly applyStatus: (status: OmrPublicStatus, signal: AbortSignal) => Promise<void>;
+  readonly continueAfterStatus: (status: OmrPublicStatus, signal: AbortSignal) => Promise<void>;
+}): Promise<void> {
+  assertOmrBrowserMonitorGeneration(input);
+  const status = await input.recover(input.signal);
+  assertOmrBrowserMonitorGeneration(input);
+  await input.applyStatus(status, input.signal);
+  if (isOmrMonitorTerminal(status)) return;
+  assertOmrBrowserMonitorGeneration(input);
+  await input.continueAfterStatus(status, input.signal);
+  assertOmrBrowserMonitorGeneration(input);
+}
+
+export async function runOmrBrowserMonitorSession(input: {
+  readonly authority: OmrBrowserMonitorGeneration;
+  readonly currentAuthority: () => OmrBrowserMonitorGeneration | undefined;
+  readonly signal: AbortSignal;
+  readonly sync: (signal: AbortSignal) => Promise<OmrPublicStatus>;
+  readonly applyStatus: (status: OmrPublicStatus, signal: AbortSignal) => Promise<void>;
+  readonly waitUntil: (targetEpochMs: number, signal: AbortSignal) => Promise<void>;
+  readonly nowEpochMs?: () => number;
+  readonly onBudgetPause?: (nextTargetEpochMs?: number) => void;
+}): Promise<void> {
+  const nowEpochMs = input.nowEpochMs ?? Date.now;
+  const deadlineEpochMs = nowEpochMs() + OMR_MONITOR_SESSION_BUDGET_MS;
+  let completedSyncAttempts = 0;
+  while (true) {
+    assertOmrBrowserMonitorGeneration(input);
+    if (completedSyncAttempts > 0 && nowEpochMs() >= deadlineEpochMs) {
+      input.onBudgetPause?.();
+      return;
+    }
+    const status = await input.sync(input.signal);
+    assertOmrBrowserMonitorGeneration(input);
+    completedSyncAttempts += 1;
+    await input.applyStatus(status, input.signal);
+    if (isOmrMonitorTerminal(status)) return;
+    assertOmrBrowserMonitorGeneration(input);
+    const now = nowEpochMs();
+    const nextAt = nextOmrMonitorTarget(status, now);
+    if (nextAt === undefined) return;
+    if (shouldPauseOmrMonitorSession({
+      nowEpochMs: now,
+      deadlineEpochMs,
+      completedSyncAttempts,
+      nextTargetEpochMs: nextAt,
+    })) {
+      input.onBudgetPause?.(nextAt);
+      return;
+    }
+    await input.waitUntil(nextAt, input.signal);
+    assertOmrBrowserMonitorGeneration(input);
+  }
+}
+
+export function nextOmrUploadBindingRetryTarget(attempt: number, nowEpochMs: number): number {
+  if (!Number.isSafeInteger(attempt) || attempt < 1 || !Number.isFinite(nowEpochMs)) {
+    throw new RangeError("OMR_BROWSER_UPLOAD_RETRY_INVALID");
+  }
+  const delay = OMR_UPLOAD_BINDING_RETRY_DELAYS_MS[Math.min(attempt, OMR_UPLOAD_BINDING_RETRY_DELAYS_MS.length) - 1];
+  return nowEpochMs + delay;
+}
+
+export function canCancelOmrStatus(status: OmrPublicStatus): boolean {
+  return !["completed", "failed", "cancelled", "cancel-pending", "reconciliation-required"].includes(status.kind);
+}
+
+export function shouldPauseOmrMonitorSession(input: {
+  readonly nowEpochMs: number;
+  readonly deadlineEpochMs: number;
+  readonly completedSyncAttempts: number;
+  readonly nextTargetEpochMs: number;
+}): boolean {
+  if (![input.nowEpochMs, input.deadlineEpochMs, input.nextTargetEpochMs].every(Number.isFinite)
+    || !Number.isSafeInteger(input.completedSyncAttempts) || input.completedSyncAttempts < 0) {
+    throw new RangeError("OMR_BROWSER_MONITOR_TIME_INVALID");
+  }
+  return input.nowEpochMs >= input.deadlineEpochMs
+    || input.completedSyncAttempts >= OMR_MONITOR_MAX_SYNC_ATTEMPTS
+    || input.nextTargetEpochMs > input.deadlineEpochMs;
+}
+
+export function omrDeletionDisposition(result?: OmrDeleteResult): "resolved-clear" | "pending-preserve" {
+  return result?.localHandleDeleted === true && result.cleanupState === "resolved" && result.vendor.status === "deleted"
+    ? "resolved-clear" : "pending-preserve";
+}
+
+export type OmrBrowserAuthorityAction =
+  | "create-or-replay" | "unlock-correction" | "resume-upload" | "monitor"
+  | "needs-input" | "quick-review" | "terminal-controls" | "delete-retry";
+
+export function omrBrowserAuthorityAction(input: {
+  readonly lifecycle: "create-pending" | "bound" | "completed" | "terminal" | "delete-pending";
+  readonly statusKind?: OmrPublicStatus["kind"];
+  readonly correctionLocked: boolean;
+}): OmrBrowserAuthorityAction {
+  if (input.correctionLocked) return "unlock-correction";
+  if (input.lifecycle === "delete-pending") return "delete-retry";
+  if (input.lifecycle === "create-pending") return "create-or-replay";
+  if (input.statusKind === "created" || input.statusKind === "uploading") return "resume-upload";
+  if (input.statusKind === "needs-input") return "needs-input";
+  if (input.lifecycle === "completed" && input.statusKind === "completed") return "quick-review";
+  if (input.lifecycle === "terminal" || input.statusKind === "failed" || input.statusKind === "cancelled"
+    || input.statusKind === "cancel-failed" || input.statusKind === "reconciliation-required") return "terminal-controls";
+  return "monitor";
+}
+
+export function omrInputReplacementDisposition(input: {
+  readonly hasManifest: boolean;
+  readonly hasHandle: boolean;
+  readonly deletionResolved: boolean;
+}): "allowed" | "delete-first" | "manifest-locked" {
+  if (input.deletionResolved || !input.hasManifest) return "allowed";
+  return input.hasHandle ? "delete-first" : "manifest-locked";
+}

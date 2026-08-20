@@ -2,7 +2,7 @@ import "server-only";
 
 import type { NextRequest } from "next/server";
 
-import type { OmrJobHandle } from "../../domain/omr/contracts";
+import { VENDOR_INPUT_REQUEST_LIMITS, type OmrJobHandle } from "../../domain/omr/contracts";
 import type { SemanticDigest } from "../../domain/digest/canonical";
 import type { InputSourceKind } from "../../domain/omr/input";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
@@ -10,46 +10,17 @@ import { getProductionServices } from "../substrate/services";
 import { SESSION_COOKIE_NAME } from "../security/session";
 import { getProductionOmrApplicationService } from "../omr/production-service";
 import { authorizeMutation } from "./api";
+import { readBoundedStructuredJson } from "./bounded-json";
 
 const RIGHTS_BASES: readonly RightsBasis[] = ["self-authored", "public-domain", "licensed", "user-confirmed-rights"];
 const SOURCE_KINDS: readonly InputSourceKind[] = ["digital-pdf", "scanned-pdf", "camera-photo"];
 
 export async function readBoundedJson(request: NextRequest, maxBytes = 64 * 1024): Promise<unknown> {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null) {
-    if (!/^(0|[1-9][0-9]*)$/u.test(contentLength)) throw new RangeError("OMR_REQUEST_INVALID");
-    const declared = Number(contentLength);
-    if (!Number.isSafeInteger(declared)) throw new RangeError("OMR_REQUEST_INVALID");
-    if (declared > maxBytes) throw new RangeError("OMR_REQUEST_TOO_LARGE");
-  }
-  if (!request.body) throw new RangeError("OMR_REQUEST_INVALID");
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byteLength += value.byteLength;
-      if (byteLength > maxBytes) {
-        await reader.cancel("OMR_REQUEST_TOO_LARGE").catch(() => undefined);
-        throw new RangeError("OMR_REQUEST_TOO_LARGE");
-      }
-      chunks.push(Uint8Array.from(value));
-    }
-  } catch (error) {
-    if (error instanceof RangeError && error.message === "OMR_REQUEST_TOO_LARGE") throw error;
-    throw new RangeError("OMR_REQUEST_INVALID");
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  let text: string;
-  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { throw new RangeError("OMR_REQUEST_INVALID"); }
-  try { return JSON.parse(text); } catch { throw new RangeError("OMR_REQUEST_INVALID"); }
+  return readBoundedStructuredJson(request, {
+    maxBytes,
+    invalidCode: "OMR_REQUEST_INVALID",
+    tooLargeCode: "OMR_REQUEST_TOO_LARGE",
+  });
 }
 
 function clientIp(request: NextRequest): string {
@@ -117,17 +88,25 @@ export function parseCreateJobBody(value: unknown) {
 export function parseVendorInputBody(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new RangeError("OMR_REQUEST_INVALID");
   const record = value as Record<string, unknown>;
-  if (typeof record.requestId !== "string" || record.requestId.length < 1 || record.requestId.length > 128) throw new RangeError("OMR_REQUEST_INVALID");
-  if (record.kind === "select-instrument" && typeof record.choice === "string") return { kind: record.kind, requestId: record.requestId, choice: record.choice } as const;
+  const utf8Length = (text: string) => new TextEncoder().encode(text).byteLength;
+  if (typeof record.requestId !== "string" || record.requestId.length < 1
+    || utf8Length(record.requestId) > VENDOR_INPUT_REQUEST_LIMITS.requestIdLength) throw new RangeError("OMR_REQUEST_INVALID");
+  if (record.kind === "select-instrument" && typeof record.choice === "string"
+    && record.choice.length > 0 && utf8Length(record.choice) <= VENDOR_INPUT_REQUEST_LIMITS.choiceLength) {
+    return { kind: record.kind, requestId: record.requestId, choice: record.choice } as const;
+  }
   if (record.kind === "confirm-page-order" && Array.isArray(record.pageIndices) && record.pageIndices.every(Number.isSafeInteger)) return { kind: record.kind, requestId: record.requestId, pageIndices: record.pageIndices as number[] } as const;
-  if (record.kind === "vendor-specific" && typeof record.schemaId === "string" && record.schemaId.length > 0 && record.schemaId.length <= 128
+  if (record.kind === "vendor-specific" && typeof record.schemaId === "string" && record.schemaId.length > 0
+    && utf8Length(record.schemaId) <= VENDOR_INPUT_REQUEST_LIMITS.schemaIdLength
     && record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)) {
     const payload = record.payload as Readonly<Record<string, unknown>>;
-    if (Object.keys(payload).length > 32 || JSON.stringify(payload).length > 8_192
-      || Object.entries(payload).some(([key, item]) => key.length < 1 || key.length > 128
+    if (Object.keys(payload).length > VENDOR_INPUT_REQUEST_LIMITS.payloadEntries
+      || utf8Length(JSON.stringify(payload)) > VENDOR_INPUT_REQUEST_LIMITS.payloadBytes
+      || Object.entries(payload).some(([key, item]) => key.length < 1
+        || utf8Length(key) > VENDOR_INPUT_REQUEST_LIMITS.payloadKeyLength
         || !["string", "number", "boolean"].includes(typeof item)
-        || (typeof item === "string" && item.length > 8_192)
-        || (typeof item === "number" && !Number.isFinite(item)))) throw new RangeError("OMR_REQUEST_INVALID");
+        || (typeof item === "string" && utf8Length(item) > VENDOR_INPUT_REQUEST_LIMITS.payloadStringLength)
+        || (typeof item === "number" && !Number.isSafeInteger(item)))) throw new RangeError("OMR_REQUEST_INVALID");
     return { kind: record.kind, requestId: record.requestId, schemaId: record.schemaId, payload: payload as Readonly<Record<string, string | number | boolean>> } as const;
   }
   throw new RangeError("OMR_REQUEST_INVALID");
