@@ -1,0 +1,24 @@
+name: Export Audiveris smoke fixture
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download known-good score fixture
+        run: |
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/randomm/audiveris-api/main/tests/test_files/o-happy-day.pdf \
+            -o /tmp/score.pdf
+          pdftoppm -png -f 1 -singlefile -r 300 /tmp/score.pdf /tmp/page
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audiveris-smoke-page
+          path: /tmp/page.png
+          retention-days: 1
