@@ -1,0 +1,64 @@
+name: P1 closure verification
+
+on:
+  push:
+    branches:
+      - chatgpt/harmonymaker-p1-final
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: harmonymaker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d harmonymaker_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/harmonymaker_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/harmonymaker_migrate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run test:postgres
+      - name: Verify fresh and repeated migration application
+        run: |
+          createdb -h 127.0.0.1 -U postgres harmonymaker_migrate
+          npm run migrate
+          npm run migrate
+      - run: npm run build
+      - run: git diff --check
+      - name: Verify P1 closure authority surfaces
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const read = (p) => fs.readFileSync(p, 'utf8');
+          const checks = {
+            workspaceRevision: /routeGeneration/.test(read('src/product/workspace-route-state.ts')) && /revisionGeneration/.test(read('src/product/workspace-route-state.ts')) && /saveIfCurrent/.test(read('src/product/local-project-store.ts')),
+            fractionalHarmony: /MUSICXML_HARMONY_OFFSET_UNREPRESENTABLE/.test(read('src/product/musicxml-export.ts')) && /effectiveChordTimeline\.spans/.test(read('src/product/musicxml-export.ts')),
+            shareCrossTab: /claimOrLoad/.test(read('src/product/share-create-recovery.ts')) && /operationGeneration/.test(read('src/product/share-create-recovery.ts')),
+            omrCrossSession: fs.existsSync('src/server/omr/cross-session-create-recovery.ts') && fs.existsSync('src/server/persistence/migrations/015_omr_create_cross_session_recovery.sql') && /withCrossSessionOmrCreateRecovery/.test(read('src/server/substrate/services.ts')),
+            pageSelectionFence: fs.existsSync('src/app/omr/browser-selection-generation.ts') || /selectionGeneration/.test(read('src/app/omr/OmrClient.tsx')),
+            cleanupFairness: fs.existsSync('src/server/omr/cleanup-fairness.test.ts') || /cleanup_last_attempt_at/.test(read('src/server/omr/postgres-store.ts')),
+          };
+          console.log(JSON.stringify(checks, null, 2));
+          if (Object.values(checks).some((value) => !value)) process.exit(1);
+          NODE
