@@ -6,8 +6,9 @@ import type { ImageQualityReport } from "../../domain/omr/image-quality";
 import type { InputSourceKind } from "../../domain/omr/input";
 import {
   CORE_OMR_QUOTA_DEFAULTS, MAX_OMR_CREDIT_ESTIMATE, MAX_OMR_DAILY_CREDIT_CEILING,
-  OMR_VENDOR_ADAPTER_CONTRACT_VERSION, canonicalizeVendorCapabilities,
-  validateVendorCapabilities, validateVendorNormalizationMappingArtifact, vendorCallOutcome,
+  OMR_VENDOR_ADAPTER_CONTRACT_VERSION, OMR_VENDOR_CREATE_DEFINITIVE_REJECTION,
+  VENDOR_INPUT_REQUEST_LIMITS, canonicalizeVendorCapabilities,
+  validateVendorCapabilities, validateVendorInputRequest, validateVendorNormalizationMappingArtifact, vendorCallOutcome,
   type CanonicalOmrCreateRequest,
   type OmrApplicationService, type OmrDeleteResult, type OmrJobHandle,
   type OmrPageUpload, type OmrProviderResult, type OmrPublicStatus,
@@ -23,7 +24,7 @@ import type { OwnedObjectStore } from "../storage/owned-object-store";
 import type { OwnedObjectRead } from "../storage/owned-object-store";
 import {
   creditStateAfterHandleDeactivation, publicStatusFromRecord,
-  type DurableOmrJobRecord, type OmrPageRecord, type OmrStore,
+  type DurableOmrJobRecord, type DurableOmrProviderDeleteOperation, type OmrPageRecord, type OmrStore,
 } from "./store";
 import { asOmrProviderContractError, classifyOmrProviderFailure, type OmrProviderFailureOrigin } from "./provider-failure";
 
@@ -119,6 +120,26 @@ export interface OmrApplicationDependencies {
   readonly now?: () => Date;
 }
 
+export interface OmrCleanupItemFailure {
+  readonly jobId: PrivateRowId;
+  readonly code: string;
+}
+
+export interface OmrCleanupBatchSummary {
+  readonly attemptedJobs: number;
+  readonly completedJobs: number;
+  readonly pendingJobs: number;
+  readonly failedJobs: number;
+  readonly results: readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[];
+  readonly failures: readonly OmrCleanupItemFailure[];
+}
+
+function cleanupItemFailureCode(error: unknown): string {
+  return error instanceof Error && /^[A-Z][A-Z0-9_:-]{1,127}$/u.test(error.message)
+    ? error.message
+    : "OMR_CLEANUP_ITEM_FAILED";
+}
+
 type ExistingJobAdapterResolution =
   | { readonly status: "available"; readonly adapter: OmrVendorAdapter }
   | { readonly status: "binding-unavailable"; readonly code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
@@ -136,8 +157,19 @@ function inputResponseValid(request: VendorInputRequest, response: VendorInputRe
       && [...response.pageIndices].sort((a, b) => a - b).every((value, index) => value === [...request.pageIndices].sort((a, b) => a - b)[index]);
   }
   if (request.kind === "vendor-specific" && response.kind === "vendor-specific") {
-    return request.schemaId === response.schemaId && Object.keys(response.payload).length <= 32
-      && JSON.stringify(response.payload).length <= 8_192;
+    try {
+      const entries = Object.entries(response.payload);
+      const encoder = new TextEncoder();
+      return request.schemaId === response.schemaId
+        && entries.length <= VENDOR_INPUT_REQUEST_LIMITS.payloadEntries
+        && encoder.encode(JSON.stringify(response.payload)).byteLength <= VENDOR_INPUT_REQUEST_LIMITS.payloadBytes
+        && entries.every(([key, value]) => key.length > 0
+          && encoder.encode(key).byteLength <= VENDOR_INPUT_REQUEST_LIMITS.payloadKeyLength
+          && (typeof value === "boolean"
+            || (typeof value === "number" && Number.isSafeInteger(value))
+            || (typeof value === "string"
+              && encoder.encode(value).byteLength <= VENDOR_INPUT_REQUEST_LIMITS.payloadStringLength)));
+    } catch { return false; }
   }
   return false;
 }
@@ -358,14 +390,14 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         try {
           await this.dependencies.store.failVendorCreation({
             jobId: claimedJob.id, expectedVendorCreateLeaseExpiresAt: claimedJob.vendorCreateLeaseExpiresAt,
-            code: "OMR_VENDOR_OPERATION_FAILED", messageKo: sanitizeVendorFailure().messageKo, now: now.toISOString(),
+            code: OMR_VENDOR_CREATE_DEFINITIVE_REJECTION, messageKo: sanitizeVendorFailure().messageKo, now: now.toISOString(),
           });
         } catch {
           await this.recordAuditBestEffort(claimedJob.id, "job-create-superseded", "definitive-rejection-fence", now.toISOString());
           throw new RangeError("OMR_IDEMPOTENCY_PENDING");
         }
         await this.recordAuditBestEffort(claimedJob.id, "job-create-failed", "definitive-vendor-rejection", now.toISOString());
-        throw new RangeError("OMR_VENDOR_OPERATION_FAILED");
+        throw new RangeError(OMR_VENDOR_CREATE_DEFINITIVE_REJECTION);
       }
       if (!claimedJob.capabilities.supportsIdempotency || outcome === "definitive-rejection") {
         try {
@@ -424,6 +456,11 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     if (inspected.quality.status === "warn" && page.warnAcknowledged !== true) throw new RangeError("OMR_IMAGE_WARNING_ACK_REQUIRED");
     const duplicate = job.pages.find((candidate) => candidate.pageIndex !== page.pageIndex && candidate.pageDigest === inspected.digest);
     if (duplicate && page.duplicateConfirmed !== true) throw new RangeError("OMR_DUPLICATE_PAGE_CONFIRMATION_REQUIRED");
+    // Historical binding availability is a pre-dispatch prerequisite, not an
+    // upload attempt. Resolve it before claiming a page so the retry counter
+    // and upload lease remain untouched while the exact adapter is absent.
+    const uploadAdapter = this.adapterFor(job);
+    const uploadVendorJobId = this.vendorJobId(job);
     const idempotencyKeyHash = keyedTokenHash(page.idempotencyKey, this.dependencies.handleHmacKey, "omr-page-idempotency-v1");
     const pageRecord: OmrPageRecord = {
       pageIndex: page.pageIndex, pageDigest: inspected.digest, mimeType: inspected.mimeType,
@@ -453,7 +490,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     try {
       const object = await this.dependencies.objects.put({ ownerSessionId: job.ownerSessionId, publicationId: `omr-page:${job.id}:${page.pageIndex}:${leaseToken}`, bytes: inspected.bytes, contentType: inspected.mimeType, expiresAt: job.handleExpiresAt });
       objectReferenceId = object.id;
-      await this.adapterFor(job).uploadPage(this.vendorJobId(job), { pageIndex: page.pageIndex, pageDigest: inspected.digest, mimeType: inspected.mimeType, idempotencyKey: idempotencyKeyHash, bytes: new Blob([inspected.bytes.slice().buffer as ArrayBuffer], { type: inspected.mimeType }) });
+      await uploadAdapter.uploadPage(uploadVendorJobId, { pageIndex: page.pageIndex, pageDigest: inspected.digest, mimeType: inspected.mimeType, idempotencyKey: idempotencyKeyHash, bytes: new Blob([inspected.bytes.slice().buffer as ArrayBuffer], { type: inspected.mimeType }) });
       vendorEffectCompleted = true;
       let applied: boolean;
       try {
@@ -704,12 +741,33 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         await this.recordAuditBestEffort(job.id, "job-failed", "invalid-vendor-progress", now.toISOString());
       } else await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "processing", ...(status.progressBp === undefined ? {} : { progressBp: status.progressBp }), ...this.clearRetry() }, now: now.toISOString() });
     } else if (status.kind === "needs-input") {
-      await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "needs-input", currentInputRequest: status.request, ...(job.currentInputRequest?.requestId === status.request.requestId ? {} : { acceptedInput: undefined, acceptedInputDigest: undefined }), ...this.clearRetry() }, now: now.toISOString() });
-      await this.recordAuditBestEffort(job.id, "needs-input", status.request.kind, now.toISOString());
+      try {
+        const request = validateVendorInputRequest(status.request, job.pageCount);
+        await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "needs-input", currentInputRequest: request, ...(job.currentInputRequest?.requestId === request.requestId ? {} : { acceptedInput: undefined, acceptedInputDigest: undefined }), ...this.clearRetry() }, now: now.toISOString() });
+        await this.recordAuditBestEffort(job.id, "needs-input", request.kind, now.toISOString());
+      } catch {
+        await this.dependencies.store.completeStatusObservation({
+          jobId: job.id,
+          leaseToken: observationLeaseToken,
+          expectedStates: STATUS_OBSERVATION_STATES,
+          update: {
+            state: "failed", creditState: "released", ...this.clearRetry(),
+            publicFailureCode: "OMR_PROVIDER_CONTRACT_INVALID",
+            publicFailureMessageKo: "제공자 추가 입력 요청이 계약 또는 안전 한도와 일치하지 않습니다.",
+          },
+          now: now.toISOString(),
+        });
+        await this.recordAuditBestEffort(job.id, "job-failed", "invalid-needs-input-request", now.toISOString());
+      }
     } else if (status.kind === "completed") {
       await this.captureCompleted(job, now, observationLeaseToken);
+    } else if (status.kind === "created") {
+      const state = job.state === "processing" || job.state === "needs-input" ? job.state : "queued";
+      await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state, ...this.clearRetry() }, now: now.toISOString() });
+      await this.recordAuditBestEffort(job.id, "job-status", "provider-created", now.toISOString());
     } else if (status.kind === "queued") {
-      await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "queued", ...this.clearRetry() }, now: now.toISOString() });
+      const state = job.state === "processing" || job.state === "needs-input" ? job.state : "queued";
+      await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state, ...this.clearRetry() }, now: now.toISOString() });
     }
     job = await this.owned(handle);
     return publicStatusFromRecord(job);
@@ -768,7 +826,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     if (TERMINAL_STATES.has(job.state)) throw new RangeError("OMR_CANCEL_NOT_ALLOWED");
     const leaseToken = generateOpaqueToken(24);
     const operationRequestDigest = await semanticDigest({ projectionSchema: "hm-omr-operation-request-v1", jobId: job.id, kind: "cancel" });
-    const claim = await this.dependencies.store.claimOperation({ jobId: job.id, kind: "cancel", operationRequestDigest, expectedStates: ["created", "uploading", "queued", "processing", "needs-input", "cancel-failed"], leaseToken, leaseExpiresAt: new Date(now.getTime() + OPERATION_LEASE_MS).toISOString(), supportsIdempotency: job.capabilities.supportsIdempotency, now: now.toISOString() });
+    const claim = await this.dependencies.store.claimOperation({ jobId: job.id, kind: "cancel", operationRequestDigest, expectedStates: ["created", "uploading", "queued", "processing", "needs-input", "sync-retry-pending", "capture-retry-pending", "cancel-failed"], leaseToken, leaseExpiresAt: new Date(now.getTime() + OPERATION_LEASE_MS).toISOString(), supportsIdempotency: job.capabilities.supportsIdempotency, now: now.toISOString() });
     if (claim.status === "pending") throw new RangeError("OMR_CANCEL_PENDING");
     if (claim.status === "reconciliation-required") throw new RangeError("OMR_JOB_RECONCILIATION_REQUIRED");
     if (claim.status === "invalid" || claim.status === "request-conflict") throw new RangeError("OMR_CANCEL_NOT_ALLOWED");
@@ -792,10 +850,203 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     }
   }
 
+  private providerDeleteAdapter(operation: DurableOmrProviderDeleteOperation): ExistingJobAdapterResolution {
+    const resolved = this.dependencies.resolveAdapter?.(
+      operation.providerBindingId,
+      operation.adapterContractVersion,
+      operation.vendorId,
+    );
+    if (resolved) return { status: "available", adapter: resolved };
+    const currentBindingId = this.dependencies.providerBindingId ?? operation.vendorId;
+    const currentContractVersion = this.dependencies.adapterContractVersion ?? OMR_VENDOR_ADAPTER_CONTRACT_VERSION;
+    return operation.providerBindingId === currentBindingId
+      && operation.adapterContractVersion === currentContractVersion
+      ? { status: "available", adapter: this.dependencies.adapter }
+      : { status: "binding-unavailable", code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
+  }
+
+  private providerDeleteVendorJobId(operation: DurableOmrProviderDeleteOperation): VendorJobId {
+    const bytes = decryptAeadV1(operation.vendorJobIdEnvelope, this.dependencies.vendorJobEncryptionKey);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes) as VendorJobId;
+  }
+
+  private providerDeleteSummary(operation: DurableOmrProviderDeleteOperation, now: Date): {
+    readonly vendor: VendorDeleteResult;
+    readonly state: DurableOmrJobRecord["vendorDeleteState"];
+    readonly nextAttemptAt?: string;
+  } {
+    if (operation.dispatchOutcome === "acknowledged-deleted") {
+      return { vendor: { status: "deleted" }, state: "deleted" };
+    }
+    if (operation.dispatchOutcome === "acknowledged-not-supported"
+      && operation.result?.status === "not-supported") {
+      const expiresAt = operation.result.retentionInfo.vendorDeletesAt;
+      if (expiresAt && expiresAt <= now.toISOString()) {
+        return { vendor: { status: "deleted" }, state: "deleted" };
+      }
+      return {
+        vendor: structuredClone(operation.result),
+        state: "not-supported",
+        nextAttemptAt: expiresAt ?? new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString(),
+      };
+    }
+    const reconciliation = operation.reconciliationRequired
+      || (operation.dispatchOutcome === "outcome-uncertain" && !operation.supportsIdempotency);
+    const activelyClaimed = Boolean(operation.claimToken)
+      && (operation.claimLeaseExpiresAt ?? "") > now.toISOString();
+    return {
+      vendor: operation.result?.status === "failed"
+        ? structuredClone(operation.result)
+        : {
+          status: "failed",
+          code: reconciliation ? "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" : "OMR_VENDOR_DELETE_PENDING",
+          message: reconciliation
+            ? "Vendor 삭제 결과가 불확실하며 안전한 자동 재호출 권한이 없습니다."
+            : "Vendor 삭제 확인을 기다리고 있습니다.",
+        },
+      state: activelyClaimed ? "pending" : "failed",
+      nextAttemptAt: operation.nextAttemptAt ?? operation.claimLeaseExpiresAt,
+    };
+  }
+
+  private async executeProviderDelete(job: DurableOmrJobRecord, now: Date): Promise<{
+    readonly vendor: VendorDeleteResult;
+    readonly state: DurableOmrJobRecord["vendorDeleteState"];
+    readonly nextAttemptAt?: string;
+    readonly retentionInfo?: import("../../domain/omr/contracts").RetentionInfo;
+  }> {
+    if (!job.vendorJobIdEnvelope) {
+      return {
+        vendor: { status: "failed", code: "OMR_VENDOR_JOB_ID_UNAVAILABLE", message: "확정된 Vendor 작업 식별자를 사용할 수 없어 외부 삭제를 확인할 수 없습니다." },
+        state: "failed",
+        nextAttemptAt: new Date(now.getTime() + DELETE_RETRY_MS).toISOString(),
+      };
+    }
+    const operationGeneration = 1;
+    const operationId = `omr-provider-delete:${keyedTokenHash(`${job.id}:${operationGeneration}:${job.providerBindingId}:${job.adapterContractVersion}`, this.dependencies.handleHmacKey, "omr-provider-delete-operation-v1")}`;
+    const idempotencyKey = keyedTokenHash(`${job.id}:${operationGeneration}`, this.dependencies.handleHmacKey, "omr-provider-delete-idempotency-v1");
+    const claimToken = generateOpaqueToken(24);
+    const claim = await this.dependencies.store.claimProviderDelete({
+      jobId: job.id,
+      operationId,
+      operationGeneration,
+      providerBindingId: job.providerBindingId,
+      adapterContractVersion: job.adapterContractVersion,
+      vendorId: job.capabilities.vendorId,
+      vendorJobIdEnvelope: job.vendorJobIdEnvelope,
+      idempotencyKey,
+      supportsDeletion: job.capabilities.supportsDeletion,
+      supportsIdempotency: job.capabilities.supportsIdempotency,
+      claimToken,
+      claimLeaseExpiresAt: new Date(now.getTime() + OPERATION_LEASE_MS).toISOString(),
+      now: now.toISOString(),
+    });
+    if (claim.status !== "claimed") return this.providerDeleteSummary(claim.operation, now);
+    const operation = claim.operation;
+    const resolution = this.providerDeleteAdapter(operation);
+    if (resolution.status === "binding-unavailable") {
+      const result = { status: "failed", code: resolution.code, message: BINDING_UNAVAILABLE_DELETE_MESSAGE_KO } as const;
+      const completedAt = this.now();
+      await this.dependencies.store.completeProviderDelete({
+        jobId: job.id, operationId, operationGeneration, claimToken,
+        dispatchOutcome: operation.dispatchOutcome,
+        result,
+        nextAttemptAt: new Date(now.getTime() + DELETE_RETRY_MS).toISOString(),
+        reconciliationRequired: operation.reconciliationRequired,
+        now: completedAt.toISOString(),
+      });
+      const persisted = await this.dependencies.store.getProviderDeleteOperation(job.id);
+      return this.providerDeleteSummary(persisted ?? { ...operation, result, claimToken: undefined, claimLeaseExpiresAt: undefined }, now);
+    }
+    const vendorJobId = this.providerDeleteVendorJobId(operation);
+    let observedRetentionInfo = job.retentionInfo;
+    if (!operation.supportsDeletion) {
+      let retentionInfo = job.retentionInfo;
+      try { retentionInfo = await resolution.adapter.getRetentionInfo(vendorJobId); } catch { /* retry the safe read later */ }
+      const result: VendorDeleteResult = retentionInfo
+        ? { status: "not-supported", retentionInfo }
+        : { status: "failed", code: "OMR_VENDOR_RETENTION_UNAVAILABLE", message: "Vendor 보존 정보를 확인하지 못했습니다." };
+      const dispatchOutcome = result.status === "not-supported" ? "acknowledged-not-supported" : "not-dispatched";
+      const nextAttemptAt = result.status === "not-supported"
+        ? undefined
+        : new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
+      const completedAt = this.now();
+      await this.dependencies.store.completeProviderDelete({
+        jobId: job.id, operationId, operationGeneration, claimToken, dispatchOutcome, result,
+        ...(nextAttemptAt ? { nextAttemptAt } : {}), reconciliationRequired: false, now: completedAt.toISOString(),
+      });
+      const persisted = await this.dependencies.store.getProviderDeleteOperation(job.id);
+      return { ...this.providerDeleteSummary(persisted ?? { ...operation, dispatchOutcome, result, claimToken: undefined, claimLeaseExpiresAt: undefined }, now), ...(retentionInfo ? { retentionInfo } : {}) };
+    }
+    const begun = await this.dependencies.store.beginProviderDeleteDispatch({
+      jobId: job.id, operationId, operationGeneration, claimToken, now: now.toISOString(),
+    });
+    if (!begun) {
+      const persisted = await this.dependencies.store.getProviderDeleteOperation(job.id);
+      return persisted ? this.providerDeleteSummary(persisted, now) : {
+        vendor: { status: "failed", code: "OMR_VENDOR_DELETE_PENDING", message: "Vendor 삭제 확인을 기다리고 있습니다." },
+        state: "pending",
+      };
+    }
+    try {
+      const raw = await resolution.adapter.deleteVendorJob(vendorJobId, { idempotencyKey: operation.idempotencyKey });
+      const result: VendorDeleteResult = raw.status === "failed"
+        ? { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." }
+        : raw;
+      if (raw.status === "not-supported") observedRetentionInfo = raw.retentionInfo;
+      else if (raw.status === "failed") observedRetentionInfo = await resolution.adapter.getRetentionInfo(vendorJobId).catch(() => observedRetentionInfo);
+      const dispatchOutcome = result.status === "deleted"
+        ? "acknowledged-deleted"
+        : result.status === "not-supported"
+          ? "acknowledged-not-supported"
+          : "acknowledged-failed";
+      const nextAttemptAt = result.status === "failed" ? new Date(now.getTime() + DELETE_RETRY_MS).toISOString() : undefined;
+      const completedAt = this.now();
+      await this.dependencies.store.completeProviderDelete({
+        jobId: job.id, operationId, operationGeneration, claimToken, dispatchOutcome, result,
+        ...(nextAttemptAt ? { nextAttemptAt } : {}), reconciliationRequired: false, now: completedAt.toISOString(),
+      });
+    } catch (error) {
+      observedRetentionInfo = await resolution.adapter.getRetentionInfo(vendorJobId).catch(() => observedRetentionInfo);
+      const uncertain = vendorCallOutcome(error) === "outcome-uncertain";
+      const reconciliationRequired = uncertain && !operation.supportsIdempotency;
+      const result = {
+        status: "failed",
+        code: reconciliationRequired ? "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" : "OMR_VENDOR_DELETE_FAILED",
+        message: reconciliationRequired
+          ? "Vendor 삭제 결과가 불확실하며 안전한 자동 재호출 권한이 없습니다."
+          : "Vendor 삭제 확인이 완료되지 않았습니다.",
+      } as const;
+      const completedAt = this.now();
+      await this.dependencies.store.completeProviderDelete({
+        jobId: job.id, operationId, operationGeneration, claimToken,
+        dispatchOutcome: uncertain ? "outcome-uncertain" : "acknowledged-failed",
+        result,
+        nextAttemptAt: new Date(now.getTime() + (reconciliationRequired ? RETRY_BACKOFF_MS.at(-1)! : DELETE_RETRY_MS)).toISOString(),
+        reconciliationRequired,
+        now: completedAt.toISOString(),
+      });
+    }
+    const persisted = await this.dependencies.store.getProviderDeleteOperation(job.id);
+    const summary: {
+      readonly vendor: VendorDeleteResult;
+      readonly state: DurableOmrJobRecord["vendorDeleteState"];
+      readonly nextAttemptAt?: string;
+    } = persisted ? this.providerDeleteSummary(persisted, now) : {
+      vendor: { status: "failed", code: "OMR_VENDOR_DELETE_PENDING", message: "Vendor 삭제 확인을 기다리고 있습니다." },
+      state: "pending",
+    };
+    return { ...summary, ...(summary.vendor.status === "not-supported"
+      ? { retentionInfo: summary.vendor.retentionInfo }
+      : observedRetentionInfo ? { retentionInfo: observedRetentionInfo } : {}) };
+  }
+
   private async deleteRecord(job: DurableOmrJobRecord, now: Date, cleanupLeaseToken?: string): Promise<OmrDeleteResult> {
-    if (job.state === "deleted" && job.vendorDeleteResult) return { localHandleDeleted: true, vendor: structuredClone(job.vendorDeleteResult) };
-    if (job.handleActive) await this.dependencies.store.markHandleDeleted(job.id, now.toISOString());
-    else if (job.state === "expired") await this.dependencies.store.transition(job.id, { state: "delete-pending" }, now.toISOString());
+    if (job.state === "deleted" && job.vendorDeleteResult) {
+      return { localHandleDeleted: true, vendor: structuredClone(job.vendorDeleteResult), cleanupState: "resolved" };
+    }
+    await this.dependencies.store.markHandleDeleted(job.id, now.toISOString());
+    job = await this.dependencies.store.findOwnedByHandleHash(job.publicHandleHash, job.ownerSessionId, true) ?? job;
     let vendor: VendorDeleteResult = job.vendorDeleteResult ?? { status: "failed", code: "OMR_VENDOR_DELETE_PENDING", message: "Vendor 삭제 확인을 기다리고 있습니다." };
     let retentionInfo = job.retentionInfo;
     let vendorDeleteState = job.vendorDeleteState;
@@ -803,24 +1054,21 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     let vendorCreateOutcomeState = job.vendorCreateOutcomeState;
     const vendorDue = !vendorDeleteNextAttemptAt || vendorDeleteNextAttemptAt <= now.toISOString();
     if (vendorDeleteState !== "deleted" && vendorDue) {
-      let resolution: ExistingJobAdapterResolution | undefined;
-      let vendorJobId: VendorJobId | undefined;
       const failVendorResolution = (code: string, message: string) => {
         vendor = { status: "failed", code, message };
         vendorDeleteState = "failed";
         vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
       };
-
       if (vendorCreateOutcomeState === "outcome-uncertain") {
         if (!job.capabilities.supportsIdempotency) {
           failVendorResolution(CREATE_OUTCOME_UNCERTAIN_CODE, CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO);
         } else {
-          resolution = this.resolveExistingJobAdapter(job);
+          const resolution = this.resolveExistingJobAdapter(job);
           if (resolution.status === "binding-unavailable") {
             failVendorResolution(resolution.code, "Vendor 생성 결과가 불확실하고 생성 시점 제공자 binding을 사용할 수 없어 외부 삭제를 확인할 수 없습니다.");
           } else {
             try {
-              vendorJobId = await resolution.adapter.createVendorJob({
+              const vendorJobId = await resolution.adapter.createVendorJob({
                 pageCount: job.canonicalCreateRequest.pageCount,
                 idempotencyKey: job.vendorCreateIdempotencyKey,
               });
@@ -829,22 +1077,17 @@ export class DurableOmrApplicationService implements OmrApplicationService {
                 await this.dependencies.store.completeVendorCreation({
                   jobId: job.id, vendorJobIdEnvelope: envelope, expectedState: "delete-pending",
                   completionMode: "cleanup-reconciliation",
-                  ...(cleanupLeaseToken
-                    ? { cleanupLeaseToken }
-                    : { expectedVendorCreateLeaseExpiresAt: job.vendorCreateLeaseExpiresAt }),
+                  ...(cleanupLeaseToken ? { cleanupLeaseToken } : { expectedVendorCreateLeaseExpiresAt: job.vendorCreateLeaseExpiresAt }),
                   now: now.toISOString(),
                 });
-                vendorCreateOutcomeState = "confirmed";
+                job = await this.dependencies.store.findOwnedByHandleHash(job.publicHandleHash, job.ownerSessionId, true) ?? job;
+                vendorCreateOutcomeState = job.vendorCreateOutcomeState;
               } catch {
                 const persisted = await this.dependencies.store.findOwnedByHandleHash(job.publicHandleHash, job.ownerSessionId, true).catch(() => undefined);
                 if (persisted?.vendorCreateOutcomeState === "confirmed" && persisted.vendorJobIdEnvelope) {
+                  job = persisted;
                   vendorCreateOutcomeState = "confirmed";
-                  vendorJobId = this.vendorJobId(persisted);
-                }
-                else {
-                  vendorJobId = undefined;
-                  failVendorResolution(CREATE_RECONCILIATION_PERSIST_CODE, "복구한 Vendor 작업 식별자를 안전하게 저장하지 못해 외부 삭제를 재시도합니다.");
-                }
+                } else failVendorResolution(CREATE_RECONCILIATION_PERSIST_CODE, "복구한 Vendor 작업 식별자를 안전하게 저장하지 못해 외부 삭제를 재시도합니다.");
               }
             } catch {
               failVendorResolution(CREATE_OUTCOME_UNCERTAIN_CODE, CREATE_OUTCOME_UNCERTAIN_MESSAGE_KO);
@@ -852,43 +1095,16 @@ export class DurableOmrApplicationService implements OmrApplicationService {
           }
         }
       }
-
       if (vendorCreateOutcomeState === "not-attempted" || vendorCreateOutcomeState === "definitive-no-job") {
         vendor = { status: "deleted" };
         vendorDeleteState = "deleted";
         vendorDeleteNextAttemptAt = undefined;
       } else if (vendorCreateOutcomeState === "confirmed") {
-        resolution ??= this.resolveExistingJobAdapter(job);
-        if (resolution.status === "binding-unavailable") {
-          failVendorResolution(resolution.code, BINDING_UNAVAILABLE_DELETE_MESSAGE_KO);
-        } else {
-          try {
-            vendorJobId ??= job.vendorJobIdEnvelope ? this.vendorJobId(job) : undefined;
-            if (!vendorJobId) {
-              failVendorResolution("OMR_VENDOR_JOB_ID_UNAVAILABLE", "확정된 Vendor 작업 식별자를 사용할 수 없어 외부 삭제를 확인할 수 없습니다.");
-            } else {
-              vendor = await resolution.adapter.deleteVendorJob(vendorJobId, { idempotencyKey: keyedTokenHash(`${job.id}:delete`, this.dependencies.handleHmacKey, "omr-delete-v1") });
-              if (vendor.status === "deleted") { vendorDeleteState = "deleted"; vendorDeleteNextAttemptAt = undefined; }
-              else if (vendor.status === "not-supported") {
-                retentionInfo = vendor.retentionInfo;
-                vendorDeleteState = "not-supported";
-                vendorDeleteNextAttemptAt = vendor.retentionInfo.vendorDeletesAt ?? new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString();
-              } else {
-                retentionInfo = await resolution.adapter.getRetentionInfo(vendorJobId).catch(() => retentionInfo);
-                vendor = { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." };
-                vendorDeleteState = "failed";
-                vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
-              }
-            }
-          } catch {
-            retentionInfo = vendorJobId
-              ? await resolution.adapter.getRetentionInfo(vendorJobId).catch(() => retentionInfo)
-              : retentionInfo;
-            vendor = { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." };
-            vendorDeleteState = "failed";
-            vendorDeleteNextAttemptAt = new Date(now.getTime() + DELETE_RETRY_MS).toISOString();
-          }
-        }
+        const providerDelete = await this.executeProviderDelete(job, now);
+        vendor = providerDelete.vendor;
+        vendorDeleteState = providerDelete.state;
+        vendorDeleteNextAttemptAt = providerDelete.nextAttemptAt;
+        retentionInfo = providerDelete.retentionInfo ?? (vendor.status === "not-supported" ? vendor.retentionInfo : retentionInfo);
       }
     }
     let localDeleteState = job.localDeleteState;
@@ -905,6 +1121,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     const explicitPendingCode = vendor.status === "failed" && [
       "OMR_PROVIDER_BINDING_UNAVAILABLE", CREATE_OUTCOME_UNCERTAIN_CODE,
       CREATE_RECONCILIATION_PERSIST_CODE, "OMR_VENDOR_JOB_ID_UNAVAILABLE",
+      "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", "OMR_VENDOR_DELETE_FAILED", "OMR_VENDOR_DELETE_PENDING",
     ].includes(vendor.code) ? vendor.code : undefined;
     const creditState = creditStateAfterHandleDeactivation({
       ...job, state, vendorCreateOutcomeState, vendorDeleteState,
@@ -922,12 +1139,42 @@ export class DurableOmrApplicationService implements OmrApplicationService {
         ? explicitPendingCode && vendor.status === "failed" ? vendor.message : "외부 보존 또는 로컬 정리를 계속 확인하고 있습니다."
         : undefined,
     } satisfies Partial<DurableOmrJobRecord>;
-    const applied = cleanupLeaseToken
-      ? await this.dependencies.store.completeCleanup({ jobId: job.id, leaseToken: cleanupLeaseToken, update, now: now.toISOString() })
-      : (await this.dependencies.store.transition(job.id, update, now.toISOString()), true);
-    if (!applied) await this.recordAuditBestEffort(job.id, "job-delete-superseded", "cleanup-fence-lost", now.toISOString());
-    await this.recordAuditBestEffort(job.id, "job-delete", `${vendorDeleteState}:${localDeleteState}`, now.toISOString());
-    return { localHandleDeleted: true, vendor };
+    const providerDeleteOperation = await this.dependencies.store.getProviderDeleteOperation(job.id);
+    const finalized = await this.dependencies.store.finalizeJobDelete({
+      jobId: job.id,
+      ...(cleanupLeaseToken ? { cleanupLeaseToken } : {}),
+      ...(providerDeleteOperation ? {
+        providerDeleteAuthority: {
+          operationId: providerDeleteOperation.operationId,
+          operationGeneration: providerDeleteOperation.operationGeneration,
+        },
+      } : {}),
+      update,
+      now: now.toISOString(),
+    });
+    if (finalized.status === "superseded") {
+      await this.recordAuditBestEffort(job.id, "job-delete-superseded", "aggregate-fence-lost", now.toISOString());
+    }
+    const persisted = finalized.job;
+    const persistedVendor: VendorDeleteResult = persisted.vendorDeleteResult
+      ?? (persisted.vendorDeleteState === "deleted"
+        ? { status: "deleted" }
+        : finalized.status === "applied"
+          ? vendor
+          : { status: "failed", code: "OMR_VENDOR_DELETE_PENDING", message: "Vendor 삭제 확인을 기다리고 있습니다." });
+    await this.recordAuditBestEffort(job.id, "job-delete", `${persisted.vendorDeleteState}:${persisted.localDeleteState}`, now.toISOString());
+    if (persisted.state === "deleted") {
+      return { localHandleDeleted: true, vendor: structuredClone(persistedVendor), cleanupState: "resolved" };
+    }
+    const nextAttemptAt = [persisted.vendorDeleteNextAttemptAt, persisted.localDeleteNextAttemptAt]
+      .filter((candidate): candidate is string => candidate !== undefined)
+      .sort()[0];
+    return {
+      localHandleDeleted: true,
+      vendor: structuredClone(persistedVendor),
+      cleanupState: "pending",
+      ...(nextAttemptAt ? { nextAttemptAt } : {}),
+    };
   }
 
   async delete(handle: OmrJobHandle): Promise<OmrDeleteResult> {
@@ -937,17 +1184,30 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     return this.deleteRecord(job, now);
   }
 
-  async cleanupExpiredJobs(limit = 50): Promise<readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[]> {
+  async cleanupExpiredJobsForScheduler(limit = 50): Promise<OmrCleanupBatchSummary> {
     const now = this.now();
     const leaseToken = generateOpaqueToken(24);
     const expired = await this.dependencies.store.claimCleanup({ now: now.toISOString(), limit, leaseToken, leaseExpiresAt: new Date(now.getTime() + CLEANUP_LEASE_MS).toISOString() });
     const results: Array<{ readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }> = [];
+    const failures: OmrCleanupItemFailure[] = [];
     for (const job of expired) {
       try { results.push({ jobId: job.id, result: await this.deleteRecord(job, now, leaseToken) }); }
-      catch {
+      catch (error) {
+        failures.push({ jobId: job.id, code: cleanupItemFailureCode(error) });
         await this.recordAuditBestEffort(job.id, "job-delete", "cleanup-isolated-failure", now.toISOString());
       }
     }
-    return results;
+    return {
+      attemptedJobs: expired.length,
+      completedJobs: results.filter(({ result }) => result.cleanupState === "resolved").length,
+      pendingJobs: results.filter(({ result }) => result.cleanupState === "pending").length,
+      failedJobs: failures.length,
+      results,
+      failures,
+    };
+  }
+
+  async cleanupExpiredJobs(limit = 50): Promise<readonly { readonly jobId: PrivateRowId; readonly result: OmrDeleteResult }[]> {
+    return (await this.cleanupExpiredJobsForScheduler(limit)).results;
   }
 }

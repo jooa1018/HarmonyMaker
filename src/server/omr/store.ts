@@ -25,6 +25,43 @@ export type VendorCreateOutcomeState =
   | "outcome-uncertain"
   | "confirmed";
 
+export type ProviderDeleteDispatchOutcome =
+  | "not-dispatched"
+  | "outcome-uncertain"
+  | "acknowledged-deleted"
+  | "acknowledged-not-supported"
+  | "acknowledged-failed";
+
+export interface DurableOmrProviderDeleteOperation {
+  readonly jobId: PrivateRowId;
+  readonly operationId: string;
+  readonly operationGeneration: number;
+  readonly providerBindingId: string;
+  readonly adapterContractVersion: string;
+  readonly vendorId: string;
+  readonly vendorJobIdEnvelope: AeadEnvelopeV1;
+  readonly idempotencyKey: string;
+  readonly supportsDeletion: boolean;
+  readonly supportsIdempotency: boolean;
+  readonly dispatchOutcome: ProviderDeleteDispatchOutcome;
+  readonly result?: VendorDeleteResult;
+  readonly claimToken?: string;
+  readonly claimLeaseExpiresAt?: string;
+  readonly nextAttemptAt?: string;
+  readonly reconciliationRequired: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+function sameAeadEnvelope(left: AeadEnvelopeV1, right: AeadEnvelopeV1): boolean {
+  return left.version === right.version
+    && left.algorithm === right.algorithm
+    && left.nonce === right.nonce
+    && left.ciphertext === right.ciphertext
+    && left.authenticationTag === right.authenticationTag
+    && left.associatedDataVersion === right.associatedDataVersion;
+}
+
 const LEGAL_OMR_TRANSITIONS: Readonly<Record<OmrLifecycleState, readonly OmrLifecycleState[]>> = Object.freeze({
   created: ["uploading", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
   uploading: ["queued", "failed", "cancel-pending", "reconciliation-required", "delete-pending", "expired"],
@@ -168,6 +205,8 @@ export interface DurableOmrJobRecord {
   readonly statusObservationLeaseExpiresAt?: string;
   readonly cleanupLeaseToken?: string;
   readonly cleanupLeaseExpiresAt?: string;
+  /** Durable fairness authority: most recent scheduler claim attempt. */
+  readonly cleanupLastAttemptAt?: string;
   readonly reconciliationKind?: "create" | "page-upload" | "sync" | "capture" | OmrOperationKind;
   readonly retryKind?: "sync" | "capture";
   readonly retryAttempt?: number;
@@ -181,6 +220,180 @@ export interface DurableOmrJobRecord {
   readonly startedAt?: string;
   readonly completedAt?: string;
   readonly deletedAt?: string;
+}
+
+export interface OmrProviderDeleteFinalizationAuthority {
+  readonly operationId: string;
+  readonly operationGeneration: number;
+}
+
+export type OmrJobDeleteFinalizationResult = {
+  readonly status: "applied" | "terminal" | "superseded";
+  readonly job: DurableOmrJobRecord;
+};
+
+function providerDeleteFailure(
+  code: "OMR_VENDOR_DELETE_PENDING" | "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" | "OMR_VENDOR_DELETE_AUTHORITY_INVALID",
+): VendorDeleteResult {
+  if (code === "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN") {
+    return { status: "failed", code, message: "Vendor 삭제 결과가 불확실하며 안전한 자동 재호출 권한이 없습니다." };
+  }
+  if (code === "OMR_VENDOR_DELETE_AUTHORITY_INVALID") {
+    return { status: "failed", code, message: "Vendor 삭제 operation authority가 durable outcome과 일치하지 않습니다." };
+  }
+  return { status: "failed", code, message: "Vendor 삭제 확인을 기다리고 있습니다." };
+}
+
+function authoritativeProviderDeleteProjection(
+  operation: DurableOmrProviderDeleteOperation,
+  now: string,
+): Pick<DurableOmrJobRecord, "vendorDeleteState" | "vendorDeleteResult" | "vendorDeleteNextAttemptAt"> {
+  const liveClaim = operation.claimToken !== undefined
+    && (operation.claimLeaseExpiresAt ?? "") > now;
+  if (operation.dispatchOutcome === "acknowledged-deleted") {
+    return { vendorDeleteState: "deleted", vendorDeleteResult: { status: "deleted" }, vendorDeleteNextAttemptAt: undefined };
+  }
+  if (operation.dispatchOutcome === "acknowledged-not-supported") {
+    if (operation.result?.status !== "not-supported") {
+      return {
+        vendorDeleteState: "failed",
+        vendorDeleteResult: providerDeleteFailure("OMR_VENDOR_DELETE_AUTHORITY_INVALID"),
+        vendorDeleteNextAttemptAt: operation.nextAttemptAt,
+      };
+    }
+    const vendorDeletesAt = operation.result.retentionInfo.vendorDeletesAt;
+    return vendorDeletesAt !== undefined && vendorDeletesAt <= now
+      ? { vendorDeleteState: "deleted", vendorDeleteResult: { status: "deleted" }, vendorDeleteNextAttemptAt: undefined }
+      : {
+          vendorDeleteState: "not-supported",
+          vendorDeleteResult: structuredClone(operation.result),
+          vendorDeleteNextAttemptAt: vendorDeletesAt ?? operation.nextAttemptAt,
+        };
+  }
+  if (liveClaim) {
+    return {
+      vendorDeleteState: "pending",
+      vendorDeleteResult: providerDeleteFailure("OMR_VENDOR_DELETE_PENDING"),
+      vendorDeleteNextAttemptAt: operation.claimLeaseExpiresAt,
+    };
+  }
+  if (operation.dispatchOutcome === "acknowledged-failed") {
+    return {
+      vendorDeleteState: "failed",
+      vendorDeleteResult: operation.result?.status === "failed"
+        ? structuredClone(operation.result)
+        : providerDeleteFailure("OMR_VENDOR_DELETE_AUTHORITY_INVALID"),
+      vendorDeleteNextAttemptAt: operation.nextAttemptAt,
+    };
+  }
+  if (operation.dispatchOutcome === "outcome-uncertain") {
+    const reconciliationRequired = operation.reconciliationRequired || !operation.supportsIdempotency;
+    return {
+      vendorDeleteState: "failed",
+      vendorDeleteResult: operation.result?.status === "failed"
+        ? structuredClone(operation.result)
+        : providerDeleteFailure(reconciliationRequired
+          ? "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN"
+          : "OMR_VENDOR_DELETE_PENDING"),
+      vendorDeleteNextAttemptAt: operation.nextAttemptAt ?? operation.claimLeaseExpiresAt,
+    };
+  }
+  return {
+    vendorDeleteState: "failed",
+    vendorDeleteResult: operation.result?.status === "failed"
+      ? structuredClone(operation.result)
+      : providerDeleteFailure("OMR_VENDOR_DELETE_PENDING"),
+    vendorDeleteNextAttemptAt: operation.nextAttemptAt ?? operation.claimLeaseExpiresAt,
+  };
+}
+
+/**
+ * Merge a delete worker's observation into the current locked aggregate.
+ * Deletion is monotonic: an acknowledged provider deletion or completed local
+ * deletion can never be regressed by a slower direct/cleanup worker.
+ */
+export function mergeOmrJobDeleteFinalization(
+  current: DurableOmrJobRecord,
+  update: Partial<DurableOmrJobRecord>,
+  providerOperation: DurableOmrProviderDeleteOperation | undefined,
+  now: string,
+  callerOwnsCleanupLease: boolean,
+): DurableOmrJobRecord {
+  let vendorDeleteState = current.vendorDeleteState === "deleted"
+    ? "deleted"
+    : update.vendorDeleteState ?? current.vendorDeleteState;
+  let vendorDeleteResult = Object.prototype.hasOwnProperty.call(update, "vendorDeleteResult")
+    ? update.vendorDeleteResult
+    : current.vendorDeleteResult;
+  let vendorDeleteNextAttemptAt = Object.prototype.hasOwnProperty.call(update, "vendorDeleteNextAttemptAt")
+    ? update.vendorDeleteNextAttemptAt
+    : current.vendorDeleteNextAttemptAt;
+
+  if (current.vendorDeleteState === "deleted") {
+    vendorDeleteResult = current.vendorDeleteResult?.status === "deleted"
+      ? structuredClone(current.vendorDeleteResult)
+      : { status: "deleted" };
+    vendorDeleteNextAttemptAt = undefined;
+  } else if (providerOperation) {
+    const authoritative = authoritativeProviderDeleteProjection(providerOperation, now);
+    vendorDeleteState = authoritative.vendorDeleteState;
+    vendorDeleteResult = authoritative.vendorDeleteResult;
+    vendorDeleteNextAttemptAt = authoritative.vendorDeleteNextAttemptAt;
+  }
+
+  const localDeleteState = current.localDeleteState === "deleted"
+    ? "deleted"
+    : update.localDeleteState ?? current.localDeleteState;
+  const localDeleteNextAttemptAt = localDeleteState === "deleted"
+    ? undefined
+    : Object.prototype.hasOwnProperty.call(update, "localDeleteNextAttemptAt")
+      ? update.localDeleteNextAttemptAt
+      : current.localDeleteNextAttemptAt;
+  if (vendorDeleteState === "deleted") vendorDeleteNextAttemptAt = undefined;
+  const state: OmrLifecycleState = vendorDeleteState === "deleted" && localDeleteState === "deleted"
+    ? "deleted"
+    : "delete-pending";
+  const vendorCreateOutcomeState = update.vendorCreateOutcomeState ?? current.vendorCreateOutcomeState;
+  const creditState = creditStateAfterHandleDeactivation({
+    ...current,
+    state,
+    vendorCreateOutcomeState,
+    vendorDeleteState,
+  });
+  const merged: DurableOmrJobRecord = {
+    ...current,
+    ...structuredClone(update),
+    id: current.id,
+    ownerSessionId: current.ownerSessionId,
+    handleActive: false,
+    state,
+    vendorCreateOutcomeState,
+    vendorDeleteState,
+    localDeleteState,
+    vendorDeleteResult: vendorDeleteResult === undefined ? undefined : structuredClone(vendorDeleteResult),
+    vendorDeleteNextAttemptAt,
+    localDeleteNextAttemptAt,
+    creditState,
+    cleanupLeaseToken: state === "deleted" || callerOwnsCleanupLease ? undefined : current.cleanupLeaseToken,
+    cleanupLeaseExpiresAt: state === "deleted" || callerOwnsCleanupLease ? undefined : current.cleanupLeaseExpiresAt,
+    deletedAt: current.deletedAt ?? now,
+    updatedAt: now,
+    ...(state === "delete-pending" && vendorDeleteResult?.status === "failed" ? {
+      publicFailureCode: vendorDeleteResult.code,
+      publicFailureMessageKo: vendorDeleteResult.message,
+    } : {}),
+    ...(state === "deleted" ? {
+      vendorJobIdEnvelope: undefined,
+      publicFailureCode: undefined,
+      publicFailureMessageKo: undefined,
+    } : {}),
+    ...(localDeleteState === "deleted" ? {
+      resultObjectReferenceId: undefined,
+      evidence: undefined,
+      normalizationMapping: undefined,
+    } : {}),
+  };
+  return merged;
 }
 
 export type OmrCreateClaim =
@@ -208,6 +421,10 @@ export type OmrResultCaptureClaim =
 export type OmrStatusObservationClaim =
   | { readonly status: "claimed"; readonly job: DurableOmrJobRecord }
   | { readonly status: "pending" | "invalid" };
+
+export type OmrProviderDeleteClaim =
+  | { readonly status: "claimed"; readonly operation: DurableOmrProviderDeleteOperation }
+  | { readonly status: "pending" | "not-due" | "terminal" | "reconciliation-required"; readonly operation: DurableOmrProviderDeleteOperation };
 
 export type OmrDurableCompletionInspection =
   | { readonly status: "committed-exact" }
@@ -290,8 +507,49 @@ export interface OmrStore {
   releaseResultCapture(jobId: PrivateRowId, leaseToken: string, now: string): Promise<void>;
   claimStatusObservation(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly leaseExpiresAt: string; readonly now: string }): Promise<OmrStatusObservationClaim>;
   completeStatusObservation(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly expectedStates: readonly OmrLifecycleState[]; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
+  getProviderDeleteOperation(jobId: PrivateRowId): Promise<DurableOmrProviderDeleteOperation | undefined>;
+  claimProviderDelete(input: {
+    readonly jobId: PrivateRowId;
+    readonly operationId: string;
+    readonly operationGeneration: number;
+    readonly providerBindingId: string;
+    readonly adapterContractVersion: string;
+    readonly vendorId: string;
+    readonly vendorJobIdEnvelope: AeadEnvelopeV1;
+    readonly idempotencyKey: string;
+    readonly supportsDeletion: boolean;
+    readonly supportsIdempotency: boolean;
+    readonly claimToken: string;
+    readonly claimLeaseExpiresAt: string;
+    readonly now: string;
+  }): Promise<OmrProviderDeleteClaim>;
+  beginProviderDeleteDispatch(input: {
+    readonly jobId: PrivateRowId;
+    readonly operationId: string;
+    readonly operationGeneration: number;
+    readonly claimToken: string;
+    readonly now: string;
+  }): Promise<boolean>;
+  completeProviderDelete(input: {
+    readonly jobId: PrivateRowId;
+    readonly operationId: string;
+    readonly operationGeneration: number;
+    readonly claimToken: string;
+    readonly dispatchOutcome: ProviderDeleteDispatchOutcome;
+    readonly result?: VendorDeleteResult;
+    readonly nextAttemptAt?: string;
+    readonly reconciliationRequired: boolean;
+    readonly now: string;
+  }): Promise<boolean>;
   transition(jobId: PrivateRowId, update: Partial<DurableOmrJobRecord>, now: string): Promise<void>;
   markHandleDeleted(jobId: PrivateRowId, now: string): Promise<void>;
+  finalizeJobDelete(input: {
+    readonly jobId: PrivateRowId;
+    readonly cleanupLeaseToken?: string;
+    readonly providerDeleteAuthority?: OmrProviderDeleteFinalizationAuthority;
+    readonly update: Partial<DurableOmrJobRecord>;
+    readonly now: string;
+  }): Promise<OmrJobDeleteFinalizationResult>;
   recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void>;
   claimCleanup(input: { readonly now: string; readonly limit: number; readonly leaseToken: string; readonly leaseExpiresAt: string }): Promise<readonly DurableOmrJobRecord[]>;
   completeCleanup(input: { readonly jobId: PrivateRowId; readonly leaseToken: string; readonly update: Partial<DurableOmrJobRecord>; readonly now: string }): Promise<boolean>;
@@ -305,6 +563,7 @@ export class MemoryOmrStore implements OmrStore {
   private gate = Promise.resolve();
   private readonly jobs = new Map<PrivateRowId, DurableOmrJobRecord>();
   private readonly idempotency = new Map<string, IdempotencyEntry>();
+  private readonly providerDeleteOperations = new Map<PrivateRowId, DurableOmrProviderDeleteOperation>();
   private readonly audits: Array<{ readonly jobId?: PrivateRowId; readonly eventKind: string; readonly outcome: string; readonly createdAt: string }> = [];
 
   private async atomic<T>(operation: () => T | Promise<T>): Promise<T> {
@@ -548,7 +807,8 @@ export class MemoryOmrStore implements OmrStore {
     await this.atomic(() => {
       const job = this.jobs.get(jobId); if (!job) return;
       const page = job.pages.find((candidate) => candidate.pageIndex === pageIndex);
-      if (!page || page.uploadLeaseToken !== leaseToken) return;
+      if (!["created", "uploading"].includes(job.state) || !page || page.uploadState !== "pending"
+        || page.uploadLeaseToken !== leaseToken) return;
       this.jobs.set(jobId, {
         ...job,
         pages: job.pages.map((candidate) => candidate.pageIndex === pageIndex ? { ...candidate, uploadState: outcome, uploadLeaseToken: undefined, uploadLeaseExpiresAt: undefined } : candidate),
@@ -676,9 +936,42 @@ export class MemoryOmrStore implements OmrStore {
     await this.atomic(() => {
       const job = this.jobs.get(jobId);
       if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (job.state === "deleted" || (!job.handleActive && job.state === "delete-pending")) return;
       if (!isLegalOmrTransition(job.state, "delete-pending")) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
       const creditState = creditStateAfterHandleDeactivation({ ...job, state: "delete-pending" });
-      this.jobs.set(jobId, { ...job, handleActive: false, state: "delete-pending", deletedAt: now, creditState, updatedAt: now });
+      this.jobs.set(jobId, { ...job, handleActive: false, state: "delete-pending", deletedAt: job.deletedAt ?? now, creditState, updatedAt: now });
+    });
+  }
+
+  async finalizeJobDelete(input: Parameters<OmrStore["finalizeJobDelete"]>[0]): Promise<OmrJobDeleteFinalizationResult> {
+    return this.atomic(() => {
+      const job = this.jobs.get(input.jobId);
+      if (!job) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      if (job.state === "deleted") return { status: "terminal", job: this.clone(job) };
+      if (input.cleanupLeaseToken !== undefined) {
+        if (job.cleanupLeaseToken !== input.cleanupLeaseToken
+          || (job.cleanupLeaseExpiresAt ?? "") <= input.now) {
+          return { status: "superseded", job: this.clone(job) };
+        }
+      }
+      const operation = this.providerDeleteOperations.get(input.jobId);
+      if (input.providerDeleteAuthority === undefined) {
+        if (operation) return { status: "superseded", job: this.clone(job) };
+      } else if (!operation
+        || operation.operationId !== input.providerDeleteAuthority.operationId
+        || operation.operationGeneration !== input.providerDeleteAuthority.operationGeneration) {
+        return { status: "superseded", job: this.clone(job) };
+      }
+      const merged = mergeOmrJobDeleteFinalization(
+        job,
+        input.update,
+        operation,
+        input.now,
+        input.cleanupLeaseToken !== undefined,
+      );
+      if (!isLegalOmrTransition(job.state, merged.state)) throw new RangeError("OMR_STATE_TRANSITION_INVALID");
+      this.jobs.set(job.id, merged);
+      return { status: "applied", job: this.clone(merged) };
     });
   }
 
@@ -720,6 +1013,113 @@ export class MemoryOmrStore implements OmrStore {
       return true;
     });
   }
+
+  async getProviderDeleteOperation(jobId: PrivateRowId): Promise<DurableOmrProviderDeleteOperation | undefined> {
+    const operation = this.providerDeleteOperations.get(jobId);
+    return operation ? structuredClone(operation) : undefined;
+  }
+
+  async claimProviderDelete(input: Parameters<OmrStore["claimProviderDelete"]>[0]): Promise<OmrProviderDeleteClaim> {
+    return this.atomic(() => {
+      if (!this.jobs.has(input.jobId)) throw new RangeError("OMR_JOB_UNAVAILABLE");
+      let operation = this.providerDeleteOperations.get(input.jobId);
+      if (!operation) {
+        operation = {
+          jobId: input.jobId,
+          operationId: input.operationId,
+          operationGeneration: input.operationGeneration,
+          providerBindingId: input.providerBindingId,
+          adapterContractVersion: input.adapterContractVersion,
+          vendorId: input.vendorId,
+          vendorJobIdEnvelope: structuredClone(input.vendorJobIdEnvelope),
+          idempotencyKey: input.idempotencyKey,
+          supportsDeletion: input.supportsDeletion,
+          supportsIdempotency: input.supportsIdempotency,
+          dispatchOutcome: "not-dispatched",
+          result: undefined,
+          claimToken: undefined,
+          claimLeaseExpiresAt: undefined,
+          nextAttemptAt: undefined,
+          reconciliationRequired: false,
+          createdAt: input.now,
+          updatedAt: input.now,
+        };
+        this.providerDeleteOperations.set(input.jobId, operation);
+      }
+      const exact = operation.operationId === input.operationId
+        && operation.operationGeneration === input.operationGeneration
+        && operation.providerBindingId === input.providerBindingId
+        && operation.adapterContractVersion === input.adapterContractVersion
+        && operation.vendorId === input.vendorId
+        && sameAeadEnvelope(operation.vendorJobIdEnvelope, input.vendorJobIdEnvelope)
+        && operation.idempotencyKey === input.idempotencyKey
+        && operation.supportsDeletion === input.supportsDeletion
+        && operation.supportsIdempotency === input.supportsIdempotency;
+      if (!exact) throw new RangeError("OMR_PROVIDER_DELETE_AUTHORITY_CONFLICT");
+      if (operation.dispatchOutcome === "acknowledged-deleted"
+        || operation.dispatchOutcome === "acknowledged-not-supported") {
+        return { status: "terminal", operation: structuredClone(operation) };
+      }
+      if (operation.reconciliationRequired
+        || (operation.dispatchOutcome === "outcome-uncertain" && !operation.supportsIdempotency)) {
+        return { status: "reconciliation-required", operation: structuredClone(operation) };
+      }
+      if (operation.nextAttemptAt && operation.nextAttemptAt > input.now) {
+        return { status: "not-due", operation: structuredClone(operation) };
+      }
+      if (operation.claimToken && (operation.claimLeaseExpiresAt ?? "") > input.now) {
+        return { status: "pending", operation: structuredClone(operation) };
+      }
+      const claimed = {
+        ...operation,
+        claimToken: input.claimToken,
+        claimLeaseExpiresAt: input.claimLeaseExpiresAt,
+        updatedAt: input.now,
+      };
+      this.providerDeleteOperations.set(input.jobId, claimed);
+      return { status: "claimed", operation: structuredClone(claimed) };
+    });
+  }
+
+  async beginProviderDeleteDispatch(input: Parameters<OmrStore["beginProviderDeleteDispatch"]>[0]): Promise<boolean> {
+    return this.atomic(() => {
+      const operation = this.providerDeleteOperations.get(input.jobId);
+      if (!operation || operation.operationId !== input.operationId
+        || operation.operationGeneration !== input.operationGeneration
+        || operation.claimToken !== input.claimToken
+        || (operation.claimLeaseExpiresAt ?? "") <= input.now) return false;
+      this.providerDeleteOperations.set(input.jobId, {
+        ...operation,
+        dispatchOutcome: "outcome-uncertain",
+        result: undefined,
+        nextAttemptAt: undefined,
+        reconciliationRequired: false,
+        updatedAt: input.now,
+      });
+      return true;
+    });
+  }
+
+  async completeProviderDelete(input: Parameters<OmrStore["completeProviderDelete"]>[0]): Promise<boolean> {
+    return this.atomic(() => {
+      const operation = this.providerDeleteOperations.get(input.jobId);
+      if (!operation || operation.operationId !== input.operationId
+        || operation.operationGeneration !== input.operationGeneration
+        || operation.claimToken !== input.claimToken
+        || (operation.claimLeaseExpiresAt ?? "") <= input.now) return false;
+      this.providerDeleteOperations.set(input.jobId, {
+        ...operation,
+        dispatchOutcome: input.dispatchOutcome,
+        ...(input.result === undefined ? { result: undefined } : { result: structuredClone(input.result) }),
+        claimToken: undefined,
+        claimLeaseExpiresAt: undefined,
+        nextAttemptAt: input.nextAttemptAt,
+        reconciliationRequired: input.reconciliationRequired,
+        updatedAt: input.now,
+      });
+      return true;
+    });
+  }
   async recordAudit(jobId: PrivateRowId | undefined, eventKind: string, outcome: string, now: string): Promise<void> {
     await this.atomic(() => { this.audits.push({ ...(jobId ? { jobId } : {}), eventKind, outcome, createdAt: now }); });
   }
@@ -734,13 +1134,27 @@ export class MemoryOmrStore implements OmrStore {
           (job.vendorDeleteState !== "deleted" && (job.vendorDeleteNextAttemptAt ?? now) <= now)
           || (job.localDeleteState !== "deleted" && (job.localDeleteNextAttemptAt ?? now) <= now)
         ))
-      )).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
+      )).sort((a, b) => {
+        const leftAttempt = a.cleanupLastAttemptAt;
+        const rightAttempt = b.cleanupLastAttemptAt;
+        if (leftAttempt === undefined && rightAttempt !== undefined) return -1;
+        if (leftAttempt !== undefined && rightAttempt === undefined) return 1;
+        if (leftAttempt !== rightAttempt) return (leftAttempt ?? "").localeCompare(rightAttempt ?? "");
+        const expiry = a.handleExpiresAt.localeCompare(b.handleExpiresAt);
+        return expiry !== 0 ? expiry : a.id.localeCompare(b.id);
+      }).slice(0, limit);
       return selected.map((job) => {
         const base = job.state === "delete-pending"
           ? job
           : { ...job, state: "expired" as const, handleActive: false, updatedAt: now };
         const creditState = creditStateAfterHandleDeactivation(base);
-        const updated = { ...base, creditState, cleanupLeaseToken: input.leaseToken, cleanupLeaseExpiresAt: input.leaseExpiresAt };
+        const updated = {
+          ...base,
+          creditState,
+          cleanupLeaseToken: input.leaseToken,
+          cleanupLeaseExpiresAt: input.leaseExpiresAt,
+          cleanupLastAttemptAt: now,
+        };
         this.jobs.set(job.id, updated);
         return this.clone(updated);
       });
@@ -755,6 +1169,7 @@ export class MemoryOmrStore implements OmrStore {
     });
   }
   listJobs(): readonly DurableOmrJobRecord[] { return [...this.jobs.values()].map((record) => this.clone(record)); }
+  listProviderDeleteOperations(): readonly DurableOmrProviderDeleteOperation[] { return [...this.providerDeleteOperations.values()].map((operation) => structuredClone(operation)); }
   listAudits(): readonly { readonly jobId?: PrivateRowId; readonly eventKind: string; readonly outcome: string; readonly createdAt: string }[] { return structuredClone(this.audits); }
 }
 

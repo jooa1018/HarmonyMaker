@@ -571,3 +571,50 @@ No Ultra, Step 11, real provider, corpus calibration, production live service, o
 ### Final authority ordering
 
 The later-written **Segment D deployment contract freeze and final bounded acceptance audit** section is the final gate authority over the preceding chronological closure record: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, `SUPPORTED_P0=0`, `SUPPORTED_P1=0`, `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`.
+
+## Ultra 통합 closure 최종 authority 부록
+
+이 부록은 current gate state의 가장 최신 authority다. 위 Segment D 기록의 chronological evidence는 보존하지만 Ultra discovery가 supported P1을 확정했으므로 acceptance gate를 reopen한다. 불변 discovery authority는 commit `d81d7dfb3f749a78cb2ebac45b8319dd865598a8`이며, independent adjudication은 `P2-ULTRA-13`을 `P1-ULTRA-10`으로 재분류하여 최종 finding authority를 `10 P1 + 14 P2 + 7 TG`로 확정했다.
+
+Closure code checkpoint는 `fac726f7f56f73ebaab24916f88b6da7aba5a910`이다. Canonical commit은 `843e911`(Wave 1), `6e28c62`(Wave 2), `1cd7877`(Wave 3)이며, additive hardening commit은 `b4251de`, `75cdbc1`, `bcd3e53`, `13b036f`, `7181f25`, `0bcd19d`, `8c9e56c`, `6cb3759`, `f3de247`, `661a966`, `7abdd12`, `fac726f`이다. Finding별 전체 authority는 [`implementation/ULTRA_CLOSURE_REPORT.md`](implementation/ULTRA_CLOSURE_REPORT.md)에 기록했다.
+
+```text
+P1 = CLOSED 10/10
+P2 = CLOSED 14/14
+TG = CLOSED 7/7
+TG_ULTRA_01 = CLOSED_TEST_GAP
+TG_ULTRA_02 = CLOSED_FIX
+TG_ULTRA_03 = CLOSED_FIX
+TG_ULTRA_04 = CLOSED_FIX
+TG_ULTRA_05 = CLOSED_FIX
+TG_ULTRA_06 = CLOSED_TEST_GAP
+TG_ULTRA_07 = CLOSED_FIX
+UNRESOLVED_SUPPORTED_P0 = 0
+UNRESOLVED_SUPPORTED_P1 = 0
+UNRESOLVED_P2 = 0
+UNRESOLVED_TG = 0
+```
+
+Migrations 1–11은 byte-unchanged이다. Additive inventory는 12 `share_moderation_lifecycle` (`68fae44f5fb02cbdf42bb0a4d510627a4a5b8b29b279378590ab41d776ed44d2`), 13 `omr_provider_delete_authority` (`d86e98a41a0e72f121e7bd12a89bbca7b8c7fa4578a9f09cec3a7778d7d3ccb5`), 14 `share_create_cross_session_recovery` (`bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140`)이다. Actual PostgreSQL 17 fresh `1 -> 14`를 통과했다.
+
+```text
+npm ci / typecheck / lint / build / git diff --check = PASS
+npm test = PASS — 90 files / 882 tests
+npm run test:postgres = PASS — PostgreSQL 17, 2 files / 35 tests
+Segment B 101-run / OMR 101-run = PASS
+required closure campaigns / Memory-PostgreSQL parity = PASS
+frozen WAG v1.0.1 six hashes / 99-code registry = UNCHANGED
+FROZEN_MUSICAL_AUTHORITY_CHANGED = NO
+PROTECTED_PATH_DIFF = 0
+```
+
+Real OMR provider의 selection, credential, recognition accuracy, commercial pricing, refund, retention, deletion, idempotency/reconciliation contract, Dev `>=36`·sealed `>=24` rights-safe corpus, production-live PostgreSQL/S3, physical iPhone Safari, Kakao in-app browser, cybersecurity audit는 external remaining이며 PASS가 아니다. Containing documentation SHA와 exact-SHA GitHub Actions/Vercel Preview identifier는 해당 commit을 생성·push한 뒤에만 제공한다.
+
+```text
+ULTRA_CLOSURE_COMPLETE = YES
+ULTRA_REAUDIT_READY = YES
+ULTRA_ACCEPTED = NO
+SEGMENT_D_ACCEPTED = NO
+STEP_11_STARTED = NO
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+```

@@ -4,6 +4,7 @@ import type { EditedArrangementSnapshot } from "../domain/edit/model";
 import type { ArrangementCandidate, ArrangementRenderDocument, GeneratedHarmonyTrack } from "../domain/generation/model";
 import { validateRenderDocumentAuthority } from "../domain/generation/render";
 import type { HarmonyProject } from "../domain/project";
+import { isVerifiedEditedSnapshot } from "../integrity/edited-snapshot-authority";
 import { productTrackRoles, trackRoleHasPlacement, type ProductTrackRoleRegistry } from "./track-roles";
 
 export type ScoreProjection = "lead" | "upper" | "lower" | "full";
@@ -30,6 +31,7 @@ function activeArtifact(project: HarmonyProject, presetId: ArrangementPresetId):
   }
   const snapshot = variant.editedSnapshots.find((item) => item.id === active.snapshotId);
   if (!snapshot) throw new RangeError("ACTIVE_ARRANGEMENT_UNAVAILABLE");
+  if (!isVerifiedEditedSnapshot(snapshot)) throw new RangeError("EDIT_SNAPSHOT_UNVERIFIED");
   return { tracks: snapshot.generatedHarmonyTracks, digest: snapshot.contentDigest, kind: "edited-snapshot", validity: snapshot.status };
 }
 

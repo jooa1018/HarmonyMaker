@@ -20,4 +20,12 @@ describe("canonical digest codec", () => {
     expect(() => canonicalJson(Array(2))).toThrow("sparse");
     expect(() => canonicalJson({ n: 2, d: 4 })).toThrow("normalized");
   });
+
+  it("rejects NFC-equivalent object-key collisions before sorting regardless of insertion order", () => {
+    const composedFirst = { "é": 1, "e\u0301": 2 };
+    const decomposedFirst = { "e\u0301": 2, "é": 1 };
+    expect(() => canonicalJson(composedFirst)).toThrow("collide after NFC normalization");
+    expect(() => canonicalJson(decomposedFirst)).toThrow("collide after NFC normalization");
+    expect(canonicalJson({ "e\u0301": 1, z: 2 })).toBe('{"z":2,"é":1}');
+  });
 });

@@ -592,3 +592,39 @@ Baseline: exact clean remote HEAD `80d598e6567a5d96e50604c561287b7f7cd94fb9`, di
 - [x] `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, `ULTRA_AUDIT_READY=YES`.
 
 The documentation-only containing commit receives exact-SHA GitHub Actions and Vercel terminal verification after push. Reopening requires a concrete reproducible current-code defect on a supported deployment path with P0/P1 material impact. Still external: real provider and commercial/retention evidence, rights-safe Dev/sealed corpora, production-live PostgreSQL/S3, physical iPhone Safari, and Kakao in-app browser. Ultra and Step 11 were not started.
+
+## Ultra 통합 closure checklist — 최종 authority 부록
+
+이 최신 부록은 이전 chronological evidence가 아니라 gate-state conclusion만 대체한다. `d81d7dfb3f749a78cb2ebac45b8319dd865598a8`의 Ultra discovery가 Segment D gate를 reopen했으며, `P2-ULTRA-13`은 independent review에서 `P1-ULTRA-10`으로 재분류되었다. Closure authority는 `10 P1 + 14 P2 + 7 TG`, code checkpoint는 `fac726f7f56f73ebaab24916f88b6da7aba5a910`이다.
+
+- [x] Wave 1 canonical `843e911`과 additive hardening을 닫았다.
+- [x] Wave 2 canonical `6e28c62`와 additive hardening을 닫았다.
+- [x] Wave 3 canonical `1cd7877`과 additive hardening을 닫았다.
+- [x] P1 10개와 P2 14개를 모두 닫았다.
+- [x] TG disposition은 final이다. 01/06은 `CLOSED_TEST_GAP`, 02/03/04/05/07은 `CLOSED_FIX`다.
+- [x] Unresolved supported P0/P1, P2, TG count는 모두 0이다.
+- [x] Migrations 1–11은 byte-unchanged이며 additive migration은 12 `share_moderation_lifecycle`, 13 `omr_provider_delete_authority`, 14 `share_create_cross_session_recovery`다.
+- [x] Runtime checksum은 각각 `68fae44f5fb02cbdf42bb0a4d510627a4a5b8b29b279378590ab41d776ed44d2`, `d86e98a41a0e72f121e7bd12a89bbca7b8c7fa4578a9f09cec3a7778d7d3ccb5`, `bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140`이다.
+- [x] PostgreSQL 17 fresh migration `1 -> 14`와 integration suite 2 files/35 tests가 통과했다.
+- [x] Clean install, typecheck, lint, default suite 90 files/882 tests, build, diff check가 통과했다.
+- [x] Segment B 101, OMR 101, 모든 required closure campaign, Memory/PostgreSQL parity가 통과했다.
+- [x] Frozen WAG v1.0.1 six hashes, 99 diagnostic codes, protected musical path는 불변이다.
+- [ ] Real OMR provider selection, credential, accuracy, pricing, refund, retention, deletion, idempotency/reconciliation contract — external remaining.
+- [ ] Rights-safe Dev corpus `>=36` 및 sealed corpus `>=24` — external remaining.
+- [ ] Production-live PostgreSQL 및 S3-compatible storage — 수행하지 않음.
+- [ ] Physical iPhone Safari 및 Kakao in-app browser — 수행하지 않음.
+- [ ] Cybersecurity penetration audit — 수행하지 않음.
+- [ ] 별도 Ultra re-audit 및 acceptance — 이 closure에서 시작하지 않음.
+- [ ] Step 11 — 시작하지 않음.
+- [ ] Exact containing documentation SHA의 GitHub Actions/Vercel Preview 검증 — documentation commit 생성·push 후 기록.
+
+```text
+ULTRA_CLOSURE_COMPLETE = YES
+ULTRA_REAUDIT_READY = YES
+ULTRA_ACCEPTED = NO
+SEGMENT_D_ACCEPTED = NO
+STEP_11_STARTED = NO
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+```
+
+Finding, migration, validation, frozen authority, external remaining의 전체 evidence는 [`ULTRA_CLOSURE_REPORT.md`](ULTRA_CLOSURE_REPORT.md)에 있다.

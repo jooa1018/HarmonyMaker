@@ -10,6 +10,9 @@ import { practiceShareTrackRoles, type ProductTrackRoleRegistry } from "./track-
 function compactFraction(value: readonly [number, number]) { return fraction(value[0], value[1]); }
 
 export interface SharedPracticeMaterialization { readonly document: ArrangementRenderDocument; readonly trackRoles: ProductTrackRoleRegistry }
+export type SharedPracticeMaterializationOutcome =
+  | { readonly status: "available"; readonly value: SharedPracticeMaterialization }
+  | { readonly status: "unavailable"; readonly code: "SHARE_PAYLOAD_UNAVAILABLE" };
 
 export function materializeSharedPractice(payload: PracticeSharePayload): SharedPracticeMaterialization {
   const durations = payload.arrangement.measures.map((measure) => compactFraction(measure.duration));
@@ -43,7 +46,9 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
   }));
   const trackRoles = practiceShareTrackRoles(payload.arrangement.tracks);
   const generatedHarmonyTracks = payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => {
-    const metadata = trackRoles.generatedTracks.find((candidate) => candidate.label === track.label);
+    const metadata = payload.schemaVersion === 4 && "harmonyRole" in track
+      ? trackRoles.generatedTracks.find((candidate) => candidate.harmonyRole === track.harmonyRole)
+      : trackRoles.generatedTracks.find((candidate) => candidate.label === track.label);
     if (!metadata) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
     return {
     trackPlanId: metadata.trackPlanId,
@@ -85,4 +90,9 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
 
 export function practiceShareToRenderDocument(payload: PracticeSharePayload): ArrangementRenderDocument {
   return materializeSharedPractice(payload).document;
+}
+
+export function materializeSharedPracticeSafely(payload: PracticeSharePayload): SharedPracticeMaterializationOutcome {
+  try { return { status: "available", value: materializeSharedPractice(payload) }; }
+  catch { return { status: "unavailable", code: "SHARE_PAYLOAD_UNAVAILABLE" }; }
 }

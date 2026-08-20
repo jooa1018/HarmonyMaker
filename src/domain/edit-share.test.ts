@@ -62,5 +62,34 @@ describe("Step 2 edit and PracticeShare foundation", () => {
       },
     })).toBe(false);
     expect(isPracticeSharePayload({ ...validSharePayload, injectedAuthority: "forbidden" })).toBe(false);
+    const withMeter = (timeSignature: readonly [number, number], duration: readonly [number, number]) => ({
+      ...validSharePayload,
+      arrangement: {
+        measures: [{ ...validSharePayload.arrangement.measures[0], timeSignature, duration }],
+        tracks: [{ ...validSharePayload.arrangement.tracks[0], events: [] }],
+      },
+    });
+    expect(isPracticeSharePayload(withMeter([4, 4], [1, 1]))).toBe(true); // pickup
+    expect(isPracticeSharePayload(withMeter([4, 4], [4, 1]))).toBe(true); // full measure
+    expect(isPracticeSharePayload(withMeter([6, 8], [1, 1]))).toBe(true); // pickup
+    expect(isPracticeSharePayload(withMeter([6, 8], [3, 1]))).toBe(true); // full measure
+    expect(isPracticeSharePayload(withMeter([4, 4], [9, 2]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([6, 8], [7, 2]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([4, 4], [10_000_000, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([3, 4], [3, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([4, 8], [2, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([Number.MAX_SAFE_INTEGER, 8], [1, 1]))).toBe(false);
+    const withPitch = (pitch: readonly [string, number, number]) => ({
+      ...validSharePayload,
+      arrangement: {
+        ...validSharePayload.arrangement,
+        tracks: [{ ...validSharePayload.arrangement.tracks[0], events: [{ ...validSharePayload.arrangement.tracks[0].events[0], pitch }] }],
+      },
+    });
+    expect(isPracticeSharePayload(withPitch(["C", 0, -1]))).toBe(true);
+    expect(isPracticeSharePayload(withPitch(["G", 0, 9]))).toBe(true);
+    expect(isPracticeSharePayload(withPitch(["C", -2, -1]))).toBe(false);
+    expect(isPracticeSharePayload(withPitch(["A", 0, 9]))).toBe(false);
+    expect(isPracticeSharePayload(withPitch(["C", 0, Number.MAX_SAFE_INTEGER]))).toBe(false);
   });
 });
