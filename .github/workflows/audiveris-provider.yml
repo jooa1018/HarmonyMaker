@@ -74,12 +74,13 @@ jobs:
         run: |
           mkdir -p /tmp/audiveris-real
           curl -fsSL --retry 3 \
-            https://raw.githubusercontent.com/randomm/audiveris-api/main/tests/test_files/messiah.pdf \
-            -o /tmp/audiveris-real/messiah.pdf
+            https://raw.githubusercontent.com/randomm/audiveris-api/main/tests/test_files/o-happy-day.pdf \
+            -o /tmp/audiveris-real/score.pdf
           docker run --rm --user 0:0 -v /tmp/audiveris-real:/work --entrypoint pdftoppm \
-            hm-audiveris:${{ github.sha }} -png -f 1 -singlefile -r 150 /work/messiah.pdf /work/page
+            hm-audiveris:${{ github.sha }} -png -f 1 -singlefile -r 300 /work/score.pdf /work/page
           docker run -d --name hm-audiveris-real -p 127.0.0.1:8002:8000 \
             -e HM_AUDIVERIS_API_KEY=test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            -e TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
             -e 'JAVA_TOOL_OPTIONS=-Xmx2g -Djava.awt.headless=true' \
             hm-audiveris:${{ github.sha }}
           for attempt in $(seq 1 60); do curl -fsS http://127.0.0.1:8002/health && break; sleep 2; done
