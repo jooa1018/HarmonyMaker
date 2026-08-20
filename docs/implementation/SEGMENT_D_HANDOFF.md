@@ -1115,3 +1115,27 @@ No Ultra, Step 11, real provider, corpus calibration, production live service, o
 ### Final frozen-gate authority
 
 The **Deployment contract freeze / final Segment D acceptance handoff** section is the final authority over every chronological closure section above: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, `SEGMENT_D_FINAL_SUPPORTED_PATH_AUDIT=COMPLETE`, `SEGMENT_D_GATE_FROZEN=YES`, `SEGMENT_D_ACCEPTED=YES`, and `ULTRA_AUDIT_READY=YES`.
+
+## Ultra 통합 closure gate override — 최종 authority 부록
+
+이 최신 부록이 current gate authority다. 위 chronological Segment D evidence는 rewrite하지 않는다. Ultra discovery commit `d81d7dfb3f749a78cb2ebac45b8319dd865598a8`이 supported finding을 확정했으므로 Segment D acceptance를 reopen했다. Independent adjudication은 `P2-ULTRA-13`을 `P1-ULTRA-10`으로 재분류했고 exact closure set은 P1 10개, P2 14개, TG 7개다.
+
+Canonical closure commit 3개는 `843e911`(project/MusicXML/workspace), `6e28c62`(share/runtime/deployment), `1cd7877`(OMR server/browser)이다. Additive hardening은 `NEW_CODE_CHECKPOINT=fac726f7f56f73ebaab24916f88b6da7aba5a910`에서 끝난다. P1 10개와 P2 14개를 모두 닫았다. TG 01/06은 `CLOSED_TEST_GAP`, TG 02/03/04/05/07은 `CLOSED_FIX`다. Unresolved supported P0/P1, P2, TG는 없다.
+
+Migrations 1–11은 byte-unchanged이다. Additive migrations 12–14는 moderation lifecycle, durable provider DELETE operation authority, cross-session share-create replay recovery를 제공한다. Runtime checksum은 `68fae44f5fb02cbdf42bb0a4d510627a4a5b8b29b279378590ab41d776ed44d2`, `d86e98a41a0e72f121e7bd12a89bbca7b8c7fa4578a9f09cec3a7778d7d3ccb5`, `bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140`이다. Actual PostgreSQL 17 fresh `1 -> 14`와 2 files/35 tests를 통과했다.
+
+Default suite 90 files/882 tests와 clean install, typecheck, lint, build, diff check가 통과했다. Segment B 101, OMR 101, 모든 required closure campaign, Memory/PostgreSQL parity도 통과했다. WAG v1.0.1 frozen six hashes, 99-code registry, protected musical path는 불변이다.
+
+External remaining은 변경되지 않았고 PASS가 아니다. Real provider selection, credential, recognition accuracy, commercial pricing, refund, retention/deletion, idempotency/reconciliation contract, rights-safe Dev `>=36`·sealed `>=24` corpus, production-live PostgreSQL/S3, physical iPhone Safari, Kakao in-app browser, cybersecurity penetration audit가 남아 있다. Documentation-inclusive commit의 exact-SHA Actions/Vercel Preview evidence는 commit 생성·push 뒤에만 제공한다.
+
+```text
+ULTRA_CLOSURE_COMPLETE = YES
+ULTRA_REAUDIT_READY = YES
+ULTRA_ACCEPTED = NO
+SEGMENT_D_ACCEPTED = NO
+STEP_11_STARTED = NO
+REAL_OMR_PROVIDER_CONNECTED = NO
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+```
+
+Ultra re-audit, main merge, acceptance decision, Step 11, real provider integration, corpus calibration, production-live probe, device test는 수행하지 않았다. 통합 finding authority는 [`ULTRA_CLOSURE_REPORT.md`](ULTRA_CLOSURE_REPORT.md)에 있다.

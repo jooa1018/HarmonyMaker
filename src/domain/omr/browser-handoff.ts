@@ -1,5 +1,6 @@
 "use client";
 
+import { binaryDigest, isSha256LowerHex, type BinaryDigest } from "../digest/canonical";
 import type { OmrProviderResult } from "./contracts";
 
 const DATABASE_NAME = "harmonymaker-omr-handoff-v1";
@@ -24,14 +25,44 @@ interface StoredHandoff {
   readonly expiresAt: string;
   readonly recoveryAttempts: number;
   readonly omrProviderResult?: OmrProviderResult;
-  readonly pageImages?: readonly Blob[];
+  readonly pageImages?: readonly OmrHandoffPageImage[];
+}
+
+export interface OmrHandoffPageImage {
+  readonly pageIndex: number;
+  readonly rawDigest: BinaryDigest;
+  readonly canonicalPageDigest: BinaryDigest;
+  readonly mimeType: "image/png" | "image/jpeg";
+  readonly blob: Blob;
 }
 
 export interface OmrImportHandoff {
   readonly handoffId: string;
   readonly file: File;
   readonly omrProviderResult?: OmrProviderResult;
-  readonly pageImages: readonly Blob[];
+  readonly pageImages: readonly OmrHandoffPageImage[];
+}
+
+export async function validateOmrHandoffPageBinding(
+  pageImages: readonly OmrHandoffPageImage[],
+  result: OmrProviderResult,
+): Promise<boolean> {
+  if (pageImages.length < 1 || pageImages.length > 12) return false;
+  const pages = new Map<number, OmrHandoffPageImage>();
+  for (const [pageIndex, page] of pageImages.entries()) {
+    if (page.pageIndex !== pageIndex || pages.has(page.pageIndex)
+      || !isSha256LowerHex(page.rawDigest) || !isSha256LowerHex(page.canonicalPageDigest)
+      || (page.mimeType !== "image/png" && page.mimeType !== "image/jpeg")
+      || !(page.blob instanceof Blob) || page.blob.type !== page.mimeType || page.blob.size < 1
+      || await binaryDigest(new Uint8Array(await page.blob.arrayBuffer())) !== page.rawDigest) return false;
+    pages.set(page.pageIndex, page);
+  }
+  for (const frame of result.evidence.frames) {
+    if (frame.coordinateSpace === "processed-pixels") continue;
+    const page = pages.get(frame.pageIndex);
+    if (!page || frame.imageDigest !== page.canonicalPageDigest) return false;
+  }
+  return true;
 }
 
 function database(): Promise<IDBDatabase> {
@@ -56,8 +87,28 @@ export async function storeOmrImportHandoff(input: {
   readonly mimeType: string;
   readonly bytes: Uint8Array;
   readonly omrProviderResult?: OmrProviderResult;
-  readonly pageImages?: readonly { readonly bytes: Uint8Array; readonly mimeType: "image/png" | "image/jpeg" }[];
+  readonly pageImages?: readonly {
+    readonly pageIndex: number;
+    readonly rawDigest: BinaryDigest;
+    readonly canonicalPageDigest: BinaryDigest;
+    readonly bytes: Uint8Array;
+    readonly mimeType: "image/png" | "image/jpeg";
+  }[];
 }): Promise<void> {
+  const pageImages = input.pageImages?.map((page): OmrHandoffPageImage => ({
+    pageIndex: page.pageIndex,
+    rawDigest: page.rawDigest,
+    canonicalPageDigest: page.canonicalPageDigest,
+    mimeType: page.mimeType,
+    blob: new Blob([page.bytes.slice().buffer as ArrayBuffer], { type: page.mimeType }),
+  }));
+  if ((input.omrProviderResult === undefined) !== (pageImages === undefined)) throw new RangeError("OMR_HANDOFF_BINDING_INVALID");
+  if (input.omrProviderResult) {
+    if (await binaryDigest(input.bytes) !== input.omrProviderResult.vendorResultDigest
+      || !pageImages || !await validateOmrHandoffPageBinding(pageImages, input.omrProviderResult)) {
+      throw new RangeError("OMR_HANDOFF_BINDING_INVALID");
+    }
+  }
   const db = await database();
   try {
     const transaction = db.transaction(STORE_NAME, "readwrite");
@@ -71,7 +122,7 @@ export async function storeOmrImportHandoff(input: {
       expiresAt: new Date(Date.now() + OMR_HANDOFF_TTL_MS).toISOString(),
       recoveryAttempts: 0,
       ...(input.omrProviderResult ? { omrProviderResult: structuredClone(input.omrProviderResult) } : {}),
-      ...(input.pageImages ? { pageImages: input.pageImages.map((page) => new Blob([page.bytes.slice().buffer as ArrayBuffer], { type: page.mimeType })) } : {}),
+      ...(pageImages ? { pageImages } : {}),
     } satisfies StoredHandoff);
     await transactionDone(transaction);
   } finally {
@@ -97,6 +148,21 @@ export async function takeOmrImportHandoff(): Promise<OmrImportHandoff | undefin
     }
     await transactionDone(transaction);
     if (!stored || recovery !== "available") return undefined;
+    if (stored.omrProviderResult) {
+      const fileDigest = await binaryDigest(new Uint8Array(await stored.bytes.arrayBuffer()));
+      if (fileDigest !== stored.omrProviderResult.vendorResultDigest || !stored.pageImages
+        || !await validateOmrHandoffPageBinding(stored.pageImages, stored.omrProviderResult)) {
+        const invalidTransaction = db.transaction(STORE_NAME, "readwrite");
+        invalidTransaction.objectStore(STORE_NAME).delete(RECORD_KEY);
+        await transactionDone(invalidTransaction);
+        throw new RangeError("OMR_HANDOFF_BINDING_INVALID");
+      }
+    } else if (stored.pageImages) {
+      const invalidTransaction = db.transaction(STORE_NAME, "readwrite");
+      invalidTransaction.objectStore(STORE_NAME).delete(RECORD_KEY);
+      await transactionDone(invalidTransaction);
+      throw new RangeError("OMR_HANDOFF_BINDING_INVALID");
+    }
     return {
       handoffId,
       file: new File([stored.bytes], stored.fileName, { type: stored.mimeType }),
