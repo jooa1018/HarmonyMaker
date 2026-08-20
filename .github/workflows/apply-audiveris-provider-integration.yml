@@ -5,7 +5,7 @@ on:
     branches:
       - chatgpt/harmonymaker-audiveris-provider
     paths:
-      - scripts/apply-audiveris-provider-patch.py
+      - scripts/apply-audiveris-provider-patch.py.part04
 
 permissions:
   contents: write
@@ -18,14 +18,17 @@ jobs:
         with:
           ref: chatgpt/harmonymaker-audiveris-provider
           fetch-depth: 0
-      - name: Apply complete integration patch
-        run: python scripts/apply-audiveris-provider-patch.py
+      - name: Reassemble and apply complete integration overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat scripts/apply-audiveris-provider-patch.py.part* > /tmp/apply-audiveris-provider-patch.py
+          python /tmp/apply-audiveris-provider-patch.py
+          rm -f scripts/apply-audiveris-provider-patch.py.part*
       - name: Commit integrated provider
         shell: bash
         run: |
           set -euo pipefail
-          rm -f scripts/apply-audiveris-provider-patch.py
-          rm -f .github/workflows/apply-audiveris-provider-integration.yml
           git config user.name "ChatGPT"
           git config user.email "chatgpt@openai.com"
           git add -A
