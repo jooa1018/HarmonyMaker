@@ -2,7 +2,7 @@ import type { ArrangementPresetId } from "../domain/config";
 import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/generation/model";
 import type { HarmonyProject } from "../domain/project";
 import type { CompactChord, CompactFraction, CompactNoteEvent, CompactTrack, CompactVocalEvent, PracticeSettings, PracticeSharePayload } from "../domain/share";
-import { isPracticeSharePayload } from "../domain/share";
+import { compactTrackStableId, isPracticeSharePayload } from "../domain/share";
 import type { TimelineAtom } from "../domain/source/atomization";
 import type { Fraction } from "../domain/fraction";
 import type { MaterializedArrangement } from "./render";
@@ -27,6 +27,20 @@ function generatedEvent(event: GeneratedVoiceEvent, document: ArrangementRenderD
 export function confirmShareRights(project: HarmonyProject, confirmedAt?: string): HarmonyProject {
   const allowedUses = [...new Set([...project.source.rights.allowedUses, "share" as const])].sort();
   return { ...project, source: { ...project.source, rights: { ...project.source.rights, allowedUses, ...(confirmedAt ? { confirmedAt } : {}) } } };
+}
+
+function canonicalPlaybackDefaults(
+  settings: PracticeSettings | undefined,
+  tracks: readonly CompactTrack[],
+): PracticeSettings | undefined {
+  if (!settings) return undefined;
+  const stableTrackIds = tracks.map((track) => compactTrackStableId(track, 4));
+  const selectedTrackId = settings.selectedTrackId
+    ?? (settings.selectedTrackIndex === undefined ? undefined : stableTrackIds[settings.selectedTrackIndex]);
+  if (selectedTrackId !== undefined && !stableTrackIds.includes(selectedTrackId)) throw new RangeError("SHARE_PLAYBACK_DEFAULT_INVALID");
+  const { selectedTrackIndex: _legacyIndex, ...rest } = settings;
+  void _legacyIndex;
+  return { ...rest, ...(selectedTrackId ? { selectedTrackId } : {}) };
 }
 
 export function materializePracticeShare(input: { readonly project: HarmonyProject; readonly presetId: ArrangementPresetId; readonly materialized: MaterializedArrangement; readonly playbackDefaults?: PracticeSettings }): PracticeSharePayload {
@@ -64,7 +78,7 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,
     arrangement: { measures: document.measures.map((measure, index) => ({ index, sourceMeasureNumber: measure.sourceMeasureNumber, lyricVerseIndex: input.project.source.sectionOccurrences.find((occurrence) => index >= occurrence.startPerformanceMeasureIndex && index < occurrence.endPerformanceMeasureIndexExclusive)?.lyricVerseIndex ?? 1, timeSignature: [measure.time.numerator, measure.time.denominator], duration: compact(measure.duration) })), tracks },
     lyrics: localLyrics.tokens, chords,
-    ...(input.playbackDefaults ? { playbackDefaults: input.playbackDefaults } : {}),
+    ...(input.playbackDefaults ? { playbackDefaults: canonicalPlaybackDefaults(input.playbackDefaults, tracks) } : {}),
     rightsShareConfirmed: true,
   };
   if (!isPracticeSharePayload(payload)) throw new RangeError("SHARE_PAYLOAD_INVALID");

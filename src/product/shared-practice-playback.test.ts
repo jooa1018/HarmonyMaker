@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { SemanticDigest } from "../domain/digest/canonical";
 import { isPracticeSharePayload, type PracticeSharePayload } from "../domain/share";
-import { buildPlaybackPlanSafely } from "./playback-plan";
+import { buildPlaybackPlan, buildPlaybackPlanSafely } from "./playback-plan";
+import { resolvePracticePlayerInitialState } from "./ProductPracticePlayer";
 import { materializeSharedPractice, materializeSharedPracticeSafely } from "./shared-practice";
 
 const digest = "0".repeat(64) as SemanticDigest;
@@ -38,6 +39,30 @@ describe("public PracticeShare playback timing boundary", () => {
     expect(materialized.status).toBe("available");
     if (materialized.status !== "available") throw new Error("expected materialized share");
     expect(buildPlaybackPlanSafely(materialized.value.document, materialized.value.trackRoles)).toMatchObject({ status: "available" });
+  });
+
+
+  it("resolves a legacy selectedTrackIndex against original payload ordering before source-first reconstruction", () => {
+    const candidate: PracticeSharePayload = {
+      ...payload([{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }]),
+      arrangement: {
+        measures: [{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }],
+        tracks: [
+          { kind: "generated-harmony", label: "Upper / H1", harmonyRole: "H1", placementRoles: ["upper"], events: [] },
+          { kind: "source-lead", label: "Lead", events: [] },
+          { kind: "generated-harmony", label: "Lower / H2", harmonyRole: "H2", placementRoles: ["lower"], events: [] },
+        ],
+      },
+      playbackDefaults: { selectedTrackIndex: 0, speedPercent: 125 },
+    };
+    expect(isPracticeSharePayload(candidate)).toBe(true);
+    const materialized = materializeSharedPractice(candidate);
+    const plan = buildPlaybackPlan(materialized.document, materialized.trackRoles);
+    expect(plan.trackIds).toEqual(["track:source-lead", "share:track:h1", "share:track:h2"]);
+    expect(materialized.playbackDefaults).toEqual({ selectedTrackId: "share:track:h1", speedPercent: 125 });
+    expect(resolvePracticePlayerInitialState(plan, materialized.playbackDefaults)).toEqual({
+      speed: 125, solo: "share:track:h1", bandEnabled: true,
+    });
   });
 
   it("rejects the former cumulative overflow counterexample and contains bypassed construction failure", () => {

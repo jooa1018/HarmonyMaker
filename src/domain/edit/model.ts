@@ -7,6 +7,9 @@ import {
   hasExactKeys, isCanonicalId, isCanonicalSpelledPitch, isPlainRecord, isSemanticDigest,
 } from "../validation";
 
+export const MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT = 512;
+export const MAX_EDITED_SNAPSHOTS_PER_VARIANT = 32;
+
 interface ArrangementOutputEditBase { readonly id: string; readonly presetId: ArrangementPresetId; readonly baseCandidateId: string; readonly baseCandidateDigest: SemanticDigest; readonly editOrdinal: number }
 export type ReplacementGeneratedEventPayload = { readonly kind: "note"; readonly pitch: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean } | { readonly kind: "rest" };
 export type ArrangementOutputEdit =

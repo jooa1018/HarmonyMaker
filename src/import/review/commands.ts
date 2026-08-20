@@ -30,20 +30,31 @@ function updateChord(
   return found ? { ...draft, parts } : draft;
 }
 
+function selectedLeadPartKey(
+  draft: MusicXmlImportDraft,
+  candidateKey: string | undefined = draft.selectedLeadStaffKey,
+): KeySignature | undefined {
+  const candidate = draft.leadCandidates.find((item) => item.key === candidateKey);
+  return candidate
+    ? draft.parts.find((part) => part.partOrdinal === candidate.partOrdinal)?.measures[0]?.key
+    : undefined;
+}
+
 export function selectLeadCandidate(
   draft: MusicXmlImportDraft,
   candidateKey: string,
 ): MusicXmlImportDraft {
   const candidate = draft.leadCandidates.find((item) => item.key === candidateKey);
   if (!candidate) return draft;
-  const selectedLeadKey = draft.parts.find((part) => part.partOrdinal === candidate.partOrdinal)
-    ?.measures[0]?.key;
-  const { defaultKey: _previousPartKey, ...withoutDefaultKey } = draft;
-  void _previousPartKey;
+  const selectedLeadKey = selectedLeadPartKey(draft, candidateKey);
+  const { defaultKey: _previousSelectedKey, ...withoutDefaultKey } = draft;
+  void _previousSelectedKey;
   return {
     ...withoutDefaultKey,
     selectedLeadStaffKey: candidateKey,
-    ...(selectedLeadKey ? { defaultKey: selectedLeadKey } : {}),
+    ...(draft.defaultKeyOverride
+      ? { defaultKey: draft.defaultKeyOverride }
+      : selectedLeadKey ? { defaultKey: selectedLeadKey } : {}),
   };
 }
 
@@ -51,7 +62,20 @@ export function setDefaultKey(
   draft: MusicXmlImportDraft,
   defaultKey: KeySignature,
 ): MusicXmlImportDraft {
-  return { ...draft, defaultKey };
+  return { ...draft, defaultKey, defaultKeyOverride: defaultKey };
+}
+
+export function clearDefaultKeyOverride(
+  draft: MusicXmlImportDraft,
+): MusicXmlImportDraft {
+  const selectedLeadKey = selectedLeadPartKey(draft);
+  const { defaultKey: _previousKey, defaultKeyOverride: _previousOverride, ...withoutKeyAuthority } = draft;
+  void _previousKey;
+  void _previousOverride;
+  return {
+    ...withoutKeyAuthority,
+    ...(selectedLeadKey ? { defaultKey: selectedLeadKey } : {}),
+  };
 }
 
 export function setDefaultTempo(

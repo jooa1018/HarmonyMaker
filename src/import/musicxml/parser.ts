@@ -964,7 +964,7 @@ function parseScore(root: XmlElement): ParseScoreResult | undefined {
     diagnostics.push({
       code: "UNSUPPORTED_MODULATION",
       messageKo: "곡 중간 조바꿈은 Core planning에서 지원하지 않습니다.",
-      details: { issue: "mid-song-key-change" },
+      details: { issue: "mid-song-key-change", diagnosticScope: "selected-lead-part", partOrdinal: firstPart.partOrdinal },
     });
   }
   const firstPartTempos = [...parsedParts[0].tempoEvents]

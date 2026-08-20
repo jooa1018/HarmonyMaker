@@ -194,6 +194,8 @@ export interface MusicXmlImportDraft {
   readonly sectionOccurrences: readonly ImportedSectionOccurrenceReview[];
   readonly unsupportedPerformanceFlows: readonly UnsupportedPerformanceFlow[];
   readonly defaultKey?: KeySignature;
+  /** User-entered authority; lead switching must not silently replace it. */
+  readonly defaultKeyOverride?: KeySignature;
   readonly defaultTempo?: TempoSpec;
   readonly algorithmVersions: Step3ImportVersions;
   readonly singerCount: 1 | 2 | 3;

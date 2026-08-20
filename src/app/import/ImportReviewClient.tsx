@@ -40,6 +40,7 @@ import {
 
 import {
   addChord,
+  clearDefaultKeyOverride,
   confirmChord,
   confirmRights,
   confirmSection,
@@ -654,9 +655,9 @@ export function ImportReviewClient() {
                 <label>초기 quarter BPM<input type="number" min="20" max="300" value={tempoText} onChange={(event) => setTempoText(event.target.value)} required /></label><button type="submit">tempo 확인</button>
               </form>
             ) : <p className={styles.okBox}>초기 tempo: {draft.defaultTempo.bpm} BPM</p>}
-            {draft.defaultKey ? <p className={styles.okBox}>선택한 Source Lead 조성 authority: {draft.defaultKey.tonic.step}{draft.defaultKey.tonic.alter === 1 ? "#" : draft.defaultKey.tonic.alter === -1 ? "b" : ""} {draft.defaultKey.mode}</p> : null}
+            {draft.defaultKey ? <p className={styles.okBox}>선택한 Source Lead 조성 authority: {draft.defaultKey.tonic.step}{draft.defaultKey.tonic.alter === 1 ? "#" : draft.defaultKey.tonic.alter === -1 ? "b" : ""} {draft.defaultKey.mode}{draft.defaultKeyOverride ? " · 명시적 override" : " · selected Lead"}</p> : null}
             <form className={styles.addRow} onSubmit={(event: FormEvent) => { event.preventDefault(); const key = keyFromText(keyText); if (key) updateDraft((current) => setDefaultKey(current, key)); }}>
-              <label>기본 조성 명시적 교정<select value={keyText} onChange={(event) => setKeyText(event.target.value)} required><option value="">조성 선택</option>{KEY_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label><button type="submit">조성 적용</button>
+              <label>기본 조성 명시적 교정<select value={keyText} onChange={(event) => setKeyText(event.target.value)} required><option value="">조성 선택</option>{KEY_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label><button type="submit">조성 적용</button>{draft.defaultKeyOverride ? <button type="button" onClick={() => updateDraft(clearDefaultKeyOverride)}>override 해제</button> : null}
             </form>
           </section>
 

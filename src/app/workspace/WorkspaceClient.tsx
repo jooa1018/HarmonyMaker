@@ -31,7 +31,7 @@ import {
   deleteWorkspaceProjectAndNavigate,
   WorkspaceRouteController,
 } from "../../product/workspace-route-state";
-import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
+import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, compactEditedArrangementHistory, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import styles from "./workspace.module.css";
 
@@ -287,7 +287,12 @@ export function WorkspaceClient() {
       const result = await materializeEditedArrangement({ lifecycleInput: await wagInputFromProject(project, presetId), intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate: activeCandidate, edits: nextBaseEdits });
       if (result.status === "blocked") { setMessage(`편집 blocked · ${result.diagnostics.map((item) => item.code).join(", ")}`); return; }
       const outputEdits = identical ? variant.outputEdits : [...variant.outputEdits, edit];
-      const nextVariant = { ...variant, outputEdits, editedSnapshots: upsertEditedSnapshotHistory(variant.editedSnapshots, result.snapshot), activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
+      const history = compactEditedArrangementHistory({
+        outputEdits,
+        editedSnapshots: upsertEditedSnapshotHistory(variant.editedSnapshots, result.snapshot),
+        activeSnapshotId: result.snapshot.id,
+      });
+      const nextVariant = { ...variant, outputEdits: history.outputEdits, editedSnapshots: history.editedSnapshots, activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
       await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`, operationProjectId);
     } catch (error) {
       if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다.");

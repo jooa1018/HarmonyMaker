@@ -26,12 +26,22 @@ export type CompactChord =
   | { readonly kind: "no-chord"; readonly startOccurrenceIndex: number; readonly startOffset: CompactFraction; readonly endOccurrenceIndex: number; readonly endOffset: CompactFraction };
 export interface CompactLyricToken { readonly id: string; readonly text: string; readonly verse: number; readonly syllabic: "single" | "begin" | "middle" | "end"; readonly extend: boolean }
 export interface CompactArrangement<TTrack extends LegacyCompactTrack | CompactTrack = CompactTrack> { readonly measures: readonly CompactMeasureOccurrence[]; readonly tracks: readonly TTrack[] }
-export interface PracticeSettings { readonly selectedTrackIndex?: number; readonly speedPercent?: 50 | 75 | 100 | 125 | 150; readonly accompanimentEnabled?: boolean }
+export interface PracticeSettings { readonly selectedTrackIndex?: number; readonly selectedTrackId?: string; readonly speedPercent?: 50 | 75 | 100 | 125 | 150; readonly accompanimentEnabled?: boolean }
 interface PracticeSharePayloadBase { readonly title: string; readonly tempo: TempoSpec; readonly key: KeySignature; readonly presetId: ArrangementPresetId; readonly arrangementArtifactDigest: SemanticDigest; readonly effectiveChordTimelineDigest: SemanticDigest; readonly lyrics: readonly CompactLyricToken[]; readonly chords?: readonly CompactChord[]; readonly playbackDefaults?: PracticeSettings; readonly rightsShareConfirmed: true }
 export interface PracticeSharePayloadV3 extends PracticeSharePayloadBase { readonly schemaVersion: 3; readonly arrangement: CompactArrangement<LegacyCompactTrack> }
 export interface PracticeSharePayloadV4 extends PracticeSharePayloadBase { readonly schemaVersion: 4; readonly arrangement: CompactArrangement<CompactTrack> }
 export type PracticeSharePayload = PracticeSharePayloadV3 | PracticeSharePayloadV4;
 export interface ShareStoreRecord { readonly opaqueTokenHash: string; readonly payloadDigest: SemanticDigest; readonly encryptedPayload: Uint8Array; readonly createdAt: string; readonly expiresAt: string; readonly rightsBasis: RightsBasis }
+
+export function compactTrackStableId(
+  track: LegacyCompactTrack | CompactTrack,
+  schemaVersion: 3 | 4,
+): string | undefined {
+  if (track.kind === "source-lead") return "track:source-lead";
+  if (schemaVersion === 4 && "harmonyRole" in track) return `share:track:${track.harmonyRole.toLowerCase()}`;
+  const match = /^(?:Upper|Lower|Upper\/Lower) \/ (H[12])$/u.exec(track.label);
+  return match ? `share:track:${match[1].toLowerCase()}` : undefined;
+}
 
 export const PRACTICE_SHARE_LIMITS = Object.freeze({
   maxPlaintextBytes: 256 * 1024,
@@ -211,6 +221,9 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
     ? [track.harmonyRole as string]
     : []);
   if (!hasUniqueStrings(generatedRoles)) return false;
+  const stableTrackIds = tracks.map((track) => compactTrackStableId(track as LegacyCompactTrack | CompactTrack, schemaVersion));
+  if (stableTrackIds.some((trackId) => trackId === undefined)
+    || !hasUniqueStrings(stableTrackIds as string[])) return false;
   for (const track of tracks) {
     const events = (track as { readonly events: readonly CompactVocalEvent[] }).events;
     for (const event of events) {
@@ -237,8 +250,11 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
     )
     && (chord.kind !== "chord" || isConsumableChordSymbol(chord.symbol, schemaVersion === 4))))) return false;
   if (value.playbackDefaults !== undefined && (!isPlainRecord(value.playbackDefaults)
-    || !hasExactKeys(value.playbackDefaults, [], ["selectedTrackIndex", "speedPercent", "accompanimentEnabled"])
+    || !hasExactKeys(value.playbackDefaults, [], ["selectedTrackIndex", "selectedTrackId", "speedPercent", "accompanimentEnabled"])
     || (value.playbackDefaults.selectedTrackIndex !== undefined && (!Number.isSafeInteger(value.playbackDefaults.selectedTrackIndex) || (value.playbackDefaults.selectedTrackIndex as number) < 0 || (value.playbackDefaults.selectedTrackIndex as number) >= tracks.length))
+    || (value.playbackDefaults.selectedTrackId !== undefined && (typeof value.playbackDefaults.selectedTrackId !== "string" || !(stableTrackIds as string[]).includes(value.playbackDefaults.selectedTrackId)))
+    || (value.playbackDefaults.selectedTrackIndex !== undefined && value.playbackDefaults.selectedTrackId !== undefined
+      && stableTrackIds[value.playbackDefaults.selectedTrackIndex as number] !== value.playbackDefaults.selectedTrackId)
     || (value.playbackDefaults.speedPercent !== undefined && ![50, 75, 100, 125, 150].includes(value.playbackDefaults.speedPercent as number))
     || (value.playbackDefaults.accompanimentEnabled !== undefined && typeof value.playbackDefaults.accompanimentEnabled !== "boolean"))) return false;
   return true;

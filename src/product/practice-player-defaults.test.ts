@@ -7,6 +7,8 @@ const plan = { trackIds: ["track:lead", "track:H1", "track:H2", "track:band"] } 
 describe("PracticeShare playback defaults", () => {
   it("applies each serialized default and the combined state exactly", () => {
     expect(resolvePracticePlayerInitialState(plan, { selectedTrackIndex: 2 })).toEqual({ speed: 100, solo: "track:H2", bandEnabled: true });
+    expect(resolvePracticePlayerInitialState(plan, { selectedTrackId: "track:H1" })).toEqual({ speed: 100, solo: "track:H1", bandEnabled: true });
+    expect(resolvePracticePlayerInitialState(plan, { selectedTrackId: "track:H1", selectedTrackIndex: 2 })).toEqual({ speed: 100, solo: "track:H1", bandEnabled: true });
     expect(resolvePracticePlayerInitialState(plan, { speedPercent: 75 })).toEqual({ speed: 75, bandEnabled: true });
     expect(resolvePracticePlayerInitialState(plan, { accompanimentEnabled: false })).toEqual({ speed: 100, bandEnabled: false });
     expect(resolvePracticePlayerInitialState(plan, { selectedTrackIndex: 1, speedPercent: 125, accompanimentEnabled: false })).toEqual({ speed: 125, solo: "track:H1", bandEnabled: false });

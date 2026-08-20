@@ -26,7 +26,10 @@ export interface PracticePlayerInitialState {
 }
 
 export function resolvePracticePlayerInitialState(plan: Pick<PlaybackPlan, "trackIds">, settings?: PracticeSettings): PracticePlayerInitialState {
-  const solo = settings?.selectedTrackIndex === undefined ? undefined : plan.trackIds[settings.selectedTrackIndex];
+  const selectedById = settings?.selectedTrackId && plan.trackIds.includes(settings.selectedTrackId)
+    ? settings.selectedTrackId
+    : undefined;
+  const solo = selectedById ?? (settings?.selectedTrackIndex === undefined ? undefined : plan.trackIds[settings.selectedTrackIndex]);
   return {
     speed: settings?.speedPercent ?? 100,
     ...(solo ? { solo } : {}),

@@ -2,17 +2,29 @@ import { parseChord } from "../domain/chord/parser";
 import { addFractions, fraction } from "../domain/fraction";
 import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/generation/model";
 import type { PerformanceChordSpan } from "../domain/harmony/chord-timeline";
-import type { PracticeSharePayload } from "../domain/share";
+import { compactTrackStableId, type PracticeSettings, type PracticeSharePayload } from "../domain/share";
 import type { TimelineAtom } from "../domain/source/atomization";
 import { musicalRange } from "../domain/time";
 import { practiceShareTrackRoles, type ProductTrackRoleRegistry } from "./track-roles";
 
 function compactFraction(value: readonly [number, number]) { return fraction(value[0], value[1]); }
 
-export interface SharedPracticeMaterialization { readonly document: ArrangementRenderDocument; readonly trackRoles: ProductTrackRoleRegistry }
+export interface SharedPracticeMaterialization { readonly document: ArrangementRenderDocument; readonly trackRoles: ProductTrackRoleRegistry; readonly playbackDefaults?: PracticeSettings }
 export type SharedPracticeMaterializationOutcome =
   | { readonly status: "available"; readonly value: SharedPracticeMaterialization }
   | { readonly status: "unavailable"; readonly code: "SHARE_PAYLOAD_UNAVAILABLE" };
+
+function normalizedPlaybackDefaults(payload: PracticeSharePayload): PracticeSettings | undefined {
+  const settings = payload.playbackDefaults;
+  if (!settings) return undefined;
+  const originalTrackIds = payload.arrangement.tracks.map((track) => compactTrackStableId(track, payload.schemaVersion));
+  if (originalTrackIds.some((trackId) => trackId === undefined)) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
+  const selectedTrackId = settings.selectedTrackId
+    ?? (settings.selectedTrackIndex === undefined ? undefined : originalTrackIds[settings.selectedTrackIndex]);
+  const { selectedTrackIndex: _legacyIndex, ...rest } = settings;
+  void _legacyIndex;
+  return { ...rest, ...(selectedTrackId ? { selectedTrackId } : {}) };
+}
 
 export function materializeSharedPractice(payload: PracticeSharePayload): SharedPracticeMaterialization {
   const durations = payload.arrangement.measures.map((measure) => compactFraction(measure.duration));
@@ -85,7 +97,7 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     },
     lyricTokens: payload.lyrics.map((token) => ({ ...token, leadEventId: firstLeadId, emphasis: "none" as const })),
   };
-  return { document, trackRoles };
+  return { document, trackRoles, ...(payload.playbackDefaults ? { playbackDefaults: normalizedPlaybackDefaults(payload) } : {}) };
 }
 
 export function practiceShareToRenderDocument(payload: PracticeSharePayload): ArrangementRenderDocument {
