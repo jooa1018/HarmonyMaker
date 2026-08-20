@@ -5,7 +5,7 @@ on:
     branches:
       - chatgpt/harmonymaker-audiveris-provider
     paths:
-      - scripts/provider-integration.patch.b64.part03
+      - scripts/provider-integration.patch.b64.part11
 
 permissions:
   contents: write
