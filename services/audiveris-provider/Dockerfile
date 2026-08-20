@@ -26,12 +26,13 @@ WORKDIR /app
 COPY services/audiveris-provider/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
-COPY services/audiveris-provider/app.py /app/app.py
+COPY services/audiveris-provider/app.py services/audiveris-provider/demo_app.py /app/
 
 ENV PATH=/opt/venv/bin:$PATH \
     AUDIVERIS_BIN=/usr/local/bin/audiveris \
     AUDIVERIS_VERSION=${AUDIVERIS_VERSION} \
     HM_AUDIVERIS_DATA_DIR=/data \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
     JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" \
     HOME=/data/home \
     PORT=8000
@@ -42,4 +43,4 @@ RUN useradd --create-home --uid 10001 provider \
 USER provider
 
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "uvicorn demo_app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
