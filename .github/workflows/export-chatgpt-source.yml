@@ -1,10 +1,11 @@
 name: Export ChatGPT closure source
 
-# Temporary CI-only source snapshot for corrected P1 closure verification.
+# Temporary CI-only source snapshot for P2 closure verification.
 on:
   push:
     branches:
       - chatgpt/harmonymaker-ultra-p1-closure
+      - chatgpt/harmonymaker-ultra-p2-closure
   pull_request:
     branches:
       - main
