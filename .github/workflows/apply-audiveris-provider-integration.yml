@@ -1,0 +1,38 @@
+name: Apply Audiveris provider integration
+
+on:
+  push:
+    branches:
+      - chatgpt/harmonymaker-audiveris-provider
+    paths:
+      - scripts/provider-integration.patch.b64.part03
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/harmonymaker-audiveris-provider
+          fetch-depth: 0
+      - name: Apply complete integration patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat scripts/provider-integration.patch.b64.part* | base64 -d > /tmp/provider-integration.patch
+          git apply --binary --check /tmp/provider-integration.patch
+          git apply --binary /tmp/provider-integration.patch
+          rm -f scripts/provider-integration.patch.b64.part*
+          rm -f .github/workflows/apply-audiveris-provider-integration.yml
+      - name: Commit integrated provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ChatGPT"
+          git config user.email "chatgpt@openai.com"
+          git add -A
+          git commit -m "feat: integrate free self-hosted Audiveris OMR provider"
+          git push origin HEAD:chatgpt/harmonymaker-audiveris-provider
