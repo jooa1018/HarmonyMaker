@@ -1,0 +1,36 @@
+name: Apply ChatGPT P2 wave 2 script
+
+on:
+  push:
+    branches:
+      - chatgpt/harmonymaker-ultra-p2-closure
+    paths:
+      - scripts/apply-p2-wave2-simple.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/harmonymaker-ultra-p2-closure
+          fetch-depth: 0
+      - name: Apply P2 wave 2 corrections
+        run: python scripts/apply-p2-wave2-simple.py
+      - name: Commit corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply-p2-wave2-simple.py
+          if git diff --quiet; then
+            echo "No wave 2 changes required"
+            exit 0
+          fi
+          git config user.name "ChatGPT"
+          git config user.email "chatgpt@openai.com"
+          git add -A
+          git commit -m "fix: close Share ordering and route P2 findings"
+          git push origin HEAD:chatgpt/harmonymaker-ultra-p2-closure
