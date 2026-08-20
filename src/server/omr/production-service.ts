@@ -12,6 +12,7 @@ import { withCrossSessionOmrCreateRecovery, type OmrCreateRecoveryRegistry } fro
 import { ReferenceOmrVendorAdapter } from "./reference-adapter";
 import { REFERENCE_OMR_FIXTURES } from "./reference-fixtures";
 import { createOmrVendorAdapter } from "./vendor-factory";
+import { AudiverisHttpOmrAdapter } from "./audiveris-http-adapter";
 import type { OmrStore } from "./store";
 
 let referenceAdapter: ReferenceOmrVendorAdapter | undefined;
@@ -114,20 +115,36 @@ async function defaultProviderRegistry(config: ProductionOmrConfig): Promise<Pro
     vendorId: "hm-reference", supportedMimeTypes: ["image/png", "image/jpeg"], maxPages: 12, evidenceGranularity: "measure",
     supportsDeletion: true, retentionDisclosure: true, supportsIdempotency: true, supportsInteractiveInput: true, estimatedCreditPerPage: 1,
   });
+  const realAdapter = config.providerMode === "real" && config.audiveris
+    ? new AudiverisHttpOmrAdapter(config.audiveris)
+    : undefined;
   const adapter = createOmrVendorAdapter({
     mode: config.providerMode,
     nodeEnvironment: process.env.NODE_ENV,
     ...(referenceAdapter ? { referenceAdapter } : {}),
+    ...(realAdapter ? { realAdapter } : {}),
   });
-  if (config.providerMode !== "reference") throw new RangeError("OMR_PROVIDER_UNCONFIGURED");
-  return createProductionOmrProviderRegistry({
-    active: {
-      providerId: "hm-reference",
-      configurationGeneration: "reference-fixtures-v1",
-      adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
-      adapter,
-    },
-  });
+  if (config.providerMode === "reference") {
+    return createProductionOmrProviderRegistry({
+      active: {
+        providerId: "hm-reference",
+        configurationGeneration: "reference-fixtures-v1",
+        adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
+        adapter,
+      },
+    });
+  }
+  if (config.providerMode === "real" && config.audiveris) {
+    return createProductionOmrProviderRegistry({
+      active: {
+        providerId: "audiveris",
+        configurationGeneration: config.audiveris.configurationGeneration,
+        adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION,
+        adapter,
+      },
+    });
+  }
+  throw new RangeError("OMR_PROVIDER_UNCONFIGURED");
 }
 
 export async function getProductionOmrApplicationService(input: {
@@ -153,7 +170,7 @@ export async function getProductionOmrApplicationService(input: {
 /** Scheduler-only composition. It can reclaim local/current rows without inventing a real provider adapter. */
 export async function getProductionOmrCleanupApplicationService(): Promise<DurableOmrApplicationService> {
   const [services, config] = await Promise.all([getProductionServices(), Promise.resolve(loadProductionOmrConfig())]);
-  if (config.providerMode === "reference") {
+  if (config.providerMode === "reference" || config.providerMode === "real") {
     const providers = await defaultProviderRegistry(config);
     return createProductionOmrApplicationService({
       store: services.omrStore, createRecoveryRegistry: services.omrCreateRecovery,

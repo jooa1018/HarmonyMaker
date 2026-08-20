@@ -25,13 +25,27 @@ export const OMR_ENVIRONMENT_VARIABLES = Object.freeze([
   "OMR_DAILY_GLOBAL_CREDIT_CEILING",
   "OMR_PROVIDER_MODE",
 ] as const);
+export const OMR_AUDIVERIS_ENVIRONMENT_VARIABLES = Object.freeze([
+  "OMR_AUDIVERIS_BASE_URL",
+  "OMR_AUDIVERIS_API_KEY",
+  "OMR_AUDIVERIS_CONFIGURATION_GENERATION",
+  "OMR_AUDIVERIS_REQUEST_TIMEOUT_MS",
+] as const);
 export type OmrEnvironmentVariable = (typeof OMR_ENVIRONMENT_VARIABLES)[number];
+
+export interface ProductionAudiverisConfig {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  readonly configurationGeneration: string;
+  readonly requestTimeoutMs: number;
+}
 
 export interface ProductionOmrConfig {
   readonly handleHmacKey: Uint8Array;
   readonly vendorJobEncryptionKey: Uint8Array;
   readonly dailyGlobalCreditCeiling: number;
   readonly providerMode: "unconfigured" | "reference" | "real";
+  readonly audiveris?: ProductionAudiverisConfig;
 }
 
 export interface ProductionSubstrateConfig {
@@ -105,11 +119,43 @@ export function loadProductionOmrConfig(environment: Environment = process.env):
   const dailyGlobalCreditCeiling = Number(environment.OMR_DAILY_GLOBAL_CREDIT_CEILING);
   if (!Number.isSafeInteger(dailyGlobalCreditCeiling) || dailyGlobalCreditCeiling <= 0
     || dailyGlobalCreditCeiling > MAX_OMR_DAILY_CREDIT_CEILING) throw new ProductionSubstrateConfigurationError([], "invalid OMR_DAILY_GLOBAL_CREDIT_CEILING");
+
+  let audiveris: ProductionAudiverisConfig | undefined;
+  if (providerMode === "real") {
+    const missingAudiveris = OMR_AUDIVERIS_ENVIRONMENT_VARIABLES.filter((name) => !present(environment[name]));
+    if (missingAudiveris.length > 0) throw new ProductionSubstrateConfigurationError([], `missing Audiveris OMR configuration: ${missingAudiveris.join(",")}`);
+    let baseUrl: URL;
+    try { baseUrl = new URL(environment.OMR_AUDIVERIS_BASE_URL as string); }
+    catch { throw new ProductionSubstrateConfigurationError([], "invalid OMR_AUDIVERIS_BASE_URL"); }
+    const loopback = ["127.0.0.1", "localhost", "::1"].includes(baseUrl.hostname);
+    if (!["http:", "https:"].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash
+      || (environment.NODE_ENV === "production" && baseUrl.protocol !== "https:" && !loopback)) {
+      throw new ProductionSubstrateConfigurationError([], "invalid OMR_AUDIVERIS_BASE_URL");
+    }
+    const apiKey = environment.OMR_AUDIVERIS_API_KEY as string;
+    if (apiKey.length < 32 || apiKey.length > 512) throw new ProductionSubstrateConfigurationError([], "invalid OMR_AUDIVERIS_API_KEY");
+    const configurationGeneration = environment.OMR_AUDIVERIS_CONFIGURATION_GENERATION as string;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u.test(configurationGeneration)) {
+      throw new ProductionSubstrateConfigurationError([], "invalid OMR_AUDIVERIS_CONFIGURATION_GENERATION");
+    }
+    const requestTimeoutMs = Number(environment.OMR_AUDIVERIS_REQUEST_TIMEOUT_MS);
+    if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1_000 || requestTimeoutMs > 300_000) {
+      throw new ProductionSubstrateConfigurationError([], "invalid OMR_AUDIVERIS_REQUEST_TIMEOUT_MS");
+    }
+    audiveris = Object.freeze({
+      baseUrl: baseUrl.toString().replace(/\/$/u, ""),
+      apiKey,
+      configurationGeneration,
+      requestTimeoutMs,
+    });
+  }
+
   return Object.freeze({
     handleHmacKey: decodeExactOmrSecret(environment, "OMR_HANDLE_HMAC_KEY"),
     vendorJobEncryptionKey: decodeExactOmrSecret(environment, "OMR_VENDOR_JOB_ENCRYPTION_KEY"),
     dailyGlobalCreditCeiling,
     providerMode,
+    ...(audiveris ? { audiveris } : {}),
   });
 }
 

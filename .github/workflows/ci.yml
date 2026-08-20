@@ -2,42 +2,7 @@ name: CI
 on:
   push:
   pull_request:
-permissions:
-  contents: write
 jobs:
-  finalize-audiveris-overlay:
-    if: github.actor != 'github-actions[bot]' && (github.ref_name == 'chatgpt/harmonymaker-audiveris-provider' || github.head_ref == 'chatgpt/harmonymaker-audiveris-provider')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: chatgpt/harmonymaker-audiveris-provider
-          fetch-depth: 0
-      - name: Apply provider overlay and remove staging artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat scripts/audiveris-overlay.b64.part* | base64 -d > /tmp/audiveris-overlay.tar.gz
-          tar -xzf /tmp/audiveris-overlay.tar.gz -C .
-          rm -f scripts/audiveris-overlay.b64.part*
-          rm -f scripts/provider-integration.patch.b64.part00
-          rm -f scripts/apply-chatgpt-omr-client-patch.mjs
-          rm -rf scripts/chatgpt-patches
-          rm -f .github/workflows/audiveris-provider.yml
-          rm -f .github/workflows/apply-audiveris-provider-integration.yml
-          rm -f .github/workflows/apply-chatgpt-p1-patches.yml
-          rm -f .github/workflows/export-chatgpt-source.yml
-          rm -f .github/workflows/export-provider-source.yml
-          git show 60030aabdc25dc9ab4bfe48dae69fa73844ca503:.github/workflows/ci.yml > .github/workflows/ci.yml
-      - name: Commit complete provider integration
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "feat: integrate free self-hosted Audiveris OMR provider"
-          git push origin HEAD:chatgpt/harmonymaker-audiveris-provider
   quality:
     runs-on: ubuntu-latest
     services:
