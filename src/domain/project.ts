@@ -4,6 +4,7 @@ import type { SemanticDigest } from "./digest/canonical";
 import { DIAGNOSTIC_CODES, type Diagnostic } from "./diagnostics";
 import {
   isArrangementOutputEdit, validateOutputEdits,
+  MAX_EDITED_SNAPSHOTS_PER_VARIANT, MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT,
   type ArrangementOutputEdit, type EditedArrangementSnapshot,
 } from "./edit/model";
 import type { ArrangementGenerationResult } from "./generation/model";
@@ -465,7 +466,9 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
   const forbidden = ["intentPlan", "activityPlan", "anchorPlan", "generationResult"].slice(max + 1);
   if (forbidden.some((field) => field in variant)) return false;
   if (variant.lifecycle === "generation-attempted" && (!Array.isArray(variant.outputEdits)
+    || variant.outputEdits.length > MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT
     || !Array.isArray(variant.editedSnapshots)
+    || variant.editedSnapshots.length > MAX_EDITED_SNAPSHOTS_PER_VARIANT
     || !Array.isArray(variant.candidateHarmonyRoles)
       || !variant.candidateHarmonyRoles.every((entry) => isPlainRecord(entry)
         && hasExactKeys(entry, ["marginalCandidateId", "trackPlanId", "harmonyRole"])
@@ -540,10 +543,11 @@ export function validateArrangementVariant(value: unknown): value is Arrangement
       if (validateOutputEdits(candidate.id, candidate.contentDigest, eventIds, candidateEdits).length > 0) return false;
     }
     if (edits.some((edit) => !generation.candidates.some((candidate) => candidate.id === edit.baseCandidateId))) return false;
+    const editById = new Map(edits.map((edit) => [edit.id, edit]));
     if (snapshots.some((snapshot) => {
       const candidate = generation.candidates.find((item) => item.id === snapshot.baseCandidateId);
       return !candidate || candidate.contentDigest !== snapshot.baseCandidateDigest
-        || snapshot.appliedEditIds.some((editId) => !edits.some((edit) => edit.id === editId && edit.baseCandidateId === candidate.id));
+        || snapshot.appliedEditIds.some((editId) => editById.get(editId)?.baseCandidateId !== candidate.id);
     })) return false;
   }
   if (variant.lastBlockedAttempt !== undefined && (!isPlainRecord(variant.lastBlockedAttempt)

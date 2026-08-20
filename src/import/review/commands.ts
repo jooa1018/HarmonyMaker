@@ -30,20 +30,52 @@ function updateChord(
   return found ? { ...draft, parts } : draft;
 }
 
+function selectedLeadPartKey(
+  draft: MusicXmlImportDraft,
+  candidateKey: string | undefined = draft.selectedLeadStaffKey,
+): KeySignature | undefined {
+  const candidate = draft.leadCandidates.find((item) => item.key === candidateKey);
+  return candidate
+    ? draft.parts.find((part) => part.partOrdinal === candidate.partOrdinal)?.measures[0]?.key
+    : undefined;
+}
+
 export function selectLeadCandidate(
   draft: MusicXmlImportDraft,
   candidateKey: string,
 ): MusicXmlImportDraft {
-  return draft.leadCandidates.some((candidate) => candidate.key === candidateKey)
-    ? { ...draft, selectedLeadStaffKey: candidateKey }
-    : draft;
+  const candidate = draft.leadCandidates.find((item) => item.key === candidateKey);
+  if (!candidate) return draft;
+  const selectedLeadKey = selectedLeadPartKey(draft, candidateKey);
+  const { defaultKey: _previousSelectedKey, ...withoutDefaultKey } = draft;
+  void _previousSelectedKey;
+  return {
+    ...withoutDefaultKey,
+    selectedLeadStaffKey: candidateKey,
+    ...(draft.defaultKeyOverride
+      ? { defaultKey: draft.defaultKeyOverride }
+      : selectedLeadKey ? { defaultKey: selectedLeadKey } : {}),
+  };
 }
 
 export function setDefaultKey(
   draft: MusicXmlImportDraft,
   defaultKey: KeySignature,
 ): MusicXmlImportDraft {
-  return { ...draft, defaultKey };
+  return { ...draft, defaultKey, defaultKeyOverride: defaultKey };
+}
+
+export function clearDefaultKeyOverride(
+  draft: MusicXmlImportDraft,
+): MusicXmlImportDraft {
+  const selectedLeadKey = selectedLeadPartKey(draft);
+  const { defaultKey: _previousKey, defaultKeyOverride: _previousOverride, ...withoutKeyAuthority } = draft;
+  void _previousKey;
+  void _previousOverride;
+  return {
+    ...withoutKeyAuthority,
+    ...(selectedLeadKey ? { defaultKey: selectedLeadKey } : {}),
+  };
 }
 
 export function setDefaultTempo(

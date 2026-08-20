@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fraction } from "../../domain/fraction";
 import {
+  clearDefaultKeyOverride,
   confirmChord,
   confirmRights,
   confirmSection,
@@ -8,6 +9,7 @@ import {
   importMusicXml,
   replaceChord,
   selectLeadCandidate,
+  setDefaultKey,
   setPerformerRange,
   setSectionOccurrenceLyricVerse,
   type MusicXmlImportDraft,
@@ -72,6 +74,55 @@ function selectAndConfirm(
 }
 
 describe("Quick Review blocking completeness", () => {
+  it("binds key/modulation analysis to the selected Lead part and preserves explicit override", async () => {
+    const keyedPart = (id: string, name: string) =>
+      `<score-part id="${id}"><part-name>${name}</part-name></score-part>`;
+    const part = (id: string, fifths: number, step: "C" | "D") =>
+      `<part id="${id}"><measure number="1"><attributes><divisions>1</divisions><key><fifths>${fifths}</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><direction><sound tempo="100"/></direction><direction><direction-type><rehearsal>Verse</rehearsal></direction-type></direction><harmony><root><root-step>${step}</root-step></root><kind>major</kind></harmony><note><pitch><step>${step}</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><staff>1</staff></note></measure></part>`;
+    const xml = `<score-partwise><part-list>${keyedPart("P1", "D lead")}${keyedPart("P2", "C lead")}</part-list>${part("P1", 2, "D")}${part("P2", 0, "C")}</score-partwise>`;
+    const draft = await draftFrom(xml);
+    const dLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 0)!;
+    const cLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 1)!;
+
+    const cPartKey = draft.parts.find((part) => part.partOrdinal === cLead.partOrdinal)?.measures[0]?.key;
+    const dPartKey = draft.parts.find((part) => part.partOrdinal === dLead.partOrdinal)?.measures[0]?.key;
+    expect(cPartKey).toBeDefined();
+    expect(dPartKey).toBeDefined();
+    const selectedC = selectLeadCandidate(draft, cLead.key);
+    expect(selectedC.defaultKey).toEqual(cPartKey);
+    expect((await deriveQuickReview(selectedC)).diagnostics.some((item) => item.code === "UNSUPPORTED_MODULATION")).toBe(false);
+
+    const selectedD = selectLeadCandidate(selectedC, dLead.key);
+    expect(selectedD.defaultKey).toEqual(dPartKey);
+    const selectedCAgain = selectLeadCandidate(selectedD, cLead.key);
+    expect(selectedCAgain.defaultKey).toEqual(selectedC.defaultKey);
+
+    const overridden = setDefaultKey(selectedCAgain, { tonic: { step: "G", alter: 0 }, mode: "major" });
+    expect(overridden.defaultKey).toEqual({ tonic: { step: "G", alter: 0 }, mode: "major" });
+    expect(overridden.defaultKeyOverride).toEqual(overridden.defaultKey);
+    const overriddenD = selectLeadCandidate(overridden, dLead.key);
+    const overriddenCAgain = selectLeadCandidate(overriddenD, cLead.key);
+    expect(overriddenD.defaultKey).toEqual({ tonic: { step: "G", alter: 0 }, mode: "major" });
+    expect(overriddenCAgain.defaultKey).toEqual({ tonic: { step: "G", alter: 0 }, mode: "major" });
+    const reset = clearDefaultKeyOverride(overriddenCAgain);
+    expect(reset.defaultKeyOverride).toBeUndefined();
+    expect(reset.defaultKey).toEqual(cPartKey);
+  });
+
+  it("does not apply a non-selected part's modulation diagnostic to the selected stable Lead", async () => {
+    const partList = `<part-list><score-part id="P1"><part-name>Modulating</part-name></score-part><score-part id="P2"><part-name>Stable</part-name></score-part></part-list>`;
+    const note = (step: "C" | "D") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><staff>1</staff></note>`;
+    const modulating = `<part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><direction><sound tempo="100"/></direction>${note("C")}</measure><measure number="2"><attributes><key><fifths>2</fifths><mode>major</mode></key></attributes>${note("D")}</measure></part>`;
+    const stable = `<part id="P2"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><direction><sound tempo="100"/></direction>${note("C")}</measure><measure number="2">${note("C")}</measure></part>`;
+    const draft = await draftFrom(`<score-partwise>${partList}${modulating}${stable}</score-partwise>`);
+    const stableLead = draft.leadCandidates.find((candidate) => candidate.partOrdinal === 1)!;
+    const selectedPartKey = draft.parts.find((part) => part.partOrdinal === stableLead.partOrdinal)?.measures[0]?.key;
+    expect(selectedPartKey).toBeDefined();
+    const selected = selectLeadCandidate(draft, stableLead.key);
+    expect(selected.defaultKey).toEqual(selectedPartKey);
+    expect((await deriveQuickReview(selected)).diagnostics.some((item) => item.code === "UNSUPPORTED_MODULATION")).toBe(false);
+  });
+
   it("reports no explicit lead selection", async () => {
     const review = await deriveQuickReview(await draftFrom());
     expect(review.state.readyForPlanning).toBe(false);

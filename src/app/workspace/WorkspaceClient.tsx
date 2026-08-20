@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ChangeEvent } from "react";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { ArrangementPresetId } from "../../domain/config";
 import type { ChordToneSpec } from "../../domain/chord/model";
+import { canonicalJson } from "../../domain/digest/canonical";
 import type { ArrangementOutputEdit } from "../../domain/edit/model";
 import { outputEditId } from "../../domain/ids";
 import type { VariantStageLocks } from "../../domain/locks";
@@ -22,8 +23,15 @@ import { exportHarmonyProject, importHarmonyProject } from "../../product/projec
 import { canDefaultExportOrShare, projectRenderDocument, selectActiveCandidate, selectActiveSnapshot, type MaterializedArrangement, type ScoreProjection } from "../../product/render";
 import { arrangementRenderDocumentToAbc } from "../../product/score-adapter";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
+import { completedShareRecoveryTransport, dispatchShareCreateReadOnlyRecovery, dispatchShareCreateRecovery, dispatchShareOwnerReconciliation, pendingShareRecoveryTransport } from "../../product/share-create-api";
+import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, restoredShareCreateUiAuthority, ShareCreateOperationGate } from "../../product/share-create-recovery";
 import { generateProjectVariant, regenerationBoundary, wagInputFromProject } from "../../product/workspace";
-import { canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, type UiStageLock } from "../../product/workspace-controls";
+import {
+  authoritativeWorkspaceProject,
+  deleteWorkspaceProjectAndNavigate,
+  WorkspaceRouteController,
+} from "../../product/workspace-route-state";
+import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, compactEditedArrangementHistory, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import styles from "./workspace.module.css";
 
@@ -68,9 +76,22 @@ export function WorkspaceClient() {
   const search = useSearchParams();
   const router = useRouter();
   const projectId = search.get("project") ?? "";
-  const [project, setProject] = useState<HarmonyProject>();
+  const projectStore = useMemo(() => new IndexedDbProjectStore(), []);
+  const routeController = useMemo(() => new WorkspaceRouteController(projectStore), [projectStore]);
+  const [routeState, setRouteState] = useState(routeController.state);
+  useLayoutEffect(() => routeController.subscribe(setRouteState), [routeController]);
+  const project = authoritativeWorkspaceProject(routeState, projectId);
   const [projection, setProjection] = useState<ScoreProjection>("full");
-  const [message, setMessage] = useState(() => projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요.");
+  const [messageState, setMessageState] = useState<{ readonly projectId: string; readonly value: string }>(() => ({
+    projectId,
+    value: projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요.",
+  }));
+  const message = !projectId
+    ? "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요."
+    : routeState.requestedId !== projectId || routeState.loadStatus === "loading"
+      ? "로컬 프로젝트를 확인하는 중…"
+      : messageState.projectId === projectId ? messageState.value : "로컬 프로젝트를 확인하는 중…";
+  const setMessage = useCallback((value: string) => setMessageState({ projectId, value }), [projectId]);
   const [busy, setBusy] = useState(false);
   const [pitchText, setPitchText] = useState("C4");
   const [lockTargetKey, setLockTargetKey] = useState("");
@@ -83,25 +104,55 @@ export function WorkspaceClient() {
   const [editKind, setEditKind] = useState<EditKind>("replace-pitch");
   const [tieStart, setTieStart] = useState(false);
   const [tieStop, setTieStop] = useState(false);
-  const [shareUrl, setShareUrl] = useState<string>();
-  const [storedShare, setStoredShare] = useState<{ token: string; ownerDeleteSecret: string; csrfToken: string }>();
+  const [shareUrlState, setShareUrlState] = useState<{ readonly projectId: string; readonly value?: string }>({ projectId });
+  const [storedShareState, setStoredShareState] = useState<{ readonly projectId: string; readonly value?: { token: string; ownerDeleteSecret: string } }>({ projectId });
+  const [shareFreshAllowedState, setShareFreshAllowedState] = useState<{ readonly projectId: string; readonly value: boolean }>({ projectId, value: false });
+  const shareUrl = shareUrlState.projectId === projectId ? shareUrlState.value : undefined;
+  const storedShare = storedShareState.projectId === projectId ? storedShareState.value : undefined;
+  const shareFreshAllowed = shareFreshAllowedState.projectId === projectId && shareFreshAllowedState.value;
+  const setShareUrl = useCallback((value: string | undefined) => setShareUrlState({ projectId, ...(value ? { value } : {}) }), [projectId]);
+  const setStoredShare = useCallback((value: { token: string; ownerDeleteSecret: string } | undefined) => setStoredShareState({ projectId, ...(value ? { value } : {}) }), [projectId]);
+  const setShareFreshAllowed = useCallback((value: boolean) => setShareFreshAllowedState({ projectId, value }), [projectId]);
+  const shareOperationGate = useMemo(() => new ShareCreateOperationGate(), []);
+  const shareRecoveryStore = useMemo(() => new IndexedDbShareCreateRecoveryStore(), []);
 
-  const saveProject = useCallback(async (next: HarmonyProject, status = "이 브라우저에 저장했습니다.") => {
-    if (!projectId) throw new RangeError("PROJECT_ID_MISSING");
-    await new IndexedDbProjectStore().save({ projectId, updatedAt: new Date().toISOString(), project: next });
-    setProject(next); setMessage(status);
-  }, [projectId]);
+  const saveProject = useCallback(async (next: HarmonyProject, status = "이 브라우저에 저장했습니다.", expectedProjectId?: string) => {
+    const outcome = await routeController.saveProject(
+      projectId,
+      next,
+      new Date().toISOString(),
+      expectedProjectId,
+    );
+    if (outcome.applied) setMessage(status);
+  }, [projectId, routeController, setMessage]);
+
+  useEffect(() => {
+    let active = true;
+    void routeController.request(projectId).then((outcome) => {
+      if (!active || !outcome.applied) return;
+      if (outcome.status === "missing") {
+        setMessage("이 브라우저에서 프로젝트를 찾을 수 없습니다.");
+      } else if (outcome.status === "corrupt") {
+        setMessage("IndexedDB 프로젝트를 열지 못했거나 저장본이 손상되었습니다.");
+      } else if (outcome.status === "loaded") {
+        setMessage(`로컬 저장본 ${new Date(outcome.record.updatedAt).toLocaleString()} 로드 완료`);
+      }
+    });
+    return () => { active = false; };
+  }, [projectId, routeController, setMessage]);
 
   useEffect(() => {
     if (!projectId) return;
     let active = true;
-    void new IndexedDbProjectStore().load(projectId).then((record) => {
-      if (!active) return;
-      if (!record) setMessage("이 브라우저에서 프로젝트를 찾을 수 없습니다.");
-      else { setProject(record.project); setMessage(`로컬 저장본 ${new Date(record.updatedAt).toLocaleString()} 로드 완료`); }
-    }).catch(() => setMessage("IndexedDB 프로젝트를 열지 못했습니다."));
+    void shareRecoveryStore.load(projectId).then((envelope) => {
+      if (!active || !envelope) return;
+      const authority = restoredShareCreateUiAuthority(envelope);
+      setShareFreshAllowed(authority.freshIntentAllowed);
+      setStoredShare(authority.createdResponse);
+      setShareUrl(authority.createdResponse ? `${window.location.origin}/share?token=${encodeURIComponent(authority.createdResponse.token)}` : undefined);
+    }).catch(() => undefined);
     return () => { active = false; };
-  }, [projectId]);
+  }, [projectId, shareRecoveryStore, setShareFreshAllowed, setShareUrl, setStoredShare]);
 
   const presetId = project?.selectedPresetId ?? "standard";
   const variant = project?.variants[presetId];
@@ -151,13 +202,16 @@ export function WorkspaceClient() {
 
   const generate = async () => {
     if (!project) return;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
     setBusy(true); setMessage(`${regenerationBoundary(project.variants[presetId] ?? { lifecycle: "empty", presetId, diagnostics: [] }) === "none" ? "Intent" : "stale boundary"}부터 정본 lifecycle을 실행하는 중…`);
     try {
       const outcome = await generateProjectVariant(project, presetId);
-      if (outcome.status === "blocked") setMessage(`blocked · ${outcome.stage} · ${outcome.diagnostics.map((item) => item.code).join(", ") || "진단 없음"}`);
-      else await saveProject(outcome.project, `${outcome.status} · 후보 ${outcome.execution.generation.result.candidates.length}개 · 독립 Validator 통과 결과 저장`);
+      if (outcome.status === "blocked") await saveProject(outcome.project, `blocked · ${outcome.stage} · ${outcome.diagnostics.map((item) => item.code).join(", ") || "진단 없음"} · 시도 권위 저장`, operationProjectId);
+      else await saveProject(outcome.project, `${outcome.status} · 후보 ${outcome.execution.generation.result.candidates.length}개 · 독립 Validator 통과 결과 저장`, operationProjectId);
       setShareUrl(undefined);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "생성에 실패했습니다."); }
+    } catch (error) {
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "생성에 실패했습니다.");
+    }
     finally { setBusy(false); }
   };
 
@@ -207,47 +261,67 @@ export function WorkspaceClient() {
 
   const applyOutputEdit = async () => {
     if (!project || !variant || variant.lifecycle !== "generation-attempted" || variant.staleness || !activeCandidate || !selectedEditTarget) return;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
     const event = selectedEditTarget.event;
     const pitch = parsePitch(pitchText);
     if ((editKind === "replace-pitch" || editKind === "replace-event-note") && !pitch) { setMessage("편집 음정을 C4, Bb3처럼 입력해 주세요."); return; }
     if ((editKind === "replace-pitch" || editKind === "set-tie") && event.kind !== "note") { setMessage("이 편집 종류는 note 이벤트만 대상으로 합니다."); return; }
-    const baseEdits = variant.outputEdits.filter((item) => item.baseCandidateId === activeCandidate.id);
+    const historicalEdits = variant.outputEdits.filter((item) => item.baseCandidateId === activeCandidate.id);
+    const baseEdits = activeOutputEditsForCandidate(variant, activeCandidate.id);
     const existing = baseEdits.find((item) => outputEditTargetId(item) === event.id);
-    const editOrdinal = existing?.editOrdinal ?? Math.max(-1, ...baseEdits.map((item) => item.editOrdinal)) + 1;
-    const common = { id: existing?.id ?? outputEditId(presetId, activeCandidate.contentDigest, editOrdinal), presetId, baseCandidateId: activeCandidate.id, baseCandidateDigest: activeCandidate.contentDigest, editOrdinal } as const;
-    const edit: ArrangementOutputEdit = editKind === "replace-pitch"
-      ? { ...common, kind: "replace-pitch", eventId: event.id, pitch: pitch! }
+    const provisionalOrdinal = existing?.editOrdinal ?? Math.max(-1, ...historicalEdits.map((item) => item.editOrdinal)) + 1;
+    const provisionalCommon = { id: existing?.id ?? outputEditId(presetId, activeCandidate.contentDigest, provisionalOrdinal), presetId, baseCandidateId: activeCandidate.id, baseCandidateDigest: activeCandidate.contentDigest, editOrdinal: provisionalOrdinal } as const;
+    const provisionalEdit: ArrangementOutputEdit = editKind === "replace-pitch"
+      ? { ...provisionalCommon, kind: "replace-pitch", eventId: event.id, pitch: pitch! }
       : editKind === "replace-event-note"
-        ? { ...common, kind: "replace-event", oldEventId: event.id, replacement: { kind: "note", pitch: pitch!, tieStart, tieStop } }
+        ? { ...provisionalCommon, kind: "replace-event", oldEventId: event.id, replacement: { kind: "note", pitch: pitch!, tieStart, tieStop } }
         : editKind === "replace-event-rest"
-          ? { ...common, kind: "replace-event", oldEventId: event.id, replacement: { kind: "rest" } }
-          : { ...common, kind: "set-tie", eventId: event.id, tieStart, tieStop };
+          ? { ...provisionalCommon, kind: "replace-event", oldEventId: event.id, replacement: { kind: "rest" } }
+          : { ...provisionalCommon, kind: "set-tie", eventId: event.id, tieStart, tieStop };
+    const identical = existing !== undefined && canonicalJson(existing) === canonicalJson(provisionalEdit);
+    const editOrdinal = identical ? existing.editOrdinal : Math.max(-1, ...historicalEdits.map((item) => item.editOrdinal)) + 1;
+    const edit = identical ? existing : { ...provisionalEdit, id: outputEditId(presetId, activeCandidate.contentDigest, editOrdinal), editOrdinal } as ArrangementOutputEdit;
     const nextBaseEdits = [...baseEdits.filter((item) => outputEditTargetId(item) !== event.id), edit].sort((left, right) => left.editOrdinal - right.editOrdinal);
     setBusy(true);
     try {
       const result = await materializeEditedArrangement({ lifecycleInput: await wagInputFromProject(project, presetId), intentPlan: variant.intentPlan, activityPlan: variant.activityPlan, anchorPlan: variant.anchorPlan, candidate: activeCandidate, edits: nextBaseEdits });
       if (result.status === "blocked") { setMessage(`편집 blocked · ${result.diagnostics.map((item) => item.code).join(", ")}`); return; }
-      const outputEdits = [...variant.outputEdits.filter((item) => item.baseCandidateId !== activeCandidate.id || outputEditTargetId(item) !== event.id), edit];
-      const nextVariant = { ...variant, outputEdits, editedSnapshots: [...variant.editedSnapshots, result.snapshot], activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
-      await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다."); }
+      const outputEdits = identical ? variant.outputEdits : [...variant.outputEdits, edit];
+      const history = compactEditedArrangementHistory({
+        outputEdits,
+        editedSnapshots: upsertEditedSnapshotHistory(variant.editedSnapshots, result.snapshot),
+        activeSnapshotId: result.snapshot.id,
+      });
+      const nextVariant = { ...variant, outputEdits: history.outputEdits, editedSnapshots: history.editedSnapshots, activeArrangement: { kind: "edited-snapshot" as const, snapshotId: result.snapshot.id }, diagnostics: result.diagnostics };
+      await saveProject({ ...project, variants: { ...project.variants, [presetId]: nextVariant } }, `EditedArrangementSnapshot ${result.snapshot.status} · 독립 Validator/metrics 재실행 완료`, operationProjectId);
+    } catch (error) {
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "편집을 적용하지 못했습니다.");
+    }
     finally { setBusy(false); }
   };
 
   const exportMusicXml = () => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
-    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey }), "application/vnd.recordare.musicxml+xml");
+    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey, tempo: project.source.defaultTempo }), "application/vnd.recordare.musicxml+xml");
   };
   const exportProject = async () => { if (project) download(`${safeName(project.source.title)}.harmonymaker.json`, await exportHarmonyProject(project), "application/json"); };
   const importProject = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-    try { await saveProject(await importHarmonyProject(await file.text()), "정본 프로젝트 파일을 검증하고 로드했습니다."); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다."); }
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
+    try { await saveProject(await importHarmonyProject(await file.text()), "정본 프로젝트 파일을 검증하고 로드했습니다.", operationProjectId); }
+    catch (error) {
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다.");
+    }
   };
-  const deleteLocal = async () => { if (!projectId) return; await new IndexedDbProjectStore().delete(projectId); router.push("/"); };
+  const deleteLocal = async () => {
+    if (!projectId) return;
+    await deleteWorkspaceProjectAndNavigate(routeController, projectId, () => router.push("/"));
+  };
 
-  const createShare = async () => {
+  const createShare = async (explicitFreshIntent = false) => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
+    const operationProjectId = routeController.beginMutation(projectId).projectId;
+    if (!shareOperationGate.tryBegin()) return;
     setBusy(true); setShareUrl(undefined);
     try {
       const withRights = confirmShareRights(project, new Date().toISOString());
@@ -255,26 +329,93 @@ export function WorkspaceClient() {
       const encoded = encodeProductUrlShare(payload);
       if (urlShareFits(encoded)) {
         const url = `${window.location.origin}/share#p=${encoded}`;
-        setShareUrl(url); await saveProject(withRights, `URL share ${new TextEncoder().encode(encoded).byteLength} bytes · 서버 저장 없음`);
+        setShareUrl(url); await saveProject(withRights, `URL share ${new TextEncoder().encode(encoded).byteLength} bytes · 서버 저장 없음`, operationProjectId);
       } else {
+        let envelope = await prepareShareCreateRecovery({
+          store: shareRecoveryStore,
+          projectId,
+          canonicalRequest: { payload, rightsBasis: project.source.rights.basis },
+          explicitFreshIntent,
+          generateId: () => crypto.randomUUID(),
+          now: new Date(),
+        });
         const sessionResponse = await fetch("/api/session", { method: "POST" });
-        const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; error?: { messageKo?: string } };
-        if (!sessionResponse.ok || !session.csrfToken) throw new Error(session.error?.messageKo ?? "서버 저장 기능을 사용할 수 없습니다.");
-        const response = await fetch("/api/shares", { method: "POST", headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken }, body: JSON.stringify({ payload, rightsBasis: project.source.rights.basis, idempotencyKey: crypto.randomUUID() }) });
-        const body = await response.json() as { ok: boolean; share?: { token: string; ownerDeleteSecret: string }; error?: { messageKo?: string } };
-        if (!response.ok || !body.share) throw new Error(body.error?.messageKo ?? "ShareStore 저장에 실패했습니다.");
-        setStoredShare({ ...body.share, csrfToken: session.csrfToken });
-        setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(body.share.token)}`);
-        await saveProject(withRights, "암호화 ShareStore에 저장했습니다. 삭제 비밀은 이 화면에만 유지됩니다.");
+        const session = await sessionResponse.json() as { ok: boolean; csrfToken?: string; sessionAuthority?: string; expiresAt?: string; error?: { messageKo?: string } };
+        if (!sessionResponse.ok || !session.csrfToken || !session.sessionAuthority || !session.expiresAt) throw new Error(session.error?.messageKo ?? "서버 저장 기능을 사용할 수 없습니다.");
+        const { csrfToken, sessionAuthority, expiresAt } = session;
+        if (completedShareRecoveryTransport(envelope, sessionAuthority) === "owner-reconcile") {
+          const reconciliation = await dispatchShareOwnerReconciliation({ envelope });
+          if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
+          if (reconciliation.kind === "active") {
+            if (!envelope.createdResponse) throw new RangeError("SHARE_OWNER_RECONCILE_INVALID");
+            setStoredShare(envelope.createdResponse);
+            setShareFreshAllowed(false);
+            setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`);
+            await saveProject(withRights, "소유자 복구 권위로 기존 ShareStore 공유가 active임을 확인했습니다.", operationProjectId);
+            return;
+          }
+          if (reconciliation.kind === "fresh-allowed") {
+            envelope = await allowShareCreateFreshIntent({ store: shareRecoveryStore, envelope, reason: reconciliation.reason === "owner-deleted" ? "owner-deleted" : "retired-replay", now: new Date() });
+            setShareFreshAllowed(true);
+            setMessage(reconciliation.reason === "owner-deleted"
+              ? "소유자 삭제가 확정되었습니다. 명시적 새 공유 요청을 시작할 수 있습니다."
+              : "이전 공유 만료가 확정되었습니다. 명시적 새 공유 요청을 시작할 수 있습니다.");
+            return;
+          }
+          if (reconciliation.kind === "retain") {
+            setMessage(`ShareStore 소유자 복구 결과가 확정되지 않았습니다(${reconciliation.code}). 새 공유는 시작하지 않습니다.`);
+            return;
+          }
+          throw new RangeError(reconciliation.code);
+        }
+        const crossSessionRecovery = pendingShareRecoveryTransport(envelope, sessionAuthority) === "cross-session-recovery";
+        const outcome = crossSessionRecovery
+          ? await dispatchShareCreateReadOnlyRecovery({ envelope, csrfToken })
+          : await (async () => {
+            envelope = await bindShareCreateSession({ store: shareRecoveryStore, envelope, sessionAuthority, sessionExpiresAt: expiresAt, now: new Date() });
+            return dispatchShareCreateRecovery({ envelope, csrfToken });
+          })();
+        if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
+        if (outcome.kind === "retain") {
+          setMessage(`ShareStore 응답이 확정되지 않았습니다(${outcome.code}). 저장된 동일 요청/K1의 read-only 복구만 유지합니다.`);
+          return;
+        }
+        if (outcome.kind === "fresh-allowed") {
+          envelope = await allowShareCreateFreshIntent({
+            store: shareRecoveryStore,
+            envelope,
+            reason: outcome.code === "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" ? "deterministic-no-effect" : "retired-replay",
+            now: new Date(),
+          });
+          setShareFreshAllowed(true);
+          setMessage(outcome.code === "SHARE_CREATE_DETERMINISTIC_NO_EFFECT"
+            ? "이전 요청에 durable 공유 효과가 없음이 확정되었습니다. 명시적 새 요청을 시작할 수 있습니다."
+            : "이전 공유가 확정적으로 만료되었습니다. 명시적 새 요청을 시작할 수 있습니다.");
+          return;
+        }
+        if (outcome.kind === "conflict") throw new RangeError("SHARE_CREATE_RECOVERY_CONFLICT");
+        if (outcome.kind === "rejected") throw new RangeError(outcome.code);
+        const recovered = outcome.response;
+        await completeShareCreateRecovery({ store: shareRecoveryStore, envelope, response: recovered, now: new Date() });
+        if (!routeController.mutationStillCurrent(projectId, operationProjectId)) return;
+        setStoredShare(recovered);
+        setShareFreshAllowed(false);
+        setShareUrl(`${window.location.origin}/share?token=${encodeURIComponent(recovered.token)}`);
+        await saveProject(withRights, "암호화 ShareStore에 저장했고 복구·삭제 권위를 IndexedDB에 보존했습니다.", operationProjectId);
       }
-    } catch (error) { setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다."); }
-    finally { setBusy(false); }
+    } catch (error) {
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "공유를 만들지 못했습니다.");
+    }
+    finally { shareOperationGate.finish(); setBusy(false); }
   };
 
   const deleteStoredShare = async () => {
     if (!storedShare) return;
-    const response = await fetch(`/api/shares/${encodeURIComponent(storedShare.token)}`, { method: "DELETE", headers: { "content-type": "application/json", "x-csrf-token": storedShare.csrfToken }, body: JSON.stringify({ ownerDeleteSecret: storedShare.ownerDeleteSecret }) });
-    if (response.ok) { setStoredShare(undefined); setShareUrl(undefined); setMessage("ShareStore 공유를 소유자 삭제했습니다."); }
+    const bootstrap = await fetch("/api/session", { method: "POST" });
+    const session = await bootstrap.json() as { csrfToken?: string };
+    if (!bootstrap.ok || !session.csrfToken) { setMessage("ShareStore 삭제 권한을 확인하지 못했습니다."); return; }
+    const response = await fetch(`/api/shares/${encodeURIComponent(storedShare.token)}`, { method: "DELETE", headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken }, body: JSON.stringify({ ownerDeleteSecret: storedShare.ownerDeleteSecret }) });
+    if (response.ok) { await shareRecoveryStore.delete(projectId); setStoredShare(undefined); setShareFreshAllowed(false); setShareUrl(undefined); setMessage("ShareStore 공유를 소유자 삭제했고 로컬 복구 권위를 제거했습니다."); }
     else setMessage("ShareStore 공유를 삭제하지 못했습니다.");
   };
 
@@ -329,6 +470,6 @@ export function WorkspaceClient() {
 
     <section className="panel"><h2>5. Export · local save · project transfer</h2><div className={styles.controls}><button type="button" disabled={!materialized || !canDefaultExportOrShare(materialized)} onClick={exportMusicXml}>MusicXML 다운로드</button><button type="button" onClick={() => void saveProject(project)}>로컬 저장</button><button type="button" onClick={() => void exportProject()}>프로젝트 내보내기</button><label className={styles.fileButton}>프로젝트 가져오기<input hidden type="file" accept="application/json,.json" onChange={(event) => void importProject(event)} /></label><button type="button" onClick={() => void deleteLocal()}>로컬 삭제</button></div></section>
 
-    <section className="panel"><h2>6. 읽기 전용 연습 공유</h2><p>현재 권리 근거: <strong>{project.source.rights.basis}</strong>. 공유 버튼은 share 권리를 명시적으로 확인하고 compact PracticeShare v3만 만듭니다.</p><button className="primary" type="button" disabled={busy || !materialized || !canDefaultExportOrShare(materialized)} onClick={() => void createShare()}>권리 확인 후 공유 만들기</button>{shareUrl ? <p className="status"><a href={shareUrl}>{shareUrl}</a></p> : null}{storedShare ? <button type="button" onClick={() => void deleteStoredShare()}>ShareStore 공유 소유자 삭제</button> : null}</section>
+    <section className="panel"><h2>6. 읽기 전용 연습 공유</h2><p>현재 권리 근거: <strong>{project.source.rights.basis}</strong>. 공유 버튼은 share 권리를 명시적으로 확인하고 compact PracticeShare v4를 만듭니다.</p><button className="primary" type="button" disabled={busy || !materialized || !canDefaultExportOrShare(materialized)} onClick={() => void createShare(false)}>권리 확인 후 공유 만들기 / 복구</button>{shareFreshAllowed ? <button type="button" disabled={busy} onClick={() => void createShare(true)}>만료된 요청 대신 명시적으로 새 공유 만들기</button> : null}{shareUrl ? <p className="status"><a href={shareUrl}>{shareUrl}</a></p> : null}{storedShare ? <button type="button" onClick={() => void deleteStoredShare()}>ShareStore 공유 소유자 삭제</button> : null}</section>
   </>;
 }

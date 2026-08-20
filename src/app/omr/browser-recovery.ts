@@ -1,4 +1,5 @@
 import { semanticDigest } from "../../domain/digest/canonical";
+import { OMR_VENDOR_CREATE_DEFINITIVE_REJECTION } from "../../domain/omr/contracts";
 
 export interface OmrApiErrorBody {
   readonly error?: {
@@ -57,7 +58,89 @@ export function isRetiredCreateReplay(error: unknown): boolean {
     && error.code === "OMR_CREATE_REPLAY_UNAVAILABLE";
 }
 
-export type OmrFreshStartReason = "stale-recovery-handle" | "retired-create-replay" | "invalid-persisted-create" | "rejected-create-request";
+/** Browser-side grammar only; the server remains authoritative for signature and expiry. */
+export function isOmrJobHandleShape(value: unknown): value is string {
+  return typeof value === "string"
+    && /^v1\.[A-Za-z0-9_-]{43}\.\d{10,12}\.[a-f0-9]{64}$/u.test(value);
+}
+
+export type OmrFreshStartReason = "stale-recovery-handle" | "retired-create-replay" | "invalid-persisted-create" | "pre-dispatch-correction";
+
+export const OMR_CREATE_PRE_DISPATCH_CORRECTION_CODES = Object.freeze([
+  "RIGHTS_PROVIDER_TRANSFER_NOT_CONFIRMED",
+  "OMR_PAGE_LIMIT_EXCEEDED",
+  "OMR_REQUEST_INVALID",
+  "OMR_PROVIDER_CONSENT_STALE",
+  "OMR_CREDIT_ESTIMATE_REQUIRED",
+  "OMR_CREDIT_ESTIMATE_INVALID",
+  "OMR_PROVIDER_BINDING_INVALID",
+  OMR_VENDOR_CREATE_DEFINITIVE_REJECTION,
+] as const);
+type OmrCreatePreDispatchCorrectionCode = typeof OMR_CREATE_PRE_DISPATCH_CORRECTION_CODES[number];
+
+export type OmrCreateOutcomePolicy =
+  | { readonly kind: "pending"; readonly code: "OMR_IDEMPOTENCY_PENDING"; readonly status: number; readonly messageKo?: string }
+  | { readonly kind: "outcome-uncertain"; readonly code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN"; readonly status: number; readonly messageKo?: string }
+  | { readonly kind: "reconciliation-required"; readonly code: "OMR_JOB_RECONCILIATION_REQUIRED"; readonly status: number; readonly messageKo?: string }
+  | { readonly kind: "quota"; readonly code: "OMR_QUOTA_EXCEEDED" | "OMR_GLOBAL_CREDIT_CEILING_EXCEEDED"; readonly status: number; readonly messageKo?: string }
+  | { readonly kind: "deterministic-rejection"; readonly code: string; readonly status: number; readonly messageKo?: string; readonly correction: "preserve-key" | "explicit-reset-allowed" }
+  | { readonly kind: "transient"; readonly code: string; readonly status?: number; readonly messageKo?: string };
+
+export function classifyOmrCreateOutcome(error: unknown): "retired" | OmrCreateOutcomePolicy {
+  if (isRetiredCreateReplay(error)) return "retired";
+  if (!(error instanceof OmrApiRequestError)) {
+    return { kind: "transient", code: "OMR_CREATE_TRANSPORT_UNCERTAIN" };
+  }
+  const common = {
+    status: error.status,
+    ...(error.messageKo ? { messageKo: error.messageKo } : {}),
+  };
+  if (error.code === "OMR_IDEMPOTENCY_PENDING") return { kind: "pending", code: error.code, ...common };
+  if (error.code === "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN") return { kind: "outcome-uncertain", code: error.code, ...common };
+  if (error.code === "OMR_JOB_RECONCILIATION_REQUIRED") return { kind: "reconciliation-required", code: error.code, ...common };
+  if (error.code === "OMR_QUOTA_EXCEEDED" || error.code === "OMR_GLOBAL_CREDIT_CEILING_EXCEEDED") {
+    return { kind: "quota", code: error.code, ...common };
+  }
+  if (error.status === 408 || error.status >= 500) {
+    return { kind: "transient", code: error.code ?? "OMR_CREATE_TRANSIENT", ...common };
+  }
+  const code = error.code ?? "OMR_CREATE_REJECTED";
+  return {
+    kind: "deterministic-rejection",
+    code,
+    correction: OMR_CREATE_PRE_DISPATCH_CORRECTION_CODES.includes(code as OmrCreatePreDispatchCorrectionCode)
+      ? "explicit-reset-allowed" : "preserve-key",
+    ...common,
+  };
+}
+
+export function canResetOmrCreateAfterCorrection(outcome: OmrCreateOutcomePolicy): boolean {
+  return outcome.kind === "deterministic-rejection" && outcome.correction === "explicit-reset-allowed";
+}
+
+export function omrCreateCorrectionRequirements(outcome: OmrCreateOutcomePolicy): {
+  readonly refreshPreflight: boolean;
+  readonly requireTransferReconsent: boolean;
+} {
+  const staleConsent = outcome.kind === "deterministic-rejection" && outcome.code === "OMR_PROVIDER_CONSENT_STALE";
+  return { refreshPreflight: staleConsent, requireTransferReconsent: staleConsent };
+}
+
+export async function applyOmrCreateCorrection<TPreflight>(
+  outcome: OmrCreateOutcomePolicy,
+  input: {
+    readonly refreshPreflight: () => Promise<TPreflight>;
+    readonly acceptRefreshedPreflight: (preflight: TPreflight) => void;
+    readonly revokeTransferConsent: () => void;
+  },
+): Promise<void> {
+  const requirements = omrCreateCorrectionRequirements(outcome);
+  if (requirements.refreshPreflight) {
+    const refreshed = await input.refreshPreflight();
+    input.acceptRefreshedPreflight(refreshed);
+  }
+  if (requirements.requireTransferReconsent) input.revokeTransferConsent();
+}
 
 export type OmrFreshStartState =
   | { readonly mode: "normal" }
@@ -65,6 +148,11 @@ export type OmrFreshStartState =
 
 export function requireExplicitOmrFreshStart(reason: OmrFreshStartReason): OmrFreshStartState {
   return { mode: "explicit-required", reason };
+}
+
+export function omrFreshStartAction(state: OmrFreshStartState): "start" | "unlock-correction" {
+  return state.mode === "explicit-required" && state.reason === "pre-dispatch-correction"
+    ? "unlock-correction" : "start";
 }
 
 export function consumeExplicitOmrFreshStart(state: OmrFreshStartState): {
@@ -103,6 +191,10 @@ export type OmrJobAcquisition<TStatus> =
   | {
     readonly kind: "fresh-start-required";
     readonly reason: OmrFreshStartReason;
+  }
+  | {
+    readonly kind: "create-preserved";
+    readonly outcome: OmrCreateOutcomePolicy;
   };
 
 const PERSISTED_CREATE_VERSION = "hm-omr-browser-create-v1" as const;
@@ -178,6 +270,7 @@ export async function acquireOmrJob<TStatus>(input: {
   readonly validateCreateRequest?: (request: Readonly<Record<string, unknown>>) => boolean;
   readonly recover: (handle: string) => Promise<TStatus>;
   readonly create: (request: Readonly<Record<string, unknown>>) => Promise<{ readonly handle: string }>;
+  readonly validateCreatedHandle?: (handle: unknown) => handle is string;
 }): Promise<OmrJobAcquisition<TStatus>> {
   if (input.forceFresh) {
     input.storage.removeItem(input.createStorageKey);
@@ -216,18 +309,20 @@ export async function acquireOmrJob<TStatus>(input: {
   try {
     created = await input.create(request);
   } catch (error) {
-    if (isRetiredCreateReplay(error)) {
+    const outcome = classifyOmrCreateOutcome(error);
+    if (outcome === "retired") {
       input.storage.removeItem(input.createStorageKey);
       input.storage.removeItem(input.recoveryStorageKey);
       return { kind: "fresh-start-required", reason: "retired-create-replay" };
     }
-    if (error instanceof OmrApiRequestError && error.status >= 400 && error.status < 500
-      && error.status !== 408 && error.status !== 429) {
-      return { kind: "fresh-start-required", reason: "rejected-create-request" };
-    }
-    throw error;
+    return { kind: "create-preserved", outcome };
   }
-  input.storage.setItem(input.recoveryStorageKey, created.handle);
+  const createdHandle: unknown = isRecord(created) ? created.handle : undefined;
+  if (typeof createdHandle !== "string"
+    || (input.validateCreatedHandle && !input.validateCreatedHandle(createdHandle))) {
+    return { kind: "create-preserved", outcome: { kind: "transient", code: "OMR_CREATE_RESPONSE_INVALID" } };
+  }
+  input.storage.setItem(input.recoveryStorageKey, createdHandle);
   input.storage.removeItem(input.createStorageKey);
-  return { kind: "acquired", handle: created.handle };
+  return { kind: "acquired", handle: createdHandle };
 }

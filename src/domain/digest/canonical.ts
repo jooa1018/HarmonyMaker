@@ -54,8 +54,18 @@ function encode(value: unknown, ancestors: ReadonlySet<object>): string {
     throw new CanonicalCodecError("fraction-shaped values must be normalized Fractions");
   }
   const record = value as Readonly<Record<string, unknown>>;
-  const keys = Object.keys(record).sort();
-  return `{${keys.map((key) => `${quote(key)}:${encode(record[key], nextAncestors)}`).join(",")}}`;
+  const entries = Object.keys(record).map((rawKey) => ({
+    rawKey,
+    normalizedKey: rawKey.normalize("NFC"),
+  }));
+  const normalizedKeys = new Set(entries.map((entry) => entry.normalizedKey));
+  if (normalizedKeys.size !== entries.length) {
+    throw new CanonicalCodecError("canonical object keys collide after NFC normalization");
+  }
+  entries.sort((left, right) => left.normalizedKey < right.normalizedKey ? -1
+    : left.normalizedKey > right.normalizedKey ? 1 : 0);
+  return `{${entries.map(({ rawKey, normalizedKey }) =>
+    `${quote(normalizedKey)}:${encode(record[rawKey], nextAncestors)}`).join(",")}}`;
 }
 
 export function canonicalJson(value: unknown): string {

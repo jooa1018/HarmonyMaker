@@ -186,9 +186,10 @@ function diagnosticAppliesToSelection(
   if (scope === undefined) return true;
   if (!draft.selectedLeadStaffKey) return true;
   if (scope === "lead-candidate") return diagnostic.details?.candidateKey === draft.selectedLeadStaffKey;
-  if (scope !== "lead-part") return true;
   const selectedCandidate = draft.leadCandidates.find((candidate) => candidate.key === draft.selectedLeadStaffKey);
   const selectedPartOrdinal = selectedCandidate?.partOrdinal;
+  if (scope === "selected-lead-part") return diagnostic.details?.partOrdinal === selectedPartOrdinal;
+  if (scope !== "lead-part") return true;
   const rawChordPartOrdinal = draft.parts.find((part) => part.measures.some((measure) => measure.chords.length > 0))?.partOrdinal;
   const partOrdinal = diagnostic.details?.partOrdinal;
   return partOrdinal === selectedPartOrdinal

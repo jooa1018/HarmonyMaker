@@ -1,9 +1,9 @@
 import type { ArrangementPresetId } from "../domain/config";
 import type { ChordToneSpec } from "../domain/chord/model";
-import type { ArrangementOutputEdit } from "../domain/edit/model";
+import { MAX_EDITED_SNAPSHOTS_PER_VARIANT, MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT, type ArrangementOutputEdit, type EditedArrangementSnapshot } from "../domain/edit/model";
 import type { ArrangementCandidate } from "../domain/generation/model";
 import type { ActivityLock, AnchorLock, IntentLock, LockedAnchorEndpointSpec, LockedNonChordToneSpec, PitchLock, SolverLock } from "../domain/locks";
-import type { HarmonyProject } from "../domain/project";
+import type { ArrangementVariant, HarmonyProject } from "../domain/project";
 import type { ArrangementAnchorPlan, ArrangementActivityPlan, ArrangementIntentPlan, HarmonyAnchorDirective, NonChordTonePlan, TexturePatternId, VoiceActivityDirective } from "../domain/plans";
 import type { SpelledPitch } from "../domain/pitch";
 import { comparePositions } from "../domain/time";
@@ -118,6 +118,83 @@ export function upsertCanonicalStageLock(locks: readonly UiStageLock[], lock: Ui
 }
 
 export function outputEditTargetId(edit: ArrangementOutputEdit): string { return edit.kind === "replace-event" ? edit.oldEventId : edit.eventId; }
+
+export function activeOutputEditsForCandidate(
+  variant: Extract<ArrangementVariant, { readonly lifecycle: "generation-attempted" }>,
+  candidateId: string,
+): readonly ArrangementOutputEdit[] {
+  const active = variant.activeArrangement;
+  if (active?.kind !== "edited-snapshot") return [];
+  const snapshot = variant.editedSnapshots.find((item) => item.id === active.snapshotId);
+  if (!snapshot || snapshot.baseCandidateId !== candidateId) return [];
+  const byId = new Map(variant.outputEdits.map((edit) => [edit.id, edit]));
+  return snapshot.appliedEditIds.flatMap((id) => {
+    const edit = byId.get(id);
+    return edit ? [edit] : [];
+  });
+}
+
+export function upsertEditedSnapshotHistory(
+  snapshots: readonly EditedArrangementSnapshot[],
+  snapshot: EditedArrangementSnapshot,
+): readonly EditedArrangementSnapshot[] {
+  return [...snapshots.filter((item) => item.id !== snapshot.id), snapshot];
+}
+
+function uniqueSnapshots(snapshots: readonly EditedArrangementSnapshot[]): readonly EditedArrangementSnapshot[] {
+  const byId = new Map<string, EditedArrangementSnapshot>();
+  for (const snapshot of snapshots) byId.set(snapshot.id, snapshot);
+  return [...byId.values()];
+}
+
+export interface CompactedEditedArrangementHistory {
+  readonly outputEdits: readonly ArrangementOutputEdit[];
+  readonly editedSnapshots: readonly EditedArrangementSnapshot[];
+}
+
+/**
+ * Keeps the active snapshot and as much newest valid history as fits the explicit
+ * current-schema bounds. Unreferenced edits are discarded, while edit ordinals
+ * remain immutable and may therefore be sparse.
+ */
+export function compactEditedArrangementHistory(input: {
+  readonly outputEdits: readonly ArrangementOutputEdit[];
+  readonly editedSnapshots: readonly EditedArrangementSnapshot[];
+  readonly activeSnapshotId: string;
+}): CompactedEditedArrangementHistory {
+  const editById = new Map(input.outputEdits.map((edit) => [edit.id, edit]));
+  const snapshots = uniqueSnapshots(input.editedSnapshots);
+  const active = snapshots.find((snapshot) => snapshot.id === input.activeSnapshotId);
+  if (!active) throw new RangeError("EDIT_HISTORY_ACTIVE_SNAPSHOT_MISSING");
+
+  const retainedSnapshots: EditedArrangementSnapshot[] = [];
+  const retainedSnapshotIds = new Set<string>();
+  const retainedEditIds = new Set<string>();
+  const candidates = [active, ...[...snapshots].reverse().filter((snapshot) => snapshot.id !== active.id)];
+  for (const snapshot of candidates) {
+    if (retainedSnapshots.length >= MAX_EDITED_SNAPSHOTS_PER_VARIANT) break;
+    const snapshotEditIds = [...new Set(snapshot.appliedEditIds)];
+    if (snapshotEditIds.some((editId) => !editById.has(editId))) {
+      if (snapshot.id === active.id) throw new RangeError("EDIT_HISTORY_ACTIVE_EDIT_MISSING");
+      continue;
+    }
+    const additionalEditIds = snapshotEditIds.filter((editId) => !retainedEditIds.has(editId));
+    if (retainedEditIds.size + additionalEditIds.length > MAX_OUTPUT_EDIT_REVISIONS_PER_VARIANT) {
+      if (snapshot.id === active.id) throw new RangeError("EDIT_HISTORY_LIMIT_EXCEEDED");
+      continue;
+    }
+    retainedSnapshots.push(snapshot);
+    retainedSnapshotIds.add(snapshot.id);
+    for (const editId of snapshotEditIds) retainedEditIds.add(editId);
+  }
+
+  return {
+    outputEdits: input.outputEdits
+      .filter((edit) => retainedEditIds.has(edit.id))
+      .sort((left, right) => left.editOrdinal - right.editOrdinal || left.id.localeCompare(right.id)),
+    editedSnapshots: snapshots.filter((snapshot) => retainedSnapshotIds.has(snapshot.id)),
+  };
+}
 
 export function staleBoundaryPresentation(stage: "intent" | "activity" | "anchor" | "generation" | "none"): string {
   if (stage === "none") return "none · active artifacts are current";

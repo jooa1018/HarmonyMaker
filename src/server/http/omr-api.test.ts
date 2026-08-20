@@ -4,7 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import type { NextRequest } from "next/server";
 import { mapApiFailure } from "./api";
-import { readBoundedJson } from "./omr-api";
+import { parseVendorInputBody, readBoundedJson } from "./omr-api";
 
 function streamedRequest(chunks: readonly Uint8Array[], contentLength?: string) {
   let index = 0;
@@ -89,5 +89,23 @@ describe("bounded OMR JSON request reader", () => {
   it("keeps the streamed byte count authoritative when a declared size is smaller", async () => {
     const streamed = streamedRequest([new Uint8Array(65).fill(0x20)], "1");
     await expect(readBoundedJson(streamed.request, 64)).rejects.toThrow("OMR_REQUEST_TOO_LARGE");
+  });
+
+  it("bounds vendor-specific input values in UTF-8 bytes and the safe-integer domain", () => {
+    expect(parseVendorInputBody({
+      kind: "vendor-specific", requestId: "r", schemaId: "s",
+      payload: { minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
+    })).toMatchObject({ payload: { minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER } });
+    for (const unsafe of [Number.MAX_SAFE_INTEGER + 1, Number.MIN_SAFE_INTEGER - 1, 1.5, 1e308, Number.NaN]) {
+      expect(() => parseVendorInputBody({
+        kind: "vendor-specific", requestId: "r", schemaId: "s", payload: { unsafe },
+      })).toThrow("OMR_REQUEST_INVALID");
+    }
+    for (const input of [
+      { kind: "vendor-specific", requestId: "한".repeat(43), schemaId: "s", payload: {} },
+      { kind: "vendor-specific", requestId: "r", schemaId: "한".repeat(43), payload: {} },
+      { kind: "vendor-specific", requestId: "r", schemaId: "s", payload: { ["한".repeat(43)]: true } },
+      { kind: "vendor-specific", requestId: "r", schemaId: "s", payload: { text: "한".repeat(1_366) } },
+    ]) expect(() => parseVendorInputBody(input)).toThrow("OMR_REQUEST_INVALID");
   });
 });

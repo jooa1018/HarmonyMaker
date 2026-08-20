@@ -40,6 +40,7 @@ import {
 
 import {
   addChord,
+  clearDefaultKeyOverride,
   confirmChord,
   confirmRights,
   confirmSection,
@@ -53,6 +54,7 @@ import {
   setSingerCount,
 } from "../../import/review/commands";
 import { deriveQuickReview, type QuickReviewAnalysis } from "../../import/review/quick-review";
+import { DIRECT_IMPORT_DRAFT_RELOAD_NOTICE } from "../../import/review/draft-durability";
 import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { loadProductExecutionRegistry } from "../../product/registry";
 import { createProjectFromQuickReview } from "../../product/workspace";
@@ -425,7 +427,7 @@ export function ImportReviewClient() {
   useEffect(() => {
     void takeOmrImportHandoff().then((handoff) => {
       if (handoff) {
-        if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image)) });
+        if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image.blob)) });
         void loadFile(handoff.file).then((loaded) => loaded
           ? (!handoff.omrProviderResult ? completeOmrImportHandoff(handoff.handoffId) : undefined)
           : recordOmrImportHandoffFailure(handoff.handoffId));
@@ -637,6 +639,7 @@ export function ImportReviewClient() {
           </section> : null}
           <section className={styles.panel} aria-labelledby="summary-heading">
             <h2 id="summary-heading">2. 악보 요약과 Source Lead</h2>
+            {!omrHandoff ? <p className={styles.help}>{DIRECT_IMPORT_DRAFT_RELOAD_NOTICE}</p> : null}
             <dl className={styles.summary}><div><dt>제목</dt><dd>{draft.title}</dd></div><div><dt>파트</dt><dd>{draft.parts.length}</dd></div><div><dt>마디</dt><dd>{draft.parts[0]?.measures.length ?? 0}</dd></div><div><dt>형식</dt><dd>{draft.containerKind.toUpperCase()}</dd></div></dl>
             <fieldset className={styles.subpanel}>
               <legend>멜로디 staff / voice — 반드시 직접 선택</legend>
@@ -652,11 +655,10 @@ export function ImportReviewClient() {
                 <label>초기 quarter BPM<input type="number" min="20" max="300" value={tempoText} onChange={(event) => setTempoText(event.target.value)} required /></label><button type="submit">tempo 확인</button>
               </form>
             ) : <p className={styles.okBox}>초기 tempo: {draft.defaultTempo.bpm} BPM</p>}
-            {!draft.defaultKey ? (
-              <form className={styles.addRow} onSubmit={(event: FormEvent) => { event.preventDefault(); const key = keyFromText(keyText); if (key) updateDraft((current) => setDefaultKey(current, key)); }}>
-                <label>기본 조성<select value={keyText} onChange={(event) => setKeyText(event.target.value)} required><option value="">조성 선택</option>{KEY_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label><button type="submit">조성 확인</button>
-              </form>
-            ) : <p className={styles.okBox}>기본 조성: {draft.defaultKey.tonic.step}{draft.defaultKey.tonic.alter === 1 ? "#" : draft.defaultKey.tonic.alter === -1 ? "b" : ""} {draft.defaultKey.mode}</p>}
+            {draft.defaultKey ? <p className={styles.okBox}>선택한 Source Lead 조성 authority: {draft.defaultKey.tonic.step}{draft.defaultKey.tonic.alter === 1 ? "#" : draft.defaultKey.tonic.alter === -1 ? "b" : ""} {draft.defaultKey.mode}{draft.defaultKeyOverride ? " · 명시적 override" : " · selected Lead"}</p> : null}
+            <form className={styles.addRow} onSubmit={(event: FormEvent) => { event.preventDefault(); const key = keyFromText(keyText); if (key) updateDraft((current) => setDefaultKey(current, key)); }}>
+              <label>기본 조성 명시적 교정<select value={keyText} onChange={(event) => setKeyText(event.target.value)} required><option value="">조성 선택</option>{KEY_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label><button type="submit">조성 적용</button>{draft.defaultKeyOverride ? <button type="button" onClick={() => updateDraft(clearDefaultKeyOverride)}>override 해제</button> : null}
+            </form>
           </section>
 
           <section className={styles.panel} aria-labelledby="chord-heading">

@@ -42,6 +42,7 @@ export class AnonymousSessionService {
   private tokenHash(token: string): string { return keyedTokenHash(token, this.sessionHashKey, "anonymous-session-v1"); }
   private csrfToken(record: SessionRecord): string { return keyedTokenHash(`${record.tokenHash}:${record.csrfNonce}`, this.csrfKey, "csrf-v1"); }
   csrfFor(record: SessionRecord): string { return this.csrfToken(record); }
+  authorityFor(record: SessionRecord): string { return keyedTokenHash(record.tokenHash, this.csrfKey, "anonymous-session-authority-v1"); }
 
   async issue(now = new Date()): Promise<IssuedSession> {
     const token = generateOpaqueToken();

@@ -1,0 +1,36 @@
+name: Apply ChatGPT P2 fix script
+
+on:
+  push:
+    branches:
+      - chatgpt/harmonymaker-ultra-p2-closure
+    paths:
+      - scripts/apply-p2-wave1-fixes.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/harmonymaker-ultra-p2-closure
+          fetch-depth: 0
+      - name: Apply source corrections
+        run: python scripts/apply-p2-wave1-fixes.py
+      - name: Commit corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply-p2-wave1-fixes.py scripts/p2-wave1-fixes.patch.b64.part*
+          if git diff --quiet; then
+            echo "No corrections required"
+            exit 0
+          fi
+          git config user.name "ChatGPT"
+          git config user.email "chatgpt@openai.com"
+          git add -A
+          git commit -m "fix: correct P2 wave 1 regressions"
+          git push origin HEAD:chatgpt/harmonymaker-ultra-p2-closure

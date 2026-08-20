@@ -3,14 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { semanticDigest, type SemanticDigest } from "../../domain/digest/canonical";
-import type { PracticeSharePayload } from "../../domain/share";
+import type { CompactTrack, PracticeSharePayload } from "../../domain/share";
+import { PRACTICE_SHARE_LIMITS } from "../../domain/share";
+import { decompressPracticeShare } from "../../domain/share-compression";
+import { gzipSync, strToU8 } from "fflate";
+import { materializeSharedPracticeSafely } from "../../product/shared-practice";
 import { MemoryGovernanceStore } from "../persistence/memory-store.test-adapter";
 import type { PrivateRowId } from "../persistence/store";
 import { MemoryOwnedObjectStore } from "../storage/memory-owned-object-store.test-adapter";
 import { QuotaAndIdempotencyService, SHARE_CREATE_PER_HOUR } from "../security/quota-core";
-import { createShareIdempotently } from "./idempotent-create";
+import { AnonymousSessionService } from "../security/session-core";
+import { createShareIdempotently, recoverShareCreateIdempotently, SHARE_CREATE_REPLAY_RETENTION_DAYS } from "./idempotent-create";
 import { readShareWithIpQuota } from "./quota-read";
-import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS } from "./share-store-core";
+import { ShareStoreService, decodeUrlShare, encodeUrlShare, SHARE_DEFAULT_TTL_DAYS, URL_SHARE_MAX_ENCODED_BYTES } from "./share-store-core";
 
 const digest = "0".repeat(64) as SemanticDigest;
 const key = (fill: number) => Uint8Array.from({ length: 32 }, () => fill);
@@ -35,10 +40,76 @@ function payload(measureCount = 8): PracticeSharePayload {
   };
 }
 
+function payloadV4(measureCount = 8): PracticeSharePayload {
+  const legacy = payload(measureCount);
+  return {
+    ...legacy,
+    schemaVersion: 4,
+    arrangement: {
+      ...legacy.arrangement,
+      tracks: legacy.arrangement.tracks.map((track, index): CompactTrack => index === 0
+        ? { kind: "source-lead", label: "Lead", events: track.events }
+        : { kind: "generated-harmony", label: index === 1 ? "Upper / H1" : "Lower / H2", harmonyRole: index === 1 ? "H1" : "H2", placementRoles: [index === 1 ? "upper" : "lower"], events: track.events }),
+    },
+  };
+}
+
+function deterministicNoise(seed: number, length: number): string {
+  let state = seed >>> 0;
+  let result = "";
+  for (let index = 0; index < length; index += 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    result += String.fromCharCode(33 + (state % 90));
+  }
+  return result;
+}
+
+function storeSizedPayload(): PracticeSharePayload {
+  const base = payloadV4(64);
+  return { ...base, lyrics: base.lyrics.map((token, index) => ({ ...token, text: deterministicNoise(index + 1, 512) })) };
+}
+
 describe("ShareStore and URL share", () => {
   it.each([8, 32, 64])("canonically round-trips the %i-measure/3-track fixture", (count) => {
     const encoded = encodeUrlShare(payload(count));
     expect(decodeUrlShare(encoded)).toEqual(payload(count));
+  });
+
+  it("keeps current v3 links loadable and makes legacy consumer failures controlled", () => {
+    const firstPartyV3 = payload(8);
+    const tracks = firstPartyV3.arrangement.tracks.map((track, index) => track.kind === "source-lead" ? { ...track, label: "Lead" } : { ...track, label: index === 1 ? "Upper / H1" : "Lower / H2" });
+    const canonicalV3 = { ...firstPartyV3, arrangement: { ...firstPartyV3.arrangement, tracks } } as PracticeSharePayload;
+    expect(materializeSharedPracticeSafely(decodeUrlShare(encodeUrlShare(canonicalV3))).status).toBe("available");
+    expect(materializeSharedPracticeSafely(decodeUrlShare(encodeUrlShare(firstPartyV3)))).toEqual({ status: "unavailable", code: "SHARE_PAYLOAD_UNAVAILABLE" });
+  });
+
+  it("requires explicit consumer-complete role/chord authority for newly emitted v4", () => {
+    const current = payloadV4();
+    expect(materializeSharedPracticeSafely(decodeUrlShare(encodeUrlShare(current))).status).toBe("available");
+    const badRole = { ...current, arrangement: { ...current.arrangement, tracks: current.arrangement.tracks.map((track) => track.kind === "generated-harmony" ? { ...track, harmonyRole: undefined } : track) } };
+    expect(() => encodeUrlShare(badRole as never)).toThrow("SHARE_PAYLOAD_INVALID");
+    const badChord = { ...current, chords: [{ kind: "chord", startOccurrenceIndex: 0, startOffset: [0, 1], endOccurrenceIndex: 1, endOffset: [0, 1], symbol: "Crocket" }] };
+    expect(() => encodeUrlShare(badChord as never)).toThrow("SHARE_PAYLOAD_INVALID");
+  });
+
+  it("binds v4 tracks by explicit role even when presentation labels are duplicated", () => {
+    const current = payloadV4();
+    const duplicatedLabels = {
+      ...current,
+      arrangement: {
+        ...current.arrangement,
+        tracks: current.arrangement.tracks.map((track) => track.kind === "generated-harmony" ? { ...track, label: "Same presentation label" } : track),
+      },
+    } as PracticeSharePayload;
+    const outcome = materializeSharedPracticeSafely(duplicatedLabels);
+    expect(outcome.status).toBe("available");
+    if (outcome.status === "available") expect(outcome.value.document.generatedHarmonyTracks.map((track) => track.trackPlanId)).toEqual(["share:track:h1", "share:track:h2"]);
+  });
+
+  it("rejects a highly-compressible expansion before JSON decode", () => {
+    const bomb = gzipSync(strToU8("x".repeat(PRACTICE_SHARE_LIMITS.maxPlaintextBytes + 1)));
+    expect(bomb.byteLength).toBeLessThan(6_000);
+    expect(() => decompressPracticeShare(bomb)).toThrow("SHARE_PAYLOAD_TOO_LARGE");
   });
 
   it("uses the URL path when it fits and durable encryption only when required", async () => {
@@ -55,6 +126,21 @@ describe("ShareStore and URL share", () => {
     expect(raw).not.toContain(durable.token);
     expect(raw).not.toContain(durable.ownerDeleteSecret);
     expect(raw).not.toContain("Fixture 64");
+  });
+
+  it("routes an over-URL-cap but bounded payload through idempotent durable creation without forceStore", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const largePayload = storeSizedPayload();
+    expect(new TextEncoder().encode(encodeUrlShare(largePayload)).byteLength).toBeGreaterThan(URL_SHARE_MAX_ENCODED_BYTES);
+    const requestDigest = await semanticDigest({ payload: largePayload, rightsBasis: "self-authored" });
+    const created = await createShareIdempotently({
+      quota, shares, sessionId: owner, sessionQuotaOwner: "session-over-url-cap", payload: largePayload,
+      rightsBasis: "self-authored", idempotencyKey: "request-key-over-url-cap", requestDigest, now,
+    });
+    expect(created).toMatchObject({ status: 201, body: { ok: true, share: { kind: "store" } } });
+    expect(store.shares.size).toBe(1);
   });
 
   it("fails closed for tampering, expiry, wrong delete secret, deletion, and unauthorized takedown", async () => {
@@ -75,6 +161,31 @@ describe("ShareStore and URL share", () => {
     await expect(service.ownerDelete(created.token, created.ownerDeleteSecret, now)).resolves.toBeUndefined();
   });
 
+  it("reconciles owner authority after session rotation without allowing moderation takedown bypass", async () => {
+    const store = new MemoryGovernanceStore();
+    const service = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const sessions = new AnonymousSessionService(store, key(5), key(6), false);
+    const initialSession = await sessions.issue(now);
+    const rotatedSession = await sessions.issue(new Date(now.getTime() + 31 * 86_400_000));
+    expect(sessions.authorityFor(rotatedSession.record)).not.toBe(sessions.authorityFor(initialSession.record));
+    const active = await service.create({ ownerSessionId: initialSession.record.id, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (active.kind !== "store") return;
+    await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000))).resolves.toEqual({ status: "active" });
+    await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 181 * 86_400_000))).resolves.toEqual({ status: "retired", reason: "expired" });
+    await expect(service.reconcileOwnerAuthority(active.token, "wrong-owner-secret-000000", now)).rejects.toThrow("SHARE_UNAVAILABLE");
+    await expect(service.reconcileOwnerAuthority("unknown-share-token-000000", active.ownerDeleteSecret, now)).rejects.toThrow("SHARE_UNAVAILABLE");
+
+    const deleted = await service.create({ ownerSessionId: owner, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (deleted.kind !== "store") return;
+    await service.ownerDelete(deleted.token, deleted.ownerDeleteSecret, now);
+    await expect(service.reconcileOwnerAuthority(deleted.token, deleted.ownerDeleteSecret, now)).resolves.toEqual({ status: "retired", reason: "owner-deleted" });
+
+    const disabled = await service.create({ ownerSessionId: owner, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (disabled.kind !== "store") return;
+    await service.takedown({ token: disabled.token, authorization: Buffer.from(key(4)).toString("base64url"), now });
+    await expect(service.reconcileOwnerAuthority(disabled.token, disabled.ownerDeleteSecret, now)).rejects.toThrow("SHARE_UNAVAILABLE");
+  });
+
   it("accepts abuse reports without token enumeration and authorizes idempotent takedown", async () => {
     const store = new MemoryGovernanceStore();
     const service = new ShareStoreService(store, key(1), key(2), key(3), key(4));
@@ -85,6 +196,30 @@ describe("ShareStore and URL share", () => {
     await service.takedown({ token: created.token, authorization, now });
     await service.takedown({ token: created.token, authorization, now });
     await expect(service.read(created.token, now)).rejects.toThrow("SHARE_UNAVAILABLE");
+  });
+
+  it("lists, claims with a concurrency fence, resolves, takes down, and audits by report record ID", async () => {
+    const store = new MemoryGovernanceStore();
+    const service = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const authorization = Buffer.from(key(4)).toString("base64url");
+    const created = await service.create({ ownerSessionId: owner, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
+    if (created.kind !== "store") return;
+    await service.report({ token: created.token, reporterSessionId: owner, category: "copyright", detail: "record-id authority", now });
+    await expect(service.listModerationReports({ authorization: "wrong" })).rejects.toThrow("INTERNAL_AUTHORITY_INVALID");
+    const listed = await service.listModerationReports({ authorization, status: "pending" });
+    expect(listed).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain(created.token);
+    const claims = await Promise.allSettled([
+      service.claimModerationReport({ authorization, reportId: listed[0].id, moderatorId: "moderator-A", now }),
+      service.claimModerationReport({ authorization, reportId: listed[0].id, moderatorId: "moderator-B", now }),
+    ]);
+    expect(claims.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(claims.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const claim = claims.find((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.claimModerationReport>>> => result.status === "fulfilled")!.value;
+    await expect(service.resolveModerationReport({ authorization, reportId: listed[0].id, claimToken: "wrong-claim-token-0000", resolution: "takedown", now })).rejects.toThrow("MODERATION_CLAIM_CONFLICT");
+    await expect(service.resolveModerationReport({ authorization, reportId: listed[0].id, claimToken: claim.claimToken, resolution: "takedown", now })).resolves.toMatchObject({ status: "resolved", resolution: "takedown" });
+    await expect(service.read(created.token, now)).rejects.toThrow("SHARE_UNAVAILABLE");
+    expect(store.audits.map((audit) => audit.eventKind)).toEqual(expect.arrayContaining(["share-abuse-report", "share-moderation-claim", "share-moderation-resolve"]));
   });
 
   it("replays a completed create without consuming a new quota unit", async () => {
@@ -105,6 +240,21 @@ describe("ShareStore and URL share", () => {
     expect(persistedReplay).toContain("ciphertext");
     expect(persistedReplay).not.toContain(choice.token);
     expect(persistedReplay).not.toContain(choice.ownerDeleteSecret);
+  });
+
+  it("retains K1 beyond share expiry and emits exact retired authority before fresh intent", async () => {
+    expect(SHARE_CREATE_REPLAY_RETENTION_DAYS).toBeGreaterThan(SHARE_DEFAULT_TTL_DAYS);
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const requestDigest = await semanticDigest({ payload: payload(64), rightsBasis: "self-authored" });
+    const common = { quota, shares, sessionId: owner, sessionQuotaOwner: "session-retired", payload: payload(64), rightsBasis: "self-authored" as const, idempotencyKey: "request-key-retired", requestDigest, now, forceStore: true };
+    await expect(createShareIdempotently(common)).resolves.toMatchObject({ status: 201 });
+    await expect(createShareIdempotently({ ...common, now: new Date(now.getTime() + SHARE_DEFAULT_TTL_DAYS * 86_400_000) })).resolves.toEqual({
+      status: 409,
+      body: { ok: false, error: { code: "SHARE_CREATE_REPLAY_RETIRED", messageKo: "이전 공유가 만료되어 새 요청을 시작할 수 있습니다." } },
+    });
+    expect(store.shares.size).toBe(1);
   });
 
   it("creates one durable effect under concurrent idempotent requests and replays the same secrets", async () => {
@@ -159,6 +309,38 @@ describe("ShareStore and URL share", () => {
     expect(store.shares.size).toBe(0);
     await expect(create(recovered)).resolves.toMatchObject({ ok: true, share: { kind: "store" } });
     expect(store.shares.size).toBe(1);
+  });
+
+  it("recovers global UUID K1 exactly and atomically retires an expired pending claim without a share effect", async () => {
+    const store = new MemoryGovernanceStore();
+    const shares = new ShareStoreService(store, key(1), key(2), key(3), key(4));
+    const quota = new QuotaAndIdempotencyService(store, key(5));
+    const k1 = "11111111-1111-4111-8111-111111111111";
+    const requestPayload = payload(64);
+    const requestDigest = await semanticDigest({ payload: requestPayload, rightsBasis: "self-authored" });
+    const created = await createShareIdempotently({ quota, shares, sessionId: owner, sessionQuotaOwner: "old-session", payload: requestPayload, rightsBasis: "self-authored", idempotencyKey: k1, requestDigest, now, forceStore: true });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: k1, requestDigest, now: new Date(now.getTime() + 31 * 86_400_000) })).resolves.toEqual({ ...created, status: 200 });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: k1, requestDigest: await semanticDigest({ changed: true }), now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT" } } });
+    expect(store.shares.size).toBe(1);
+
+    const missingKey = "22222222-2222-4222-8222-222222222222";
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: missingKey, requestDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" } } });
+    expect(store.shares.size).toBe(1);
+
+    const pendingKey = "33333333-3333-4333-8333-333333333333";
+    const pending = await quota.claimIdempotency({ sessionId: owner, operation: "share-create-v1", key: pendingKey, requestDigest, now, pendingLeaseSeconds: 1 });
+    expect(pending.status).toBe("claimed");
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: pendingKey, requestDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_PENDING" } } });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: pendingKey, requestDigest, now: new Date(now.getTime() + 1_001) })).resolves.toMatchObject({ status: 409, body: { error: { code: "SHARE_CREATE_DETERMINISTIC_NO_EFFECT" } } });
+    if (pending.status !== "claimed") throw new Error("expected pending claim");
+    await expect(shares.createAndCompleteIdempotency({
+      ownerSessionId: owner, payload: requestPayload, rightsBasis: "self-authored", now, forceStore: true,
+      idempotency: { operation: "share-create-v1", keyHash: pending.keyHash, requestDigest, claimCreatedAt: pending.claimCreatedAt },
+    })).rejects.toThrow("IDEMPOTENCY_NOT_CLAIMED");
+    expect(store.shares.size).toBe(1);
+
+    await createShareIdempotently({ quota, shares, sessionId: other, sessionQuotaOwner: "other-session", payload: requestPayload, rightsBasis: "self-authored", idempotencyKey: k1, requestDigest, now, forceStore: true });
+    await expect(recoverShareCreateIdempotently({ quota, shares, idempotencyKey: k1, requestDigest, now })).resolves.toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_AMBIGUOUS" } } });
   });
 
   it("applies the ShareStore read limit to an IP-HMAC owner without retaining the raw IP", async () => {
