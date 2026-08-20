@@ -1,0 +1,90 @@
+name: Audiveris provider
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "services/audiveris-provider/**"
+      - "src/server/omr/audiveris-http-adapter.ts"
+      - "src/server/omr/audiveris-http-adapter.test.ts"
+      - "src/server/omr/production-service.ts"
+      - "src/server/substrate/config.ts"
+      - ".github/workflows/audiveris-provider.yml"
+  push:
+    branches:
+      - chatgpt/harmonymaker-audiveris-provider
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "services/audiveris-provider/**"
+      - "src/server/omr/audiveris-http-adapter.ts"
+      - "src/server/omr/audiveris-http-adapter.test.ts"
+      - "src/server/omr/production-service.ts"
+      - "src/server/substrate/config.ts"
+      - ".github/workflows/audiveris-provider.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  provider-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: services/audiveris-provider/requirements-test.txt
+      - run: pip install -r services/audiveris-provider/requirements-test.txt
+      - run: pytest services/audiveris-provider/tests
+        env:
+          PYTHONPATH: services/audiveris-provider
+          HM_AUDIVERIS_API_KEY: test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          HM_AUDIVERIS_FAKE_ENGINE: "1"
+      - name: Build pinned real Audiveris image
+        run: docker build --build-arg AUDIVERIS_VERSION=5.10.2 -t hm-audiveris:${{ github.sha }} .
+      - name: Verify bundled Audiveris launcher
+        run: docker run --rm --entrypoint /usr/local/bin/audiveris hm-audiveris:${{ github.sha }} -version | tee /tmp/audiveris-version.txt
+      - name: Fake-engine HTTP protocol smoke
+        run: |
+          docker run -d --name hm-audiveris-smoke -p 127.0.0.1:8001:8000 \
+            -e HM_AUDIVERIS_API_KEY=test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            -e HM_AUDIVERIS_FAKE_ENGINE=1 \
+            hm-audiveris:${{ github.sha }}
+          for attempt in $(seq 1 60); do curl -fsS http://127.0.0.1:8001/health && break; sleep 2; done
+          python - <<'PY'
+          from PIL import Image, ImageDraw
+          image = Image.new("RGB", (1200, 1600), "white")
+          draw = ImageDraw.Draw(image)
+          for row in range(5): draw.line((100, 500 + row * 24, 1100, 500 + row * 24), fill="black", width=3)
+          draw.ellipse((520, 550, 555, 575), fill="black")
+          draw.line((553, 560, 553, 450), fill="black", width=5)
+          image.save("/tmp/provider-page.png")
+          PY
+          node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8001 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/provider-page.png
+      - if: always()
+        run: docker logs hm-audiveris-smoke || true
+      - if: always()
+        run: docker rm -f hm-audiveris-smoke || true
+      - name: Real Audiveris HTTP MusicXML smoke
+        timeout-minutes: 25
+        run: |
+          mkdir -p /tmp/audiveris-real
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/randomm/audiveris-api/main/tests/test_files/messiah.pdf \
+            -o /tmp/audiveris-real/messiah.pdf
+          docker run --rm -v /tmp/audiveris-real:/work --entrypoint pdftoppm \
+            hm-audiveris:${{ github.sha }} -png -f 1 -singlefile -r 150 /work/messiah.pdf /work/page
+          docker run -d --name hm-audiveris-real -p 127.0.0.1:8002:8000 \
+            -e HM_AUDIVERIS_API_KEY=test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            -e 'JAVA_TOOL_OPTIONS=-Xmx2g -Djava.awt.headless=true' \
+            hm-audiveris:${{ github.sha }}
+          for attempt in $(seq 1 60); do curl -fsS http://127.0.0.1:8002/health && break; sleep 2; done
+          node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/page.png
+      - if: always()
+        run: docker logs hm-audiveris-real || true
+      - if: always()
+        run: docker rm -f hm-audiveris-real || true
