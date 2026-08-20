@@ -1,4 +1,4 @@
-name: Apply ChatGPT P1 patches
+name: Apply ChatGPT closure patches
 
 on:
   push:
@@ -32,5 +32,5 @@ jobs:
           git config user.name "ChatGPT"
           git config user.email "chatgpt@openai.com"
           git add -A
-          git commit -m "fix: close OMR cleanup fairness"
+          git commit -m "fix: close Ultra project and playback P2 findings"
           git push origin HEAD:chatgpt/harmonymaker-ultra-p1-closure
