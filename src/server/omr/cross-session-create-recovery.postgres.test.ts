@@ -42,7 +42,10 @@ function record(ownerSessionId: PrivateRowId, now: string, key: string): Omit<Du
     ipOwnerHash: `ip:${ownerSessionId}`,
     publicHandleHash: `handle:${key}`,
     publicHandleReplayEnvelope: replayEnvelope,
-    handleExpiresAt: "2026-01-03T00:00:00.000Z",
+    // This alias is intentionally bounded by the job's handle expiry. Keep the
+    // fixture beyond the wall clock used by PostgreSQL so the test exercises
+    // recovery rather than an already-expired alias.
+    handleExpiresAt: "2099-01-03T00:00:00.000Z",
     sourceKind: "camera-photo",
     pageCount: 1,
     canonicalCreateRequest: {
@@ -94,7 +97,7 @@ function record(ownerSessionId: PrivateRowId, now: string, key: string): Omit<Du
 async function session(key: string): Promise<PrivateRowId> {
   const result = await pool.query(
     "INSERT INTO anonymous_sessions (token_hash,csrf_nonce,created_at,expires_at) VALUES ($1,$2,$3,$4) RETURNING id",
-    [`token:${key}`, `csrf:${key}`, "2025-12-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z"],
+    [`token:${key}`, `csrf:${key}`, "2025-12-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"],
   );
   return String(result.rows[0].id) as PrivateRowId;
 }
