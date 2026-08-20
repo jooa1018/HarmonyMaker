@@ -76,7 +76,7 @@ jobs:
           curl -fsSL --retry 3 \
             https://raw.githubusercontent.com/randomm/audiveris-api/main/tests/test_files/messiah.pdf \
             -o /tmp/audiveris-real/messiah.pdf
-          docker run --rm -v /tmp/audiveris-real:/work --entrypoint pdftoppm \
+          docker run --rm --user 0:0 -v /tmp/audiveris-real:/work --entrypoint pdftoppm \
             hm-audiveris:${{ github.sha }} -png -f 1 -singlefile -r 150 /work/messiah.pdf /work/page
           docker run -d --name hm-audiveris-real -p 127.0.0.1:8002:8000 \
             -e HM_AUDIVERIS_API_KEY=test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
