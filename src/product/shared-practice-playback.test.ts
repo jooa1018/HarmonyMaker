@@ -41,10 +41,11 @@ describe("public PracticeShare playback timing boundary", () => {
     expect(buildPlaybackPlanSafely(materialized.value.document, materialized.value.trackRoles)).toMatchObject({ status: "available" });
   });
 
-
   it("resolves a legacy selectedTrackIndex against original payload ordering before source-first reconstruction", () => {
+    const base = payload([{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }]);
+    if (base.schemaVersion !== 4) throw new Error("expected v4 share fixture");
     const candidate: PracticeSharePayload = {
-      ...payload([{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }]),
+      ...base,
       arrangement: {
         measures: [{ index: 0, lyricVerseIndex: 1, timeSignature: [4, 4], duration: [4, 1] }],
         tracks: [
