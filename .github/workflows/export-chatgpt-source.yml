@@ -1,13 +1,10 @@
 name: Export ChatGPT closure source
 
-# Temporary CI-only source snapshot for corrected P1 closure verification.
+# Temporary CI-only source/dependency snapshot for ChatGPT closure verification.
 on:
   push:
     branches:
       - chatgpt/harmonymaker-ultra-p1-closure
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -17,10 +14,22 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Archive source
-        run: tar --exclude=.git -czf /tmp/harmonymaker-source.tgz .
+        run: tar --exclude=.git --exclude=node_modules -czf /tmp/harmonymaker-source.tgz .
+      - name: Archive installed dependencies
+        run: tar --zstd -cf /tmp/harmonymaker-node-modules.tar.zst node_modules
       - uses: actions/upload-artifact@v4
         with:
           name: harmonymaker-source
           path: /tmp/harmonymaker-source.tgz
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harmonymaker-node-modules
+          path: /tmp/harmonymaker-node-modules.tar.zst
           retention-days: 1
