@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import html
 import os
 import secrets
 import uuid
-from typing import Annotated
+from io import BytesIO
 
-from fastapi import BackgroundTasks, Header, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse
+from fastapi import BackgroundTasks, File, Header, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from PIL import ImageOps, UnidentifiedImageError
 
 import app as provider
 
@@ -21,77 +22,203 @@ def require_demo_token(token: str) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
 
-@app.get("/demo/{token}", response_class=HTMLResponse)
-def demo_page(token: str) -> HTMLResponse:
-    require_demo_token(token)
-    token_json = json.dumps(token)
+def page_html(title: str, body: str, *, refresh_seconds: int | None = None) -> HTMLResponse:
+    refresh = (
+        f'<meta http-equiv="refresh" content="{refresh_seconds}" />'
+        if refresh_seconds is not None
+        else ""
+    )
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>HarmonyMaker · Audiveris 임시 테스트</title>
+{refresh}
+<title>{html.escape(title)}</title>
 <style>
-:root{{color-scheme:light dark;font-family:system-ui,-apple-system,sans-serif}}body{{max-width:720px;margin:0 auto;padding:24px 18px 60px;line-height:1.55}}h1{{font-size:1.45rem}}.card{{border:1px solid #8886;border-radius:14px;padding:16px;margin:18px 0}}button,input{{font:inherit}}button{{padding:11px 16px;border-radius:10px;border:1px solid #8888}}button:disabled{{opacity:.5}}#status{{white-space:pre-wrap}}.small{{font-size:.88rem;opacity:.75}}a{{word-break:break-all}}</style>
+:root{{color-scheme:light dark;font-family:system-ui,-apple-system,sans-serif}}
+body{{max-width:720px;margin:0 auto;padding:24px 18px 60px;line-height:1.55}}
+h1{{font-size:1.45rem}}
+.card{{border:1px solid #8886;border-radius:14px;padding:16px;margin:18px 0}}
+button,input{{font:inherit}}
+button{{padding:11px 16px;border-radius:10px;border:1px solid #8888}}
+.small{{font-size:.88rem;opacity:.75}}
+pre{{white-space:pre-wrap;word-break:break-word}}
+a{{word-break:break-all}}
+</style>
 </head>
 <body>
-<h1>Audiveris 5.10.2 임시 OMR 테스트</h1>
-<p>악보 사진 한 장을 선택하면 임시 Render 서버에서 실제 Audiveris 엔진으로 MusicXML 변환을 시도합니다.</p>
-<div class="card">
-<input id="file" type="file" accept="image/*" />
-<p><button id="run" type="button">인식 시작</button></p>
-<div id="status">대기 중</div>
-<div id="result"></div>
-</div>
-<p class="small">테스트용 임시 서비스입니다. 인식 결과는 반드시 확인해야 하며, 서버 재시작 시 작업이 사라질 수 있습니다. 업로드는 최대 한 페이지이며 처리 후 결과 다운로드가 끝나면 삭제를 시도합니다.</p>
-<script>
-const token={token_json};
-const base=`/demo-api/${{encodeURIComponent(token)}}`;
-const fileInput=document.getElementById('file');
-const run=document.getElementById('run');
-const statusEl=document.getElementById('status');
-const resultEl=document.getElementById('result');
-const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
-async function pngBlob(file){{
-  const bitmap=await createImageBitmap(file);
-  const max=2600;
-  const scale=Math.min(1,max/Math.max(bitmap.width,bitmap.height));
-  const w=Math.max(1,Math.round(bitmap.width*scale));
-  const h=Math.max(1,Math.round(bitmap.height*scale));
-  const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
-  const ctx=canvas.getContext('2d',{{alpha:false}});ctx.fillStyle='white';ctx.fillRect(0,0,w,h);ctx.drawImage(bitmap,0,0,w,h);bitmap.close();
-  return await new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('PNG 변환 실패')),'image/png'));
-}}
-async function checked(url,options){{const r=await fetch(url,options);if(!r.ok)throw new Error(`${{r.status}} ${{await r.text()}}`);return r;}}
-run.addEventListener('click',async()=>{{
-  const file=fileInput.files?.[0];if(!file){{statusEl.textContent='악보 사진을 먼저 선택하세요.';return;}}
-  run.disabled=true;resultEl.textContent='';let jobId;
-  try{{
-    statusEl.textContent='사진을 PNG로 준비하는 중…';const png=await pngBlob(file);
-    const created=await (await checked(`${{base}}/jobs`,{{method:'POST'}})).json();jobId=created.jobId;
-    statusEl.textContent='업로드 중…';await checked(`${{base}}/jobs/${{encodeURIComponent(jobId)}}/page`,{{method:'PUT',headers:{{'Content-Type':'image/png'}},body:png}});
-    statusEl.textContent='Audiveris 인식 시작…';await checked(`${{base}}/jobs/${{encodeURIComponent(jobId)}}/start`,{{method:'POST'}});
-    for(let i=0;i<120;i++){{
-      const state=await (await checked(`${{base}}/jobs/${{encodeURIComponent(jobId)}}/status`)).json();
-      statusEl.textContent=`상태: ${{state.kind}}${{state.progressBp!==undefined?` · ${{(state.progressBp/100).toFixed(0)}}%`:''}}`;
-      if(state.kind==='completed'){{
-        const url=`${{base}}/jobs/${{encodeURIComponent(jobId)}}/result`;
-        resultEl.innerHTML=`<p><a href="${{url}}" target="_blank" rel="noopener">MusicXML 결과 열기</a></p><p><button id="delete" type="button">서버 작업 삭제</button></p>`;
-        document.getElementById('delete').onclick=async()=>{{await checked(`${{base}}/jobs/${{encodeURIComponent(jobId)}}`,{{method:'DELETE'}});statusEl.textContent+='\n서버 작업 삭제 완료';resultEl.innerHTML='';}};
-        return;
-      }}
-      if(['failed','cancelled'].includes(state.kind))throw new Error(JSON.stringify(state));
-      await sleep(3000);
-    }}
-    throw new Error('처리 시간이 너무 깁니다.');
-  }}catch(error){{statusEl.textContent=`실패: ${{error instanceof Error?error.message:String(error)}}`;}}
-  finally{{run.disabled=false;}}
-}});
-</script>
+<h1>{html.escape(title)}</h1>
+{body}
 </body>
 </html>"""
     )
+
+
+def canonical_png(raw: bytes) -> bytes:
+    if not raw or len(raw) > provider.MAX_PAGE_BYTES:
+        raise HTTPException(status_code=413, detail="사진 파일이 너무 큽니다.")
+    try:
+        with provider.Image.open(BytesIO(raw)) as opened:
+            image = ImageOps.exif_transpose(opened).convert("L")
+            max_side = 2600
+            if max(image.size) > max_side:
+                image.thumbnail((max_side, max_side), provider.Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.save(output, format="PNG", optimize=True)
+            png = output.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail="이 사진 형식을 서버에서 읽지 못했습니다. JPG/PNG 또는 사진의 스크린샷으로 다시 시도하세요.",
+        ) from error
+    if not png or len(png) > provider.MAX_PAGE_BYTES:
+        raise HTTPException(status_code=413, detail="PNG 변환 결과가 너무 큽니다.")
+    return png
+
+
+async def png_request(png: bytes) -> Request:
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": png, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "PUT",
+        "scheme": "https",
+        "path": "/demo-upload",
+        "raw_path": b"/demo-upload",
+        "query_string": b"",
+        "headers": [(b"content-type", b"image/png")],
+        "client": ("demo", 0),
+        "server": ("demo", 443),
+    }
+    return Request(scope, receive)
+
+
+@app.get("/demo/{token}", response_class=HTMLResponse)
+def demo_page(token: str) -> HTMLResponse:
+    require_demo_token(token)
+    safe_token = html.escape(token, quote=True)
+    return page_html(
+        "Audiveris 5.10.2 임시 OMR 테스트",
+        f"""
+<p>악보 사진 한 장을 선택하면 임시 Render 서버에서 실제 Audiveris 엔진으로 MusicXML 변환을 시도합니다.</p>
+<div class="card">
+<form action="/demo/{safe_token}/submit" method="post" enctype="multipart/form-data">
+  <p><input name="file" type="file" accept="image/*" required /></p>
+  <p><button type="submit">인식 시작</button></p>
+</form>
+<p class="small">버튼은 JavaScript 없이 일반 HTML 제출로 동작합니다. JPG/PNG가 가장 확실하며, HEIC가 거부되면 사진의 스크린샷을 올리면 됩니다.</p>
+</div>
+<p class="small">테스트용 임시 서비스입니다. 서버 재시작 시 작업이 사라질 수 있습니다. 업로드는 한 페이지이며, 결과를 확인한 뒤 서버 작업을 삭제할 수 있습니다.</p>
+""",
+    )
+
+
+@app.post("/demo/{token}/submit")
+async def demo_submit(
+    token: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> Response:
+    require_demo_token(token)
+    try:
+        raw = await file.read(provider.MAX_PAGE_BYTES + 1)
+        png = canonical_png(raw)
+        created = provider.create_job(
+            provider.CreateJobRequest(pageCount=1, idempotencyKey=f"demo-create-{uuid.uuid4()}")
+        )
+        job_id = created.jobId
+        request = await png_request(png)
+        await provider.upload_page(
+            job_id,
+            0,
+            request,
+            idempotency_key=f"demo-upload-{job_id}",
+            page_digest=hashlib.sha256(png).hexdigest(),
+        )
+        provider.start_job(
+            job_id,
+            provider.IdempotentOperationRequest(idempotencyKey=f"demo-start-{job_id}"),
+            background_tasks,
+        )
+    except HTTPException as error:
+        detail = error.detail if isinstance(error.detail, str) else str(error.detail)
+        return page_html(
+            "업로드 실패",
+            f'<div class="card"><pre>{html.escape(detail)}</pre><p><a href="/demo/{html.escape(token, quote=True)}">다시 시도</a></p></div>',
+        )
+    return RedirectResponse(
+        url=f"/demo/{token}/job/{job_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/demo/{token}/job/{job_id}", response_class=HTMLResponse)
+def demo_job(token: str, job_id: str) -> HTMLResponse:
+    require_demo_token(token)
+    state = provider.get_status(job_id)
+    kind = str(state.get("kind", "unknown"))
+    safe_token = html.escape(token, quote=True)
+    safe_job_id = html.escape(job_id, quote=True)
+
+    if kind in {"created", "queued", "processing"}:
+        progress = state.get("progressBp")
+        progress_text = ""
+        if isinstance(progress, int):
+            progress_text = f" · {progress / 100:.0f}%"
+        return page_html(
+            "Audiveris 인식 중",
+            f"""
+<div class="card">
+<p><strong>상태:</strong> {html.escape(kind)}{html.escape(progress_text)}</p>
+<p>이 페이지는 약 3초마다 자동 새로고침됩니다.</p>
+</div>
+""",
+            refresh_seconds=3,
+        )
+
+    if kind == "completed":
+        result_url = f"/demo-api/{safe_token}/jobs/{safe_job_id}/result"
+        delete_url = f"/demo/{safe_token}/job/{safe_job_id}/delete"
+        return page_html(
+            "Audiveris 인식 완료",
+            f"""
+<div class="card">
+<p><strong>상태:</strong> completed</p>
+<p><a href="{result_url}">MusicXML 결과 열기</a></p>
+<form action="{delete_url}" method="post"><button type="submit">서버 작업 삭제</button></form>
+</div>
+""",
+        )
+
+    code = html.escape(str(state.get("code", "AUDIVERIS_FAILED")))
+    message = html.escape(str(state.get("message", "인식에 실패했습니다.")))
+    return page_html(
+        "Audiveris 인식 실패",
+        f"""
+<div class="card">
+<p><strong>{code}</strong></p>
+<pre>{message}</pre>
+<p><a href="/demo/{safe_token}">다른 사진으로 다시 시도</a></p>
+</div>
+""",
+    )
+
+
+@app.post("/demo/{token}/job/{job_id}/delete")
+async def demo_delete_form(token: str, job_id: str) -> Response:
+    require_demo_token(token)
+    await provider.delete_job(job_id, idempotency_key=f"demo-delete-{job_id}")
+    return RedirectResponse(url=f"/demo/{token}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/demo-api/{token}/jobs")
