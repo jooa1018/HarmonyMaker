@@ -2,6 +2,8 @@
 .next
 node_modules
 coverage
+.env*
+!.env.example
 *.zip
 *.tgz
 scripts/chatgpt-patches
