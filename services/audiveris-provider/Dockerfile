@@ -26,7 +26,11 @@ WORKDIR /app
 COPY services/audiveris-provider/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
-COPY services/audiveris-provider/app.py services/audiveris-provider/demo_app.py /app/
+COPY services/audiveris-provider/app.py \
+     services/audiveris-provider/demo_app.py \
+     services/audiveris-provider/musicxml_output.py \
+     services/audiveris-provider/provider_entrypoint.py \
+     /app/
 
 ENV PATH=/opt/venv/bin:$PATH \
     AUDIVERIS_BIN=/usr/local/bin/audiveris \
@@ -43,4 +47,4 @@ RUN useradd --create-home --uid 10001 provider \
 USER provider
 
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn demo_app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "uvicorn provider_entrypoint:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

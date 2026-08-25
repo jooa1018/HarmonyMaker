@@ -37,6 +37,9 @@ for (let attempt = 0; attempt < 180; attempt += 1) {
 if (status?.kind !== "completed") throw new Error(`provider did not complete: ${JSON.stringify(status)}`);
 const result = await (await request(`/v1/jobs/${job.jobId}/result`)).text();
 if (!result.includes("<score-partwise") && !result.includes("<score-timewise")) throw new Error("result is not MusicXML");
+if (/<!DOCTYPE\b/u.test(result) || /<!ENTITY\b/u.test(result)) {
+  throw new Error("result retains XML declarations rejected by the HarmonyMaker importer");
+}
 const metadata = await (await request(`/v1/jobs/${job.jobId}/metadata`)).json();
 await request(`/v1/jobs/${job.jobId}`, { method: "DELETE", headers: { "Idempotency-Key": `${key}-delete` } });
 console.log(JSON.stringify({ health, capabilities, jobId: job.jobId, metadata, musicXmlBytes: Buffer.byteLength(result) }, null, 2));
