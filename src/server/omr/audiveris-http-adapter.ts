@@ -30,6 +30,13 @@ export interface AudiverisHttpAdapterConfig {
 
 type HttpPolicy = "read" | "mutating";
 
+interface AudiverisPageMetadata {
+  readonly pageIndex: number;
+  readonly pageDigest: BinaryDigest;
+  readonly widthPixels: number;
+  readonly heightPixels: number;
+}
+
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_ERROR_BYTES = 4 * 1024;
 const MAX_MUSICXML_BYTES = 4 * 1024 * 1024;
@@ -62,6 +69,8 @@ export class AudiverisHttpOmrAdapter implements OmrVendorAdapter {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
+  private readonly musicXmlCache = new Map<VendorJobId, Promise<string>>();
+  private readonly metadataCache = new Map<VendorJobId, Promise<readonly AudiverisPageMetadata[]>>();
 
   constructor(config: AudiverisHttpAdapterConfig) {
     this.baseUrl = canonicalBaseUrl(config.baseUrl);
@@ -71,6 +80,26 @@ export class AudiverisHttpOmrAdapter implements OmrVendorAdapter {
     }
     this.apiKey = config.apiKey;
     this.timeoutMs = config.requestTimeoutMs;
+  }
+
+  private memoize<T>(
+    cache: Map<VendorJobId, Promise<T>>,
+    vendorJobId: VendorJobId,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    const current = cache.get(vendorJobId);
+    if (current) return current;
+    const pending = loader();
+    cache.set(vendorJobId, pending);
+    void pending.catch(() => {
+      if (cache.get(vendorJobId) === pending) cache.delete(vendorJobId);
+    });
+    return pending;
+  }
+
+  private clearCaptureCache(vendorJobId: VendorJobId): void {
+    this.musicXmlCache.delete(vendorJobId);
+    this.metadataCache.delete(vendorJobId);
   }
 
   private async request(path: string, init: RequestInit, policy: HttpPolicy): Promise<Response> {
@@ -167,6 +196,7 @@ export class AudiverisHttpOmrAdapter implements OmrVendorAdapter {
   }
 
   async startVendorJob(vendorJobId: VendorJobId, operation: { readonly idempotencyKey: string }): Promise<void> {
+    this.clearCaptureCache(vendorJobId);
     await this.request(`/v1/jobs/${encodeURIComponent(vendorJobId)}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -196,41 +226,40 @@ export class AudiverisHttpOmrAdapter implements OmrVendorAdapter {
   }
 
   async exportMusicXml(vendorJobId: VendorJobId): Promise<string> {
-    const response = await this.request(`/v1/jobs/${encodeURIComponent(vendorJobId)}/result`, {}, "read");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_MUSICXML_BYTES) throw new RangeError("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
-    let value: string;
-    try { value = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-    catch (error) { throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID", { cause: error }); }
-    if (!value.includes("<score-partwise") && !value.includes("<score-timewise")) throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
-    return value;
+    return this.memoize(this.musicXmlCache, vendorJobId, async () => {
+      const response = await this.request(`/v1/jobs/${encodeURIComponent(vendorJobId)}/result`, {}, "read");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0 || bytes.byteLength > MAX_MUSICXML_BYTES) throw new RangeError("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED");
+      let value: string;
+      try { value = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+      catch (error) { throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID", { cause: error }); }
+      if (!value.includes("<score-partwise") && !value.includes("<score-timewise")) throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+      return value;
+    });
   }
 
-  private async metadata(vendorJobId: VendorJobId): Promise<readonly {
-    readonly pageIndex: number;
-    readonly pageDigest: BinaryDigest;
-    readonly widthPixels: number;
-    readonly heightPixels: number;
-  }[]> {
-    const value = await this.json(`/v1/jobs/${encodeURIComponent(vendorJobId)}/metadata`);
-    if (!isPlainRecord(value) || !hasExactKeys(value, ["pages"]) || !Array.isArray(value.pages)) {
-      throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
-    }
-    const pages = value.pages.map((page) => {
-      if (!isPlainRecord(page) || !hasExactKeys(page, ["pageIndex", "pageDigest", "widthPixels", "heightPixels"])
-        || !integer(page.pageIndex, 0, 99) || !isLowerHexDigest(page.pageDigest)
-        || !integer(page.widthPixels, 1, 100_000) || !integer(page.heightPixels, 1, 100_000)) {
+  private async metadata(vendorJobId: VendorJobId): Promise<readonly AudiverisPageMetadata[]> {
+    return this.memoize(this.metadataCache, vendorJobId, async () => {
+      const value = await this.json(`/v1/jobs/${encodeURIComponent(vendorJobId)}/metadata`);
+      if (!isPlainRecord(value) || !hasExactKeys(value, ["pages"]) || !Array.isArray(value.pages)) {
         throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
       }
-      return {
-        pageIndex: page.pageIndex as number,
-        pageDigest: page.pageDigest,
-        widthPixels: page.widthPixels as number,
-        heightPixels: page.heightPixels as number,
-      };
-    }).sort((left, right) => left.pageIndex - right.pageIndex);
-    if (pages.some((page, index) => page.pageIndex !== index)) throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
-    return pages;
+      const pages = value.pages.map((page) => {
+        if (!isPlainRecord(page) || !hasExactKeys(page, ["pageIndex", "pageDigest", "widthPixels", "heightPixels"])
+          || !integer(page.pageIndex, 0, 99) || !isLowerHexDigest(page.pageDigest)
+          || !integer(page.widthPixels, 1, 100_000) || !integer(page.heightPixels, 1, 100_000)) {
+          throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+        }
+        return {
+          pageIndex: page.pageIndex as number,
+          pageDigest: page.pageDigest,
+          widthPixels: page.widthPixels as number,
+          heightPixels: page.heightPixels as number,
+        };
+      }).sort((left, right) => left.pageIndex - right.pageIndex);
+      if (pages.some((page, index) => page.pageIndex !== index)) throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+      return pages;
+    });
   }
 
   async getEvidence(vendorJobId: VendorJobId): Promise<VendorEvidenceBundle> {
@@ -261,35 +290,47 @@ export class AudiverisHttpOmrAdapter implements OmrVendorAdapter {
   }
 
   async getNormalizationMapping(vendorJobId: VendorJobId): Promise<VendorNormalizationMappingArtifact> {
-    const [musicXml, evidence] = await Promise.all([this.exportMusicXml(vendorJobId), this.getEvidence(vendorJobId)]);
-    const artifact = {
-      version: "vendor-export-target-map-v2" as const,
-      vendorResultDigest: await binaryDigest(new TextEncoder().encode(musicXml)),
-      providerBundleDigest: evidence.providerBundleDigest,
-      mappings: [],
-    };
-    return { ...artifact, artifactDigest: await computeVendorNormalizationMappingDigest(artifact) };
+    try {
+      const [musicXml, evidence] = await Promise.all([this.exportMusicXml(vendorJobId), this.getEvidence(vendorJobId)]);
+      const artifact = {
+        version: "vendor-export-target-map-v2" as const,
+        vendorResultDigest: await binaryDigest(new TextEncoder().encode(musicXml)),
+        providerBundleDigest: evidence.providerBundleDigest,
+        mappings: [],
+      };
+      return { ...artifact, artifactDigest: await computeVendorNormalizationMappingDigest(artifact) };
+    } finally {
+      this.clearCaptureCache(vendorJobId);
+    }
   }
 
   async cancelVendorJob(vendorJobId: VendorJobId, operation: { readonly idempotencyKey: string }): Promise<void> {
-    await this.request(`/v1/jobs/${encodeURIComponent(vendorJobId)}/cancel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(operation),
-    }, "mutating");
+    try {
+      await this.request(`/v1/jobs/${encodeURIComponent(vendorJobId)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(operation),
+      }, "mutating");
+    } finally {
+      this.clearCaptureCache(vendorJobId);
+    }
   }
 
   async deleteVendorJob(vendorJobId: VendorJobId, operation: { readonly idempotencyKey: string }): Promise<VendorDeleteResult> {
-    const value = await this.json(`/v1/jobs/${encodeURIComponent(vendorJobId)}`, {
-      method: "DELETE",
-      headers: { "Idempotency-Key": operation.idempotencyKey },
-    }, "mutating");
-    if (isPlainRecord(value) && hasExactKeys(value, ["status"]) && value.status === "deleted") return { status: "deleted" };
-    if (isPlainRecord(value) && hasExactKeys(value, ["status", "code", "message"])
-      && value.status === "failed" && typeof value.code === "string" && typeof value.message === "string") {
-      return { status: "failed", code: value.code, message: value.message };
+    try {
+      const value = await this.json(`/v1/jobs/${encodeURIComponent(vendorJobId)}`, {
+        method: "DELETE",
+        headers: { "Idempotency-Key": operation.idempotencyKey },
+      }, "mutating");
+      if (isPlainRecord(value) && hasExactKeys(value, ["status"]) && value.status === "deleted") return { status: "deleted" };
+      if (isPlainRecord(value) && hasExactKeys(value, ["status", "code", "message"])
+        && value.status === "failed" && typeof value.code === "string" && typeof value.message === "string") {
+        return { status: "failed", code: value.code, message: value.message };
+      }
+      throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+    } finally {
+      this.clearCaptureCache(vendorJobId);
     }
-    throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
   }
 
   async getRetentionInfo(vendorJobId: VendorJobId): Promise<RetentionInfo> {
