@@ -48,6 +48,14 @@ jobs:
         run: docker build --build-arg AUDIVERIS_VERSION=5.10.2 -t hm-audiveris:${{ github.sha }} .
       - name: Verify bundled Audiveris launcher
         run: docker run --rm --entrypoint /usr/local/bin/audiveris hm-audiveris:${{ github.sha }} -version | tee /tmp/audiveris-version.txt
+      - name: Verify deployed engine profile wrapper
+        run: |
+          docker run --rm --entrypoint sh hm-audiveris:${{ github.sha }} -c '
+            test "$AUDIVERIS_BIN" = /app/audiveris-wrapper.sh
+            test -x "$AUDIVERIS_BIN"
+            grep -Fq "org.audiveris.omr.sheet.ProcessingSwitches.chordNames=true" "$AUDIVERIS_BIN"
+            "$AUDIVERIS_BIN" -version
+          '
       - name: Fake-engine HTTP protocol smoke
         run: |
           docker run -d --name hm-audiveris-smoke -p 127.0.0.1:8001:8000 \
