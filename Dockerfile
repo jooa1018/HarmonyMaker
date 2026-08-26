@@ -21,9 +21,20 @@ COPY services/audiveris-provider/app.py \
      services/audiveris-provider/demo_app.py \
      services/audiveris-provider/musicxml_output.py \
      services/audiveris-provider/provider_entrypoint.py \
+     services/audiveris-provider/audiveris-wrapper.sh \
      /app/
-ENV PATH=/opt/venv/bin:$PATH AUDIVERIS_BIN=/usr/local/bin/audiveris AUDIVERIS_VERSION=${AUDIVERIS_VERSION} HM_AUDIVERIS_DATA_DIR=/data TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" HOME=/data/home PORT=8000
-RUN useradd --create-home --uid 10001 provider && mkdir -p /data/home && chown -R provider:provider /app /data
+ENV PATH=/opt/venv/bin:$PATH \
+    AUDIVERIS_BIN=/app/audiveris-wrapper.sh \
+    AUDIVERIS_VERSION=${AUDIVERIS_VERSION} \
+    HM_AUDIVERIS_DATA_DIR=/data \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
+    JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" \
+    HOME=/data/home \
+    PORT=8000
+RUN useradd --create-home --uid 10001 provider \
+    && chmod 0755 /app/audiveris-wrapper.sh \
+    && mkdir -p /data/home \
+    && chown -R provider:provider /app /data
 USER provider
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn provider_entrypoint:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
