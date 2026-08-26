@@ -80,10 +80,41 @@ describe("Audiveris HTTP OMR adapter", () => {
     const mapping = await subject.getNormalizationMapping(jobId as never);
     expect(mapping.mappings).toEqual([]);
     expect(mapping.vendorResultDigest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(calls.filter((call) => String(call).endsWith("/result"))).toHaveLength(1);
+    expect(calls.filter((call) => String(call).endsWith("/metadata"))).toHaveLength(1);
     expect(await subject.getRetentionInfo(jobId as never)).toMatchObject({ canDeleteImmediately: true, policyReference: "self-hosted" });
     expect(await subject.deleteVendorJob(jobId as never, { idempotencyKey: "delete-key-xxxxxxxx" })).toEqual({ status: "deleted" });
     await subject.cancelVendorJob(jobId as never, { idempotencyKey: "cancel-key-xxxxxxxx" });
     expect(calls.length).toBeGreaterThan(5);
+  });
+
+  it("reuses the first completed-result snapshot if provider state disappears during capture", async () => {
+    const pageDigest = await binaryDigest(pageBytes);
+    let resultReads = 0;
+    let metadataReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/result")) {
+        resultReads += 1;
+        return resultReads === 1
+          ? new Response("<?xml version=\"1.0\"?><score-partwise version=\"4.0\"></score-partwise>")
+          : json({ detail: "job not found after provider restart" }, 404);
+      }
+      if (url.endsWith("/metadata")) {
+        metadataReads += 1;
+        return metadataReads === 1
+          ? json({ pages: [{ pageIndex: 0, pageDigest, widthPixels: 100, heightPixels: 200 }] })
+          : json({ detail: "job not found after provider restart" }, 404);
+      }
+      throw new Error(`unexpected URL ${url}`);
+    }));
+
+    const subject = adapter();
+    expect(await subject.exportMusicXml(jobId as never)).toContain("<score-partwise");
+    expect((await subject.getEvidence(jobId as never)).frames).toHaveLength(1);
+    expect((await subject.getNormalizationMapping(jobId as never)).mappings).toEqual([]);
+    expect(resultReads).toBe(1);
+    expect(metadataReads).toBe(1);
   });
 
   it("classifies create transport ambiguity and deterministic provider rejection", async () => {
