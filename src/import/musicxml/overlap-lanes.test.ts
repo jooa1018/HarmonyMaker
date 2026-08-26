@@ -32,10 +32,11 @@ function score(withOverlap: boolean): string {
 </score-partwise>`;
 }
 
-async function draftFor(xml: string) {
+async function draftFor(xml: string, omrHandoff = false) {
   const result = await importMusicXml(encoder.encode(xml), {
     algorithmVersions: versions,
     identityFactory: () => "doc:overlap-lane-test",
+    ...(omrHandoff ? { originalFileName: "omr-result.musicxml" } : {}),
   });
   expect(result.status).toBe("review-required");
   if (result.status !== "review-required") throw new Error("fixture import was blocked");
@@ -44,14 +45,22 @@ async function draftFor(xml: string) {
 
 describe("MusicXML overlapping lead candidate lanes", () => {
   it("leaves an ordinary monophonic voice as one unchanged candidate", async () => {
-    const draft = await draftFor(score(false));
+    const draft = await draftFor(score(false), true);
     expect(draft.leadCandidates).toHaveLength(1);
     expect(draft.leadCandidates[0].noteCount).toBe(4);
     expect(draft.leadCandidates[0].key).not.toContain(":lane:");
   });
 
-  it("preserves simultaneous notes as explicit candidate lanes instead of a blocked overlap", async () => {
+  it("keeps direct MusicXML same-voice overlap conservative", async () => {
     const draft = await draftFor(score(true));
+    expect(draft.leadCandidates).toHaveLength(1);
+    const selected = selectLeadCandidate(draft, draft.leadCandidates[0].key);
+    const review = await deriveQuickReview(selected, versions);
+    expect(review.diagnostics.some((diagnostic) => diagnostic.code === "INPUT_EVENT_OVERLAP")).toBe(true);
+  });
+
+  it("preserves OMR simultaneous notes as explicit candidate lanes instead of silently deleting them", async () => {
+    const draft = await draftFor(score(true), true);
     expect(draft.leadCandidates).toHaveLength(2);
     const base = draft.leadCandidates.find((candidate) => !candidate.key.includes(":lane:"));
     const overlap = draft.leadCandidates.find((candidate) => candidate.key.includes(":lane:"));

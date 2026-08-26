@@ -16,6 +16,11 @@ import * as core from "./parser-core";
 
 export { createSecureDocumentId, __musicXmlParserInternals } from "./parser-core";
 
+// Internal OMR handoff contract emitted by OmrClient. Direct MusicXML imports keep
+// the conservative same-voice overlap blocker; only provider-produced OMR results
+// are partitioned into explicit review lanes so no musical event is silently lost.
+const OMR_HANDOFF_FILE_NAME = "omr-result.musicxml";
+
 interface DerivedCandidateDescriptor {
   readonly key: string;
   readonly rawKey: string;
@@ -184,7 +189,7 @@ export async function importMusicXml(
   options: Parameters<typeof core.importMusicXml>[1],
 ): Promise<Awaited<ReturnType<typeof core.importMusicXml>>> {
   const result = await core.importMusicXml(rawBytes, options);
-  if (result.status !== "review-required") return result;
+  if (result.status !== "review-required" || options.originalFileName !== OMR_HANDOFF_FILE_NAME) return result;
   const draft = await splitOverlappingLeadCandidates(result.draft);
   return draft === result.draft ? result : { ...result, draft, diagnostics: draft.diagnostics };
 }
