@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-const [baseUrl, apiKey, pagePath] = process.argv.slice(2);
+const [baseUrl, apiKey, pagePath, ...flags] = process.argv.slice(2);
 if (!baseUrl || !apiKey || !pagePath) {
-  throw new Error("usage: node scripts/audiveris-provider-smoke.mjs <baseUrl> <apiKey> <page.png>");
+  throw new Error("usage: node scripts/audiveris-provider-smoke.mjs <baseUrl> <apiKey> <page.png> [--require-harmony]");
 }
+const requireHarmony = flags.includes("--require-harmony");
 const auth = { Authorization: `Bearer ${apiKey}` };
 const page = await readFile(pagePath);
 const digest = createHash("sha256").update(page).digest("hex");
@@ -40,6 +41,10 @@ if (!result.includes("<score-partwise") && !result.includes("<score-timewise")) 
 if (/<!DOCTYPE\b/u.test(result) || /<!ENTITY\b/u.test(result)) {
   throw new Error("result retains XML declarations rejected by the HarmonyMaker importer");
 }
+const harmonyCount = (result.match(/<harmony\b/gu) ?? []).length;
+if (requireHarmony && harmonyCount === 0) {
+  throw new Error("real chord-name OCR fixture produced no MusicXML harmony elements");
+}
 const metadata = await (await request(`/v1/jobs/${job.jobId}/metadata`)).json();
 await request(`/v1/jobs/${job.jobId}`, { method: "DELETE", headers: { "Idempotency-Key": `${key}-delete` } });
-console.log(JSON.stringify({ health, capabilities, jobId: job.jobId, metadata, musicXmlBytes: Buffer.byteLength(result) }, null, 2));
+console.log(JSON.stringify({ health, capabilities, jobId: job.jobId, metadata, musicXmlBytes: Buffer.byteLength(result), harmonyCount }, null, 2));
