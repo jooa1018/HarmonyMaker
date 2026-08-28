@@ -60,7 +60,12 @@ async function readinessSource(): Promise<SongSourceDocument> {
     performanceSequence: { expanderVersion: "repeat-v1", occurrences: [{ occurrenceId: "pm:0:0:0", sourceMeasureId: "sm:0", sourceMeasureNumber: 1, occurrenceIndexForSource: 0, performanceIndex: 0, time: COMMON_TIME, duration: fraction(4) }] },
     sectionDefinitions: [{ id: "sd:0:1:other:0", type: "other", label: "Song", sourceMeasureIds: ["sm:0"], confirmation: "confirmed" }],
     sectionOccurrences: [{ id: "so:0:1:0", sectionDefinitionId: "sd:0:1:other:0", occurrenceIndex: 0, variant: "base", lyricVerseIndex: 1, startPerformanceMeasureIndex: 0, endPerformanceMeasureIndexExclusive: 1 }],
-    phraseRegions: [], rights: { basis: "self-authored", allowedUses: ["generation"] }, importInfo: { sourceKind: "omr", importerVersion: "omr-normalizer-v1" },
+    phraseRegions: [{
+      id: "ph:0:0:0/1:1:0/1",
+      sectionOccurrenceId: "so:0:1:0",
+      range: { start: { performanceMeasureIndex: 0, offset: fraction(0) }, end: { performanceMeasureIndex: 1, offset: fraction(0) } },
+      boundarySource: "manual",
+    }], rights: { basis: "self-authored", allowedUses: ["generation"] }, importInfo: { sourceKind: "omr", importerVersion: "omr-normalizer-v1" },
   } as unknown as SongSourceDocument;
   source = { ...source, revisionDigest: await digestMusicalSource(source) };
   const sourceRevision = { documentId: source.documentId, revisionOrdinal: source.revisionOrdinal, revisionDigest: source.revisionDigest };

@@ -39,7 +39,13 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = input.materialized.trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
-      return { kind: "generated-harmony" as const, label: metadata.label, events: track.events.map((event) => generatedEvent(event, document, localLyrics.sourceToLocal)) };
+      return {
+        kind: "generated-harmony" as const,
+        label: metadata.label,
+        harmonyRole: metadata.harmonyRole,
+        placementRoles: [...new Set(metadata.placements.map((placement) => placement.placementRole))].sort(),
+        events: track.events.map((event) => generatedEvent(event, document, localLyrics.sourceToLocal)),
+      };
     }),
   ];
   const chords: CompactChord[] = document.effectiveChordTimeline.spans.map((span) => {
@@ -52,7 +58,7 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
       : { ...common, kind: "no-chord" };
   });
   const payload: PracticeSharePayload = {
-    schemaVersion: 3, title: input.project.source.title, tempo: input.project.source.defaultTempo,
+    schemaVersion: 4, title: input.project.source.title, tempo: input.project.source.defaultTempo,
     key: input.project.source.defaultKey, presetId: input.presetId,
     arrangementArtifactDigest: input.materialized.artifactDigest,
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,

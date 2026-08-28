@@ -49,6 +49,9 @@ import type { LeadEvent, SongSourceDocument } from "./source/model";
 import { validateSongSourceDocumentIntegrity } from "./source/validation";
 import { comparePositions, compareRanges, type MusicalPosition } from "./time";
 import type { StageExecutionResult } from "./plans";
+import { attestVerifiedEditedSnapshot, materializeEditedArrangement } from "../integrity/edited-snapshot-authority";
+import { deriveCandidateEvidence } from "../integrity/candidate-evidence";
+import type { WagLifecycleInput } from "../grammar/lifecycle";
 
 export type HarmonyProjectIntegrityResult = StageExecutionResult<HarmonyProject>;
 
@@ -107,6 +110,20 @@ function resolvedAtomization(project: HarmonyProject): SourceLeadAtomization | u
   return project.sourceLeadAtomizationState.status === "resolved"
     ? project.sourceLeadAtomizationState.atomization
     : undefined;
+}
+
+function retainedTimeline(project: HarmonyProject): EffectiveChordTimeline | undefined {
+  const state = project.chordTimelineState;
+  if (state.status === "resolved") return state.timeline;
+  if (state.status === "stale" || state.status === "blocked") return state.previousTimeline;
+  return undefined;
+}
+
+function retainedAtomization(project: HarmonyProject): SourceLeadAtomization | undefined {
+  const state = project.sourceLeadAtomizationState;
+  if (state.status === "resolved") return state.atomization;
+  if (state.status === "stale" || state.status === "blocked") return state.previousAtomization;
+  return undefined;
 }
 
 function resolvedChordFromSource(event: SongSourceDocument["sourceMeasures"][number]["chordEvents"][number]): object | undefined {
@@ -618,9 +635,14 @@ function validateMetricReferences(
 async function validateCandidateIntegrity(
   candidate: ArrangementCandidate,
   project: HarmonyProject,
+  intent: ArrangementIntentPlan,
+  activity: ArrangementActivityPlan,
   anchor: ArrangementAnchorPlan,
   ordinals: ProjectOrdinals,
-): Promise<void> {
+  effectiveConfig: EffectiveArrangementConfig,
+  timelineAuthority: EffectiveChordTimeline = resolvedTimeline(project)!,
+  atomizationAuthority: SourceLeadAtomization = resolvedAtomization(project)!,
+): Promise<ArrangementCandidate["candidateStatus"]> {
   const anchorDirectiveOrdinalById = anchorDirectiveOrdinalRegistry(anchor, ordinals);
   validateMetricReferences(candidate.metrics, ordinals);
   const generatedTrackIds = new Set(project.trackPlans
@@ -638,9 +660,30 @@ async function validateCandidateIntegrity(
     requiredOrdinal(anchorDirectiveOrdinalById, realized.directiveId, "anchor directive");
     requiredOrdinal(ordinals.trackOrdinalById, realized.trackPlanId, "track");
   }
+  const timeline = timelineAuthority;
+  const atomization = atomizationAuthority;
+  requireIntegrity(timeline !== undefined && atomization !== undefined, "Candidate lacks retained timeline/atomization authority");
+  const evidence = await deriveCandidateEvidence({
+    lifecycleInput: {
+      source: project.source,
+      effectiveChordTimeline: timeline,
+      sourceLeadAtomization: atomization,
+      effectiveConfig,
+      userCaps: project.settings.userCaps,
+      performers: project.performers,
+      trackPlans: project.trackPlans,
+      assignments: project.assignments,
+      locks: project.locksByPreset[candidate.presetId]
+        ?? { intent: [], activity: [], anchor: [], solver: [] },
+    },
+    intentPlan: intent,
+    activityPlan: activity,
+    anchorPlan: anchor,
+    candidate,
+  });
   const rebuilt = await buildArrangementCandidate({
     presetId: candidate.presetId,
-    candidateStatus: candidate.candidateStatus,
+    candidateStatus: evidence.candidateStatus,
     anchorPlanDigest: candidate.anchorPlanDigest,
     effectiveConfigDigest: candidate.effectiveConfigDigest,
     presetProfileDigest: candidate.presetProfileDigest,
@@ -656,14 +699,19 @@ async function validateCandidateIntegrity(
       lyricOrdinalById: ordinals.lyricOrdinalById,
       anchorDirectiveOrdinalById,
     },
-    metrics: candidate.metrics,
-    diagnostics: candidate.diagnostics,
-    canonicalPathKey: candidate.canonicalPathKey,
+    metrics: evidence.metrics,
+    diagnostics: evidence.diagnostics,
+    canonicalPathKey: evidence.canonicalPathKey,
   });
+  requireIntegrity(candidate.candidateStatus === evidence.candidateStatus, "Candidate status differs from required coverage rederivation");
   requireIntegrity(candidate.contentDigest === rebuilt.contentDigest, "Candidate content digest mismatch");
   requireIntegrity(candidate.id === rebuilt.id, "Candidate ID mismatch");
   requireIntegrity(exact(candidate.generatedEventsByTrack, rebuilt.generatedEventsByTrack), "Generated Event ID or canonical order mismatch");
   requireIntegrity(exact(candidate.realizedAnchors, rebuilt.realizedAnchors), "realized anchor canonical order mismatch");
+  requireIntegrity(exact(candidate.metrics, evidence.metrics), "Candidate metrics differ from independent rederivation");
+  requireIntegrity(exact(candidate.diagnostics, evidence.diagnostics), "Candidate diagnostics differ from independent rederivation");
+  requireIntegrity(candidate.canonicalPathKey === evidence.canonicalPathKey, "Candidate canonicalPathKey differs from independent rederivation");
+  return evidence.candidateStatus;
 }
 
 function generationRegistryKeys(): {
@@ -753,16 +801,34 @@ async function validateSnapshots(
   snapshots: readonly EditedArrangementSnapshot[],
   edits: readonly ArrangementOutputEdit[],
   candidates: readonly ArrangementCandidate[],
+  intent: ArrangementIntentPlan,
+  activity: ArrangementActivityPlan,
   anchor: ArrangementAnchorPlan,
   project: HarmonyProject,
   expected: AlgorithmExecutionRegistry,
   ordinals: ProjectOrdinals,
+  effectiveConfig: EffectiveArrangementConfig,
+  timelineAuthority: EffectiveChordTimeline = resolvedTimeline(project)!,
+  atomizationAuthority: SourceLeadAtomization = resolvedAtomization(project)!,
 ): Promise<void> {
   const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   const editById = new Map(edits.map((edit) => [edit.id, edit]));
   const directiveOrdinals = anchorDirectiveOrdinalRegistry(anchor, ordinals);
-  const timeline = resolvedTimeline(project);
-  const atomization = resolvedAtomization(project);
+  const timeline = timelineAuthority;
+  const atomization = atomizationAuthority;
+  requireIntegrity(timeline !== undefined && atomization !== undefined, "snapshot lacks retained timeline/atomization authority", "EDIT_SNAPSHOT_INVALID");
+  const lifecycleInput: WagLifecycleInput = {
+    source: project.source,
+    effectiveChordTimeline: timeline,
+    sourceLeadAtomization: atomization,
+    effectiveConfig,
+    userCaps: project.settings.userCaps,
+    performers: project.performers,
+    trackPlans: project.trackPlans,
+    assignments: project.assignments,
+    locks: project.locksByPreset[effectiveConfig.presetId]
+      ?? { intent: [], activity: [], anchor: [], solver: [] },
+  };
   for (const snapshot of snapshots) {
     validateMetricReferences(snapshot.metrics, ordinals);
     const candidate = candidateById.get(snapshot.baseCandidateId);
@@ -813,7 +879,126 @@ async function validateSnapshots(
       requiredOrdinal(directiveOrdinals, realized.directiveId, "anchor directive");
       requiredOrdinal(ordinals.trackOrdinalById, realized.trackPlanId, "track");
     }
+    const rederived = await materializeEditedArrangement({
+      lifecycleInput,
+      intentPlan: intent,
+      activityPlan: activity,
+      anchorPlan: anchor,
+      candidate,
+      edits: appliedEdits,
+    });
+    requireIntegrity(rederived.status === "complete", "Snapshot cannot be rederived from its canonical base and edits", "EDIT_SNAPSHOT_INVALID");
+    requireIntegrity(
+      exact(snapshot, rederived.snapshot),
+      "Snapshot semantic material/evidence differs from canonical rederivation",
+      "EDIT_SNAPSHOT_INVALID",
+    );
+    attestVerifiedEditedSnapshot(snapshot);
   }
+}
+
+/**
+ * Staleness only disables execution. It never turns persisted downstream
+ * material into trusted opaque history. Revalidate the retained generation
+ * aggregate against its own persisted upstream plans and retained source
+ * authorities before any early freshness return is allowed.
+ */
+async function validateRetainedGenerationArtifacts(
+  variant: Extract<ArrangementVariant, { readonly lifecycle: "generation-attempted" }>,
+  project: HarmonyProject,
+  expected: AlgorithmExecutionRegistry,
+  ordinals: ProjectOrdinals,
+  effectiveConfig: EffectiveArrangementConfig,
+): Promise<void> {
+  const generation = variant.generationResult;
+  const timeline = retainedTimeline(project);
+  const atomization = retainedAtomization(project);
+  requireIntegrity(timeline !== undefined && atomization !== undefined, "stale generation lacks retained source authority", "CANDIDATE_PROJECTION_INVALID");
+  requireIntegrity(generation.digests.effectiveChordTimelineDigest === timeline.digest
+    && generation.digests.sourceLeadAtomizationDigest === atomization.digest,
+  "retained generation source authority mismatch", "CANDIDATE_PROJECTION_INVALID");
+
+  const registryKeys = generationRegistryKeys();
+  assertExactRegistrySubset(generation.versions, expected.versions, registryKeys.versions, "retained version");
+  assertExactRegistrySubset(generation.configDigests, expected.configDigests, registryKeys.configs, "retained config");
+  requireIntegrity(variant.intentPlan.intentPlanDigest === await digestIntentPlan(variant.intentPlan, ordinals), "retained Intent Plan digest mismatch");
+  requireIntegrity(variant.activityPlan.activityPlanDigest === await digestActivityPlan(variant.activityPlan, ordinals), "retained Activity Plan digest mismatch");
+  requireIntegrity(variant.anchorPlan.anchorPlanDigest === await digestAnchorPlan(variant.anchorPlan, ordinals), "retained Anchor Plan digest mismatch");
+  requireIntegrity(generation.digests.intentPlanDigest === variant.intentPlan.intentPlanDigest
+    && generation.digests.activityPlanDigest === variant.activityPlan.activityPlanDigest
+    && generation.digests.anchorPlanDigest === variant.anchorPlan.anchorPlanDigest
+    && generation.digests.presetProfileDigest === project.presetProfiles.presetProfileDigest
+    && generation.digests.effectiveConfigDigest === effectiveConfig.digest,
+  "retained generation digest envelope mismatch", "CANDIDATE_PROJECTION_INVALID");
+
+  const marginalCandidates = generation.candidates.filter((candidate) => Object.keys(candidate.generatedEventsByTrack).length === 1);
+  requireIntegrity(variant.candidateHarmonyRoles.length === 0 || variant.candidateHarmonyRoles.length === marginalCandidates.length, "retained operational harmony roles are only partially present", "CANDIDATE_PROJECTION_INVALID");
+  requireIntegrity(variant.candidateHarmonyRoles.length <= 2, "retained operational harmony roles exceed supported cardinality", "CANDIDATE_PROJECTION_INVALID");
+  requireIntegrity(new Set(variant.candidateHarmonyRoles.map((entry) => entry.trackPlanId)).size === variant.candidateHarmonyRoles.length, "retained operational harmony tracks are duplicated", "CANDIDATE_PROJECTION_INVALID");
+  requireIntegrity(new Set(variant.candidateHarmonyRoles.map((entry) => entry.marginalCandidateId)).size === variant.candidateHarmonyRoles.length, "retained operational marginal Candidates are duplicated", "CANDIDATE_PROJECTION_INVALID");
+  requireIntegrity(variant.candidateHarmonyRoles.every((entry, index) => entry.harmonyRole === (index === 0 ? "H1" : "H2")), "retained operational harmony role order is not canonical", "CANDIDATE_PROJECTION_INVALID");
+  for (const entry of variant.candidateHarmonyRoles) {
+    const marginal = marginalCandidates.find((candidate) => candidate.id === entry.marginalCandidateId);
+    requireIntegrity(marginal !== undefined && entry.trackPlanId in marginal.generatedEventsByTrack, "retained operational role target mismatch", "CANDIDATE_PROJECTION_INVALID");
+  }
+
+  const derivedCandidateStatuses: ArrangementCandidate["candidateStatus"][] = [];
+  for (const candidate of generation.candidates) {
+    requireIntegrity(candidate.presetId === variant.presetId
+      && candidate.anchorPlanDigest === generation.digests.anchorPlanDigest
+      && candidate.effectiveConfigDigest === generation.digests.effectiveConfigDigest
+      && candidate.presetProfileDigest === generation.digests.presetProfileDigest
+      && candidate.effectiveChordTimelineDigest === generation.digests.effectiveChordTimelineDigest
+      && candidate.sourceLeadAtomizationDigest === generation.digests.sourceLeadAtomizationDigest,
+    "retained Candidate provenance mismatch");
+    derivedCandidateStatuses.push(await validateCandidateIntegrity(
+      candidate,
+      project,
+      variant.intentPlan,
+      variant.activityPlan,
+      variant.anchorPlan,
+      ordinals,
+      effectiveConfig,
+      timeline,
+      atomization,
+    ));
+  }
+  const derivedGenerationStatus = derivedCandidateStatuses.length === 0
+    ? "blocked"
+    : derivedCandidateStatuses.some((status) => status === "complete") ? "complete" : "partial";
+  requireIntegrity(generation.status === derivedGenerationStatus, "retained Generation result status differs from derived Candidate coverage", "GENERATION_RESULT_STATE_INVALID");
+
+  const candidateById = new Map(generation.candidates.map((candidate) => [candidate.id, candidate]));
+  const editsByCandidate = new Map<string, ArrangementOutputEdit[]>();
+  for (const edit of variant.outputEdits) {
+    const candidate = candidateById.get(edit.baseCandidateId);
+    requireIntegrity(candidate !== undefined && candidate.contentDigest === edit.baseCandidateDigest, "retained OutputEdit base binding mismatch", "EDIT_BASE_CANDIDATE_STALE");
+    requireIntegrity(edit.id === outputEditId(edit.presetId, edit.baseCandidateDigest, edit.editOrdinal), "retained OutputEdit ID mismatch", "EDIT_MATERIALIZATION_BLOCKED");
+    const eventIds = new Set(Object.values(candidate.generatedEventsByTrack).flat().map((event) => event.id));
+    requireIntegrity(validateOutputEdits(candidate.id, candidate.contentDigest, eventIds, [edit]).length === 0, "retained OutputEdit target binding mismatch", "EDIT_BASE_CANDIDATE_STALE");
+    const values = editsByCandidate.get(candidate.id) ?? [];
+    values.push(edit);
+    editsByCandidate.set(candidate.id, values);
+  }
+  for (const values of editsByCandidate.values()) {
+    values.sort((left, right) => left.editOrdinal - right.editOrdinal);
+    requireIntegrity(values.every((edit, index) => edit.editOrdinal === index), "retained OutputEdit ordinals are not continuous", "EDIT_MATERIALIZATION_BLOCKED");
+  }
+
+  await validateSnapshots(
+    variant.editedSnapshots,
+    variant.outputEdits,
+    generation.candidates,
+    variant.intentPlan,
+    variant.activityPlan,
+    variant.anchorPlan,
+    project,
+    expected,
+    ordinals,
+    effectiveConfig,
+    timeline,
+    atomization,
+  );
 }
 
 async function validateVariantIntegrity(
@@ -838,6 +1023,9 @@ async function validateVariantIntegrity(
   const locks: VariantStageLocks = project.locksByPreset[variant.presetId]
     ?? { intent: [], activity: [], anchor: [], solver: [] };
   const intent = variant.intentPlan;
+  if (variant.lifecycle === "generation-attempted" && !isFresh(variant, "generation")) {
+    await validateRetainedGenerationArtifacts(variant, project, expected, ordinals, effectiveConfig);
+  }
   if (!isFresh(variant, "intent")) return;
   assertIntentReferences(intent, project, ordinals);
   requireIntegrity(intent.plannerVersion === expected.versions.plannerVersion, "Intent planner version mismatch", "ALGORITHM_CONFIG_MISMATCH");
@@ -979,6 +1167,7 @@ async function validateVariantIntegrity(
     activityPlanDigest: activity.activityPlanDigest,
     anchorPlanDigest: anchor.anchorPlanDigest,
   }), "Generation digest envelope mismatch");
+  const derivedCandidateStatuses: ArrangementCandidate["candidateStatus"][] = [];
   for (const candidate of generation.candidates) {
     requireIntegrity(candidate.presetId === variant.presetId
       && candidate.anchorPlanDigest === anchor.anchorPlanDigest
@@ -986,8 +1175,12 @@ async function validateVariantIntegrity(
       && candidate.presetProfileDigest === generation.digests.presetProfileDigest
       && candidate.effectiveChordTimelineDigest === generation.digests.effectiveChordTimelineDigest
       && candidate.sourceLeadAtomizationDigest === generation.digests.sourceLeadAtomizationDigest, "Candidate provenance mismatch");
-    await validateCandidateIntegrity(candidate, project, anchor, ordinals);
+    derivedCandidateStatuses.push(await validateCandidateIntegrity(candidate, project, intent, activity, anchor, ordinals, effectiveConfig));
   }
+  const derivedGenerationStatus = derivedCandidateStatuses.length === 0
+    ? "blocked"
+    : derivedCandidateStatuses.some((status) => status === "complete") ? "complete" : "partial";
+  requireIntegrity(generation.status === derivedGenerationStatus, "Generation result status differs from derived Candidate coverage", "GENERATION_RESULT_STATE_INVALID");
   const candidateById = new Map(generation.candidates.map((candidate) => [candidate.id, candidate]));
   const editsByCandidate = new Map<string, ArrangementOutputEdit[]>();
   for (const edit of variant.outputEdits) {
@@ -1008,10 +1201,13 @@ async function validateVariantIntegrity(
     variant.editedSnapshots,
     variant.outputEdits,
     generation.candidates,
+    intent,
+    activity,
     anchor,
     project,
     expected,
     ordinals,
+    effectiveConfig,
   );
 }
 

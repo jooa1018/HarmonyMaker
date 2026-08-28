@@ -95,8 +95,8 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(result.rawMusicXml).toBe(musicXml);
     expect(result.evidence.evidence).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain("reference-job:");
-    await expect(h.service.delete(handle)).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "deleted" } });
-    await expect(h.service.delete(handle)).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "deleted" } });
+    await expect(h.service.delete(handle)).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" });
+    await expect(h.service.delete(handle)).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" });
     expect(h.adapter.callCounts.delete).toBe(1);
     expect(h.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
     await expect(h.service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
@@ -511,9 +511,46 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const h = await harness();
     const handle = await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "cleanup-expiry-key" });
     h.advance(24 * 60 * 60 * 1_000 + 1);
-    await expect(h.service.cleanupExpiredJobs()).resolves.toEqual([{ jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } } }]);
+    await expect(h.service.cleanupExpiredJobs()).resolves.toEqual([{ jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" } }]);
     expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", handleActive: false, creditState: "released" });
     await expect(h.service.synchronizeStatus(handle)).rejects.toThrow("OMR_JOB_UNAVAILABLE");
+  });
+
+  it("reports isolated scheduler item failures without hiding the attempted claim", async () => {
+    const h = await harness();
+    await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "cleanup-summary-failure" });
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    const internal = h.service as unknown as { deleteRecord: (...input: readonly unknown[]) => Promise<never> };
+    vi.spyOn(internal, "deleteRecord").mockRejectedValueOnce(new RangeError("OMR_DELETE_FAULT_INJECTED"));
+    await expect(h.service.cleanupExpiredJobsForScheduler()).resolves.toEqual({
+      attemptedJobs: 1,
+      completedJobs: 0,
+      pendingJobs: 0,
+      failedJobs: 1,
+      results: [],
+      failures: [{ jobId: "1", code: "OMR_DELETE_FAULT_INJECTED" }],
+    });
+  });
+
+  it("reports a retryable delete outcome as pending rather than completed", async () => {
+    const h = await harness();
+    await createConsentedJob(h.service, { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights, providerTransferConsent: true, idempotencyKey: "cleanup-summary-pending" });
+    h.advance(24 * 60 * 60 * 1_000 + 1);
+    const internal = h.service as unknown as { deleteRecord: (...input: readonly unknown[]) => Promise<never> };
+    vi.spyOn(internal, "deleteRecord").mockResolvedValueOnce({
+      localHandleDeleted: true,
+      vendor: { status: "failed", code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", message: "pending" },
+      cleanupState: "pending",
+      nextAttemptAt: "2026-01-02T00:00:00.000Z",
+    } as never);
+    await expect(h.service.cleanupExpiredJobsForScheduler()).resolves.toMatchObject({
+      attemptedJobs: 1,
+      completedJobs: 0,
+      pendingJobs: 1,
+      failedJobs: 0,
+      results: [{ jobId: "1", result: { cleanupState: "pending" } }],
+      failures: [],
+    });
   });
 
   it("binds informed transfer consent to the exact provider capability snapshot", async () => {
@@ -568,6 +605,57 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     ]);
   });
 
+  it("does not claim, lease, retry, persist, or call B when upload binding A is unavailable", async () => {
+    const h = await harness();
+    const adapterA = new ReferenceOmrVendorAdapter([h.fixture], { vendorId: "provider-a", vendorDisplayName: "Provider A" });
+    const adapterB = new ReferenceOmrVendorAdapter([h.fixture], { vendorId: "provider-b", vendorDisplayName: "Provider B" });
+    const registry = new Map<string, ReferenceOmrVendorAdapter>([["binding:a", adapterA], ["binding:b", adapterB]]);
+    const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
+      ? registry.get(bindingId) : undefined;
+    const serviceA = new DurableOmrApplicationService({ ...h.dependencies, adapter: adapterA, providerBindingId: "binding:a", resolveAdapter });
+    const handle = await createConsentedJob(serviceA, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "missing-upload-binding-a",
+    });
+    registry.delete("binding:a");
+    const rotated = new DurableOmrApplicationService({ ...h.dependencies, adapter: adapterB, providerBindingId: "binding:b", resolveAdapter });
+    const upload = { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png" as const, idempotencyKey: "missing-upload-binding-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) };
+    await expect(rotated.uploadPage(handle, upload)).rejects.toThrow("OMR_PROVIDER_BINDING_UNAVAILABLE");
+    const restarted = new DurableOmrApplicationService({ ...h.dependencies, adapter: adapterB, providerBindingId: "binding:b", resolveAdapter });
+    await expect(restarted.uploadPage(handle, upload)).rejects.toThrow("OMR_PROVIDER_BINDING_UNAVAILABLE");
+    expect(adapterA.callCounts.upload).toBe(0);
+    expect(adapterB.callCounts.upload).toBe(0);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "created", pages: [] });
+    registry.set("binding:a", adapterA);
+    const restored = new DurableOmrApplicationService({ ...h.dependencies, adapter: adapterB, providerBindingId: "binding:b", resolveAdapter });
+    await expect(restored.uploadPage(handle, upload)).resolves.toBeUndefined();
+    expect(adapterA.callCounts.upload).toBe(1);
+    expect(adapterB.callCounts.upload).toBe(0);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "uploading", pages: [{ pageIndex: 0, retryCount: 0, uploadState: "uploaded", uploadLeaseToken: undefined }] });
+  });
+
+  it("leaves the Memory page and job byte-for-byte unchanged for a stale failPage lease token", async () => {
+    const h = await harness();
+    await createConsentedJob(h.service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "stale-fail-page-memory",
+    });
+    const job = h.store.listJobs()[0];
+    const page = {
+      pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKeyHash: "memory-page-key",
+      width: 100, height: 120, quality: {
+        blurBp: basisPoints(0), perspectiveBp: basisPoints(0), glareBp: basisPoints(0), cropRiskBp: basisPoints(0),
+        estimatedStaffSpacePixels: 20, status: "pass" as const, reasons: [],
+      }, warnAcknowledged: false, duplicateConfirmed: false, uploadState: "pending" as const, retryCount: 0,
+    };
+    await expect(h.store.claimPage(job.id, page, 3, "current-page-lease", "2026-01-01T00:05:00.000Z", true, "2026-01-01T00:00:00.000Z"))
+      .resolves.toMatchObject({ status: "claimed" });
+    const before = structuredClone(h.store.listJobs()[0]);
+    await expect(h.store.failPage(job.id, 0, "stale-page-lease", "reconciliation-required", "2026-01-01T00:00:01.000Z"))
+      .resolves.toBeUndefined();
+    expect(h.store.listJobs()[0]).toEqual(before);
+  });
+
   it("canonicalizes set-like capability fields before consent snapshot hashing", async () => {
     const h = await harness();
     const capabilities = await h.adapter.getCapabilities();
@@ -605,6 +693,50 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       expect(await h.service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
       expect(h.store.listJobs()[0]).toMatchObject({ state: "completed", creditState: "settled", providerBindingId: "hm-reference", retryAttempt: undefined });
     }
+  });
+
+  it("completes repeated provider-created/queued observations without regressing local state or leaking the lease", async () => {
+    for (const vendorState of ["created", "queued"] as const) for (const localState of ["queued", "processing", "needs-input", "sync-retry-pending"] as const) {
+      const h = await harness([{ kind: vendorState }, { kind: vendorState }]);
+      const handle = await createStartedJob(h, `provider-created-${localState}`);
+      const job = h.store.listJobs()[0];
+      if (localState === "processing") await h.store.transition(job.id, { state: "processing" }, "2026-01-01T00:00:00.000Z");
+      if (localState === "needs-input") await h.store.transition(job.id, {
+        state: "needs-input",
+        currentInputRequest: { kind: "select-instrument", requestId: `created-${localState}`, choices: ["Voice"] },
+      }, "2026-01-01T00:00:00.000Z");
+      if (localState === "sync-retry-pending") await h.store.transition(job.id, {
+        state: "sync-retry-pending", retryKind: "sync", retryAttempt: 1,
+        retryNextAttemptAt: "2026-01-01T00:00:00.000Z",
+      }, "2026-01-01T00:00:00.000Z");
+      const expected = localState === "sync-retry-pending" ? "queued" : localState;
+      await expect(h.service.synchronizeStatus(handle)).resolves.toMatchObject({ kind: expected });
+      expect(h.store.listJobs()[0]).toMatchObject({ state: expected, statusObservationLeaseToken: undefined, statusObservationLeaseExpiresAt: undefined });
+      await expect(h.service.synchronizeStatus(handle)).resolves.toMatchObject({ kind: expected });
+      expect(h.adapter.callCounts.status).toBe(2);
+      expect(h.store.listJobs()[0]).toMatchObject({ statusObservationLeaseToken: undefined, statusObservationLeaseExpiresAt: undefined });
+    }
+  });
+
+  it("fails closed before persisting a malformed provider needs-input payload", async () => {
+    const h = await harness([{
+      kind: "needs-input",
+      request: {
+        kind: "vendor-specific", requestId: "unsafe-runtime-input", schemaId: "provider-schema",
+        payload: { unsafe: Number.MAX_SAFE_INTEGER + 1 },
+      },
+    } as never]);
+    const handle = await createStartedJob(h, "malformed-needs-input-runtime");
+    await expect(h.service.synchronizeStatus(handle)).resolves.toMatchObject({
+      kind: "failed", code: "OMR_PROVIDER_CONTRACT_INVALID",
+    });
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "failed", creditState: "released",
+      statusObservationLeaseToken: undefined,
+      statusObservationLeaseExpiresAt: undefined,
+    });
+    expect(h.store.listJobs()[0]).not.toHaveProperty("acceptedInput");
+    expect(h.store.listJobs()[0]).not.toHaveProperty("currentInputRequest");
   });
 
   it("bounds transient retries without releasing credit or discarding provider binding", async () => {
@@ -872,7 +1004,7 @@ describe("durable provider-neutral OMR application lifecycle", () => {
 
     h.advance(24 * 60 * 60 * 1_000 + 1);
     await expect(service.cleanupExpiredJobs()).resolves.toEqual([{
-      jobId: "1", result: { localHandleDeleted: true, vendor: expect.objectContaining({ status: "failed", code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN" }) },
+      jobId: "1", result: { localHandleDeleted: true, vendor: expect.objectContaining({ status: "failed", code: "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN" }), cleanupState: "pending", nextAttemptAt: expect.any(String) },
     }]);
     expect(createSpy).toHaveBeenCalledTimes(1); expect(deleteSpy).not.toHaveBeenCalled(); expect(retentionSpy).not.toHaveBeenCalled();
     const pending = h.store.listJobs()[0];
@@ -1139,12 +1271,12 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const resolveAdapter = (bindingId: string, contractVersion: string) => contractVersion === OMR_VENDOR_ADAPTER_CONTRACT_VERSION
       ? bindingId === "binding:a" ? h.adapter : adapterB
       : undefined;
-    let beforeCompleteCleanup: ReturnType<MemoryOmrStore["listJobs"]>[number] | undefined;
+    let beforeDeleteFinalization: ReturnType<MemoryOmrStore["listJobs"]>[number] | undefined;
     const cleanupStore = new Proxy(h.store, {
       get(target, property, receiver) {
-        if (property === "completeCleanup") return async (...args: Parameters<OmrStore["completeCleanup"]>) => {
-          beforeCompleteCleanup = structuredClone(target.listJobs()[0]);
-          return target.completeCleanup(...args);
+        if (property === "finalizeJobDelete") return async (...args: Parameters<OmrStore["finalizeJobDelete"]>) => {
+          beforeDeleteFinalization = structuredClone(target.listJobs()[0]);
+          return target.finalizeJobDelete(...args);
         };
         const value = Reflect.get(target, property, receiver) as unknown;
         return typeof value === "function" ? value.bind(target) : value;
@@ -1179,9 +1311,9 @@ describe("durable provider-neutral OMR application lifecycle", () => {
       adapterContractVersion: OMR_VENDOR_ADAPTER_CONTRACT_VERSION, resolveAdapter,
     });
     await expect(rotated.cleanupExpiredJobs()).resolves.toEqual([{
-      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } },
+      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" },
     }]);
-    expect(beforeCompleteCleanup).toMatchObject({
+    expect(beforeDeleteFinalization).toMatchObject({
       state: "delete-pending", handleActive: false, vendorCreateOutcomeState: "confirmed",
       vendorJobIdEnvelope: expect.any(Object), cleanupLeaseToken: expect.any(String),
     });
@@ -1398,10 +1530,125 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     const unsupported = new ReferenceOmrVendorAdapter([base.fixture], { vendorId: "hm-reference", supportedMimeTypes: ["image/png"], maxPages: 12, evidenceGranularity: "page", supportsDeletion: false, retentionDisclosure: true, supportsIdempotency: true, supportsInteractiveInput: true, estimatedCreditPerPage: 1 });
     await expect(runDelete(unsupported, "unsupported-delete-key")).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "not-supported", retentionInfo: { policyReference: "reference-fixture-only" } } });
     const failed = new ReferenceOmrVendorAdapter([{ ...base.fixture, deleteResult: { status: "failed", code: "RAW_VENDOR_CODE", message: "raw vendor details" } }]);
-    await expect(runDelete(failed, "failed-delete-key")).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." } });
+    await expect(runDelete(failed, "failed-delete-key")).resolves.toEqual({ localHandleDeleted: true, vendor: { status: "failed", code: "OMR_VENDOR_DELETE_FAILED", message: "Vendor 삭제 확인이 완료되지 않았습니다." }, cleanupState: "pending", nextAttemptAt: expect.any(String) });
   });
 
-  it("follows up not-supported Vendor deletion at the disclosed vendorDeletesAt after handle removal", async () => {
+  it("shares one provider DELETE claimant and fences cleanup finalization that completes after direct delete", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "overlapping-provider-delete");
+    await h.service.synchronizeStatus(handle);
+    let releaseDelete!: () => void;
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    const providerDelete = vi.spyOn(h.adapter, "deleteVendorJob").mockImplementation(async () => {
+      await deleteGate;
+      return { status: "deleted" };
+    });
+    const originalObjectDelete = h.objects.delete.bind(h.objects);
+    let releaseStaleCleanup!: () => void;
+    const staleCleanupGate = new Promise<void>((resolve) => { releaseStaleCleanup = resolve; });
+    let localDeleteCalls = 0;
+    const localDelete = vi.spyOn(h.objects, "delete").mockImplementation(async (...args) => {
+      localDeleteCalls += 1;
+      if (localDeleteCalls === 1) await staleCleanupGate;
+      return originalObjectDelete(...args);
+    });
+    const direct = h.service.delete(handle);
+    await vi.waitFor(() => expect(providerDelete).toHaveBeenCalledTimes(1));
+    const cleanup = h.service.cleanupExpiredJobs();
+    await vi.waitFor(() => expect(localDelete).toHaveBeenCalledTimes(1));
+    expect(providerDelete).toHaveBeenCalledTimes(1);
+    releaseDelete();
+    await expect(direct).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" });
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted" });
+    releaseStaleCleanup();
+    await expect(cleanup).resolves.toMatchObject([{ result: { cleanupState: "resolved", vendor: { status: "deleted" } } }]);
+    expect(providerDelete).toHaveBeenCalledTimes(1);
+    expect(h.store.listProviderDeleteOperations()).toHaveLength(1);
+    expect(h.store.listProviderDeleteOperations()[0]).toMatchObject({ dispatchOutcome: "acknowledged-deleted", claimToken: undefined });
+  });
+
+  it("makes two direct DELETE finalizers idempotent when the pending observer completes last", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const handle = await createStartedJob(h, "overlapping-direct-provider-delete");
+    await h.service.synchronizeStatus(handle);
+    let releaseDelete!: () => void;
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    const providerDelete = vi.spyOn(h.adapter, "deleteVendorJob").mockImplementation(async () => {
+      await deleteGate;
+      return { status: "deleted" };
+    });
+    const originalObjectDelete = h.objects.delete.bind(h.objects);
+    let releaseStaleDirect!: () => void;
+    const staleDirectGate = new Promise<void>((resolve) => { releaseStaleDirect = resolve; });
+    let localDeleteCalls = 0;
+    const localDelete = vi.spyOn(h.objects, "delete").mockImplementation(async (...args) => {
+      localDeleteCalls += 1;
+      if (localDeleteCalls === 1) await staleDirectGate;
+      return originalObjectDelete(...args);
+    });
+    const first = h.service.delete(handle);
+    await vi.waitFor(() => expect(providerDelete).toHaveBeenCalledTimes(1));
+    const second = h.service.delete(handle);
+    await vi.waitFor(() => expect(localDelete).toHaveBeenCalledTimes(1));
+    releaseDelete();
+    await expect(first).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+    releaseStaleDirect();
+    await expect(second).resolves.toMatchObject({ cleanupState: "resolved", vendor: { status: "deleted" } });
+    expect(providerDelete).toHaveBeenCalledTimes(1);
+    expect(h.store.listJobs()[0]).toMatchObject({
+      state: "deleted", vendorDeleteState: "deleted", localDeleteState: "deleted", cleanupLeaseToken: undefined,
+    });
+  });
+
+  it("replays an uncertain idempotent DELETE with the exact durable key after restart", async () => {
+    for (const remoteAppliedBeforeLoss of [false, true]) {
+      const h = await harness([{ kind: "completed" }]);
+      const handle = await createStartedJob(h, `idempotent-delete-loss-${remoteAppliedBeforeLoss}`);
+      await h.service.synchronizeStatus(handle);
+      const keys: string[] = [];
+      let remoteDeleted = false;
+      vi.spyOn(h.adapter, "deleteVendorJob").mockImplementation(async (_vendorJobId, operation) => {
+        keys.push(operation.idempotencyKey);
+        if (keys.length === 1) {
+          if (remoteAppliedBeforeLoss) remoteDeleted = true;
+          throw new OmrVendorCallError("delete response lost", "outcome-uncertain");
+        }
+        remoteDeleted = true;
+        return { status: "deleted" };
+      });
+      await expect(h.service.delete(handle)).resolves.toMatchObject({ vendor: { status: "failed", code: "OMR_VENDOR_DELETE_FAILED" } });
+      expect(h.store.listProviderDeleteOperations()[0]).toMatchObject({ dispatchOutcome: "outcome-uncertain", reconciliationRequired: false });
+      h.advance(60_001);
+      const restarted = new DurableOmrApplicationService(h.dependencies);
+      await expect(restarted.delete(handle)).resolves.toMatchObject({ vendor: { status: "deleted" } });
+      expect(remoteDeleted).toBe(true);
+      expect(keys).toHaveLength(2);
+      expect(new Set(keys).size).toBe(1);
+      expect(h.store.listProviderDeleteOperations()[0]).toMatchObject({ dispatchOutcome: "acknowledged-deleted", claimToken: undefined });
+    }
+  });
+
+  it("never blindly replays an uncertain non-idempotent DELETE after restart", async () => {
+    const h = await harness([{ kind: "completed" }]);
+    const capabilities = await h.adapter.getCapabilities();
+    const adapter = new ReferenceOmrVendorAdapter([h.fixture], { ...capabilities, supportsIdempotency: false });
+    const service = new DurableOmrApplicationService({ ...h.dependencies, adapter });
+    const handle = await createConsentedJob(service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "non-idempotent-delete-loss",
+    });
+    await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "non-idempotent-delete-page", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
+    await service.start(handle); await service.synchronizeStatus(handle);
+    const providerDelete = vi.spyOn(adapter, "deleteVendorJob").mockRejectedValue(new OmrVendorCallError("delete response lost", "outcome-uncertain"));
+    await expect(service.delete(handle)).resolves.toMatchObject({ vendor: { status: "failed", code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" } });
+    h.advance(12 * 60 * 60_000 + 1);
+    const restarted = new DurableOmrApplicationService({ ...h.dependencies, adapter });
+    await expect(restarted.delete(handle)).resolves.toMatchObject({ vendor: { status: "failed", code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN" } });
+    expect(providerDelete).toHaveBeenCalledTimes(1);
+    expect(h.store.listProviderDeleteOperations()[0]).toMatchObject({ dispatchOutcome: "outcome-uncertain", reconciliationRequired: true, claimToken: undefined });
+  });
+
+  it("never dispatches unsupported DELETE and closes retention at the disclosed vendorDeletesAt", async () => {
     const h = await harness([{ kind: "completed" }]);
     const vendorDeletesAt = "2026-01-01T00:02:00.000Z";
     const fixture = { ...h.fixture, retentionInfo: { canDeleteImmediately: false, policyReference: "scheduled-delete-policy", vendorDeletesAt } };
@@ -1411,13 +1658,13 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     await service.uploadPage(handle, { pageIndex: 0, pageDigest: h.pageDigest, mimeType: "image/png", idempotencyKey: "scheduled-delete-upload", bytes: new Blob([h.pageBytes.slice().buffer as ArrayBuffer]) });
     await service.start(handle); expect(await service.synchronizeStatus(handle)).toEqual({ kind: "completed" });
     await expect(service.delete(handle)).resolves.toMatchObject({ localHandleDeleted: true, vendor: { status: "not-supported", retentionInfo: { vendorDeletesAt } } });
-    expect(adapter.callCounts.delete).toBe(1);
+    expect(adapter.callCounts.delete).toBe(0);
     h.advance(60 * 1_000);
     await expect(service.cleanupExpiredJobs()).resolves.toEqual([]);
     h.advance(60 * 1_000 + 1);
     await expect(service.cleanupExpiredJobs()).resolves.toHaveLength(1);
-    expect(adapter.callCounts.delete).toBe(2);
-    expect(h.store.listJobs()[0]).toMatchObject({ state: "delete-pending", handleActive: false, vendorDeleteState: "not-supported", localDeleteState: "deleted", retentionInfo: { vendorDeletesAt } });
+    expect(adapter.callCounts.delete).toBe(0);
+    expect(h.store.listJobs()[0]).toMatchObject({ state: "deleted", handleActive: false, vendorDeleteState: "deleted", localDeleteState: "deleted", retentionInfo: { vendorDeletesAt } });
   });
 
   it("replays the exact canonical create request after lost responses and distinguishes uncertain from definitive outcomes", async () => {
@@ -1471,18 +1718,18 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     vi.spyOn(definitive.adapter, "createVendorJob").mockImplementation(async () => { definitiveCalls += 1; throw new OmrVendorCallError("rejected", "definitive-rejection"); });
     const definitiveService = new DurableOmrApplicationService({ ...definitive.dependencies, adapter: definitive.adapter });
     const definitiveRequest = { sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo" as const, rights, providerTransferConsent: true as const, idempotencyKey: "definitive-rejection" };
-    await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_OPERATION_FAILED");
+    await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_CREATE_DEFINITIVE_REJECTION");
     expect(definitive.store.listJobs()[0]).toMatchObject({
       state: "failed", vendorCreateOutcomeState: "definitive-no-job",
       creditState: "released",
     });
     expect(definitive.store.listJobs()[0].vendorJobIdEnvelope).toBeUndefined();
     definitive.advance(5 * 60 * 1_000 + 1);
-    await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_OPERATION_FAILED");
+    await expect(createConsentedJob(definitiveService, definitiveRequest)).rejects.toThrow("OMR_VENDOR_CREATE_DEFINITIVE_REJECTION");
     expect(definitiveCalls).toBe(1);
     definitive.advance(24 * 60 * 60 * 1_000);
     await expect(definitiveService.cleanupExpiredJobs()).resolves.toEqual([{
-      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" } },
+      jobId: "1", result: { localHandleDeleted: true, vendor: { status: "deleted" }, cleanupState: "resolved" },
     }]);
     expect(definitive.adapter.callCounts.delete).toBe(0);
     expect(definitive.store.listJobs()[0]).toMatchObject({
@@ -1892,5 +2139,142 @@ describe("durable provider-neutral OMR application lifecycle", () => {
     expect(processing.store.listJobs()[0]).toMatchObject({ state: "deleted", handleActive: false });
     expect(errorLog).toHaveBeenCalled();
     errorLog.mockRestore();
+  });
+
+  it("fences provider DELETE at the lease boundary and after W2 reclaims W1", async () => {
+    const h = await harness();
+    await createConsentedJob(h.service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: "delete-lease-boundary",
+    });
+    const job = h.store.listJobs()[0];
+    if (!job.vendorJobIdEnvelope) throw new Error("DELETE_LEDGER_FIXTURE_INVALID");
+    const authority = {
+      jobId: job.id,
+      operationId: "delete-op:1",
+      operationGeneration: 1,
+      providerBindingId: job.providerBindingId,
+      adapterContractVersion: job.adapterContractVersion,
+      vendorId: job.capabilities.vendorId,
+      vendorJobIdEnvelope: job.vendorJobIdEnvelope,
+      idempotencyKey: "delete-idempotency:1",
+      supportsDeletion: true,
+      supportsIdempotency: true,
+    } as const;
+    await expect(h.store.claimProviderDelete({
+      ...authority, claimToken: "W1", claimLeaseExpiresAt: "2026-01-01T00:00:10.000Z", now: "2026-01-01T00:00:00.000Z",
+    })).resolves.toMatchObject({ status: "claimed", operation: { claimToken: "W1" } });
+    await expect(h.store.beginProviderDeleteDispatch({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", now: "2026-01-01T00:00:09.999Z",
+    })).resolves.toBe(true);
+    await expect(h.store.completeProviderDelete({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+      reconciliationRequired: false, now: "2026-01-01T00:00:10.000Z",
+    })).resolves.toBe(false);
+    await expect(h.store.claimProviderDelete({
+      ...authority, claimToken: "W2", claimLeaseExpiresAt: "2026-01-01T00:00:20.000Z", now: "2026-01-01T00:00:10.000Z",
+    })).resolves.toMatchObject({ status: "claimed", operation: { claimToken: "W2" } });
+    await expect(h.store.beginProviderDeleteDispatch({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", now: "2026-01-01T00:00:10.001Z",
+    })).resolves.toBe(false);
+    await expect(h.store.completeProviderDelete({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+      reconciliationRequired: false, now: "2026-01-01T00:00:10.001Z",
+    })).resolves.toBe(false);
+    await expect(h.store.beginProviderDeleteDispatch({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W2", now: "2026-01-01T00:00:10.001Z",
+    })).resolves.toBe(true);
+    await expect(h.store.completeProviderDelete({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W2", dispatchOutcome: "acknowledged-deleted", result: { status: "deleted" },
+      reconciliationRequired: false, now: "2026-01-01T00:00:19.999Z",
+    })).resolves.toBe(true);
+  });
+
+  it.each([
+    {
+      label: "acknowledged failure",
+      supportsIdempotency: true,
+      dispatchOutcome: "acknowledged-failed" as const,
+      reconciliationRequired: false,
+      result: { status: "failed" as const, code: "OMR_VENDOR_DELETE_FAILED", message: "acknowledged failure" },
+    },
+    {
+      label: "non-idempotent uncertainty",
+      supportsIdempotency: false,
+      dispatchOutcome: "outcome-uncertain" as const,
+      reconciliationRequired: true,
+      result: { status: "failed" as const, code: "OMR_VENDOR_DELETE_OUTCOME_UNCERTAIN", message: "reconciliation required" },
+    },
+  ])("keeps Memory DELETE ledger truth after a stale pending finalizer: $label", async (scenario) => {
+    const h = await harness();
+    await createConsentedJob(h.service, {
+      sessionId: "session:1", pageCount: 1, sourceKind: "camera-photo", rights,
+      providerTransferConsent: true, idempotencyKey: `delete-reverse:${scenario.label}`,
+    });
+    const job = h.store.listJobs()[0];
+    if (!job.vendorJobIdEnvelope) throw new Error("DELETE_LEDGER_FIXTURE_INVALID");
+    const authority = {
+      jobId: job.id,
+      operationId: `delete-reverse:${scenario.label}`,
+      operationGeneration: 1,
+      providerBindingId: job.providerBindingId,
+      adapterContractVersion: job.adapterContractVersion,
+      vendorId: job.capabilities.vendorId,
+      vendorJobIdEnvelope: job.vendorJobIdEnvelope,
+      idempotencyKey: `delete-reverse-key:${scenario.label}`,
+      supportsDeletion: true,
+      supportsIdempotency: scenario.supportsIdempotency,
+    } as const;
+    await h.store.markHandleDeleted(job.id, "2026-01-01T00:00:00.000Z");
+    await expect(h.store.claimProviderDelete({
+      ...authority, claimToken: "W1", claimLeaseExpiresAt: "2026-01-01T00:10:00.000Z",
+      now: "2026-01-01T00:00:00.000Z",
+    })).resolves.toMatchObject({ status: "claimed" });
+    await expect(h.store.beginProviderDeleteDispatch({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", now: "2026-01-01T00:00:01.000Z",
+    })).resolves.toBe(true);
+    await expect(h.store.completeProviderDelete({
+      jobId: job.id, operationId: authority.operationId, operationGeneration: 1,
+      claimToken: "W1", dispatchOutcome: scenario.dispatchOutcome, result: scenario.result,
+      nextAttemptAt: "2026-01-01T12:00:00.000Z",
+      reconciliationRequired: scenario.reconciliationRequired,
+      now: "2026-01-01T00:00:02.000Z",
+    })).resolves.toBe(true);
+    const finalizationAuthority = {
+      operationId: authority.operationId,
+      operationGeneration: authority.operationGeneration,
+    };
+    await expect(h.store.finalizeJobDelete({
+      jobId: job.id,
+      providerDeleteAuthority: finalizationAuthority,
+      update: {
+        state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+        vendorDeleteResult: scenario.result, vendorDeleteNextAttemptAt: "2026-01-01T12:00:00.000Z",
+      },
+      now: "2026-01-01T00:00:03.000Z",
+    })).resolves.toMatchObject({ status: "applied", job: { vendorDeleteState: "failed" } });
+    await expect(h.store.finalizeJobDelete({
+      jobId: job.id,
+      providerDeleteAuthority: finalizationAuthority,
+      update: {
+        state: "delete-pending", vendorDeleteState: "pending", localDeleteState: "failed",
+        vendorDeleteResult: { status: "failed", code: "STALE_PENDING", message: "stale pending observation" },
+        vendorDeleteNextAttemptAt: "2026-01-01T00:10:00.000Z",
+      },
+      now: "2026-01-01T00:00:04.000Z",
+    })).resolves.toMatchObject({
+      status: "applied",
+      job: {
+        state: "delete-pending", vendorDeleteState: "failed", localDeleteState: "deleted",
+        vendorDeleteResult: scenario.result, vendorDeleteNextAttemptAt: "2026-01-01T12:00:00.000Z",
+      },
+    });
   });
 });

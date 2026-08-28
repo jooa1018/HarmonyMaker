@@ -3,8 +3,8 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 
 import type {
-  AbuseReportInput, CleanupResult, DurableShareRecord, GovernanceStore,
-  IdempotencyClaim, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
+  AbuseReportInput, AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, CleanupResult, DurableShareRecord, GovernanceStore,
+  IdempotencyClaim, IdempotencyRecoveryLookup, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
 } from "./store";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -29,6 +29,24 @@ function shareRow(row: Record<string, unknown>): DurableShareRecord {
     expiresAt: iso(row.expires_at as Date),
     ...(row.disabled_at ? { disabledAt: iso(row.disabled_at as Date) } : {}),
     ...(row.deleted_at ? { deletedAt: iso(row.deleted_at as Date) } : {}),
+  };
+}
+function abuseReportRow(row: Record<string, unknown>): AbuseReportRecord {
+  return {
+    id: id(row.id as string),
+    ...(row.reporter_session_id ? { reporterSessionId: id(row.reporter_session_id as string) } : {}),
+    ...(row.share_record_id ? { shareRecordId: id(row.share_record_id as string) } : {}),
+    opaqueReferenceHash: row.opaque_reference_hash as string,
+    category: row.category as string,
+    ...(row.detail ? { detail: row.detail as string } : {}),
+    createdAt: iso(row.created_at as Date),
+    status: row.status as AbuseReportStatus,
+    updatedAt: iso(row.updated_at as Date),
+    ...(row.claim_token ? { claimToken: row.claim_token as string } : {}),
+    ...(row.claim_expires_at ? { claimExpiresAt: iso(row.claim_expires_at as Date) } : {}),
+    ...(row.claimed_by ? { claimedBy: row.claimed_by as string } : {}),
+    ...(row.resolution ? { resolution: row.resolution as AbuseReportResolution } : {}),
+    ...(row.resolved_at ? { resolvedAt: iso(row.resolved_at as Date) } : {}),
   };
 }
 function objectRow(row: Record<string, unknown>): ObjectReferenceRecord {
@@ -120,6 +138,32 @@ export class PostgresGovernanceStore implements GovernanceStore {
     if (!row || row.request_digest !== input.requestDigest) return { status: "conflict" };
     return row.state === "complete" ? { status: "replay", response: row.response_json } : { status: "pending" };
   }
+  async recoverIdempotency(input: { readonly operation: string; readonly keyHash: string; readonly requestDigest: string; readonly now: string }): Promise<IdempotencyRecoveryLookup> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        "SELECT id,request_digest,state,response_json,claim_expires_at,expires_at FROM idempotency_records WHERE operation=$1 AND key_hash=$2 ORDER BY id LIMIT 2 FOR UPDATE",
+        [input.operation, input.keyHash],
+      );
+      if (result.rows.length === 0) { await client.query("COMMIT"); return { status: "missing" }; }
+      if (result.rows.length !== 1) { await client.query("COMMIT"); return { status: "ambiguous" }; }
+      const row = result.rows[0];
+      if (row.request_digest !== input.requestDigest) { await client.query("COMMIT"); return { status: "conflict" }; }
+      if (row.state === "complete") {
+        await client.query("COMMIT");
+        return iso(row.expires_at as Date) <= input.now ? { status: "expired" } : { status: "replay", response: row.response_json };
+      }
+      if (iso(row.claim_expires_at as Date) > input.now) { await client.query("COMMIT"); return { status: "pending" }; }
+      const retired = await client.query("DELETE FROM idempotency_records WHERE id=$1 AND state='pending'", [row.id]);
+      if (retired.rowCount !== 1) throw new Error("IDEMPOTENCY_RECOVERY_FENCE_FAILED");
+      await client.query("COMMIT");
+      return { status: "retired-no-effect" };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
   async completeIdempotency(input: { readonly sessionId: PrivateRowId; readonly operation: string; readonly keyHash: string; readonly response: unknown }): Promise<void> {
     const result = await this.database.query(
       "UPDATE idempotency_records SET state='complete',response_json=$4 WHERE session_id=$1 AND operation=$2 AND key_hash=$3 AND state='pending'",
@@ -179,14 +223,69 @@ export class PostgresGovernanceStore implements GovernanceStore {
     const timestampColumn = input.lifecycle === "disabled" ? "disabled_at" : "deleted_at";
     await this.database.query(`UPDATE share_records SET lifecycle=$2,${timestampColumn}=COALESCE(${timestampColumn},$3) WHERE id=$1 AND lifecycle='active'`, [input.id, input.lifecycle, input.at]);
   }
-  async createAbuseReport(input: AbuseReportInput): Promise<void> {
-    await this.database.query(
-      "INSERT INTO abuse_reports (reporter_session_id,share_record_id,opaque_reference_hash,category,detail,created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+  async createAbuseReport(input: AbuseReportInput): Promise<AbuseReportRecord> {
+    const result = await this.database.query(
+      "INSERT INTO abuse_reports (reporter_session_id,share_record_id,opaque_reference_hash,category,detail,created_at,status,updated_at) VALUES ($1,$2,$3,$4,$5,$6,'pending',$6) RETURNING *",
       [input.reporterSessionId ?? null, input.shareRecordId ?? null, input.opaqueReferenceHash, input.category, input.detail ?? null, input.createdAt],
     );
+    return abuseReportRow(result.rows[0]);
   }
-  async createAudit(input: { readonly eventKind: string; readonly shareRecordId?: PrivateRowId; readonly objectReferenceId?: PrivateRowId; readonly outcome: string; readonly createdAt: string }): Promise<void> {
-    await this.database.query("INSERT INTO audit_events (event_kind,share_record_id,object_reference_id,outcome,created_at) VALUES ($1,$2,$3,$4,$5)", [input.eventKind, input.shareRecordId ?? null, input.objectReferenceId ?? null, input.outcome, input.createdAt]);
+  async listAbuseReports(input: { readonly status?: AbuseReportStatus; readonly limit: number }): Promise<readonly AbuseReportRecord[]> {
+    const result = await this.database.query(
+      `SELECT * FROM abuse_reports WHERE ($1::text IS NULL OR status=$1) ORDER BY created_at,id LIMIT $2`,
+      [input.status ?? null, input.limit],
+    );
+    return result.rows.map(abuseReportRow);
+  }
+  async claimAbuseReport(input: { readonly id: PrivateRowId; readonly moderatorId: string; readonly claimToken: string; readonly now: string; readonly claimExpiresAt: string }): Promise<AbuseReportRecord | undefined> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const claimed = await client.query(
+        `UPDATE abuse_reports SET status='claimed',claim_token=$3,claim_expires_at=$4,claimed_by=$2,updated_at=$5
+         WHERE id=$1 AND (status='pending' OR (status='claimed' AND claim_expires_at <= $5)) RETURNING *`,
+        [input.id, input.moderatorId, input.claimToken, input.claimExpiresAt, input.now],
+      );
+      if (claimed.rowCount !== 1) { await client.query("ROLLBACK"); return undefined; }
+      const row = abuseReportRow(claimed.rows[0]);
+      await client.query(
+        "INSERT INTO audit_events (event_kind,share_record_id,abuse_report_id,outcome,created_at) VALUES ('share-moderation-claim',$1,$2,$3,$4)",
+        [row.shareRecordId ?? null, row.id, input.moderatorId, input.now],
+      );
+      await client.query("COMMIT");
+      return row;
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
+  }
+  async resolveAbuseReport(input: { readonly id: PrivateRowId; readonly claimToken: string; readonly resolution: AbuseReportResolution; readonly now: string }): Promise<AbuseReportRecord | undefined> {
+    const client = await this.database.connect();
+    try {
+      await client.query("BEGIN");
+      const locked = await client.query("SELECT * FROM abuse_reports WHERE id=$1 FOR UPDATE", [input.id]);
+      const current = locked.rows[0];
+      if (!current || current.status !== "claimed" || current.claim_token !== input.claimToken || iso(current.claim_expires_at as Date) <= input.now) {
+        await client.query("ROLLBACK"); return undefined;
+      }
+      if (input.resolution === "takedown" && current.share_record_id) {
+        await client.query("UPDATE share_records SET lifecycle='disabled',disabled_at=COALESCE(disabled_at,$2) WHERE id=$1 AND lifecycle='active'", [current.share_record_id, input.now]);
+      }
+      const resolved = await client.query(
+        `UPDATE abuse_reports SET status='resolved',claim_token=NULL,claim_expires_at=NULL,resolution=$2,resolved_at=$3,updated_at=$3
+         WHERE id=$1 RETURNING *`,
+        [input.id, input.resolution, input.now],
+      );
+      const row = abuseReportRow(resolved.rows[0]);
+      await client.query(
+        "INSERT INTO audit_events (event_kind,share_record_id,abuse_report_id,outcome,created_at) VALUES ('share-moderation-resolve',$1,$2,$3,$4)",
+        [row.shareRecordId ?? null, row.id, input.resolution, input.now],
+      );
+      await client.query("COMMIT");
+      return row;
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
+  }
+  async createAudit(input: { readonly eventKind: string; readonly shareRecordId?: PrivateRowId; readonly abuseReportId?: PrivateRowId; readonly objectReferenceId?: PrivateRowId; readonly outcome: string; readonly createdAt: string }): Promise<void> {
+    await this.database.query("INSERT INTO audit_events (event_kind,share_record_id,abuse_report_id,object_reference_id,outcome,created_at) VALUES ($1,$2,$3,$4,$5,$6)", [input.eventKind, input.shareRecordId ?? null, input.abuseReportId ?? null, input.objectReferenceId ?? null, input.outcome, input.createdAt]);
   }
   async createObjectReference(input: Omit<ObjectReferenceRecord, "id">): Promise<ObjectReferenceRecord> {
     const client = await this.database.connect();

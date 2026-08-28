@@ -1,9 +1,9 @@
 import type { ArrangementPresetId } from "../domain/config";
 import type { ChordToneSpec } from "../domain/chord/model";
-import type { ArrangementOutputEdit } from "../domain/edit/model";
+import type { ArrangementOutputEdit, EditedArrangementSnapshot } from "../domain/edit/model";
 import type { ArrangementCandidate } from "../domain/generation/model";
 import type { ActivityLock, AnchorLock, IntentLock, LockedAnchorEndpointSpec, LockedNonChordToneSpec, PitchLock, SolverLock } from "../domain/locks";
-import type { HarmonyProject } from "../domain/project";
+import type { ArrangementVariant, HarmonyProject } from "../domain/project";
 import type { ArrangementAnchorPlan, ArrangementActivityPlan, ArrangementIntentPlan, HarmonyAnchorDirective, NonChordTonePlan, TexturePatternId, VoiceActivityDirective } from "../domain/plans";
 import type { SpelledPitch } from "../domain/pitch";
 import { comparePositions } from "../domain/time";
@@ -118,6 +118,28 @@ export function upsertCanonicalStageLock(locks: readonly UiStageLock[], lock: Ui
 }
 
 export function outputEditTargetId(edit: ArrangementOutputEdit): string { return edit.kind === "replace-event" ? edit.oldEventId : edit.eventId; }
+
+export function activeOutputEditsForCandidate(
+  variant: Extract<ArrangementVariant, { readonly lifecycle: "generation-attempted" }>,
+  candidateId: string,
+): readonly ArrangementOutputEdit[] {
+  const active = variant.activeArrangement;
+  if (active?.kind !== "edited-snapshot") return [];
+  const snapshot = variant.editedSnapshots.find((item) => item.id === active.snapshotId);
+  if (!snapshot || snapshot.baseCandidateId !== candidateId) return [];
+  const byId = new Map(variant.outputEdits.map((edit) => [edit.id, edit]));
+  return snapshot.appliedEditIds.flatMap((id) => {
+    const edit = byId.get(id);
+    return edit ? [edit] : [];
+  });
+}
+
+export function upsertEditedSnapshotHistory(
+  snapshots: readonly EditedArrangementSnapshot[],
+  snapshot: EditedArrangementSnapshot,
+): readonly EditedArrangementSnapshot[] {
+  return [...snapshots.filter((item) => item.id !== snapshot.id), snapshot];
+}
 
 export function staleBoundaryPresentation(stage: "intent" | "activity" | "anchor" | "generation" | "none"): string {
   if (stage === "none") return "none · active artifacts are current";

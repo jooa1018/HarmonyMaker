@@ -91,6 +91,32 @@ describe("production OMR configuration", () => {
     expect(loadProductionOmrConfig({ ...environment, OMR_DAILY_GLOBAL_CREDIT_CEILING: String(Number.MAX_SAFE_INTEGER) }).dailyGlobalCreditCeiling).toBe(Number.MAX_SAFE_INTEGER);
   });
 
+
+  it("loads and validates real Audiveris provider configuration", () => {
+    const real = loadProductionOmrConfig({
+      ...environment,
+      OMR_PROVIDER_MODE: "real",
+      OMR_AUDIVERIS_BASE_URL: "https://audiveris.example.test",
+      OMR_AUDIVERIS_API_KEY: "provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      OMR_AUDIVERIS_CONFIGURATION_GENERATION: "audiveris-5.10.2-temp-v1",
+      OMR_AUDIVERIS_REQUEST_TIMEOUT_MS: "180000",
+    });
+    expect(real.audiveris).toEqual({
+      baseUrl: "https://audiveris.example.test",
+      apiKey: "provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      configurationGeneration: "audiveris-5.10.2-temp-v1",
+      requestTimeoutMs: 180000,
+    });
+    expect(() => loadProductionOmrConfig({ ...environment, OMR_PROVIDER_MODE: "real" })).toThrow("missing Audiveris OMR configuration");
+    expect(() => loadProductionOmrConfig({
+      ...environment, OMR_PROVIDER_MODE: "real",
+      OMR_AUDIVERIS_BASE_URL: "http://remote.example.test",
+      OMR_AUDIVERIS_API_KEY: "provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      OMR_AUDIVERIS_CONFIGURATION_GENERATION: "audiveris-v1",
+      OMR_AUDIVERIS_REQUEST_TIMEOUT_MS: "180000",
+    })).toThrow("OMR_AUDIVERIS_BASE_URL");
+  });
+
   it("fails closed for missing/invalid values and production reference mode", () => {
     expect(() => loadProductionOmrConfig({})).toThrow("missing OMR configuration");
     expect(() => loadProductionOmrConfig({ ...environment, OMR_HANDLE_HMAC_KEY: Buffer.alloc(31).toString("base64url") })).toThrow("OMR_HANDLE_HMAC_KEY");

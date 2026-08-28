@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: harmonymaker-audiveris-temp
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: chatgpt/harmonymaker-audiveris-provider
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: commit
+    healthCheckPath: /health
+    envVars:
+      - key: HM_AUDIVERIS_API_KEY
+        generateValue: true
+      - key: HM_AUDIVERIS_RETENTION_SECONDS
+        value: "3600"
+      - key: HM_AUDIVERIS_MAX_PAGES
+        value: "12"
+      - key: HM_AUDIVERIS_DURABLE_STORAGE
+        value: "0"
+      - key: HM_AUDIVERIS_SOURCE_CODE_URL
+        value: https://github.com/jooa1018/HarmonyMaker/tree/chatgpt/harmonymaker-audiveris-provider/services/audiveris-provider
+      - key: JAVA_TOOL_OPTIONS
+        value: -Xmx384m -Djava.awt.headless=true

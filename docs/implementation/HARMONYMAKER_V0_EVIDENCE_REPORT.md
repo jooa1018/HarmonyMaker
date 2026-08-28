@@ -961,3 +961,43 @@ External provider, corpus, production-live-service, and physical-device verifica
 ### Final authority ordering
 
 The **Deployment contract freeze and final supported-path evidence** section is the final evidence authority over the preceding chronological closure record: `P1_RESAT_02_F=NOT_APPLICABLE_PRE_PRODUCTION_LEGACY_PATH`, supported P0/P1 `0/0`, historical N/A `1`, and `SEGMENT_D_GATE_FROZEN=YES`.
+
+## Ultra 통합 closure evidence — 최종 authority 부록
+
+Ultra discovery historical evidence는 `d81d7dfb3f749a78cb2ebac45b8319dd865598a8`에서 불변이다. Independent adjudication은 `P2-ULTRA-13`을 `P1-ULTRA-10`으로 승격했으며 closure authority는 정확히 P1 10개, P2 14개, TG 7개다. 모두 production/test checkpoint `fac726f7f56f73ebaab24916f88b6da7aba5a910`에서 닫았고, 이전 Segment D acceptance 선언은 reopen되어 별도 Ultra re-audit 전까지 `NO`다.
+
+| Evidence | 결과 |
+|---|---|
+| Wave commit | canonical `843e911`, `6e28c62`, `1cd7877`; 이후 `fac726f`까지 모든 code commit은 additive hardening |
+| Finding 결과 | P1 10/10 closed, P2 14/14 closed, TG 7/7 disposed, unresolved supported P0/P1·P2·TG 모두 0 |
+| TG 결과 | 01/06 `CLOSED_TEST_GAP`, 02/03/04/05/07 `CLOSED_FIX` |
+| Migration inventory | 1–11 byte-unchanged, additive 12 moderation, 13 provider-delete authority, 14 cross-session share-create recovery |
+| Migration checksums | 12 `68fae44…44d2`; 13 `d86e98a…ccb5`; 14 `bcb47b6…3140` |
+| PostgreSQL | actual PostgreSQL 17, fresh `1 -> 14`, 2 files/35 tests PASS |
+| Default validation | `npm ci`, typecheck, lint, 90 files/882 tests, build, diff check PASS |
+| Campaign | Segment B 101, OMR 101, snapshot tamper, MusicXML timing, workspace identity, share response loss, scheduler, DELETE certainty, failPage fault, historical provider upload, page manifest, browser retry, provider status PASS |
+| Store parity | Memory/PostgreSQL share/session/quota/moderation/cleanup/concurrency 및 OMR aggregate authority PASS |
+| Frozen authority | WAG v1.0.1 six hashes와 99-code registry exact, protected musical path diff 0 |
+
+Exact migration runtime checksum은 다음과 같다.
+
+```text
+12 share_moderation_lifecycle = 68fae44f5fb02cbdf42bb0a4d510627a4a5b8b29b279378590ab41d776ed44d2
+13 omr_provider_delete_authority = d86e98a41a0e72f121e7bd12a89bbca7b8c7fa4578a9f09cec3a7778d7d3ccb5
+14 share_create_cross_session_recovery = bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140
+```
+
+Frozen hash 6개는 `5c8c704f…4ede`, `ee09ded7…98d5`, `3ded5968…80ba`, `676780f8…330d`, `0fa15cf0…ab4c`, `4be25a0a…379b`이며 repository authority test가 full value와 diagnostic code 정확히 99개를 검증한다. `FROZEN_MUSICAL_AUTHORITY_CHANGED=NO`다.
+
+Real provider selection, credential, recognition accuracy, commercial pricing, refund, retention/deletion, idempotency/reconciliation evidence, Dev `>=36`·sealed `>=24` rights-safe corpus, production-live PostgreSQL/S3, physical iPhone Safari, Kakao in-app browser, cybersecurity test는 external remaining이다. Exact documentation-inclusive SHA와 Actions/Vercel Preview identifier는 containing commit push 뒤의 external observation으로만 기록한다.
+
+```text
+ULTRA_CLOSURE_COMPLETE = YES
+ULTRA_REAUDIT_READY = YES
+ULTRA_ACCEPTED = NO
+SEGMENT_D_ACCEPTED = NO
+STEP_11_STARTED = NO
+CYBER_SECURITY_AUDIT = NOT_PERFORMED
+```
+
+Finding별 전체 evidence는 [`ULTRA_CLOSURE_REPORT.md`](ULTRA_CLOSURE_REPORT.md)에 있다.
