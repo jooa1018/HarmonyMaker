@@ -31,6 +31,7 @@ COPY services/audiveris-provider/app.py \
      services/audiveris-provider/musicxml_output.py \
      services/audiveris-provider/provider_entrypoint.py \
      services/audiveris-provider/audiveris-wrapper.sh \
+     services/audiveris-provider/recognition_preprocess.py \
      /app/
 
 ENV PATH=/opt/venv/bin:$PATH \
