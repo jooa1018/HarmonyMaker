@@ -100,13 +100,12 @@ jobs:
           for attempt in $(seq 1 60); do curl -fsS http://127.0.0.1:8002/health && break; sleep 2; done
           node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/page.png
 
-          # Rights-safe lead-sheet fixture: Edward S. Shaw, CC BY-SA 3.0, Wikimedia Commons.
-          # https://commons.wikimedia.org/wiki/File:Amazing_Grace_Cmaj_Lead_Sheet.pdf
+          # Explicit chord-symbol fixture: C7 and F are visibly printed above the staff.
+          # CharlesGillingham, CC BY-SA 3.0 / GFDL, Wikimedia Commons.
+          # https://commons.wikimedia.org/wiki/File:Lead_Sheet.png
           curl -fsSL --retry 3 \
-            https://upload.wikimedia.org/wikipedia/commons/b/b0/Amazing_Grace_Cmaj_Lead_Sheet.pdf \
-            -o /tmp/audiveris-real/chord-score.pdf
-          docker run --rm --user 0:0 -v /tmp/audiveris-real:/work --entrypoint pdftoppm \
-            hm-audiveris:${{ github.sha }} -png -f 1 -singlefile -r 200 /work/chord-score.pdf /work/chord-page
+            https://upload.wikimedia.org/wikipedia/commons/9/9c/Lead_Sheet.png \
+            -o /tmp/audiveris-real/chord-page.png
           node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/chord-page.png --require-harmony
       - if: always()
         run: docker logs hm-audiveris-real || true
