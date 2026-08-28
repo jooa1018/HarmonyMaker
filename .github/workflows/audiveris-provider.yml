@@ -53,7 +53,11 @@ jobs:
           docker run --rm --entrypoint sh hm-audiveris:${{ github.sha }} -c '
             test "$AUDIVERIS_BIN" = /app/audiveris-wrapper.sh
             test -x "$AUDIVERIS_BIN"
+            test "$HM_AUDIVERIS_OCR_LANGUAGES" = "eng+kor"
             grep -Fq "org.audiveris.omr.sheet.ProcessingSwitches.chordNames=true" "$AUDIVERIS_BIN"
+            grep -Fq "org.audiveris.omr.text.Language.defaultSpecification" "$AUDIVERIS_BIN"
+            tesseract --list-langs 2>/dev/null | grep -Fxq eng
+            tesseract --list-langs 2>/dev/null | grep -Fxq kor
             "$AUDIVERIS_BIN" -version
           '
       - name: Fake-engine HTTP protocol smoke
