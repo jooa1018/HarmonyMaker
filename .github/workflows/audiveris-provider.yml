@@ -53,7 +53,9 @@ jobs:
           docker run --rm --entrypoint sh hm-audiveris:${{ github.sha }} -c '
             test "$AUDIVERIS_BIN" = /app/audiveris-wrapper.sh
             test -x "$AUDIVERIS_BIN"
+            test -f /app/recognition_preprocess.py
             test "$HM_AUDIVERIS_OCR_LANGUAGES" = "eng+kor"
+            grep -Fq "recognition_preprocess.py" "$AUDIVERIS_BIN"
             grep -Fq "org.audiveris.omr.sheet.ProcessingSwitches.chordNames=true" "$AUDIVERIS_BIN"
             grep -Fq "org.audiveris.omr.text.Language.defaultSpecification" "$AUDIVERIS_BIN"
             tesseract --list-langs 2>/dev/null | grep -Fxq eng
@@ -81,8 +83,8 @@ jobs:
         run: docker logs hm-audiveris-smoke || true
       - if: always()
         run: docker rm -f hm-audiveris-smoke || true
-      - name: Real Audiveris HTTP MusicXML smoke
-        timeout-minutes: 25
+      - name: Real Audiveris HTTP MusicXML and chord-name OCR smoke
+        timeout-minutes: 30
         run: |
           mkdir -p /tmp/audiveris-real
           curl -fsSL --retry 3 \
@@ -97,6 +99,15 @@ jobs:
             hm-audiveris:${{ github.sha }}
           for attempt in $(seq 1 60); do curl -fsS http://127.0.0.1:8002/health && break; sleep 2; done
           node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/page.png
+
+          # Rights-safe lead-sheet fixture: Edward S. Shaw, CC BY-SA 3.0, Wikimedia Commons.
+          # https://commons.wikimedia.org/wiki/File:Amazing_Grace_Cmaj_Lead_Sheet.pdf
+          curl -fsSL --retry 3 \
+            https://upload.wikimedia.org/wikipedia/commons/b/b0/Amazing_Grace_Cmaj_Lead_Sheet.pdf \
+            -o /tmp/audiveris-real/chord-score.pdf
+          docker run --rm --user 0:0 -v /tmp/audiveris-real:/work --entrypoint pdftoppm \
+            hm-audiveris:${{ github.sha }} -png -f 1 -singlefile -r 200 /work/chord-score.pdf /work/chord-page
+          node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/chord-page.png --require-harmony
       - if: always()
         run: docker logs hm-audiveris-real || true
       - if: always()
