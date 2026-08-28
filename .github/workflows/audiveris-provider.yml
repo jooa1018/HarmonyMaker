@@ -107,16 +107,23 @@ jobs:
             https://upload.wikimedia.org/wikipedia/commons/9/9c/Lead_Sheet.png \
             -o /tmp/audiveris-real/chord-page.png
 
-          # Independent OCR capability gate. If this fails, a Tesseract-assisted fallback
-          # cannot be trusted even as a non-authoritative Quick Review suggestion source.
+          # Chord-specific Tesseract capability gate. Whole-page free-form OCR is easily
+          # distracted by staff lines, so aggregate several sparse/block modes while
+          # restricting recognition to the chord-symbol alphabet.
           docker run --rm -v /tmp/audiveris-real:/work --entrypoint sh hm-audiveris:${{ github.sha }} -c '
-            tesseract /work/chord-page.png stdout -l eng --psm 11 2>/dev/null | tee /work/chord-ocr.txt
-            grep -Eiq "(^|[^A-Za-z0-9])C7([^A-Za-z0-9]|$)" /work/chord-ocr.txt
-            grep -Eiq "(^|[^A-Za-z0-9])F([^A-Za-z0-9]|$)" /work/chord-ocr.txt
+            ocr="$(
+              for psm in 6 11 12; do
+                tesseract /work/chord-page.png stdout -l eng --psm "$psm" \
+                  -c "tessedit_char_whitelist=ABCDEFGabcdefg#b0123456789/()+-" 2>/dev/null || true
+              done
+            )"
+            printf "%s\n" "$ocr"
+            printf "%s\n" "$ocr" | grep -Eiq "(^|[^A-Za-z0-9])C7([^A-Za-z0-9]|$)"
+            printf "%s\n" "$ocr" | grep -Eiq "(^|[^A-Za-z0-9])F([^A-Za-z0-9]|$)"
           '
 
           # Audiveris' own harmony export is observed but is not a release gate: 5.10.2 may
-          # omit chord-name OCR from MusicXML even when Tesseract can see the printed tokens.
+          # omit chord-name OCR from MusicXML even when independent OCR sees printed tokens.
           node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/chord-page.png
       - if: always()
         run: docker logs hm-audiveris-real || true
