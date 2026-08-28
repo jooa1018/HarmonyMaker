@@ -27,6 +27,9 @@ COPY services/audiveris-provider/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 COPY services/audiveris-provider/app.py \
+     services/audiveris-provider/chord_ocr.py \
+     services/audiveris-provider/chord_ocr_image.py \
+     services/audiveris-provider/chord_ocr_model.py \
      services/audiveris-provider/demo_app.py \
      services/audiveris-provider/musicxml_output.py \
      services/audiveris-provider/provider_entrypoint.py \
@@ -39,6 +42,7 @@ ENV PATH=/opt/venv/bin:$PATH \
     AUDIVERIS_VERSION=${AUDIVERIS_VERSION} \
     HM_AUDIVERIS_DATA_DIR=/data \
     HM_AUDIVERIS_OCR_LANGUAGES=eng+kor \
+    HM_AUDIVERIS_CHORD_OCR=1 \
     TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
     JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" \
     HOME=/data/home \

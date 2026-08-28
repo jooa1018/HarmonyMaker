@@ -48,13 +48,17 @@ jobs:
         run: docker build --build-arg AUDIVERIS_VERSION=5.10.2 -t hm-audiveris:${{ github.sha }} .
       - name: Verify bundled Audiveris launcher
         run: docker run --rm --entrypoint /usr/local/bin/audiveris hm-audiveris:${{ github.sha }} -version | tee /tmp/audiveris-version.txt
-      - name: Verify deployed engine profile wrapper
+      - name: Verify deployed recognition profile
         run: |
           docker run --rm --entrypoint sh hm-audiveris:${{ github.sha }} -c '
             test "$AUDIVERIS_BIN" = /app/audiveris-wrapper.sh
             test -x "$AUDIVERIS_BIN"
             test -f /app/recognition_preprocess.py
+            test -f /app/chord_ocr.py
+            test -f /app/chord_ocr_image.py
+            test -f /app/chord_ocr_model.py
             test "$HM_AUDIVERIS_OCR_LANGUAGES" = "eng+kor"
+            test "$HM_AUDIVERIS_CHORD_OCR" = "1"
             grep -Fq "recognition_preprocess.py" "$AUDIVERIS_BIN"
             grep -Fq "org.audiveris.omr.sheet.ProcessingSwitches.chordNames=true" "$AUDIVERIS_BIN"
             grep -Fq "org.audiveris.omr.text.Language.defaultSpecification" "$AUDIVERIS_BIN"
@@ -83,7 +87,7 @@ jobs:
         run: docker logs hm-audiveris-smoke || true
       - if: always()
         run: docker rm -f hm-audiveris-smoke || true
-      - name: Real Audiveris HTTP MusicXML and chord OCR capability smoke
+      - name: Real Audiveris HTTP MusicXML and hybrid chord OCR smoke
         timeout-minutes: 30
         run: |
           mkdir -p /tmp/audiveris-real
@@ -102,14 +106,11 @@ jobs:
 
           # Explicit chord-symbol fixture: C7 and F are visibly printed above the staff.
           # CharlesGillingham, CC BY-SA 3.0 / GFDL, Wikimedia Commons.
-          # https://commons.wikimedia.org/wiki/File:Lead_Sheet.png
           curl -fsSL --retry 3 \
             https://upload.wikimedia.org/wikipedia/commons/9/9c/Lead_Sheet.png \
             -o /tmp/audiveris-real/chord-page.png
 
-          # Chord-specific Tesseract capability gate. Whole-page free-form OCR is easily
-          # distracted by staff lines, so aggregate several sparse/block modes while
-          # restricting recognition to the chord-symbol alphabet.
+          # Independent OCR capability check, separate from the provider's mapping/injection gate.
           docker run --rm -v /tmp/audiveris-real:/work --entrypoint sh hm-audiveris:${{ github.sha }} -c '
             ocr="$(
               for psm in 6 11 12; do
@@ -122,9 +123,11 @@ jobs:
             printf "%s\n" "$ocr" | grep -Eiq "(^|[^A-Za-z0-9])F([^A-Za-z0-9]|$)"
           '
 
-          # Audiveris' own harmony export is observed but is not a release gate: 5.10.2 may
-          # omit chord-name OCR from MusicXML even when independent OCR sees printed tokens.
-          node scripts/audiveris-provider-smoke.mjs http://127.0.0.1:8002 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx /tmp/audiveris-real/chord-page.png
+          node scripts/audiveris-provider-smoke.mjs \
+            http://127.0.0.1:8002 \
+            test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            /tmp/audiveris-real/chord-page.png \
+            --require-harmony
       - if: always()
         run: docker logs hm-audiveris-real || true
       - if: always()
