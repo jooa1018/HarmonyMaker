@@ -4,7 +4,7 @@ ARG AUDIVERIS_VERSION=5.10.2
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl python3 python3-venv \
-    tesseract-ocr tesseract-ocr-eng poppler-utils \
+    tesseract-ocr tesseract-ocr-eng tesseract-ocr-kor poppler-utils \
     libgl1 libglib2.0-0 libasound2t64 libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /usr/share/desktop-directories /usr/share/mime/packages /usr/share/icons/hicolor /usr/share/applications \
@@ -27,6 +27,7 @@ ENV PATH=/opt/venv/bin:$PATH \
     AUDIVERIS_BIN=/app/audiveris-wrapper.sh \
     AUDIVERIS_VERSION=${AUDIVERIS_VERSION} \
     HM_AUDIVERIS_DATA_DIR=/data \
+    HM_AUDIVERIS_OCR_LANGUAGES=eng+kor \
     TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
     JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" \
     HOME=/data/home \
