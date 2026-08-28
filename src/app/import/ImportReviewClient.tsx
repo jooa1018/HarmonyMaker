@@ -488,7 +488,7 @@ export function ImportReviewClient() {
   const selectedPart = draft?.parts.find((part) => part.partOrdinal === selectedCandidate?.partOrdinal);
   const chordPart = useMemo(() => selectedPart?.measures.some((measure) => measure.chords.length > 0)
     ? selectedPart
-    : draft?.parts.find((part) => part.measures.some((measure) => measure.chords.length > 0)), [draft, selectedPart]);
+    : draft?.parts.find((part) => part.measures.some((measure) => measure.chords.length > 0)) ?? selectedPart, [draft, selectedPart]);
   const chords = chordPart?.measures.flatMap((measure) => measure.chords) ?? [];
   const sections = draft?.sections.filter((section) => section.partOrdinal === selectedCandidate?.partOrdinal) ?? [];
   const sectionOccurrences = draft?.sectionOccurrences
