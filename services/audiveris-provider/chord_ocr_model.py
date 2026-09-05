@@ -29,6 +29,9 @@ ALIASES = {
     "min": "m", "-": "m", "M7": "maj7", "ma7": "maj7", "major7": "maj7",
     "minor7": "m7", "o": "dim", "o7": "dim7", "+": "aug", "2": "add2",
     "(2)": "(add2)", "add02": "add2", "(add02)": "(add2)",
+    # Resolve complete quality tokens after the root, never global substitutions.
+    "Δ": "", "Δ7": "maj7", "Δ9": "maj9",
+    "°": "dim", "°7": "dim7", "ø": "m7b5", "ø7": "m7b5",
 }
 
 
@@ -116,7 +119,8 @@ def clean_text(text: str) -> str:
     value = text.strip().replace("♯", "#").replace("♭", "b").replace("−", "-")
     value = value.replace("[", "(").replace("]", ")").replace("|", "/")
     value = re.sub(r"\s+", "", value)
-    value = re.sub(r"[^A-Za-z0-9#b/()+.\-]", "", value)
+    # Unknown glyphs are evidence of uncertainty, not disposable noise. Removing
+    # one can turn CΔ7 / C°7 / Cø7 / C?7 into a different, apparently exact C7.
     value = re.sub(r"(?<=/[A-Ga-g])[23]$", "#", value).strip("._,")
     return value[0].upper() + value[1:] if value and value[0].lower() in "abcdefg" else value
 
@@ -165,7 +169,7 @@ def preferred_spellings_from_fifths(fifths: int) -> dict[str, str]:
     return result
 
 
-def _noisy(text: str, preferred: dict[str, str] | None) -> tuple[HarmonySpec, float] | None:
+def _noisy(text: str) -> tuple[HarmonySpec, float] | None:
     match = re.match(r"^(?P<root>[A-G](?:#|b)?)(?P<body>.*?)/(?P<bass>[A-G])(?P<acc>[#b23]?)$", text, re.I)
     if not match:
         return None
@@ -175,8 +179,8 @@ def _noisy(text: str, preferred: dict[str, str] | None) -> tuple[HarmonySpec, fl
         return None
     bass_step, acc = match.group("bass").upper(), match.group("acc")
     acc = "#" if acc in ("2", "3") else acc
-    if not acc and preferred:
-        acc = preferred.get(bass_step, bass_step)[1:]
+    # Slash-bass symbols are absolute: a key signature cannot supply an
+    # accidental that the OCR text did not observe. Explicit OCR 2/3 survives.
     normalized = body.lower().replace("o", "d").replace("0", "d")
     ranked = []
     for item in (entry for entry in SUFFIXES if entry[0]):
@@ -212,7 +216,7 @@ def spec_key(spec: HarmonySpec) -> tuple[object, ...]:
 
 
 def structural_key(spec: HarmonySpec) -> tuple[object, ...]:
-    return spec.root, spec.kind, spec.bass[0] if spec.bass else None, spec.degrees
+    return spec.root, spec.kind, spec.bass, spec.degrees
 
 
 def resolve_hypothesis(
@@ -226,18 +230,28 @@ def resolve_hypothesis(
     if exact:
         minimum = 35.0 if len(text) <= 2 else 15.0
         return (exact, 1.0 + hypothesis.confidence / 200.0) if hypothesis.confidence >= minimum or allow_low_confidence else None
+    # Non-ASCII quality symbols are supported only as complete exact aliases.
+    # Unresolved symbols (including punctuation such as ?) must not enter the
+    # fuzzy path, even when multiple OCR modes agree or confidence is high.
+    if not re.fullmatch(r"[A-Za-z0-9#/()+.\-]+", text):
+        return None
     if not text or text[0].upper() not in "ABCDEFG" or len(text) < 3:
         return None
-    noisy = _noisy(text, preferred)
+    noisy = _noisy(text)
     if noisy and (hypothesis.confidence >= 20.0 or allow_low_confidence):
         return noisy[0], noisy[1] + hypothesis.confidence / 250.0
     root = text[0].upper() + (text[1] if len(text) > 1 and text[1] in "#b" else "")
+    observed_bass = None
+    if "/" in text:
+        bass_match = re.search(r"/([A-Ga-g](?:#|b)?)$", text)
+        if not bass_match:
+            return None
+        observed_bass = bass_match[1][0].upper() + bass_match[1][1:]
+    # Keep the preferred argument for callers, but musical context is not OCR
+    # evidence. Lexicon search must preserve the observed root and slash bass.
     semantic: dict[tuple[object, ...], tuple[float, HarmonySpec]] = {}
-    for item in (candidate for candidate in LEXICON if candidate.root == root):
+    for item in (candidate for candidate in LEXICON if candidate.root == root and candidate.bass == observed_bass):
         distance = weighted_distance(text, item.surface)
-        if preferred and item.bass:
-            expected = preferred.get(item.bass[0], item.bass[0])
-            distance += -0.28 if item.bass == expected else 0.22 if len(item.bass) > 1 else 0.0
         key = spec_key(item)
         if key not in semantic or distance < semantic[key][0]:
             semantic[key] = distance, item
