@@ -89,7 +89,9 @@ def ready_review(page: Page) -> None:
 
 
 def generate(page: Page, preset: str) -> None:
-    page.get_by_label("Preset", exact=True).select_option(preset)
+    selector = page.get_by_label(re.compile(r"^Preset(?:\s|$)"))
+    selector.select_option(preset)
+    expect(selector).to_have_value(preset)
     page.get_by_role("button", name="정본 화음 생성", exact=True).click()
     expect(page.get_by_test_id("generation-status")).to_have_text("complete", timeout=60000)
     expect(page.locator('.score-wrap svg')).not_to_have_count(0)
