@@ -1,0 +1,42 @@
+name: Runtime closure workspace
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/harmonymaker-astra-runtime-closure
+    paths:
+      - .github/workflows/runtime-closure.yml
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Package exact source and installed public dependencies
+        run: |
+          mkdir -p /tmp/hm-runtime-workspace
+          git rev-parse HEAD > /tmp/hm-runtime-workspace/source-sha.txt
+          node --version > /tmp/hm-runtime-workspace/node-version.txt
+          npm --version > /tmp/hm-runtime-workspace/npm-version.txt
+          git archive --format=tar HEAD | gzip -1 > /tmp/hm-runtime-workspace/source.tar.gz
+          tar -czf /tmp/hm-runtime-workspace/dependencies.tar.gz node_modules
+          (cd /tmp/hm-runtime-workspace && sha256sum source.tar.gz dependencies.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hm-runtime-workspace-${{ github.sha }}
+          path: /tmp/hm-runtime-workspace/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
