@@ -8,7 +8,7 @@ from PIL import Image, ImageOps
 
 from chord_ocr_model import OcrHypothesis, StaffGeometry, clean_text
 
-WHITELIST = "ABCDEFGabcdefg#b0123456789/()+-majindomsuMN.C"
+WHITELIST = "ABCDEFGabcdefg#b0123456789/()+-majindomsuMN.C♯♭Δ°ø"
 
 
 def otsu(gray: Image.Image) -> int:

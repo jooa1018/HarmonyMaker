@@ -32,7 +32,9 @@ export class PracticeAudioOwnershipController<T extends OwnedAudioSession> {
   private timerValue?: ReturnType<typeof setInterval>;
 
   constructor(
-    private readonly clearTimer: (timer: ReturnType<typeof setInterval>) => void = clearInterval,
+    // Call the browser timer API as a global function, not with this controller
+    // as its receiver (Web IDL otherwise throws before audio can be released).
+    private readonly clearTimer: (timer: ReturnType<typeof setInterval>) => void = (timer) => clearInterval(timer),
   ) {}
 
   get active(): T | undefined { return this.activeValue; }
