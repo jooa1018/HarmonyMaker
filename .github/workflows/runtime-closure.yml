@@ -1,42 +1,53 @@
-name: Runtime closure workspace
+name: Runtime closure browser
 
 on:
   workflow_dispatch:
   push:
     branches:
       - codex/harmonymaker-astra-runtime-closure
-    paths:
-      - .github/workflows/runtime-closure.yml
 
 permissions:
   contents: read
 
+concurrency:
+  group: runtime-closure-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  workspace:
+  product-browser:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      HM_CODE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - name: Package exact source and installed public dependencies
-        run: |
-          mkdir -p /tmp/hm-runtime-workspace
-          git rev-parse HEAD > /tmp/hm-runtime-workspace/source-sha.txt
-          node --version > /tmp/hm-runtime-workspace/node-version.txt
-          npm --version > /tmp/hm-runtime-workspace/npm-version.txt
-          git archive --format=tar HEAD | gzip -1 > /tmp/hm-runtime-workspace/source.tar.gz
-          tar -czf /tmp/hm-runtime-workspace/dependencies.tar.gz node_modules
-          (cd /tmp/hm-runtime-workspace && sha256sum source.tar.gz dependencies.tar.gz > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: hm-runtime-workspace-${{ github.sha }}
-          path: /tmp/hm-runtime-workspace/
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
+          python-version: "3.13"
+      - run: npm ci
+      - run: python -m pip install -r services/audiveris-provider/requirements-test.txt playwright==1.57.0
+      - name: Provider regressions at exact branch HEAD
+        run: PYTHONPATH=services/audiveris-provider python -m pytest -q services/audiveris-provider/tests
+      - run: python -m playwright install --with-deps chromium
+      - run: npm run build
+      - name: Ordinary Product Core entry on disposable production build
+        run: python scripts/runtime-browser-smoke.py
+      - name: Whitespace and frozen change boundary
+        run: |
+          git diff-tree --check HEAD^ HEAD
+          git diff --exit-code 82c01d28a8e862ed96b48da8ab405589329a8553 -- docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.freeze.json src/grammar/worship-arrangement-grammar-v1.0.1.canonical.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-browser-${{ github.sha }}
+          path: runtime-browser-evidence/
+          retention-days: 7
+          if-no-files-found: warn
