@@ -56,10 +56,17 @@ def compressed_score(xml: bytes) -> bytes:
 
 
 def ready_review(page: Page) -> None:
-    page.locator('input[name="lead-candidate"]').first.check()
+    # The product schedules canonical draft updates with a React transition.
+    # A click plus retrying checked-state assertion observes that public state;
+    # Locator.check() requires the transition to commit synchronously.
+    lead = page.locator('input[name="lead-candidate"]').first
+    lead.click()
+    expect(lead).to_be_checked()
+    expect(page.get_by_text("정본 digest·timeline·atomization 재계산 중…", exact=True)).not_to_be_visible(timeout=30000)
     expect(page.locator('input[id^="chord-"]')).not_to_have_count(0)
     for button in page.get_by_role("button", name="저장하고 확인", exact=True).all():
         button.click()
+    expect(page.get_by_text("정본 digest·timeline·atomization 재계산 중…", exact=True)).not_to_be_visible(timeout=30000)
     for button in page.get_by_role("button", name="Section 확인", exact=True).all():
         button.click()
     if page.get_by_role("button", name="tempo 확인", exact=True).count():

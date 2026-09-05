@@ -84,3 +84,9 @@ def test_augmentation_preserves_or_rejects_observed_quality(
         assert count == 2
         root = ET.fromstring(result)
         assert [node.text for node in root.iter("kind")] == [kind, kind]
+
+
+def test_ocr_character_configuration_preserves_supported_quality_glyphs() -> None:
+    # Configuration-boundary regression, not an engine recognition guarantee.
+    from chord_ocr_image import WHITELIST
+    assert set("♯♭Δ°ø").issubset(set(WHITELIST))
