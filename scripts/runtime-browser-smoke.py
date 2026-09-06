@@ -52,7 +52,7 @@ def record(step: str, **details: object) -> None:
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
-def original_score() -> bytes:
+def original_score(repeats: int = 1) -> bytes:
     # Session-authored eight-bar diatonic score; no user/external score is used.
     bars = []
     for index, (root, kind, notes) in enumerate([
@@ -60,7 +60,7 @@ def original_score() -> bytes:
         ("A", "minor", "CEAE"), ("F", "major", "CFAC"),
         ("C", "major", "EGEC"), ("G", "major", "DGBG"),
         ("F", "major", "AFAC"), ("C", "major", "GECC"),
-    ], 1):
+    ] * repeats, 1):
         attributes = '<attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>' if index == 1 else ""
         direction = '<direction><direction-type><rehearsal>Verse</rehearsal></direction-type><sound tempo="120"/></direction>' if index == 1 else ""
         melody = ''.join(f'<note><pitch><step>{step}</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>' for step in notes)
@@ -191,6 +191,25 @@ def generate(page: Page, preset: str) -> None:
     expect(page.locator('section.practice-player [role="alert"]')).to_have_count(0)
 
 
+def readable_layout(page: Page, minimum_systems: int = 2) -> dict:
+    # A visible SVG can still contain a whole song scaled into one tiny line.
+    # Measure actual browser geometry, including flex controls with long IDs.
+    page.wait_for_function("""minimum => {
+      const notes = [...document.querySelectorAll('.score-wrap .abcjs-note')];
+      const systems = new Set(notes.flatMap(n => [...n.classList].filter(c => /^abcjs-l\\d+$/.test(c))));
+      const heads = [...document.querySelectorAll('.score-wrap .abcjs-notehead')];
+      return document.documentElement.scrollWidth <= innerWidth + 1 && systems.size >= minimum &&
+        heads.length > 0 && heads.every(n => n.getBoundingClientRect().height >= 4);
+    }""", arg=minimum_systems, timeout=15000)
+    return page.evaluate("""() => ({
+      viewport: innerWidth, pageWidth: document.documentElement.scrollWidth,
+      systems: new Set([...document.querySelectorAll('.score-wrap .abcjs-note')]
+        .flatMap(n => [...n.classList].filter(c => /^abcjs-l\\d+$/.test(c)))).size,
+      minimumNoteheadHeight: Math.min(...[...document.querySelectorAll('.score-wrap .abcjs-notehead')]
+        .map(n => n.getBoundingClientRect().height))
+    })""")
+
+
 AUDIO_TAP = """() => {
   window.__hmAnalyzers = [];
   window.__hmIntervals = new Set();
@@ -309,8 +328,9 @@ def run_product_core(page: Page) -> bytes:
     begin("mobile-controls")
     page.get_by_role("button", name="lead", exact=True).click()
     playback(page)
+    layout = readable_layout(page)
     page.screenshot(path=str(OUT / "workspace-mobile.png"), full_page=True)
-    record("mobile-controls", viewport="390x844", physical_device=False)
+    record("mobile-controls", viewport="390x844", physical_device=False, layout=layout)
     page.get_by_role("button", name="full", exact=True).click()
     begin("url-share-readonly-render-audio")
     page.get_by_role("button", name="권리 확인 후 공유 만들기 / 복구", exact=True).click()
@@ -324,6 +344,7 @@ def run_product_core(page: Page) -> bytes:
     expect(shared.get_by_role("heading", name=TITLE, exact=True)).to_be_visible()
     expect(shared.get_by_role("button", name="정본 화음 생성", exact=True)).to_have_count(0)
     playback(shared)
+    readable_layout(shared)
     shared.close()
     record("url-share-readonly-render-audio", server_store=False)
     begin("playing-unmount-owned-local-project-delete")
@@ -382,6 +403,27 @@ def run(page: Page) -> None:
     assert len(ET.fromstring(mxl_export.read_bytes()).findall("part")) == 3
     record("mxl-playback-save-reload-export", result="complete")
     assert creates == [], "Direct MXL handoff dispatched an OMR job"
+    begin("long-score-readable-reflow")
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(BASE + "/import", wait_until="networkidle")
+    page.locator('input[type="file"]').set_input_files({"name": "long-original.musicxml", "mimeType": "application/xml", "buffer": original_score(12)})
+    ready_review(page)
+    generate(page, "standard")
+    desktop = readable_layout(page, 12)
+    page.locator('.score-wrap').screenshot(path=str(OUT / "long-score-desktop.png"))
+    timers = page.evaluate("window.__hmIntervals.size")
+    play_with_pcm(page)
+    page.set_viewport_size({"width": 390, "height": 844})
+    mobile = readable_layout(page, 12)
+    expect(page.locator('section.practice-player p.status').first).to_contain_text("재생 중")
+    assert page.evaluate("new Set(window.__hmAnalyzers.filter(a => a.context.state !== 'closed').map(a => a.context)).size") == 1
+    page.get_by_role("button", name="Reset", exact=True).click()
+    audio_released(page, timers)
+    page.locator('.score-wrap').screenshot(path=str(OUT / "long-score-mobile.png"))
+    assert mobile["systems"] > desktop["systems"], "Viewport resize did not reflow score systems"
+    page.get_by_role("button", name="로컬 삭제", exact=True).click()
+    page.wait_for_url(BASE + "/")
+    record("long-score-readable-reflow", measures=96, desktop=desktop, mobile=mobile, playback_survived_resize=True)
     simulated_omr_response_loss(page)
 
 
