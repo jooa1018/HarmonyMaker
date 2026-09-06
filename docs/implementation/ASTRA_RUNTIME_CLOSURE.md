@@ -1,91 +1,98 @@
 # Astra runtime closure — 2026-09-07 KST
 
-## 판정과 SHA 경계
+## 판정과 검증 SHA
 
-**INCOMPLETE.** 로컬 수정과 검증은 진행됐지만, Render workspace 선택 승인이 없어 실제 provider의 추적 branch 및 자동 배포 영향을 확인하지 못했다. 사용자 지시의 push 전 배포 연결 확인 조건에 따라 로컬 additive commit은 아직 push하지 않았다. 현재 Preview에는 아래 표시 결함이 남아 있다. 새 HEAD의 push/PR CI 및 새 SHA Preview 검증은 완료가 아니다.
+**CODE_VERIFIED_EXTERNAL_BLOCKED.** 기존 `41c26ea`의 PASS를 새 HEAD의 PASS로 사용하지 않았다. 새 runtime SHA `ddcea952a6c7b1b90250fa3646109b5b4b6d588d`의 Preview에서 직접 MusicXML/MXL과 실제 PNG OMR부터 Review·프로젝트·화음 생성, 모바일 표시, 재생·저장·복구·내보내기·공유·소유자 삭제까지 통과했다. PDF는 실제 create 요청이 HTTP 429 / OMR_QUOTA_EXCEEDED로 거절되어 끝까지 검증하지 못했다. 앞선 검증 도구의 pause 처리 오류로 PNG 2건의 인식량을 이미 사용한 뒤, 정상 PNG 1건으로 세션의 최근 1시간 3건 한도에 도달했다. 이를 제품 인식 실패나 원인 불명의 테스트 실패로 숨기지 않는다. 확인된 제품 차단 P0/P1은 없지만 PDF 외부 흐름이 미완료이므로 PREVIEW_VERIFIED가 아니다. 물리 iPhone과 전체 인식 품질은 NOT_RUN이다.
+
+이 문서는 검증 뒤 추가되는 **문서만 변경한 commit**이다. 자기 commit의 SHA/배포 ID를 본문에 소급하여 꾸미지 않는다. 문서 commit 이후 최종 push HEAD의 CI checkout, 정확한 새 Preview/provider revision 및 직접 입력 재실행 결과는 [Draft PR #13](https://github.com/jooa1018/HarmonyMaker/pull/13)의 최신 증거에 기록한다. 문서 commit에서 실제 OMR을 실행하지 않았다면 NOT_RUN으로 별도 표시하며, 이 표의 SHA 결과로 대체하지 않는다.
 
 | 대상 | 직접 확인한 상태 |
 | --- | --- |
 | 저장소 / branch | `jooa1018/HarmonyMaker` / `codex/harmonymaker-astra-runtime-closure` |
-| 시작 및 현재 원격 HEAD | `41c26ea97ab0bf057cb9febe245c422e7107ebd7` |
+| 재개 시작 원격 | `41c26ea97ab0bf057cb9febe245c422e7107ebd7` |
+| 이번에 push·검증한 HEAD | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d`; non-force push. 기존 base 이후 6개 commit과 추가 5개 commit 모두 보존 |
 | base | `chatgpt/harmonymaker-audiveris-provider` / `82c01d28a8e862ed96b48da8ab405589329a8553` |
-| 최종 소스 검증 commit | `58bf767f852a5106a0882934accdf0771bc3f64f`. 이 문서를 추가하는 후속 commit은 기록만 변경하며 앱·테스트 소스는 동일 |
-| 기존 작업 보존 | base 이후 기존 6개 commit 보존. 별도 linked worktree 사용. 다른 checkout의 미커밋 수정과 과거 final branch는 수정하지 않음 |
-| PR | [#13](https://github.com/jooa1018/HarmonyMaker/pull/13), Open / Draft / Unmerged 유지 |
-| 확인한 Preview | [고정 deployment URL](https://harmony-maker-2yu868avd-ecctom1.vercel.app), `dpl_FUJGLQQYv6iSZ69FiyPu4K1vppMf`, READY, target null, source git, SHA `41c26ea` |
-| branch alias | `harmony-maker-git-codex-harmonymaker-astra-runti-bfd413-ecctom1.vercel.app`, 위 deployment의 alias 목록에 존재 |
-| 운영 앱 단서 | `harmony-maker-opal.vercel.app`, production deployment의 git ref `main`, SHA `b4e14976ab65899cc86a65c20c99a7545f1a0d9e`. 변경·승격하지 않음 |
-| provider revision/config | BLOCKED_EXTERNAL: Render 커넥터가 사용자 확인 workspaceId를 요구. `My Workspace` (`tea-d90iarbsq97s739e0sbg`) 승인 요청 미응답 |
+| 작업 보존 | 별도 linked worktree 사용. 다른 checkout의 미커밋 수정과 과거 final branch를 건드리지 않음. push 전 remote 재조회에서 다른 작업자의 후속 commit 없음 |
+| PR | [#13](https://github.com/jooa1018/HarmonyMaker/pull/13), Open / Draft / Unmerged |
+| 실제 검증 Preview | [고정 deployment URL](https://harmony-maker-1wvoc8fmd-ecctom1.vercel.app), `dpl_CKM6pEFfNbfYdbHYtJvxCV72XPcs`, READY / target null / git SHA `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` |
+| branch alias | `harmony-maker-git-codex-harmonymaker-astra-runti-bfd413-ecctom1.vercel.app` |
+| 운영 앱 | `harmony-maker-opal.vercel.app`, production `main`, SHA `b4e14976ab65899cc86a65c20c99a7545f1a0d9e`. 변경·승격 없음 |
+| 별도 provider | Render `harmonymaker-audiveris-temp`, `srv-da3f66qfngtc73d105qg`; 실제 LIVE commit `ddcea952a6c7b1b90250fa3646109b5b4b6d588d`, `dep-daepiv5bedkc73e790kg` |
 
-Vercel의 승인된 임시 인증 URL을 사용해 실제 Playwright Chromium으로 접근했다. 보호 설정을 변경하지 않았다. 원래 SSO 로그인 화면이 나타났다는 사실은 이후 인증된 Preview 흐름의 접근 불가 근거로 사용하지 않는다. 임시 접근 토큰·쿠키·owner handle은 보고서나 저장소에 포함하지 않는다.
+Vercel의 승인된 임시 인증으로 실제 Playwright Chromium을 사용했다. 보호 설정을 변경하지 않았다. 접근 토큰·쿠키·OMR owner handle·공유 payload는 보고서와 저장소에 포함하지 않는다.
 
-## 결함 및 변경
+## 원인, 수정, 회귀
 
-| ID | 사용자 영향 / 재현 | 원인 | 변경 파일·commit | 검증 / 상태 |
+| ID | 사용자 영향 / 재현 | 확인한 원인과 변경 | 증거 / 현재 상태 |
+| --- | --- | --- | --- |
+| ASTRA-01 | 기존 browser run에서 OMR 오류 검사 AssertionError, 이후 MXL 미실행 | navigation 전에 전역 alert가 빈 Next route announcer를 선택. `scripts/runtime-browser-smoke.py`, `.gitignore`; `5b1f1a3` | PASS. URL/heading 대기와 Source region의 실제 오류 문구, 실행 가능한 시작 동작 없음, create 0건 유지. 빈 오류 허용·검사 삭제 없음 |
+| ASTRA-02 | 기존 clearInterval receiver 수정의 실제 브라우저 해제 보장 부족 | 기존 wrapper를 보존하고 smoke에 PCM과 context/timer 소유권 검증 추가; `5b1f1a3` | PASS 새 Preview와 push browser CI. Play/Pause/Resume/Reset, 재생 중 편성 전환, unmount 후 context closed 및 timer baseline 복귀, live context 1개 |
+| ASTRA-03 | 응답 유실 후 중복 생성 위험의 browser 회귀 부족 | manifest, 중복 클릭, 첫 응답 유실, reload와 같은 키 retry 관측 추가; `06ba31a` | PASS 격리 CI. 요청 2회/동일 키/논리적 simulated effect 1회/실제 외부 호출 0회. 실패 503과 명확한 오류 유지. 실제 provider 장애 주입이 아님 |
+| ASTRA-04 | 390px 화면이 1,056px까지 넘침. 악보 한 줄 축소로 음표 머리 약 2.70px | `globals.css`, `workspace.module.css`의 select 폭·모바일 label 및 `ProductPracticePlayer.tsx`의 실제 폭 기반 abcjs wrap/ResizeObserver; `58bf767` | PASS 새 Preview. pageWidth 390, 96마디 desktop 24단/mobile 96단, 음표 머리 약 8px. 공유 화면과 실제 OMR 악보도 검사 |
+| ASTRA-05 | 전체 test의 101회 OMR 결정성 검사가 간헐적으로 30초 timeout | worker 자원 경합. `vitest.config.mts` maxWorkers 2; `c80206d` | PASS 로컬 및 새 CI. 테스트·101회 순열·timeout·assertion·skip 조건은 변경하지 않음. 97 files/905 tests |
+| ASTRA-06 | 이전에는 Render workspace 미승인으로 안전한 push/새 Preview 확인 불가 | 이번 사용자 승인으로 실제 비운영 연결 확인 후 non-force push 및 테스트 provider branch 정정 | RESOLVED. 앱과 Python provider의 deployment SHA를 각각 조회. 운영 앱/main은 그대로 |
+| ASTRA-07 | Preview OMR 검증 도구가 상태 화면의 처리 중에서 진행하지 못함 | 임시 검증 스크립트가 60초 조회 budget의 두 pause 안내 중 재개 동작을 놓침. 제품 실패가 아님. Source 안내와 동일 handle의 ‘상태 확인 재개’를 처리하도록 검증 절차 수정 | PASS 수정 절차. 앞선 PNG 2건은 동일 handle sync로 completed/result 200 확인 후 각각 소유자 DELETE 200/404로 정리. 불확실한 기존 작업을 새 키로 재전송하지 않음 |
+| ASTRA-08 | 새 Preview의 실제 PDF 인식부터 완료까지 검증하지 못함 | PNG 3건으로 최근 1시간 세션 한도 3건 소진. PDF create HTTP 429; provider 작업 생성 전에 quota gate 거절 | BLOCKED_EXTERNAL. 원인과 화면의 명확한 오류 확인. quota 변경·새 identity·DB 초기화로 우회하지 않음. 첫 한도 슬롯은 2026-09-07 02:51:18.755 KST 이후 자연 회복 예정이며, 다른 사용/전역 한도는 다시 확인해야 함 |
+
+예외 기록은 단계·유형·traceback·비어 있지 않은 fallback과 안전한 경로/API 상태를 남긴다. 실패를 catch하여 PASS 처리하지 않는다. 별도 subagent/검토자는 사용하지 않았다.
+
+## 새 Preview에서 실제 실행한 사용자 흐름
+
+| 흐름 | 결과 | 직접 확인한 범위 |
+| --- | --- | --- |
+| MusicXML 직접 입력 | PASS | 잘못된 입력 거부 → 일반 화면 → Quick Review → 프로젝트 → simple/standard/full complete → 4편성 표시와 nonzero PCM → 저장/새로고침/재진입 → 프로젝트 JSON 재가져오기 → 3파트 MusicXML 내보내기·재가져오기·생성 |
+| MXL 직접 입력 | PASS | `/omr` 로컬 handoff → Quick Review → generation/PCM/저장/새로고침/3파트 export → export 재가져오기·생성. OMR 외부 호출 0건 |
+| 실제 PNG OMR | PASS | 자체 작성 8마디/32음/8코드 악보. 품질·권리·외부 전송 동의 → double-click create 1건 → upload/queued/processing → 필요한 경우 동일 handle 상태 확인 재개 → 실제 completed/MusicXML → 화면 handoff → Review → 프로젝트 → 생성/표시/PCM/저장·복구/내보내기·재가져오기/URL 공유/로컬 삭제 |
+| 실제 PDF OMR | BLOCKED_EXTERNAL | 같은 권리 안전 악보 PDF. digital PDF 확인과 WARN 검토 및 동의 이후 create 429. 명확한 제품 오류 PASS, provider 인식/Review 이후는 NOT_RUN. 기존 41c26ea PDF 성공으로 대신하지 않음 |
+| Source-first 검토 | PASS (PNG의 제한된 fixture) | 실제 PNG 결과 8마디/32음/8개 harmony. C/G/Am/F/C/G/F/C를 검토. 누락된 C major는 자체 작성 원본에 따라 명시적 사용자 교정. lead/tempo/곡 구조/3인 음역/권리를 확인한 뒤 generation |
+| URL 공유 | PASS | 읽기 전용 실제 browser, 생성 동작 없음, nonzero PCM. 서버 저장형과 구분 |
+| 서버 저장형 공유 | PASS | 자체 작성 96마디로 `kind:store` 201, 같은 키 replay 200/동일 응답, readonly desktop/mobile/PCM. 정상 소유자 UI 삭제 200 및 이후 조회 404 |
+| 소유자 삭제 | PASS | 이번 테스트 로컬 프로젝트만 삭제. OMR 각 테스트 job은 애플리케이션 DELETE API로 localHandleDeleted true / vendor deleted / cleanupState resolved, 이후 404. 다른 데이터·직접 DELETE SQL·bulk 삭제 없음 |
+| 모바일 표시 | PASS | 390×844 Chromium, 가로 넘침 없음·8px 음표 머리·실제 폭에 맞는 악보 줄바꿈. 물리 iPhone 결과가 아님 |
+
+PNG 인식 관찰 154초, 상태 조회 재개 2회. 재개는 원래 handle을 확인하는 동작이며 새 외부 create가 아니다. 과거 ‘눌렀다가 무반응’은 PNG에서 재현되지 않았고 요청/상태 전이/결과/화면 handoff까지 확인했다. PDF는 quota 오류가 명확히 표시됐다. 이번 재개에서 외부 인식은 PNG 3건이며 PDF 429는 외부 인식 0건이다.
+
+## Render와 DB/storage의 실제 확인 범위
+
+- 사용자 승인 workspace: My Workspace, `tea-d90iarbsq97s739e0sbg`. 해당 저장소 서비스는 기존 임시 테스트 서비스 하나. Docker/free/Singapore/1 instance, PR preview off. 다른 repository 서비스는 변경하지 않았다.
+- push 전에 실제 추적 branch가 base이고 LIVE `82c01d2`임을 확인해 앱 작업 branch push가 provider 운영 배포를 일으키지 않음을 확인했다. 이후 확인된 테스트 서비스의 branch를 `codex/harmonymaker-astra-runtime-closure`로 변경; autoDeploy yes/commit. 첫 새 LIVE `dep-daeph6mq1p3s73ac4mc0`.
+- 공개 source 안내 `HM_AUDIVERIS_SOURCE_CODE_URL`만 위 runtime SHA의 immutable provider 소스로 갱신했다. 이 비secret 변경으로 `dep-daepiv5bedkc73e790kg`가 같은 SHA에 LIVE. API key/demo token 등 secret은 조회·변경하지 않았다. 새 유료 서비스/plan 변경/production 변경 없음.
+- 실제 health: Audiveris 5.10.2, engine audiveris, durableStorage false. 환경: maxPages 12, retention 3600s, durable storage 0, `JAVA_TOOL_OPTIONS=-Xmx384m -Djava.awt.headless=true`. 실제 메모리 한도 약 512MiB/CPU 0.15. process timeout 환경 override 없음; 배포 소스 기본값 900초. 임의 timeout/retry 증가 없음.
+- 데이터는 `/data`의 ephemeral provider SQLite/files, 1 worker. capability supportsIdempotency false. 재시작 이후 외부 생성 중복 방지나 보관 복구는 보장하지 않으며 restart 장애 주입은 NOT_RUN. 테스트 성공을 내구성 보장으로 확대하지 않는다.
+- `render.yaml`의 base 추적은 템플릿이며 실제 서비스 설정 override와 구분한다. Render LIVE commit 및 실제 요청 로그로 배포를 확인했고, Vercel READY로 Python 코드 배포를 추정하지 않았다.
+- 운영 Vercel alias는 main `b4e14976...` 유지. 운영 capabilities read-only 조회는 PERSISTENCE_UNAVAILABLE 503으로 OMR 구성이 없었다. 운영 앱 배포/승격/설정 변경 없음.
+- Neon `harmonymaker-preview` / `red-sun-79451966`, primary `production` / `br-weathered-unit-aw8j57lo`는 비일회용 DB로 취급했다. registry 1~15 read-only 확인; migration/장애 주입/직접 데이터 삭제 없음.
+- 자체 PNG page digest와 생성 시각으로 Preview job이 이 DB에 존재함을 좁게 확인했다. provider binding `omr-provider:audiveris:310b16b9aa8b6850b112c43702517b33`, adapter v1. 이 binding hash는 endpoint 주소의 증명이 아니다. 실제 Render 요청 로그와 시각을 함께 확인했다. 실제 upload/result read/소유자 cleanup으로 storage 흐름을 검증했으며 키/접속 문자열을 출력하지 않았다.
+- 이번 PNG 3건(UTC 16:51:18.755, 17:02:23.572, 17:06:16.420)을 read-only로 다시 조회해 state/local_delete_state/vendor_delete_state 모두 deleted, handle_active false를 확인했다. 삭제해도 hourly 사용량이 감소하지 않는 안전 계약은 유지했다.
+- 기존 chord OCR Source identity 수정(CΔ7/C°7/Cø7/unknown glyph/slash bass)은 보존. 실제 entrypoint에서 augment 호출되고 candidate는 unconfirmed. 65개 unit PASS는 glyph별 실제 영상 인식 품질 PASS가 아니다.
+
+## 실행 gate와 checkout 구분
+
+환경: Windows, Node 22.23.2, Next 16.3.0, Python 3.12.14, Playwright 1.57.0 Chromium. AGENTS에 따라 설치 Next CSS/client/navigation/testing 문서 확인. 로컬 Docker Desktop 초기화 오류는 reset하지 않았고, PG 17.11을 localhost 55439 disposable DB에 사용한 뒤 중지했다.
+
+| 실행 | 결과 / 환경 |
+| --- | --- |
+| npm ci / typecheck / lint / build / git diff --check | PASS. lockfile 그대로 452 packages/0 vulnerabilities. 최종 제품 source `58bf767`, 문서만 추가한 `ddcea952`와 소스 동일 |
+| npm test | PASS 로컬 97 files/905 tests. 새 push/PR CI도 PASS |
+| npm run test:postgres | PASS disposable PG 4 files/39 tests |
+| migrate fresh/repeat | PASS installed 1~15, 반복 installed [] |
+| provider pytest | PASS 65 tests (deprecation warnings 3) |
+| frozen / Segment B / OMR determinism | PASS 3 files/12 tests, frozen 6개 파일 hash와 두 101회 gate. KEEP_WAG_V1_0_1 유지 |
+| production localhost browser | PASS 로컬 `58bf767`; 새 push CI browser는 `ddcea952`. Preview와 별도 증거 |
+| 최초 실패 | [33950877356](https://github.com/jooa1018/HarmonyMaker/actions/runs/33950877356) / `41c26ea`: artifact 9964810711 직접 조사. 원인은 ASTRA-01 |
+
+| CI run | event | GitHub headSha | 실제 checkout SHA | 결과 |
 | --- | --- | --- | --- | --- |
-| ASTRA-01 | 기존 browser run의 OMR 진입에서 빈 AssertionError; 이후 MXL 미실행 | navigation 완료 전 전역 alert가 `__next-route-announcer__`의 빈 요소를 선택. 실제 Source 영역에는 명확한 서버 미구성 오류와 session HTTP 503이 존재 | `scripts/runtime-browser-smoke.py`, `.gitignore`; `5b1f1a3` | PASS 로컬. `/omr` URL/heading 대기, Source region alert의 실제 오류 문구, 시작 동작 부재 및 create 0건을 모두 검사. 빈 오류 허용하지 않음 |
-| ASTRA-02 | 기존 clearInterval receiver 수정의 실제 브라우저 해제 보장이 필요 | 기존 wrapper 수정은 타당하며 보존. 이전 smoke의 재생만으로는 pause/reset/unmount 해제를 입증하지 못함 | `scripts/runtime-browser-smoke.py`; `5b1f1a3` | PASS 로컬 및 기존 SHA Preview. 실제 PCM, Play/Pause/Resume/Reset, 재생 중 편성 변경, unmount 후 context closed / timer baseline 복귀, live context 1개 검사 |
-| ASTRA-03 | 응답 유실 후 중복 클릭·새로고침으로 다른 생성 키를 발급할 위험의 브라우저 회귀 범위 부족 | 브라우저 manifest 및 버튼 상태를 실제 reload와 함께 검사해야 함 | `scripts/runtime-browser-smoke.py`; `06ba31a` | PASS 격리 브라우저. API 전체 interception, 첫 응답 유실, 같은 키 retry의 명확한 503. 2회 요청/동일 키/논리적 simulated effect 1회/실제 외부 효과 0회. 실제 provider 장애 주입 결과가 아님 |
-| ASTRA-04 | P1 표시 결함: 390px Preview가 1,056px까지 가로 넘침. 8마디도 1단/음표 머리 약 2.70px, 96마디 공유는 한 줄로 축소 | 긴 select의 최소 내용 폭과, 줄바꿈 없는 ABC를 responsive SVG로 축소하는 렌더링 | `src/app/globals.css`, `src/app/workspace/workspace.module.css`, `src/product/ProductPracticePlayer.tsx`, browser smoke; `58bf767` | 로컬 PASS: select 폭 제한, 모바일 label 분리, 실제 폭 기준 abcjs wrap + ResizeObserver 해제. 96마디 desktop 24단/mobile 96단, 음표 약 8px, pageWidth 390. 현재 Preview는 아직 FAIL; 수정 SHA 배포 검증 필요 |
-| ASTRA-05 | 전체 npm test의 101회 OMR 결정성 검사 간헐적 30초 timeout | 기본 worker 병렬 실행에서 자원 경합. 동일 코드가 기본 실행 1회 PASS, 2회 timeout; worker 2개 실행은 PASS | `vitest.config.mts`; `c80206d` | PASS. worker 수만 2로 제한. 테스트·101회 순열·30초 timeout·assertion·skip 조건은 변경하지 않음. 기본 `npm test` 최종 97 files/905 tests PASS |
-| ASTRA-06 | 최종 HEAD가 공유 가능한 검증된 Preview에 도달하지 못함 | provider 실제 연결/자동 배포 확인을 위한 Render workspace 승인이 남음 | 코드 변경 대상 아님 | BLOCKED_EXTERNAL. push, 새 HEAD CI, 새 Preview는 NOT_RUN. 현 Preview의 표시 결함 때문에 전체 판정은 INCOMPLETE |
+| [34046159961 CI](https://github.com/jooa1018/HarmonyMaker/actions/runs/34046159961) | push | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` | PASS |
+| [34046159975 Runtime closure browser](https://github.com/jooa1018/HarmonyMaker/actions/runs/34046159975) | push | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` | PASS, 해당 artifact results.json 확인 |
+| [34046161799 CI](https://github.com/jooa1018/HarmonyMaker/actions/runs/34046161799) | pull_request | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` | `23491fdd975580ffd621040e52964454b4d5d92d` | PASS, checkout log 확인 |
+| [34046161805 Audiveris provider](https://github.com/jooa1018/HarmonyMaker/actions/runs/34046161805) | pull_request | `ddcea952a6c7b1b90250fa3646109b5b4b6d588d` | `23491fdd975580ffd621040e52964454b4d5d92d` | PASS, 65 unit + 실제 pinned Docker/Audiveris HTTP MusicXML/hybrid OCR. fake HTTP 단계는 별도 |
 
-예외 기록은 단계, 예외 유형, 비어 있지 않은 fallback, traceback, query/fragment를 제외한 allowlist 경로 및 API HTTP/requestfailed/pageerror를 남긴다. bearer/OMR handle/URL/secret 형태는 정리한다. failure artifact 작성은 예외 정보를 먼저 보존하며, 실패를 catch해 PASS로 바꾸지 않는다.
+## 남은 한계와 NOT_RUN
 
-## 실제 Preview 사용자 흐름 — 배포 SHA 41c26ea만 해당
+- 확인된 제품 차단 P0/P1 없음. 새 Preview PDF는 **BLOCKED_EXTERNAL**이며 인식 이후 단계는 **NOT_RUN**. 한도 자연 회복 뒤 동일 소유 세션/보존 manifest의 원래 키로 PDF 1건만 재개해야 한다. 권한/요금제/secret 변경은 필요하지 않다.
+- 물리 iPhone Safari, JPEG 별도 인식, 특수 코드 glyph의 실제 영상 정확도, 광범위 인식/음악적 품질, provider restart 복구는 **NOT_RUN**.
+- production 배포·승격, main 병합, 정식 릴리스는 **NOT_RUN**이며 승인 범위 밖이다.
+- iPhone 후속 확인: PR의 최종 Preview를 Safari에서 열고 자체 MusicXML 입력 → Review·생성 → 세로/가로 악보 가독성 → Play/Pause/Resume/Reset → 저장/재진입과 공유 재생을 확인한다. 데스크톱 모바일 viewport의 PASS를 physical-device PASS로 계산하지 않는다.
 
-| 흐름 | 직접 실행 결과 | 범위 |
-| --- | --- | --- |
-| MusicXML 직접 입력 | PASS | 잘못된 입력 거부 → 일반 화면 → Quick Review → 프로젝트 → simple/standard/full complete → 4편성 표시 및 nonzero PCM → 저장/새로고침/프로젝트 JSON 재가져오기 → MusicXML 3파트 내보내기 및 재가져오기 |
-| MXL 직접 입력 | PASS | `/omr`의 MXL 로컬 handoff → Quick Review → generation → 재생/저장/새로고침/3파트 내보내기. provider 호출 아님 |
-| 실제 PNG OMR | PASS (인식/결과까지) | 이번 세션에서 작성한 8마디 악보, 이미지 품질/권리/외부전송 확인. 실제 create double-click에서 1회 요청. queued/processing 표시. 4분 관찰 종료 뒤 동일 job/handle을 sync하여 completed 및 실제 MusicXML HTTP 200 수신. 새 생성 키나 새 외부 작업으로 재시도하지 않음 |
-| 실제 PDF OMR end-to-end | PASS (표시 결함은 별도) | 자체 작성 동일 악보 PDF. 페이지/품질 WARN을 명시적으로 검토 후 동의, 실제 인식 완료 → 정본 importer handoff → lead/C major/tempo/8개 코드/곡구조/3인 음역/권리 확인 → 생성 → 4편성 실제 PCM → 저장/새로고침/프로젝트 파일 재가져오기 → MusicXML 3파트 재가져오기 및 generation |
-| 단순 코드 인식 | PASS, 제한된 fixture | PNG/PDF 모두 8마디/32음/8개 코드. C, G, Am, F, C, G, F, C를 검토 화면에서 확인. OCR 제목/조성 누락은 명시적 사용자 교정; 인식되지 않은 값을 자동 정답으로 꾸미지 않음 |
-| URL 공유 | PASS | 읽기 전용 화면, 생성 동작 없음, 실제 PCM. 서버 저장형으로 계산하지 않음 |
-| 서버 저장형 공유 | PASS (표시 결함은 별도) | 자체 작성 96마디 MusicXML을 일반 review/generation/UI에서 공유 → `kind:store`, HTTP 201. 동일 키 API replay 200/동일 응답. 실제 readonly browser PCM. UI 소유자 삭제 200 및 read-after-delete 404 |
-| 로컬 프로젝트 삭제 | PASS | 이번 테스트가 만든 프로젝트만 삭제. cloud 삭제와 구분 |
-| OMR 서버/provider/object 삭제 | PASS | 이번에 생성한 PNG/PDF 두 job의 소유 권한으로 애플리케이션 DELETE API 실행. 둘 다 HTTP 200, localHandleDeleted true, vendor deleted, cleanupState resolved, 이후 조회 404. provider 재시작이나 전체 데이터 삭제하지 않음 |
-| 모바일 viewport | 조작/오디오 PASS, 기존 표시 FAIL | 390×844 Chromium. 물리 기기 검증이 아님. 가로 넘침/악보 축소는 ASTRA-04로 로컬 수정 |
-
-과거 “눌렀다가 무반응” 증상은 위 정상 PNG/PDF에서 재현되지 않았다. 실제 요청과 job 상태 전이 및 결과 수신을 확인했다. 다만 인식 완료까지 수분이 걸렸으며 전체 문서/폰트/음악적 정확도 검증으로 확대하지 않는다.
-
-## Provider 및 DB/storage 확인 범위
-
-- 기존 `provider_entrypoint._decode_musicxml`은 실제 Audiveris 결과 정규화 후 `augment_musicxml_with_chord_ocr`를 호출한다. 삽입 후보는 unconfirmed이며 Quick Review 확인을 거쳐 Source/generation 입력에 반영된다.
-- 기존 CΔ7/C°7/Cø7/unknown-symbol/slash-bass source identity 회귀를 보존했고 provider 전체 65개 테스트가 통과했다. OCR 텍스트 주입 단위 테스트는 실제 해당 glyph의 영상 인식 정확도 증거가 아니다.
-- Preview capability: Audiveris 5.10.2, PNG transfer, maxPages 12, page evidence, deletion 지원, immediate deletion true, retention `self-hosted:3600s:ephemeral`, supportsIdempotency false. 실제 엔진의 단순 fixture 성공으로 재시작 후 idempotency를 보장하지 않는다.
-- 실제 Render revision, 환경변수 값/timeout/memory/persistence와 현재 추적 branch는 조회하지 못했다. 저장소 `render.yaml`의 base branch 추적 및 384m/1h 설정은 현재 서비스 설정으로 확정하지 않는다. Vercel SHA로 Python 배포 SHA를 추론하지 않는다.
-- Neon `harmonymaker-preview` (`red-sun-79451966`)의 `production` primary branch (`br-weathered-unit-aw8j57lo`)는 비일회용으로 취급했다. read-only SQL로 registry 1~15를 확인했다. migration/장애 주입/직접 DELETE SQL을 실행하지 않았다.
-- 이번 PNG 고유 page digest와 생성 시각으로 Preview에서 만든 job이 위 DB에 존재함을 좁은 조회로 확인했다. provider binding `omr-provider:audiveris:310b16b9aa8b6850b112c43702517b33`, adapter v1, 실제 result object 존재와 읽기를 확인했다. 삭제 후 해당 job의 state/local_delete_state/vendor_delete_state 및 source object lifecycle이 모두 deleted임을 다시 조회했다.
-- 실제 source upload/result 수신/소유자 cleanup은 확인했지만 bucket/endpoint의 설정 원문은 조회하지 않았다. 기존 R2 smoke 주장으로 대신하지 않았다.
-
-## 실행 검증
-
-환경: Windows, Node 22.23.2, Next 16.3.0, Python 3.12.14, Playwright 1.57.0 Chromium. root AGENTS 지시에 따라 설치된 Next CSS/client/navigation/testing 문서를 읽었다. Docker Desktop은 sailor-ingest.sock 초기화 오류로 사용하지 못했으며 reset하지 않았다. 공식 배포 PostgreSQL 17.11을 localhost 55439의 disposable DB에 실행했다.
-
-| 명령/검증 | 결과 | 증거 파일/범위 |
-| --- | --- | --- |
-| `npm ci` | PASS | lockfile 그대로, 452 packages / 0 vulnerabilities |
-| `npm run typecheck` | PASS | `typecheck-final.log` |
-| `npm run lint` | PASS | `lint-final.log` |
-| `npm test` | PASS | 97 files/905 tests, 68.95s. `unit-tests-final.log`. 수정 전 timeout 원본은 `unit-tests-final-layout.log`로 보존 |
-| `npm run test:postgres` | PASS | disposable PG의 최종 4 files/39 tests; `postgres-tests-final.log` |
-| `npm run migrate` fresh/repeat | PASS | installed 1~15 → 반복 installed []; 각각 `postgres-migrate-first.log`, `postgres-migrate-repeat.log` |
-| `npm run build` | PASS | 최종 label CSS 포함 `build-final.log` |
-| `git diff --check` | PASS | 변경 파일 실제 diff 검사 |
-| provider requirements + pytest | PASS | 65 tests / 3 deprecation warnings; `provider-tests.log` |
-| frozen authority + Segment B + OMR determinism | PASS | 3 files/12 tests; 6개 frozen 파일 hash와 두 101회 gate, `frozen-determinism.log` |
-| production localhost Chromium 전체 smoke | PASS | 최종 `58bf767f852a5106a0882934accdf0771bc3f64f`, `browser-final.log`, `runtime-browser-evidence/results.json`. 모바일 screenshot을 재확인했고 수직으로 깨진 label도 최종 CSS에서 바로잡음 |
-| 실제 Audiveris 엔진 CI | PASS at 41c26ea | 이번에 실행한 [34043519212](https://github.com/jooa1018/HarmonyMaker/actions/runs/34043519212): 실제 Docker image/launcher/HTTP MusicXML/hybrid OCR. fake-provider unit 경로와 실제 엔진 단계를 구분 |
-| 최초 실패 CI/artifact | FAIL at 41c26ea | [33950877356](https://github.com/jooa1018/HarmonyMaker/actions/runs/33950877356), job 101265278050, artifact 9964810711 다운로드·내용 확인. 잘못된 alert 검사 재현 |
-| 새 HEAD push-triggered / pull_request-triggered CI | NOT_RUN | 미push. branch HEAD, merge-ref, 실제 checkout SHA를 새로 확인해야 함 |
-| 새 SHA Vercel Preview | NOT_RUN | 미push. 기존 41c26ea의 성공과 실패만 위 표에 기록 |
-
-## 남은 필수 항목과 한계
-
-1. 사용자에게 이미 요청한 Render **My Workspace** 사용 승인 한 항목이 필요하다. 커넥터 자체가 확인된 workspaceId 재사용을 요구한다. 운영 영향 확인을 건너뛰기 위한 대체 경로로 우회하지 않는다.
-2. 승인 후 실제 `harmonymaker-audiveris-temp`의 revision/config/자동 배포 연결 및 비운영 여부를 조회해야 한다. 확인 후 기존 branch additive push, PR #13 유지, push/PR CI의 실제 checkout SHA, 새 Preview deployment SHA와 같은 사용자 흐름을 확인해야 한다.
-3. 현재 Preview의 P1 표시 결함은 수정이 아직 배포되지 않아 남아 있다. 확인된 로컬 domain/security/OMR 결과 생성 결함은 없다. 배포 검증 전 PREVIEW_VERIFIED라고 선언하지 않는다.
-4. physical iPhone Safari, JPEG 별도 인식, 특수 코드 glyph의 실제 이미지 인식 정확도, 광범위 악보/음악적 정확도, provider restart recovery는 NOT_RUN. 외부 서비스에 장애 주입하지 않았다. 운영 승격/릴리스는 NOT_RUN이며 이번 권한 범위 밖이다.
-
-별도 검토자나 subagent는 사용하지 않았다. 이 문서는 단일 통합 담당자의 실행 기록이며 독립 검증 주장이나 미래 자동 완료 약속이 아니다.
+원본/로그/스크린샷/정리된 JSON은 실행 환경의 `runtime-evidence.zip`과 `verification.json`에 모았다. 최종 push HEAD 증거는 PR #13 최신 본문과 함께 읽는다. 다른 사람의 데이터나 인증 정보를 evidence에 포함하지 않는다.
