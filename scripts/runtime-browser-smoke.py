@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import traceback
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 from xml.etree import ElementTree as ET
 import zipfile
@@ -23,6 +25,24 @@ OUT = ROOT / "runtime-browser-evidence"
 BASE = "http://127.0.0.1:3100"
 TITLE = "Runtime closure original fixture"
 RESULTS: list[dict[str, object]] = []
+STEP = "server-readiness"
+OBSERVATIONS: list[dict[str, object]] = []
+
+
+def begin(step: str) -> None:
+    global STEP
+    STEP = step
+
+
+def safe_path(url: str) -> str:
+    path = urlsplit(url).path
+    return path if path in ("/", "/import", "/omr", "/workspace", "/share", "/api/session", "/api/omr/provider-capabilities", "/api/omr/jobs") else "/[redacted]"
+
+
+def redact(text: str) -> str:
+    text = re.sub(r'v1\.[A-Za-z0-9_-]{43}\.\d{10,12}\.[a-f0-9]{64}', '[redacted-handle]', text)
+    text = re.sub(r'(?:https?|postgres(?:ql)?|s3)://\S+', '[redacted-url]', text)
+    return re.sub(r'(?i)((?:token|cookie|secret|authorization|password|payload)\s*[:=]\s*)\S+', r'\1[redacted]', text)
 
 
 def record(step: str, **details: object) -> None:
@@ -100,6 +120,13 @@ def generate(page: Page, preset: str) -> None:
 
 AUDIO_TAP = """() => {
   window.__hmAnalyzers = [];
+  window.__hmIntervals = new Set();
+  const schedule = window.setInterval.bind(window);
+  const clear = window.clearInterval.bind(window);
+  window.setInterval = (...args) => {
+    const timer = schedule(...args); window.__hmIntervals.add(timer); return timer;
+  };
+  window.clearInterval = (timer) => { window.__hmIntervals.delete(timer); clear(timer); };
   const connect = AudioNode.prototype.connect;
   AudioNode.prototype.connect = function (...args) {
     if (args[0] instanceof AudioDestinationNode) {
@@ -114,22 +141,37 @@ AUDIO_TAP = """() => {
 }"""
 
 
-def playback(page: Page) -> None:
+def audio_released(page: Page, timers: int) -> None:
+    page.wait_for_function("""timers =>
+      window.__hmAnalyzers.every(a => a.context.state === 'closed') &&
+      window.__hmIntervals.size === timers""", arg=timers, timeout=15000)
+
+
+def play_with_pcm(page: Page, action: str = "Play") -> None:
     player = page.locator('section.practice-player')
-    player.get_by_role("button", name="Play", exact=True).click()
+    player.get_by_role("button", name=action, exact=True).click()
     expect(player.locator('p.status').first).to_contain_text("재생 중")
     # Observe real Web Audio PCM, not just a button/transport state. The analyzer
     # is transparent in the existing signal path; no synthesizer is replaced.
     page.wait_for_function("""() => window.__hmAnalyzers.some(a => {
+      if (a.context.state !== 'running') return false;
       const samples = new Float32Array(a.fftSize); a.getFloatTimeDomainData(samples);
       return samples.some(x => Math.abs(x) > 0.00001);
     })""", timeout=15000)
+    assert page.evaluate("new Set(window.__hmAnalyzers.filter(a => a.context.state !== 'closed').map(a => a.context)).size") == 1, "More than one live audio context"
+
+
+def playback(page: Page) -> None:
+    player = page.locator('section.practice-player')
+    timers = page.evaluate("window.__hmIntervals.size")
+    play_with_pcm(page)
     player.get_by_role("button", name="Pause", exact=True).click()
     expect(player.locator('p.status').first).to_contain_text("일시 정지")
-    player.get_by_role("button", name="Resume", exact=True).click()
-    expect(player.locator('p.status').first).to_contain_text("재생 중")
+    audio_released(page, timers)
+    play_with_pcm(page, "Resume")
     player.get_by_role("button", name="Reset", exact=True).click()
     expect(player.locator('p.status').first).to_contain_text("준비")
+    audio_released(page, timers)
 
 
 def download(page: Page, label: str, name: str) -> Path:
@@ -142,6 +184,7 @@ def download(page: Page, label: str, name: str) -> Path:
 
 
 def run(page: Page) -> None:
+    begin("musicxml-user-entry-review-project")
     page.goto(BASE, wait_until="networkidle")
     page.get_by_role("link", name="MusicXML 가져오기와 Quick Review →", exact=True).click()
     page.locator('input[type="file"]').set_input_files({"name": "invalid.musicxml", "mimeType": "application/xml", "buffer": b'<not-a-score />'})
@@ -153,13 +196,24 @@ def run(page: Page) -> None:
     workspace = page.url
     record("musicxml-user-entry-review-project", measures=8, singers=3)
     for preset in ("simple", "standard", "full"):
+        begin(f"generation-{preset}")
         generate(page, preset)
         record("generation", preset=preset, result="complete")
     for projection in ("lead", "upper", "lower", "full"):
+        begin(f"projection-render-audio-{projection}")
         page.get_by_role("button", name=projection, exact=True).click()
         expect(page.locator('.score-wrap svg')).not_to_have_count(0)
         playback(page)
         record("projection-render-audio", projection=projection, pcm="nonzero", physical_device=False)
+    begin("playing-projection-replacement")
+    timers = page.evaluate("window.__hmIntervals.size")
+    play_with_pcm(page)
+    page.get_by_role("button", name="lead", exact=True).click()
+    audio_released(page, timers)
+    playback(page)
+    page.get_by_role("button", name="full", exact=True).click()
+    record("playing-projection-replacement", released_contexts=True, released_timers=True)
+    begin("export-save-reload-reenter")
     page.screenshot(path=str(OUT / "workspace-desktop.png"), full_page=True)
     exported_xml = download(page, "MusicXML 다운로드", "roundtrip.musicxml")
     root = ET.fromstring(exported_xml.read_bytes())
@@ -179,11 +233,13 @@ def run(page: Page) -> None:
     expect(page.get_by_text("정본 프로젝트 파일을 검증하고 로드했습니다.", exact=True)).to_be_visible()
     record("project-export-reimport-validated")
     page.set_viewport_size({"width": 390, "height": 844})
+    begin("mobile-controls")
     page.get_by_role("button", name="lead", exact=True).click()
     playback(page)
     page.screenshot(path=str(OUT / "workspace-mobile.png"), full_page=True)
     record("mobile-controls", viewport="390x844", physical_device=False)
     page.get_by_role("button", name="full", exact=True).click()
+    begin("url-share-readonly-render-audio")
     page.get_by_role("button", name="권리 확인 후 공유 만들기 / 복구", exact=True).click()
     link = page.locator('a[href*="/share#p="]')
     expect(link).to_be_visible(timeout=30000)
@@ -197,31 +253,57 @@ def run(page: Page) -> None:
     playback(shared)
     shared.close()
     record("url-share-readonly-render-audio", server_store=False)
+    begin("playing-unmount-owned-local-project-delete")
+    timers = page.evaluate("window.__hmIntervals.size")
+    play_with_pcm(page)
     page.get_by_role("button", name="로컬 삭제", exact=True).click()
     page.wait_for_url(BASE + "/")
+    audio_released(page, timers)
+    record("playing-unmount-release", released_contexts=True, released_timers=True)
     page.goto(workspace, wait_until="networkidle")
     expect(page.get_by_role("link", name="Quick Review에서 시작하기 →", exact=True)).to_be_visible()
     expect(page.get_by_test_id("generation-status")).to_have_count(0)
     record("owned-local-project-delete")
+    begin("exported-musicxml-reimport-generation")
     page.goto(BASE + "/import", wait_until="networkidle")
     page.locator('input[type="file"]').set_input_files(exported_xml)
     ready_review(page)
     generate(page, "standard")
     record("exported-musicxml-reimport-generation", result="complete")
+    begin("omr-missing-configuration-visible-error")
+    creates = []
+    page.on("request", lambda request: creates.append(request.method) if request.method == "POST" and urlsplit(request.url).path == "/api/omr/jobs" else None)
     page.goto(BASE, wait_until="networkidle")
-    page.get_by_role("link", name="사진·PDF OMR과 증거 검토 →", exact=True).click()
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/session" and response.request.method == "POST") as session_response:
+        page.get_by_role("link", name="사진·PDF OMR과 증거 검토 →", exact=True).click()
+        page.wait_for_url(BASE + "/omr", timeout=30000)
+    expect(page.get_by_role("heading", name="사진·PDF 악보 인식", exact=True)).to_be_visible()
     # With no production substrate credentials, the actual API must fail visibly.
     # No provider request is sent and no reference result can be substituted.
-    alert = page.get_by_role("alert")
+    # Next's route announcer also has role=alert, including before navigation
+    # commits. Only the actual Source-preparation region owns product errors.
+    alert = page.get_by_role("region", name="1. 안전한 Source 준비", exact=True).get_by_role("alert")
     expect(alert).to_be_visible(timeout=30000)
-    assert alert.inner_text().strip()
-    expect(page.get_by_role("button", name="인식 시작", exact=True)).to_be_disabled()
-    record("omr-missing-configuration-visible-error", real_omr="BLOCKED_EXTERNAL")
+    expect(alert).to_have_text("서버 저장 기능이 아직 구성되지 않았습니다.")
+    assert session_response.value.status == 503
+    # No selected pages means the start section is absent, not disabled.
+    expect(page.get_by_role("button", name="인식 시작", exact=True)).to_have_count(0)
+    assert creates == [], "OMR job was created without selected input"
+    record("omr-missing-configuration-visible-error", http_status=503, create_requests=0, real_omr="BLOCKED_EXTERNAL")
+    begin("mxl-omr-entry-handoff-review-generation")
     page.locator('input[type="file"]').first.set_input_files({"name": "original.mxl", "mimeType": "application/vnd.recordare.musicxml", "buffer": compressed_score(xml)})
     page.wait_for_url("**/import", timeout=30000)
     ready_review(page)
     generate(page, "standard")
     record("mxl-omr-entry-handoff-review-generation", result="complete")
+    playback(page)
+    page.get_by_role("button", name="로컬 저장", exact=True).click()
+    page.reload(wait_until="networkidle")
+    expect(page.get_by_test_id("generation-status")).to_have_text("complete", timeout=30000)
+    mxl_export = download(page, "MusicXML 다운로드", "mxl-roundtrip.musicxml")
+    assert len(ET.fromstring(mxl_export.read_bytes()).findall("part")) == 3
+    record("mxl-playback-save-reload-export", result="complete")
+    assert creates == [], "Direct MXL handoff dispatched an OMR job"
 
 
 def main() -> None:
@@ -252,17 +334,25 @@ def main() -> None:
             context = browser.new_context(viewport={"width": 1280, "height": 900}, accept_downloads=True)
             context.add_init_script("(" + AUDIO_TAP + ")();")
             page = context.new_page()
+            context.on("page", lambda child: child.on("pageerror", lambda error: OBSERVATIONS.append({"kind": "pageerror", "path": safe_path(child.url), "error": redact(str(error))})))
+            page.on("pageerror", lambda error: OBSERVATIONS.append({"kind": "pageerror", "path": safe_path(page.url), "error": redact(str(error))}))
+            context.on("response", lambda response: OBSERVATIONS.append({"kind": "api-response", "path": safe_path(response.url), "status": response.status}) if "/api/" in response.url else None)
+            context.on("requestfailed", lambda request: OBSERVATIONS.append({"kind": "requestfailed", "path": safe_path(request.url), "method": request.method, "error": redact(request.failure or "unknown")}))
             try:
                 run(page)
+                begin("browser-error-gate")
+                assert not [event for event in OBSERVATIONS if event["kind"] == "pageerror"], "Unhandled browser pageerror (see observations)"
                 completed = True
             except Exception as error:
-                text = re.sub(r'https?://\S+', '[redacted-url]', page.locator("body").inner_text())
-                (OUT / "failure-body.txt").write_text(text)
+                failure = {"step": STEP, "status": "FAIL", "path": safe_path(page.url), "exception_type": type(error).__name__, "error": redact(str(error)) or type(error).__name__, "traceback": redact("".join(traceback.format_exception(error)))}
+                RESULTS.append(failure)
+                print(json.dumps(failure, ensure_ascii=False), flush=True)
+                text = redact(page.locator("body").inner_text())
+                (OUT / "failure-body.txt").write_text(text, encoding="utf-8")
                 # URL-share payloads are not included in evidence screenshots.
                 page.locator('a[href*="/share"]').evaluate_all("links => links.forEach(a => a.textContent = '공유 링크 (숨김)')")
                 page.screenshot(path=str(OUT / "failure.png"), full_page=True)
-                RESULTS.append({"step": "browser-flow", "status": "FAIL", "error": re.sub(r'https?://\S+', '[redacted-url]', str(error))})
-                raise
+                raise SystemExit(1) from None
             finally:
                 browser.close()
     finally:
@@ -272,7 +362,7 @@ def main() -> None:
         except subprocess.TimeoutExpired:
             server.kill(); server.wait(timeout=10)
         log.close()
-        (OUT / "results.json").write_text(json.dumps({"code_sha": os.environ.get("HM_CODE_SHA", "local-unpublished"), "environment": "disposable-localhost-production-build", "status": "PASS" if completed else "FAIL", "real_omr": "BLOCKED_EXTERNAL", "preview": "NOT_RUN", "physical_device": "NOT_RUN", "checks": RESULTS}, ensure_ascii=False, indent=2))
+        (OUT / "results.json").write_text(json.dumps({"code_sha": os.environ.get("HM_CODE_SHA", "local-unpublished"), "environment": "disposable-localhost-production-build", "status": "PASS" if completed else "FAIL", "real_omr": "BLOCKED_EXTERNAL", "preview": "NOT_RUN", "physical_device": "NOT_RUN", "checks": RESULTS, "observations": OBSERVATIONS}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

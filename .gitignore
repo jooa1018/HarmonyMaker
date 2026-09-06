@@ -3,5 +3,7 @@ node_modules/
 out/
 *.log
 *.tsbuildinfo
+__pycache__/
+runtime-browser-evidence/
 .env*
 !.env.example
