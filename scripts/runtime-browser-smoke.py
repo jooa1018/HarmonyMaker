@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 from playwright.sync_api import Page, expect, sync_playwright
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "runtime-browser-evidence"
@@ -73,6 +74,78 @@ def compressed_score(xml: bytes) -> bytes:
         archive.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="score.musicxml" media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>')
         archive.writestr("score.musicxml", xml)
     return output.getvalue()
+
+
+def simulated_omr_response_loss(page: Page) -> None:
+    """Browser safety only: every API is intercepted; no real OMR is claimed."""
+    begin("simulated-omr-response-loss")
+    keys: list[str] = []
+    effects: set[str] = set()
+    unexpected: list[str] = []
+    quality = {"status": "pass", "reasons": [], "blurBp": 0, "perspectiveBp": 0, "glareBp": 0, "cropRiskBp": 0}
+
+    def api(route) -> None:
+        request = route.request
+        path = urlsplit(request.url).path
+        if path == "/api/session":
+            route.fulfill(json={"csrfToken": "disposable-simulated-csrf"})
+        elif path == "/api/omr/provider-capabilities":
+            route.fulfill(json={"preflight": {"capabilitySnapshotDigest": "a" * 64, "capabilities": {
+                "vendorId": "simulated-response-loss", "vendorDisplayName": "Simulated failure only",
+                "supportedMimeTypes": ["image/png"], "transferMimeType": "image/png", "maxPages": 12,
+                "evidenceGranularity": "page", "supportsDeletion": True, "retentionDisclosure": True,
+                "supportsIdempotency": False, "supportsInteractiveInput": False, "canDeleteImmediately": True,
+                "retentionPolicyReference": "simulation:no-external-effects", "externalTransfer": True,
+            }}})
+        elif path == "/api/omr/quality-preflight":
+            route.fulfill(json={"inspection": {"digest": "b" * 64, "width": 1200, "height": 1600, "quality": quality}})
+        elif path == "/api/omr/jobs" and request.method == "POST":
+            key = request.post_data_json["idempotencyKey"]
+            keys.append(key)
+            effects.add(key)
+            # Model a committed effect whose response is lost. Never return a
+            # fake success, handle or MusicXML to the application.
+            if len(keys) == 1:
+                route.abort("connectionreset")
+            else:
+                route.fulfill(status=503, json={"error": {"code": "OMR_VENDOR_CREATE_OUTCOME_UNCERTAIN", "messageKo": "같은 생성 키의 제공자 생성 결과를 확인해야 합니다."}})
+        else:
+            unexpected.append(path)
+            route.abort()
+
+    page.route("**/api/**", api)
+    page.goto(BASE + "/omr", wait_until="networkidle")
+    source = page.get_by_role("region", name="1. 안전한 Source 준비", exact=True)
+    source.locator('input[type="file"]').set_input_files({"name": "invalid.png", "mimeType": "image/png", "buffer": b"not an image"})
+    expect(source.get_by_role("alert")).to_have_text(re.compile(r"\S+"))
+    assert keys == [], "Invalid input dispatched an OMR create"
+    record("simulated-omr-invalid-image-visible-error", create_requests=0, external_effects=0)
+    fixture = Image.new("RGB", (1200, 1600), "white")
+    draw = ImageDraw.Draw(fixture)
+    for row in range(5):
+        draw.line((100, 500 + row * 24, 1100, 500 + row * 24), fill="black", width=3)
+    encoded = io.BytesIO()
+    fixture.save(encoded, format="PNG")
+    source.locator('input[type="file"]').set_input_files({"name": "simulated-failure.png", "mimeType": "image/png", "buffer": encoded.getvalue()})
+    start = page.get_by_role("button", name="인식 시작", exact=True)
+    expect(start).to_be_disabled()
+    for attempt in range(2):
+        if attempt:
+            page.reload(wait_until="networkidle")
+        page.get_by_label("이 악보를 편곡 생성에 사용하고 처리할 권리가 있습니다.", exact=True).check()
+        page.get_by_label("위 capability snapshot과 외부 제공자 전송·보관 고지를 확인하고 명시적으로 동의합니다.", exact=True).check()
+        expect(start).to_be_enabled()
+        if attempt == 0:
+            start.dblclick()
+        else:
+            start.click()
+        expect(source.get_by_role("alert")).to_contain_text("같은 생성 키")
+        expect(start).to_be_enabled()
+        assert len(keys) == attempt + 1, "Duplicate click dispatched another create"
+        expect(page.get_by_role("button", name="새 작업 시작", exact=True)).to_have_count(0)
+    assert len(effects) == 1 and keys[0] == keys[1], "Response loss/reload rotated the creation key"
+    assert not unexpected, "Unexpected simulated API call"
+    record("simulated-omr-response-loss-reload-same-key", create_requests=2, logical_simulated_effects=1, external_effects=0)
 
 
 def ready_review(page: Page) -> None:
@@ -183,7 +256,7 @@ def download(page: Page, label: str, name: str) -> Path:
     return path
 
 
-def run(page: Page) -> None:
+def run_product_core(page: Page) -> bytes:
     begin("musicxml-user-entry-review-project")
     page.goto(BASE, wait_until="networkidle")
     page.get_by_role("link", name="MusicXML 가져오기와 Quick Review →", exact=True).click()
@@ -270,6 +343,11 @@ def run(page: Page) -> None:
     ready_review(page)
     generate(page, "standard")
     record("exported-musicxml-reimport-generation", result="complete")
+    return xml
+
+
+def run(page: Page) -> None:
+    xml = run_product_core(page)
     begin("omr-missing-configuration-visible-error")
     creates = []
     page.on("request", lambda request: creates.append(request.method) if request.method == "POST" and urlsplit(request.url).path == "/api/omr/jobs" else None)
@@ -304,6 +382,7 @@ def run(page: Page) -> None:
     assert len(ET.fromstring(mxl_export.read_bytes()).findall("part")) == 3
     record("mxl-playback-save-reload-export", result="complete")
     assert creates == [], "Direct MXL handoff dispatched an OMR job"
+    simulated_omr_response_loss(page)
 
 
 def main() -> None:
