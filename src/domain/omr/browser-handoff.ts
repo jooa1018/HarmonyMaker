@@ -38,6 +38,7 @@ export interface OmrHandoffPageImage {
 
 export interface OmrImportHandoff {
   readonly handoffId: string;
+  readonly expiresAt: string;
   readonly file: File;
   readonly omrProviderResult?: OmrProviderResult;
   readonly pageImages: readonly OmrHandoffPageImage[];
@@ -165,6 +166,7 @@ export async function takeOmrImportHandoff(): Promise<OmrImportHandoff | undefin
     }
     return {
       handoffId,
+      expiresAt,
       file: new File([stored.bytes], stored.fileName, { type: stored.mimeType }),
       ...(stored.omrProviderResult ? { omrProviderResult: stored.omrProviderResult } : {}),
       pageImages: stored.pageImages ?? [],
@@ -174,7 +176,7 @@ export async function takeOmrImportHandoff(): Promise<OmrImportHandoff | undefin
   }
 }
 
-export async function recordOmrImportHandoffFailure(handoffId: string): Promise<void> {
+export async function recordOmrImportHandoffFailure(handoffId: string): Promise<boolean> {
   const db = await database();
   try {
     const transaction = db.transaction(STORE_NAME, "readwrite");
@@ -184,12 +186,15 @@ export async function recordOmrImportHandoffFailure(handoffId: string): Promise<
       request.onsuccess = () => resolve(request.result as StoredHandoff | undefined);
       request.onerror = () => reject(request.error ?? new Error("OMR_HANDOFF_READ_FAILED"));
     });
+    let available = false;
     if (stored?.handoffId === handoffId) {
       const failures = (stored.recoveryAttempts ?? 0) + 1;
-      if (evaluateOmrHandoffRecovery(stored.expiresAt, failures, new Date().toISOString()) === "available") store.put({ ...stored, recoveryAttempts: failures });
+      available = evaluateOmrHandoffRecovery(stored.expiresAt, failures, new Date().toISOString()) === "available";
+      if (available) store.put({ ...stored, recoveryAttempts: failures });
       else store.delete(RECORD_KEY);
     }
     await transactionDone(transaction);
+    return available;
   } finally { db.close(); }
 }
 

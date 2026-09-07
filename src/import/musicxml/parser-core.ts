@@ -49,6 +49,8 @@ import {
   type XmlElement,
 } from "./xml";
 
+import { MusicXmlStructureError } from "./structure-error";
+
 type RawChordDraft = Omit<ImportedChordDraft, "key">;
 
 interface TempoEvent {
@@ -127,7 +129,7 @@ function candidateIdentity(key: string): { readonly staffNumber: number; readonl
 function durationFraction(durationText: string | undefined, divisions: number): Fraction {
   const duration = parseInteger(durationText);
   if (duration === undefined || duration <= 0 || !Number.isSafeInteger(divisions) || divisions <= 0) {
-    throw new RangeError("invalid MusicXML duration/divisions");
+    throw new MusicXmlStructureError("invalid MusicXML duration/divisions");
   }
   return fraction(duration, divisions);
 }
@@ -606,7 +608,7 @@ function parseMeasure(
     if (child.name === "backup" || child.name === "forward") {
       const amount = durationFraction(xmlText(xmlChild(child, "duration")), divisions);
       cursor = child.name === "backup" ? subtractFractions(cursor, amount) : addFractions(cursor, amount);
-      if (cursor.n < 0) throw new RangeError("MusicXML backup moved before measure start");
+      if (cursor.n < 0) throw new MusicXmlStructureError("MusicXML backup moved before measure start");
       if (compareFractions(cursor, maximum) > 0) maximum = cursor;
       continue;
     }
@@ -661,7 +663,7 @@ function parseMeasure(
       }
       const duration = durationFraction(xmlText(xmlChild(child, "duration")), divisions);
       const onset = isChordMember ? lastOnset.get(keyForCandidate) : cursor;
-      if (!onset) throw new RangeError("MusicXML chord member has no preceding note");
+      if (!onset) throw new MusicXmlStructureError("MusicXML chord member has no preceding note");
       if (!isChordMember) lastOnset.set(keyForCandidate, onset);
       const end = addFractions(onset, duration);
       if (compareFractions(end, maximum) > 0) maximum = end;
@@ -721,7 +723,7 @@ function parseMeasure(
       }
       const offset = fraction(parsedOffset, divisions);
       const onset = addFractions(cursor, offset);
-      if (onset.n < 0) throw new RangeError("MusicXML harmony offset precedes measure start");
+      if (onset.n < 0) throw new MusicXmlStructureError("MusicXML harmony offset precedes measure start");
       rawChords.push(parseHarmony(child, context, ordinal, onset));
       continue;
     }
@@ -743,17 +745,17 @@ function parseMeasure(
       }
       const offset = fraction(parsedOffset, divisions);
       const onset = addFractions(cursor, offset);
-      if (onset.n < 0) throw new RangeError("MusicXML direction offset precedes measure start");
+      if (onset.n < 0) throw new MusicXmlStructureError("MusicXML direction offset precedes measure start");
       textEvents.push(...directionTextEvents(child, onset));
       flowTexts.push(...flowFromDirection(child, context.partOrdinal, ordinal));
       const tempo = parseTempo(child, ordinal, onset);
       if (tempo) tempos.push(tempo);
     }
   }
-  if (!time) throw new RangeError("MusicXML has no initial time signature");
+  if (!time) throw new MusicXmlStructureError("MusicXML has no initial time signature");
   const meterDuration = fullMeasureDuration(time);
   if (compareFractions(maximum, meterDuration) > 0 || compareFractions(cursor, meterDuration) > 0) {
-    throw new RangeError("MusicXML cursor exceeds measure duration");
+    throw new MusicXmlStructureError("MusicXML cursor exceeds measure duration", { element: "measure", maximum: `${maximum.n}/${maximum.d}`, meterDuration: `${meterDuration.n}/${meterDuration.d}` });
   }
   const implicit = measure.attributes.implicit === "yes";
   const actualDuration = implicit && maximum.n > 0 ? maximum : meterDuration;
@@ -833,13 +835,23 @@ function parsePart(
   const tempoEvents: TempoEvent[] = [];
   const flowTexts: Omit<UnsupportedPerformanceFlow, "id">[] = [];
   for (const [ordinal, measureElement] of xmlChildren(part, "measure").entries()) {
-    const parsed = parseMeasure(measureElement, ordinal, context, inherited);
+    let parsed: ReturnType<typeof parseMeasure>;
+    try {
+      parsed = parseMeasure(measureElement, ordinal, context, inherited);
+    } catch (error) {
+      if (error instanceof MusicXmlStructureError) {
+        Object.assign(error.details, { partOrdinal, measureOrdinal: ordinal });
+        const number = parseInteger(measureElement.attributes.number);
+        if (number !== undefined) error.details.measureNumber = number;
+      }
+      throw error;
+    }
     measures.push(parsed.measure);
     tempoEvents.push(...parsed.tempoEvents);
     flowTexts.push(...parsed.flowTexts);
     inherited = parsed.next;
   }
-  if (measures.length === 0) throw new RangeError("MusicXML part has no measures");
+  if (measures.length === 0) throw new MusicXmlStructureError("MusicXML part has no measures");
   if (inherited.activeEnding) {
     diagnostics.push({
       code: "PERFORMANCE_EXPANSION_FAILED",
@@ -1055,10 +1067,11 @@ export async function importMusicXml(
   try {
     score = parseScore(parsedXml.root);
   } catch (error) {
+    if (!(error instanceof MusicXmlStructureError)) throw error;
     const diagnostics = await materializeImportDiagnostics([{
       code: "IMPORT_CORRUPT_XML",
-      messageKo: "MusicXML의 시간축 또는 구조가 유효하지 않습니다.",
-      details: { reason: error instanceof Error ? error.message : "score-parse-failed" },
+      messageKo: error.messageKo,
+      details: error.details,
     }]);
     return { status: "blocked", diagnostics };
   }

@@ -1,5 +1,34 @@
 # Astra runtime closure — 2026-09-07 KST
 
+## 2026-09-07 실사용 JPEG 후속 조사 — INCOMPLETE
+
+이 항목은 아래 역사적 검증과 별개다. `17dbdf7`의 자체 작성 1쪽 PDF 전체 흐름 PASS / PREVIEW_VERIFIED(최신 PR 증거)는 유지하지만, 실제 사용자 JPEG의 성공을 뜻하지 않는다.
+
+- 사용자 확인: 2026-09-07 약 15:12 KST, iPhone용 Google Chrome, 원래 오류 탭은 닫힘. 해당 기기의 IndexedDB·쿠키·handle을 가져오거나 위조하지 않았다.
+- 고정 오류 Preview: `https://harmony-maker-4coo4cnmf-ecctom1.vercel.app`, `dpl_DZKuY7hFdWjUqAdcYd7b8EWmKNTK`, 실제 앱 SHA `17dbdf74692feb0aa21e2fb9a9a18fb30145be03`. 원격 HEAD도 동일했고 다른 작업자의 후속 변경은 없었다.
+- Render My Workspace / `harmonymaker-audiveris-temp`의 LIVE는 `ddcea952a6c7b1b90250fa3646109b5b4b6d588d`. 작업 branch를 autoDeploy commit으로 추적한다. provider source는 17dbdf7과 동일하다. 이번 수정은 provider를 변경하지 않는다.
+- 서버 읽기 조회: 15:03:06.979 KST 생성 → 15:12:00.533 완료된 camera-photo 1쪽 작업이 있으며, 39,797-byte MusicXML 객체가 active 상태다. digest `c96343d5e66f00d9e807e619aeaa8c317195398c8d72f8e2faa00b1db5758e45`, 객체 보관 만료는 2026-09-08 15:03:06.979 KST. 원문 객체 읽기 권한은 현재 도구에서 확보하지 못했다. 원래 사용자 결과를 확보했다고 보고하지 않는다.
+- 첨부 JPEG의 서버 방식 정규화 PNG digest는 `8858cee03d279000325ea80c5173aa90c44c7cf9c4b833b8f2e243c111c52740`으로 위 작업의 페이지 digest와 정확히 일치한다. 원본 JPEG bytes와 정규화 PNG bytes는 구분한다. 원래 iPhone handoff bytes/binding은 NOT_RUN이다.
+- 외부 재인식 호출 0건. 네트워크가 차단된 로컬 Audiveris 5.10.2 인식 2건: 먼저 JPEG를 직접 grayscale 변환한 재현, 이어서 서버와 일치하는 정규화 PNG를 사용한 재현. 후자는 현재 wrapper/preprocess/output/chord-OCR 코드를 사용했다. 원문 악보·전체 MusicXML·engine logs는 저장소 밖 비공개 디버깅 폴더에만 보존한다.
+- 동일 정규화 입력의 로컬 결과는 39,987 bytes, digest `bd541bb36b73920ee47f34b1ce8e9cfc4ac34555d1f28dd363ee921932fbe918`이다. 원래 서버 결과 digest와 다르므로 **원래 결과 replay가 아니다**. 실행된 importer의 첫 실패는 `MusicXML cursor exceeds measure duration`, partOrdinal 0 / measureOrdinal 1 / 악보 번호 1 / element measure. exact Fraction 단위(quarter note) 최대 11/2, 박자 길이 4/1, 즉 4/4 마디에 온음표 기준 11/8이다. 성부 1의 시간축이 초과한다. 처음 로컬 재현에서도 같은 실패를 관측했다.
+- 로컬 엔진이 여러 movement 파일을 만들고 provider가 첫 파일을 선택하는 것도 관측했다. 나머지 파일의 첫 박자표 누락과 전체 악보 보존 문제는 해결되지 않았다. 첫 마디를 강제로 잘라내거나, 박자를 고정하거나, 전체 악보를 인식한 것처럼 처리하지 않았다.
+
+### 이번 최소 수정과 검증 범위
+
+- 의도적인 구조 검사만 `IMPORT_CORRUPT_XML`로 분류하며, 안전한 한국어 원인과 part/measure 위치를 남긴다. 예기치 않은 runtime exception은 XML 손상으로 분류하거나 그 원문을 화면에 노출하지 않는다.
+- OMR 결과 가져오기 맥락을 표시하고, 검증한 원본 bytes의 다운로드와 보존 파일 재입력 경로를 제공한다. 다운로드 사본은 IndexedDB Blob backing과 분리한다. 30분 TTL / 실패 3회 제한은 유지하며 새 인식 요청을 보내지 않는다. 직접 파일 선택 때 이전 OMR Review 상태도 해제한다. 불안정하게 관측된 같은 탭 재읽기 버튼은 최종 제품에 포함하지 않는다.
+- 자체 작성 최소 XML 회귀: 구버전에서 6개 중 5개 실패, 수정본에서 모두 PASS. 정상 pickup / backup을 포함한 두 성부 / 박자 변경은 의미를 유지해 Review로 진입한다. overfull/음수 backup/0 duration/선행 음 없는 chord는 계속 차단한다.
+- Chromium·Playwright WebKit: /import 초기·파일 focus·오류·390×844/844×390 전환·글자 크기 200% 검사. 기본 상태에서는 원래 화면 잘림을 재현하지 못했다. 글자 200%에서는 기존 scrollWidth 751 > clientWidth 390을 재현했으며, grid/file-input 최소 폭 수정 후 두 엔진 모두 390/390, scrollX 0. physical iPhone의 원래 잘림 원인으로 단정하지 않는다. 실제 pinch/page zoom 및 물리 iPhone은 별도 미검증이다.
+- 정규화 입력의 로컬 엔진 XML에는 별도의 synthetic provider envelope를 붙여 OMR 맥락과 페이지/결과 digest 검사를 검사한다. 구체적 마디 오류 → 다운로드 bytes 일치 → 보존 파일 직접 재입력의 검증이며, 원래 사용자의 provider-result binding을 확보한 replay나 새 외부 OMR E2E가 아니다. 3회 실패 후 삭제·TTL·다른 handoff ID 보호는 별도 IndexedDB 회귀 테스트로 검증한다. WebKit의 임시 context Blob 저장 제한은 persistent disposable context로 분리했고, 다운로드 검사는 도구가 bytes를 미리 읽어 주는 관측 보조 없이 실행한다. 일반 MusicXML/MXL 전달에는 OMR 인식 맥락을 붙이지 않고 원래 파일 확장자를 보존한다.
+- 이 악보의 수동 음악 교정은 수행하지 않았다. 실제 결과 → Review → 프로젝트 → WAG → 재생·저장·내보내기는 현재 구조 차단으로 NOT_RUN이다. 안내·보존 기능 개선을 이 악보의 처리 성공으로 보고하지 않는다. 전체 인식 정확도·물리 iPhone·운영 배포도 NOT_RUN.
+- 이번 시험은 외부 OMR job이나 사용자 프로젝트를 생성하지 않았다. 브라우저 시험이 직접 만든 로컬 replay handoff만 정리하고 테스트 브라우저를 닫았다. 사용자의 원래 작업과 서버 객체는 삭제하지 않았다. quota·secret·요금·운영 DB·main은 변경하지 않았다.
+
+최종 코드 변경 이후 `npm ci`(452 packages, 0 vulnerabilities), typecheck, lint, unit 99 files / 914 tests, disposable PostgreSQL 4 files / 39 tests, build, diff-check가 모두 PASS다. 별도 localhost production build 브라우저 회귀 23항목도 PASS: 정상 XML/MXL의 Review·complete 생성·실제 PCM·저장/복구·내보내기·소유 데이터 삭제, 96마디 표시와 모의 OMR 복구를 포함한다. 이 정상 fixture 성공은 실사용 악보의 성공으로 대체하지 않는다. 마지막 로컬 OMR synthetic-envelope replay는 Chromium/WebKit 모두 다운로드 원문 일치·직접 재입력·200% 글자 확대에서 390/390 폭·소유 local handoff cleanup PASS다.
+
+additive commit SHA, CI의 branch checkout/PR merge-ref, 새 Preview와 provider LIVE revision은 PR #13의 후속 증거 및 이 문서의 로컬 증거 사본에 추가한다. 문서만 갱신하려고 다시 배포하지 않는다. 원래 서버 XML 접근과 이 악보의 유효한 Review 진입이 남으므로 판정은 **INCOMPLETE**다.
+
+---
+
 ## 판정과 검증 SHA
 
 **CODE_VERIFIED_EXTERNAL_BLOCKED.** 기존 `41c26ea`의 PASS를 새 HEAD의 PASS로 사용하지 않았다. 새 runtime SHA `ddcea952a6c7b1b90250fa3646109b5b4b6d588d`의 Preview에서 직접 MusicXML/MXL과 실제 PNG OMR부터 Review·프로젝트·화음 생성, 모바일 표시, 재생·저장·복구·내보내기·공유·소유자 삭제까지 통과했다. PDF는 실제 create 요청이 HTTP 429 / OMR_QUOTA_EXCEEDED로 거절되어 끝까지 검증하지 못했다. 앞선 검증 도구의 pause 처리 오류로 PNG 2건의 인식량을 이미 사용한 뒤, 정상 PNG 1건으로 세션의 최근 1시간 3건 한도에 도달했다. 이를 제품 인식 실패나 원인 불명의 테스트 실패로 숨기지 않는다. 확인된 제품 차단 P0/P1은 없지만 PDF 외부 흐름이 미완료이므로 PREVIEW_VERIFIED가 아니다. 물리 iPhone과 전체 인식 품질은 NOT_RUN이다.

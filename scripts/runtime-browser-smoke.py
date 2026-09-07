@@ -392,6 +392,8 @@ def run(page: Page) -> None:
     begin("mxl-omr-entry-handoff-review-generation")
     page.locator('input[type="file"]').first.set_input_files({"name": "original.mxl", "mimeType": "application/vnd.recordare.musicxml", "buffer": compressed_score(xml)})
     page.wait_for_url("**/import", timeout=30000)
+    expect(page.locator('input[name="lead-candidate"]').first).to_be_visible()
+    expect(page.get_by_text("이미지 인식 결과를 검토하는 중입니다.", exact=True)).to_have_count(0)
     ready_review(page)
     generate(page, "standard")
     record("mxl-omr-entry-handoff-review-generation", result="complete")
