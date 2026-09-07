@@ -357,6 +357,11 @@ def inject_candidates(system: SystemLayout, staff: StaffGeometry, candidates: Se
         x = min(system.width, max(0.0, ratio * system.width))
         index = next((i for i, start in enumerate(starts) if x < start + system.measures[i].width), len(system.measures) - 1)
         measure, local_x = system.measures[index], x - starts[index]
+        # Native text OCR can export chords for only part of a page. Preserve
+        # every measure with native harmony verbatim; supplement only empty
+        # measures after the existing whole-page/system correspondence gate.
+        if children(measure.element, "harmony"):
+            continue
         if not measure.anchors:
             continue
         anchor = min(measure.anchors, key=lambda value: abs(value[0] - local_x))

@@ -35,7 +35,7 @@ def first_fifths(root: ET.Element) -> int:
 
 
 def augment_musicxml_with_chord_ocr(musicxml: str, recognition_tiff: Path, work_dir: Path) -> tuple[str, int]:
-    if "<harmony" in musicxml or not recognition_tiff.is_file():
+    if not recognition_tiff.is_file():
         return musicxml, 0
     try: root = ET.fromstring(musicxml)
     except ET.ParseError: return musicxml, 0

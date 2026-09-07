@@ -1,5 +1,53 @@
 # Astra runtime closure — 2026-09-07 KST
 
+## Native OCR·인식 연동 개선 — INCOMPLETE (2026-09-07)
+
+294ee2e의 기존 수정과 불완전 출력 차단을 보존했다. 문자 OCR 초기화와 일부 코드 보완 결함은 실제 엔진으로 개선을 확인했다. **사용자 JPEG의 전체 악보 보존·유효한 Review 입력은 아직 FAIL이며, 편곡 가능 상태로 보고하지 않는다.** 원래 서버 XML은 여전히 별도 BLOCKED_EXTERNAL이고 아래 로컬 결과와 동일하다고 주장하지 않는다.
+
+### 실제 수정 및 검증
+
+- Audiveris 5.10.2의 설치 소스 `TesseractOrder`는 JavaCPP Tesseract 5.5.1에 OEM_TESSERACT_ONLY로 Init 후 Recognize를 호출한다. Ubuntu CLI 5.3.4와 LSTM-only 데이터가 공존하던 불일치를 확인했다. 공식 tessdata 4.0.0 commit `590567f20dc044f6948a8e2c61afc714c360ad0e`의 eng/kor만 다운로드하고 SHA-256을 고정했다. 실제 네이티브 데이터 경로는 `/opt/audiveris-tessdata`이며 별도 chord OCR은 Ubuntu 데이터 경로와 OEM 1을 유지한다. 언어 목록만으로 PASS 처리하지 않았다.
+- eng checksum: `daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047`; kor checksum: `9520bfe9e3cfc38d4a808e036b0287c88a1d37fb80b9a0a23928ddccdd20595b`.
+- 실제 native 인식은 자체 작성 이미지의 제목 `Harmony Beam Study`, 사용자 로컬 저장 .omr의 87개 단어(한글 포함 단어 18개)로 확인했다. 결과에 12개 native harmony와 첫 movement의 가사 9개가 생겼다. 단어/코드 개수는 정확도 보장이 아니며 사용자 전체 코드의 위치 대응 PASS가 아니다.
+- 패키지의 숨은 Xms512m/Xmx8G가 JAVA_TOOL_OPTIONS를 덮어쓰는 사실도 실제 플래그로 확인했다. 패키지 강제값을 제거하고 native heap을 256MiB로 제한했다. 기존 general Xmx384m 환경에서도 실제 MaxHeapSize=268435456을 확인했다. 원격 요금제·자원·환경값은 바꾸지 않는다.
+- native harmony가 한 곳이라도 있으면 나머지 보완을 모두 생략하던 동작을 수정했다. native harmony가 있는 마디는 보존하고 빈 마디만 기존 전체 페이지/시스템 gate 아래에서 보완한다. 코드 영역에 아래에서 들어오는 줄기·빔은 임시 분할 마스크에서만 제외하여 G/F 글자와 합쳐진 crop을 막는다. 원본이나 Audiveris 입력의 음악 픽셀은 수정하지 않는다.
+- Free 사양 시험에서 synchronous 코드 OCR 후처리가 상태 조회를 막는 현상을 재현했다. 후처리를 worker thread로 옮기고 같은 job의 조회/취소를 유지한다. 소유자 삭제는 파일 생성 worker 종료 뒤 workspace를 지워 재생성을 막는다. 첫 Free 시험의 30초 상태 응답 timeout은 관찰 중단으로 기록하며 엔진 최종 실패로 판정하지 않았다. 소유 시험 job은 정리했고 자체 작성 입력으로 분리된 회귀를 수행했다. 처리 중 관찰 및 삭제 회귀는 수정 전 FAIL, 수정 후 PASS다. 요청/엔진 timeout을 늘리는 수정은 하지 않았다.
+
+최종 실제 HTTP 회귀는 0.1 CPU/512MiB/swap 추가 없음에서 두 이미지 모두 PASS: standard 326.81초, small 314.84초. 각각 기존 900초 범위 안에서 같은 job의 상태 조회·결과 수신·소유자 삭제를 마쳤다. cgroup peak 536870912 bytes, memory.events oom=0/oom_kill=0이다. 메모리 압력은 있었으므로 여유가 크다고 주장하지 않는다. 이 결과는 소량 자체 작성 입력의 자원 검증이며 사용자 전체 JPEG의 0.1 CPU 검증은 NOT_RUN이다.
+
+### 제한 실험: 사용자 전체 로컬 인식 3회 + 저장 .omr 재개 1회
+
+이 세션의 전체 사용자 인식 예산 3회를 모두 사용했고 추가 전체 인식은 하지 않았다. 모두 동일한 보존 입력, 512MiB 제한, 로컬 1 CPU였으며 Render 0.1 CPU에서 실행했다고 주장하지 않는다. 이전 세션의 4회와 합쳐 전체 로컬 인식 누적 7회다. 외부 인식은 **0회**다.
+
+| 시험 | 변경·자원 | 음악 결과 및 판정 |
+| --- | --- | --- |
+| 기존 기준선 | native OCR 초기화 실패 | 3 movement, 8 systems, 30 exported measures, note elements 206. 첫 실패 11/2 quarter, 첫 movement overfull 6개, 후속 10마디 박자 없음 |
+| 1 native 호환 데이터 | 초기 heap384에서 39.62초/512MiB OOM137. TEXTS/CURVES를 저장한 .omr를 heap256으로 재개: 14.8초/218,558,464 bytes | 3 movement/8 systems/30마디/205 note elements. 첫 11/2 및 overfull 6개 그대로, underfull 4개(pickup 포함), 후속 missing meter 10개. 첫 movement pitched notes/durations는 기존과 동일하며 pickup rest 1개만 없어졌다. 빔 개선 아님 |
+| 2 smallBeams=true | 설치 버전의 실제 ProcessingSwitches 설정 하나. heap256, 50.97초/517,947,392 bytes | 3 movement/8 systems/29마디/194 note elements. 첫 11/2 그대로, 첫 movement 20→19마디 및 103→89 note elements. **누락 악화로 기각** |
+| 3 indentations=false | 하나의 곡이라는 명시적 실험, 기본 beam. heap256, 49.14초/506,679,296 bytes | 1 movement/8 systems/30마디이나 146 note elements, overfull 7개/underfull 6개(pickup 포함). 첫 11/2 그대로. 잘못된 3/4 상속으로 박자 누락 표시만 사라짐. **음악 보존 실패로 기각**, 제품 기본값에 넣지 않음 |
+
+오선 간격13px/선3px/beam 추정9px, 이진화 beam 영역9~10px와 오선 중첩, 실패 두 음의 BeamStem 연결 누락을 기존 파일에서 관측했다. beam9가 잘못되었다고 단정하지 않았다. 시스템 left 53~54→92→154의 이동이 indentation 임계26px를 넘으며 잘못된 movement-start와 연결됐다. 그러나 분할을 끄는 것만으로 음악 연결은 해결되지 않았다. 이전 meanCoeff0.5 실험은 반복하지 않았다.
+
+overfull 수 감소나 박자 합계만으로 정확도를 판정하지 않았다. 작은 빔 실험은 underfull 3개(pickup 포함)를 남기며 음표 누락을 늘리고 indentation 실험은 음표를 크게 잃었다. 입력 특화 상수·정답 음 배열·제목/파일명/digest 분기·XML 합치기·부분 출력 gate 제거는 없다.
+
+### 실제 사용자 경로와 범용 회귀
+
+- 자체 작성 두 시스템/4마디 이미지의 두 스케일·배치에서 실제 HTTP provider 결과를 검증했다. 각각 32개 pitch/duration, C/G/Am/F 네 코드 및 시작 위치, native 제목 인식 PASS. 첫 시험에서 G가 누락된 실패를 보존하고 crop 분할 수정 후 두 변형에서 PASS를 확인했다. 수작업 XML만 읽는 시험이 아니다.
+- 실제 자체 작성 OCR 결과 → 일반 MusicXML 가져오기 → Review/Quick Review → WAG → 악보 및 nonzero PCM 재생 → 저장/reload → 3파트 MusicXML/프로젝트 내보내기 → 소유 프로젝트 삭제 PASS. 원본에 따라 **C major와 quarter 96 BPM을 명시적으로 입력**했다(native key/tempo 누락). 음표·리듬·코드 수동 교정 0개. 이를 key/tempo 자동 인식 PASS로 세지 않는다.
+- 사용자 JPEG 실험 결과는 현재 importer에서 IMPORT_CORRUPT_XML로 막히며 그 단계에는 음표·리듬 편집기가 없다. 원본 다운로드/재입력 안내만으로 전체 복구 가능하다고 보고할 수 없다. 사용자 JPEG Review→프로젝트→WAG→재생→저장·복구·내보내기 **NOT_RUN / blocked**. Audiveris GUI에서 원본 대조하며 빔·박자·마디선·movement·코드 전체를 교정하는 경로는 이번에 완료 검증하지 못했다. 필요한 정확한 전체 교정 개수/작업시간도 미확정이다.
+- 기존 전체 local unit 921개/99파일, PostgreSQL 39개/4파일, typecheck/lint/build PASS; provider 최종 87개 PASS. 기존 runtime 브라우저 23항목 PASS(직접 MusicXML/MXL·WAG·PCM·모바일·저장·복구·공유·삭제 포함). 비공개 사용자 이미지/전체 XML/.omr는 저장소와 공개 artifact에 넣지 않는다.
+
+**남은 차단:** JPEG의 빔·박자·마디/음표 누락 및 전체 코드 대응. 다음 결정은 이 저해상도 JPEG에 상수 실험을 반복할지 여부가 아니라, 원본 대조를 포함한 Audiveris 명시적 편집·전체 재수출 경로를 별도 범위로 검증할지 여부다. 자동 복구나 현재 앱 내 전체 교정 성공을 약속하지 않는다.
+
+물리 iPhone·전체 인식 품질·운영 배포 NOT_RUN. 이전 ddcea952 PNG 및 17dbdf7 PDF PASS는 각각의 환경/입력 증거로만 유지한다. 이번 변경의 최종 SHA/CI/Preview/provider LIVE와 자원 측정은 PR #13 및 로컬 최종 증거에 덧붙이며 문서 갱신만으로 재배포하지 않는다.
+
+공식 근거: [Audiveris languages](https://audiveris.github.io/audiveris/_pages/guides/main/languages/), [Tesseract data families](https://tesseract-ocr.github.io/tessdoc/Data-Files.html).
+
+---
+
+
+
+
 ## 시간축·전체 출력 조사 후속 — INCOMPLETE (2026-09-07)
 
 이번 범위는 d0972aa의 안내·다운로드·재입력·확대 수정을 보존하고, 실제 로컬 인식의 시간축과 첫 출력 선택을 조사하는 것이다. **부분 결과를 전체 완료로 반환하는 provider 결함은 수정했다. 첨부 악보 전체의 자동 처리 성공은 아니다.** 원래 서버 XML 접근은 별도 BLOCKED_EXTERNAL이며, 로컬 재현 분석은 완료했다.

@@ -14,6 +14,20 @@ RUN mkdir -p /usr/share/desktop-directories /usr/share/mime/packages /usr/share/
     && rm -f /tmp/audiveris.deb && rm -rf /var/lib/apt/lists/* \
     && AUD="$(find /opt -maxdepth 4 -type f -name 'Audiveris' -perm -111 | head -n 1)" \
     && test -n "$AUD" && ln -s "$AUD" /usr/local/bin/audiveris
+# Audiveris 5.10.2 uses OEM_TESSERACT_ONLY. Ubuntu's tessdata is LSTM-only;
+# keep it for the independent chord OCR and install legacy-capable native data.
+ARG TESSDATA_REVISION=590567f20dc044f6948a8e2c61afc714c360ad0e
+COPY services/audiveris-provider/native-tessdata.sha256 /tmp/native-tessdata.sha256
+RUN mkdir -p /opt/audiveris-tessdata \
+    && for lang in eng kor; do \
+      curl -fsSL --retry 3 -o "/opt/audiveris-tessdata/${lang}.traineddata" \
+        "https://raw.githubusercontent.com/tesseract-ocr/tessdata/${TESSDATA_REVISION}/${lang}.traineddata"; \
+    done \
+    && cd /opt/audiveris-tessdata && sha256sum -c /tmp/native-tessdata.sha256 \
+    && rm /tmp/native-tessdata.sha256 \
+    && grep -Fxq 'java-options=-Xmx8G' /opt/audiveris/lib/app/Audiveris.cfg \
+    && sed -i '/^java-options=-Xm[sx]/d' /opt/audiveris/lib/app/Audiveris.cfg
+# The packaged launcher otherwise overrides JAVA_TOOL_OPTIONS with Xms512m/Xmx8G.
 WORKDIR /app
 COPY services/audiveris-provider/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
@@ -33,8 +47,10 @@ ENV PATH=/opt/venv/bin:$PATH \
     HM_AUDIVERIS_DATA_DIR=/data \
     HM_AUDIVERIS_OCR_LANGUAGES=eng+kor \
     HM_AUDIVERIS_CHORD_OCR=1 \
+    HM_AUDIVERIS_NATIVE_TESSDATA=/opt/audiveris-tessdata \
+    HM_AUDIVERIS_CHORD_TESSDATA=/usr/share/tesseract-ocr/5/tessdata \
     TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
-    JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" \
+    JAVA_TOOL_OPTIONS="-Xms32m -Xmx256m -Djava.awt.headless=true" \
     HOME=/data/home \
     PORT=8000
 RUN useradd --create-home --uid 10001 provider \

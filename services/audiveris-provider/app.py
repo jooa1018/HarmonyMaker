@@ -57,6 +57,7 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="HarmonyMaker Audiveris OMR provider", version=PROVIDER_VERSION)
 processing_gate = asyncio.Semaphore(1)
 running_processes: dict[str, asyncio.subprocess.Process] = {}
+running_postprocessing: dict[str, asyncio.Task[str]] = {}
 
 
 class StrictModel(BaseModel):
@@ -376,7 +377,19 @@ async def run_job(job_id: str) -> None:
                     combined = (stdout + b"\n" + stderr).decode("utf-8", errors="replace")[-8_000:]
                     raise RuntimeError(f"Audiveris failed with exit code {process.returncode}: {combined}")
                 exported = find_result(output_dir)
-                result_path.write_text(decode_musicxml(exported), encoding="utf-8")
+                # Native export decoding also runs the independent chord OCR.
+                # Keep status/cancel requests responsive while it uses the CPU.
+                decoding = asyncio.create_task(asyncio.to_thread(decode_musicxml, exported))
+                running_postprocessing[job_id] = decoding
+                try:
+                    musicxml = await decoding
+                finally:
+                    running_postprocessing.pop(job_id, None)
+                with database() as connection:
+                    current = connection.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if current is None or current["state"] == "cancelled":
+                    return
+                result_path.write_text(musicxml, encoding="utf-8")
             with database() as connection:
                 connection.execute(
                     "UPDATE jobs SET state='completed',progress_bp=10000,result_path=?,updated_at=? WHERE id=? AND state<>'cancelled'",
@@ -608,6 +621,14 @@ async def delete_job(
     if process is not None and process.returncode is None:
         process.kill()
         await process.wait()
+    # The decoder can create diagnostic crops. Wait for that worker before
+    # removing the owned workspace, so deletion cannot leave recreated files.
+    decoding = running_postprocessing.get(job_id)
+    if decoding is not None:
+        with database() as connection:
+            connection.execute("UPDATE jobs SET state='cancelled',updated_at=? WHERE id=?", (utc_now(), job_id))
+        with suppress(Exception):
+            await asyncio.shield(decoding)
     with database() as connection:
         connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
     shutil.rmtree(JOBS_DIR / job_id, ignore_errors=True)
