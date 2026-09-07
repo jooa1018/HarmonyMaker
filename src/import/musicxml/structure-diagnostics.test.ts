@@ -13,6 +13,23 @@ const score = (measures: string) => new TextEncoder().encode(`<score-partwise><p
 afterEach(() => vi.restoreAllMocks());
 
 describe("MusicXML structural failure boundary", () => {
+  it.each([4, 12, 480])("preserves beam-duration evidence without silently repairing it, divisions %s", async (divisions) => {
+    const make = (overfull: boolean) => {
+      // Same causal structure, self-authored pitches and moved measure number.
+      const durations = [0.5, 0.5, 0.5, 0.5, overfull ? 1 : 0.25, overfull ? 1.5 : 0.75, 0.5, 0.5];
+      const notes = durations.map((duration, i) => `<note><pitch><step>F</step><octave>4</octave></pitch><duration>${duration * divisions}</duration><voice>2</voice><type>${i === 4 ? (overfull ? "quarter" : "16th") : i === 5 ? (overfull ? "quarter" : "eighth") : "eighth"}</type>${i === 5 ? "<dot/>" : ""}</note>`).join("");
+      return score(`<measure number="32"><attributes><divisions>${divisions}</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>${notes}</measure>`);
+    };
+    const valid = await importMusicXml(make(false), options);
+    expect(valid.status).toBe("review-required");
+    if (valid.status === "review-required") {
+      expect(valid.draft.parts[0].measures[0].leadEvents).toHaveLength(8);
+    }
+    const contradictory = await importMusicXml(make(true), options);
+    expect(contradictory.status).toBe("blocked");
+    expect(contradictory.diagnostics[0].details).toMatchObject({ measureNumber: 32, maximum: "11/2", meterDuration: "4/1" });
+  });
+
   it("locates an overfull measure without truncating or inventing timing", async () => {
     const result = await importMusicXml(score(`<measure number="0" implicit="yes">${attributes}${note(1)}</measure><measure number="1">${note(4)}${note(7)}</measure>`), options);
     expect(result.status).toBe("blocked");

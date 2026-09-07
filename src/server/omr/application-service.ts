@@ -144,7 +144,13 @@ type ExistingJobAdapterResolution =
   | { readonly status: "available"; readonly adapter: OmrVendorAdapter }
   | { readonly status: "binding-unavailable"; readonly code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
 
-function sanitizeVendorFailure(): { readonly code: string; readonly messageKo: string } {
+function sanitizeVendorFailure(vendorCode?: string): { readonly code: string; readonly messageKo: string } {
+  if (vendorCode === "AUDIVERIS_OUTPUT_INCOMPLETE" || vendorCode === "AUDIVERIS_OUTPUT_AMBIGUOUS") {
+    return { code: "OMR_OUTPUT_INCOMPLETE", messageKo: "인식 결과가 여러 구간으로 나뉘거나 서로 달라 전체 악보를 확정하지 못했습니다. 일부 구간만 가져오지 않았습니다. 원본과 모든 구간을 검토·교정한 MusicXML을 가져오세요. 새 인식을 반복하지 마세요." };
+  }
+  if (vendorCode === "AUDIVERIS_OUTPUT_INVALID") {
+    return { code: "OMR_OUTPUT_INVALID", messageKo: "인식 출력의 전체 구간 목록이나 파일을 확인하지 못했습니다. 원본과 결과 파일을 확인하세요." };
+  }
   return { code: "OMR_VENDOR_OPERATION_FAILED", messageKo: "악보 인식 서비스 작업을 완료하지 못했습니다." };
 }
 
@@ -729,7 +735,7 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "failed", creditState: "released", ...this.clearRetry(), publicFailureCode: "OMR_VENDOR_STATUS_UNKNOWN", publicFailureMessageKo: "인식 작업 상태를 확인할 수 없습니다." }, now: now.toISOString() });
       await this.recordAuditBestEffort(job.id, "job-failed", "unknown-vendor-status", now.toISOString());
     } else if (status.kind === "failed") {
-      const failure = sanitizeVendorFailure();
+      const failure = sanitizeVendorFailure(status.code);
       await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "failed", creditState: "released", ...this.clearRetry(), publicFailureCode: failure.code, publicFailureMessageKo: failure.messageKo }, now: now.toISOString() });
       await this.recordAuditBestEffort(job.id, "job-failed", failure.code, now.toISOString());
     } else if (status.kind === "cancelled") {

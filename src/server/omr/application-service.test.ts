@@ -77,6 +77,22 @@ async function createStartedJob(h: Awaited<ReturnType<typeof harness>>, idempote
 }
 
 describe("durable provider-neutral OMR application lifecycle", () => {
+  it.each([
+    ["AUDIVERIS_OUTPUT_INCOMPLETE", "OMR_OUTPUT_INCOMPLETE"],
+    ["AUDIVERIS_OUTPUT_AMBIGUOUS", "OMR_OUTPUT_INCOMPLETE"],
+    ["AUDIVERIS_OUTPUT_INVALID", "OMR_OUTPUT_INVALID"],
+    ["unknown-private-code", "OMR_VENDOR_OPERATION_FAILED"],
+  ])("preserves bounded output failure %s without publishing vendor text", async (code, expected) => {
+    const h = await harness([{ kind: "failed", code, message: "secret raw XML / private provider path" }]);
+    const handle = await createStartedJob(h, `output-failure-${code}`);
+    const status = await h.service.synchronizeStatus(handle);
+    expect(status).toMatchObject({ kind: "failed", code: expected });
+    expect(JSON.stringify(status)).not.toContain("secret raw XML");
+    if (expected === "OMR_OUTPUT_INCOMPLETE") expect(JSON.stringify(status)).toContain("일부 구간만 가져오지 않았습니다");
+    expect((await h.service.synchronizeStatus(handle))).toEqual(status);
+    expect(h.adapter.callCounts.create).toBe(1);
+  });
+
   it("creates the Vendor job exactly once, uploads idempotently, completes with evidence, and deletes truthfully", async () => {
     const h = await harness();
     const request = { sessionId: "session:1", pageCount: 1, rights, providerTransferConsent: true as const, idempotencyKey: "create-key-0001", sourceKind: "camera-photo" as const };

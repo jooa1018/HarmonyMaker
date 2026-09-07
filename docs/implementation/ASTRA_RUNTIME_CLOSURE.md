@@ -1,5 +1,64 @@
 # Astra runtime closure — 2026-09-07 KST
 
+## 시간축·전체 출력 조사 후속 — INCOMPLETE (2026-09-07)
+
+이번 범위는 d0972aa의 안내·다운로드·재입력·확대 수정을 보존하고, 실제 로컬 인식의 시간축과 첫 출력 선택을 조사하는 것이다. **부분 결과를 전체 완료로 반환하는 provider 결함은 수정했다. 첨부 악보 전체의 자동 처리 성공은 아니다.** 원래 서버 XML 접근은 별도 BLOCKED_EXTERNAL이며, 로컬 재현 분석은 완료했다.
+
+### 5.5박의 발생 단계와 원인
+
+기존 JPEG/정규화 PNG/두 번의 로컬 인식 MXL 전체/.omr/로그를 보존·재사용했다. 정규화 입력 digest는 `8858cee03d279000325ea80c5173aa90c44c7cf9c4b833b8f2e243c111c52740`이다. 원래 서버 결과(39,797 bytes, `c96343d5e66f00d9e807e619aeaa8c317195398c8d72f8e2faa00b1db5758e45`)와 이전 로컬 provider 결과(39,987 bytes, `bd541bb36b73920ee47f34b1ce8e9cfc4ac34555d1f28dd363ee921932fbe918`)는 구분한다.
+
+MusicXML 4.0의 문서 순서 clock 규칙을 사용하는 별도 Python Fraction 추적기로 모든 출력의 note/rest/chord/grace/backup/forward를 계산했다. 표시 type/dot는 비교 자료로만 읽고 duration을 덮어쓰지 않았다. 첫 실패는 part ordinal 0, measure ordinal 1/표기 번호 1, voice 1/단일 staff다. 이 마디는 implicit가 아니고 divisions=4, 4/4이며 chord/grace/rest/backup/forward/time-modification이 없다.
+
+| 문서 내 note ordinal | 원본 이미지의 길이 | 엔진 duration / type | quarter-note cursor 전→후 |
+| --- | --- | --- | --- |
+| 0, 1, 2, 3 | 각각 8분음표 | 각각 2 / eighth | 0→1/2→1→3/2→2 |
+| 4 | 16분음표 (짧은 두 번째 빔 포함) | 4 / quarter | 2→3 |
+| 5 | 점8분음표 | 6 / quarter + dot | 3→9/2 (여기서 처음 4박 초과) |
+| 6, 7 | 각각 8분음표 | 각각 2 / eighth | 9/2→5→11/2 |
+
+원본의 다섯째·여섯째 음에 보이는 빔이 저장된 엔진 graph에서는 stem에 연결되지 않았다. `.omr` head-chord 13552/13553에는 beam-stem 관계가 없고 augmentation-dot은 여섯째 음에 연결되어 있다. 따라서 16분→4분, 점8분→점4분으로 각각 3/4박 증가했다. 마지막 onset은 5, 최대 end는 11/2다. 저장된 `.omr` stack 자체에 duration=11/8, expected=1, excess=3/8(온음표 단위)이 이미 있다. raw MXL → 기존 provider의 DOCTYPE 제거 후 결과는 정확히 동일해 provider 후처리에서 시간축이 바뀐 것도 아니다.
+
+분류: **B, 엔진의 빔 인식 누락이 로컬 시간축 초과의 원인**이다. 이 최초 실패에 대해 A(importer 계산 오류), C(후처리 duration 변경), D(미지원 구조의 오분류) 근거는 없다. 빔 검출이 이미지의 오선과 겹친 부분에서 실패한 것은 관찰되지만, 특정 이진화 계수 하나로 일반 해결할 수 있다는 근거는 확보하지 못했다. 실제로 모순된 duration/type는 계속 차단한다.
+
+첫 실패만 보지 않았다. 첫 출력의 20마디 중 **총 6마디**가 박자 길이를 초과했고, 뒤 두 출력의 10마디는 초기 박자표가 없다. 첫 부분의 박자도 뒤에서 3/4로 인식되어 원본과 다르며, 마디선/음표 인식의 추가 손실이 있다. 두 음을 단순 교정하거나 1.5박을 자르는 것으로 전체를 복구할 수 없다. 수동 음악 교정/새 Source 승격은 수행하지 않았다.
+
+### 세 출력의 구간 보존과 일반 수정
+
+`.omr` book의 score→sheet-page 매핑과 sheet의 system 순서로 확인했다. mvt1은 이미지 시스템 1~5(20개 인식 마디/104 note), mvt2는 시스템 6(4마디/54 note), mvt3은 시스템 7~8(6마디/48 note)이다. 세 파일은 XML/MXL 중복 직렬화가 아닌 서로 다른 구간이다. 시스템 6/7의 잘못 인식된 indentation으로 movement-start가 생겼고, 기존 find_result는 mvt1만 반환해 마지막 세 시스템을 제외했다. 이것은 **C, provider 선택에 의한 별도 누락 결함**이다. 이미지에서 첫 구간부터 마지막까지 공간 대응은 찾았지만, 인식 자체의 마디/음표/박자 손실 때문에 음악적 연결 의미가 확정되지 않았다.
+
+기존 코드 OCR에는 부분 XML 5시스템 대 이미지 8staff의 불일치에서 삽입을 생략하는 gate가 있다. 이를 제거해 뒤 구간의 코드를 앞 구간에 붙이지 않았다. 모든 출력에 native harmony가 0개이며, 전체 코드 대응 성공은 아니다.
+
+수정된 find_result는 후처리 전에 `.omr` book의 전체 score 목록을 검사한다. 여러 movement가 있으면 `AUDIVERIS_OUTPUT_INCOMPLETE`, 서로 다른 출력이면 `AUDIVERIS_OUTPUT_AMBIGUOUS`, 목록/출력 확인 실패면 `AUDIVERIS_OUTPUT_INVALID`로 종료한다. 파일명 순서/크기/음악 내용 추측으로 선택하거나 합치지 않는다. **같은 경로 stem의 XML/MXL이며 canonical XML까지 같은 경우만** 중복 직렬화로 인정한다. 서로 다른 movement는 내용이 같아도 버리지 않는다. book은 여러 score인데 출력 하나만 남은 경우도 차단한다. 원래 artifacts는 기존 보관 정책에 따라 남으며 partial result.musicxml은 게시하지 않는다. 이 guard가 하나의 score 내부의 모든 인식 누락을 검출한다는 뜻은 아니다.
+
+앱 상태 동기화는 위 알려진 오류 코드만 자체 작성한 한국어 안내로 변환한다. vendor 원문/XML/경로는 공개하지 않으며 모르는 오류는 기존 generic 메시지를 유지한다. 새 인식을 반복하라고 안내하지 않는다. 유효한 교정 MusicXML을 기존 직접 가져오기 경로로 넣는 연결은 유지하지만, 대규모 편집기나 자동 음악 교정은 추가하지 않았다.
+
+### 제한된 추가 실험과 환경 정정
+
+기존 로컬 이미지에는 kor 데이터가 없었다. 따라서 이전 기록의 '같은 provider 설정'은 wrapper/소스 수준의 일치였으며 전체 실행 환경 동일성은 아니었다. 현재 Dockerfile로 새 이미지를 빌드하고 eng/kor/osd 설치, 실제 실행 로그를 확인했다. Windows checkout의 shell CRLF로 첫 launcher가 실행 전 실패한 것은 LF checkout으로 바로잡았다(인식 호출 0회). 제품 wrapper의 내용 변경은 없다.
+
+이번 추가 로컬 인식은 네트워크 차단 **2회**다. (1) 기존 prepared TIFF에서 meanCoeff만 0.7→0.5로 바꾼 이진화 실험은 8개 시스템을 2개로 누락해 **기각**, 제품 미반영. (2) 현재 Dockerfile/기본 이진화/eng+kor 구성으로 원래 정규화 PNG에서 다시 인식했으며 같은 3구간, 같은 첫 11/2 초과와 총 6개 overfull/10개 초기 박자 누락이 재현됐다. 이전 2회와 합하면 실제 사용자 입력의 로컬 인식은 누적 4회, 이번 외부 인식은 0회다.
+
+새 환경 로그에서는 Audiveris의 legacy OCR 모드와 설치된 LSTM 언어 데이터의 불일치로 native text OCR 초기화 실패도 확인했다. 5.10.2 TesseractOrder는 legacy 모드를 고정하며, 이는 BEAMS 이후 TEXTS 단계다. 이 문제를 최초 빔 누락의 원인으로 단정하거나 임의 엔진 모드/언어 모델 교체를 하지 않았다. 별도 chord OCR의 위치 gate도 완전한 결과에서 검증되기 전에는 완화하지 않는다.
+
+### 검증과 남은 범위
+
+- 실제 보존 출력 replay: 이전 find_result가 첫 20마디를 반환 → 수정본은 전체 inventory 불일치를 명시적으로 차단. 모든 artifact hash 유지, 새 인식 0회.
+- 자체 작성 provider 회귀 17개: 파일명/출력 순서 변경, 서로 다른 음높이/divisions/마디 번호, 같은 내용을 가진 다른 movement, 동일 artifact의 XML/MXL 중복, 누락된 export, 손상된 목록, 실제 run_job 상태·result 409·artifact 보존. 기존 suite 포함 82개 PASS.
+- 시간축 자체 작성 회귀: divisions 4/12/480, 음높이·voice·마디 번호를 바꾼 정상 구조는 Review, 대응하는 11/2 모순 구조는 차단. 기존 exact Fraction/backup/pickup/박자 변경 회귀 유지.
+- 앱 경계 회귀: 알려진 출력 실패만 안전한 안내, 모르는 코드/민감한 vendor 메시지 비노출, 재조회 때 동일 terminal 상태/새 create 없음.
+- 최종 gate/CI checkout, additive commit, 정확한 Preview와 provider LIVE는 PR #13과 기존 로컬 증거 사본에 갱신한다. 문서만으로 새 배포를 반복하지 않는다.
+
+마지막 제품 코드 변경 후 npm ci, typecheck, lint, unit 99 files/921 tests, disposable PostgreSQL 4 files/39 tests, build, diff-check 모두 PASS. Provider suite 82개도 다시 PASS다. 로컬 production build 브라우저의 **모의 API** 시험은 일반 입력→전체 출력 차단→새로고침에도 같은 terminal 상태→새 create 없음→시험 소유 manifest 삭제→기존 MusicXML 가져오기 이동 PASS다. 실제 외부 OMR 성공으로 세지 않는다. Push 직전 읽기 조회(18:35 KST)에서 최근 1시간 생성 0건/미만료 진행 작업 0건을 확인했다. 과거 만료된 processing row와 원래 사용자 완료 작업은 변경하지 않았다.
+
+전체 구간을 의미 보존한 정상 Source로 만들지 못했으므로 실제 JPEG Review→프로젝트→WAG→악보/재생→저장/복구/내보내기는 **NOT_RUN / blocked**다. 자동으로 고쳐졌다고 보고하지 않는다. 기존 정상 XML/MXL·PNG/PDF의 환경별 PASS는 유지하지만 이 JPEG를 대신하지 않는다. 원래 서버 사건의 정확한 원인은 원문 접근 전까지 미확정이다. 물리 iPhone·전체 인식 품질·운영 배포도 NOT_RUN.
+
+필요한 다음 자료는 원래 서버 결과의 권한 있는 접근, 또는 이 실제 악보의 빔·마디선·박자·구간을 원본과 대조해 명시적으로 교정할 수 있는 입력이다. 정상 MusicXML 재시험이나 새 외부 JPEG 인식을 사용자에게 요구해 해결로 대체하지 않는다. 원본 악보/전체 XML/.omr/로그는 비공개 work에만 보존하며 사용자 원래 job이나 객체를 cleanup하지 않는다.
+
+근거: [MusicXML duration/clock](https://www.w3.org/2021/06/musicxml40/musicxml-reference/elements/duration/), [chord clock](https://www.w3.org/2021/06/musicxml40/musicxml-reference/elements/chord/), [backup](https://www.w3.org/2021/06/musicxml40/musicxml-reference/elements/backup/), [Audiveris Book/Score](https://audiveris.github.io/audiveris/_pages/tutorials/main_concepts/book_score/), [MXL exports](https://audiveris.github.io/audiveris/_pages/reference/outputs/mxl/), [pinned adaptive threshold](https://github.com/Audiveris/audiveris/blob/5.10.2/app/src/main/java/org/audiveris/omr/image/AdaptiveDescriptor.java), [pinned OCR legacy mode](https://github.com/Audiveris/audiveris/blob/5.10.2/app/src/main/java/org/audiveris/omr/text/tesseract/TesseractOrder.java).
+
+---
+
 ## 2026-09-07 실사용 JPEG 후속 조사 — INCOMPLETE
 
 이 항목은 아래 역사적 검증과 별개다. `17dbdf7`의 자체 작성 1쪽 PDF 전체 흐름 PASS / PREVIEW_VERIFIED(최신 PR 증거)는 유지하지만, 실제 사용자 JPEG의 성공을 뜻하지 않는다.

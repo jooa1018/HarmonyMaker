@@ -21,6 +21,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.responses import JSONResponse, PlainTextResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
+from musicxml_output import normalize_audiveris_musicxml
 
 AUDIVERIS_VERSION = os.environ.get("AUDIVERIS_VERSION", "5.10.2")
 PROVIDER_VERSION = "hm-audiveris-provider-v1"
@@ -198,7 +199,7 @@ def cleanup_expired() -> None:
             shutil.rmtree(JOBS_DIR / job_id, ignore_errors=True)
 
 
-def decode_musicxml(result_file: Path) -> str:
+def read_engine_musicxml(result_file: Path) -> str:
     data = result_file.read_bytes()
     if result_file.suffix.lower() == ".mxl" or data.startswith(b"PK\x03\x04"):
         with zipfile.ZipFile(result_file) as archive:
@@ -223,6 +224,18 @@ def decode_musicxml(result_file: Path) -> str:
     if len(text.encode("utf-8")) > 4 * 1024 * 1024:
         raise RuntimeError("Audiveris MusicXML exceeds the provider limit")
     return text
+
+
+def decode_musicxml(result_file: Path) -> str:
+    return read_engine_musicxml(result_file)
+
+
+class OutputSelectionError(RuntimeError):
+    """A bounded, user-safe failure; original engine artifacts remain retained."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def fake_musicxml(page_count: int) -> str:
@@ -257,12 +270,51 @@ def combine_pages(job_id: str, pages: list[sqlite3.Row], workspace: Path) -> Pat
 
 
 def find_result(output_dir: Path) -> Path:
+    # One image can contain several movements. Audiveris records their identity
+    # in book.xml and exports each score separately; filenames are not a musical
+    # ordering contract. Even identical movements must not be collapsed.
+    books = list(output_dir.rglob("*.omr"))
+    try:
+        if len(books) > 1:
+            raise OutputSelectionError("AUDIVERIS_OUTPUT_AMBIGUOUS", "여러 인식 책의 전체 구간 연결을 확정할 수 없습니다. 원본과 전체 구간을 확인한 MusicXML을 가져오세요.")
+        if books:
+            with zipfile.ZipFile(books[0]) as archive:
+                if archive.getinfo("book.xml").file_size > 4 * 1024 * 1024:
+                    raise ValueError("book metadata exceeds limit")
+                metadata = archive.read("book.xml")
+            if b"<!DOCTYPE" in metadata or b"<!ENTITY" in metadata:
+                raise ValueError("active book metadata")
+            book = ElementTree.fromstring(metadata)
+            scores = book.findall("score")
+            if book.tag != "book" or not scores:
+                raise ValueError("missing score inventory")
+            if len(scores) > 1:
+                raise OutputSelectionError("AUDIVERIS_OUTPUT_INCOMPLETE", "악보가 여러 구간으로 나뉘어 일부만 반환할 수 없습니다. 원본과 모든 구간의 연결을 검토·교정한 MusicXML을 가져오세요. 새 인식을 반복하지 마세요.")
+    except OutputSelectionError:
+        raise
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+        raise OutputSelectionError("AUDIVERIS_OUTPUT_INVALID", "인식 결과의 전체 구간 목록을 확인하지 못했습니다. 원본과 결과 파일을 확인하세요.") from error
     candidates = sorted(
         [*output_dir.rglob("*.mxl"), *output_dir.rglob("*.musicxml"), *output_dir.rglob("*.xml")],
         key=lambda path: (path.suffix.lower() != ".mxl", len(path.parts), str(path)),
     )
     if not candidates:
         raise RuntimeError("Audiveris produced no MusicXML result")
+    # Only duplicate serializations of the SAME artifact may coexist. Read raw
+    # engine output here, before entrypoint chord OCR, so checking candidates
+    # cannot run OCR repeatedly or compare postprocessed fragments.
+    try:
+        identities = []
+        for candidate in candidates:
+            text = normalize_audiveris_musicxml(read_engine_musicxml(candidate))
+            root = ElementTree.fromstring(text)
+            if root.tag not in ("score-partwise", "score-timewise"):
+                raise ValueError("unsupported score container")
+            identities.append((candidate.with_suffix(""), ElementTree.canonicalize(text, strip_text=True)))
+    except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+        raise OutputSelectionError("AUDIVERIS_OUTPUT_INVALID", "인식 결과 파일을 안전하게 확인하지 못했습니다. 원본과 결과 파일을 확인하세요.") from error
+    if any(identity != identities[0] for identity in identities[1:]):
+        raise OutputSelectionError("AUDIVERIS_OUTPUT_AMBIGUOUS", "서로 다른 인식 출력이 있어 전체 악보를 확정할 수 없습니다. 일부 파일을 자동 선택하지 않았습니다. 모든 구간을 검토한 MusicXML을 가져오세요.")
     return candidates[0]
 
 
@@ -335,8 +387,8 @@ async def run_job(job_id: str) -> None:
                 current = connection.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
                 if current is not None and current["state"] != "cancelled":
                     connection.execute(
-                        "UPDATE jobs SET state='failed',error_code='AUDIVERIS_FAILED',error_message=?,updated_at=? WHERE id=?",
-                        (str(error)[-4_000:], utc_now(), job_id),
+                        "UPDATE jobs SET state='failed',error_code=?,error_message=?,updated_at=? WHERE id=?",
+                        (error.code if isinstance(error, OutputSelectionError) else "AUDIVERIS_FAILED", str(error)[-4_000:], utc_now(), job_id),
                     )
 
 
