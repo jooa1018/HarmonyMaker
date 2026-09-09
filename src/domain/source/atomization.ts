@@ -10,6 +10,8 @@ import { resolveProductionLyricEmphasis } from "./lyrics";
 import type { LyricToken, PhraseRegion, SectionOccurrence, SourceMeasure } from "./model";
 
 export interface TimelineAtom {
+  /** No melodic pitch. This is a rhythmic instruction, not a rest. */
+  readonly rhythmOnly?: true;
   readonly id: string;
   readonly sourceEventId: string;
   readonly range: MusicalRange;
@@ -75,8 +77,8 @@ export async function atomizeSourceLead(input: {
     if (!section) throw new RangeError("SECTION_COVERAGE_INVALID");
     const lyricById = new Map(entry.measure.lyricTokens.map((token) => [token.id, token]));
     const orderedLeadEvents = [...entry.measure.leadEvents].sort((left, right) => compareCanonicalValues(
-      left.kind === "rest" ? { kind: left.kind, onset: left.onset, duration: left.duration } : { kind: left.kind, onset: left.onset, duration: left.duration, pitch: left.pitch, tieStart: left.tieStart, tieStop: left.tieStop },
-      right.kind === "rest" ? { kind: right.kind, onset: right.onset, duration: right.duration } : { kind: right.kind, onset: right.onset, duration: right.duration, pitch: right.pitch, tieStart: right.tieStart, tieStop: right.tieStop },
+      left.kind === "rest" ? { kind: left.kind, onset: left.onset, duration: left.duration } : { kind: left.kind, onset: left.onset, duration: left.duration, ...(left.kind === "note" ? { pitch: left.pitch } : {}), tieStart: left.tieStart, tieStop: left.tieStop },
+      right.kind === "rest" ? { kind: right.kind, onset: right.onset, duration: right.duration } : { kind: right.kind, onset: right.onset, duration: right.duration, ...(right.kind === "note" ? { pitch: right.pitch } : {}), tieStart: right.tieStart, tieStop: right.tieStop },
     ));
     for (let eventOrdinal = 0; eventOrdinal < orderedLeadEvents.length; eventOrdinal += 1) {
       const event = orderedLeadEvents[eventOrdinal];
@@ -84,7 +86,7 @@ export async function atomizeSourceLead(input: {
       const rawEnd: MusicalPosition = { performanceMeasureIndex: occurrence.performanceIndex, offset: addFractions(event.onset, event.duration) };
       const eventRange = musicalRange(start, rawEnd, durations);
       const boundaries = boundariesForRange(eventRange, input.chordTimeline, input.phraseRegions, input.sectionOccurrences);
-      const selectedTokens: LyricToken[] = event.kind === "note"
+      const selectedTokens: LyricToken[] = event.kind !== "rest"
         ? event.lyricTokenIds.map((id) => lyricById.get(id)).filter((token): token is LyricToken => token?.verse === section.lyricVerseIndex)
           .sort((left, right) => compareCanonicalValues(
             { syllabic: left.syllabic, extend: left.extend, emphasis: resolveProductionLyricEmphasis(left), text: left.text.normalize("NFC") },
@@ -100,12 +102,13 @@ export async function atomizeSourceLead(input: {
           sourceEventOrdinal: eventOrdinal,
           range,
           pitch: event.kind === "note" ? event.pitch : null,
-          tiedFromPrevious: event.kind === "note" && (event.tieStop || segmentIndex > 0),
-          tiedToNext: event.kind === "note" && (event.tieStart || segmentIndex < boundaries.length - 2),
+          ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}),
+          tiedFromPrevious: event.kind !== "rest" && (event.tieStop || segmentIndex > 0),
+          tiedToNext: event.kind !== "rest" && (event.tieStart || segmentIndex < boundaries.length - 2),
           lyricTokens: tokenProjection,
         };
         const id = timelineAtomId(occurrence.performanceIndex, eventOrdinal, range.start.offset, range.end.offset);
-        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [] }, projection });
+        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}), tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [] }, projection });
       }
     }
   }

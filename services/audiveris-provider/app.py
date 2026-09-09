@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from musicxml_output import normalize_audiveris_musicxml
+from recovery_output import RECOVERABLE_OUTPUT_CODES, rejected_output_bundle
 
 AUDIVERIS_VERSION = os.environ.get("AUDIVERIS_VERSION", "5.10.2")
 PROVIDER_VERSION = "hm-audiveris-provider-v1"
@@ -587,6 +588,28 @@ def get_metadata(job_id: str) -> MetadataResponse:
             for page in pages
         ]
     )
+
+
+@app.get("/v1/jobs/{job_id}/rejected-output", dependencies=[Depends(require_auth)])
+def get_rejected_output(job_id: str) -> Response:
+    row = job_row(job_id)
+    if row["state"] != "failed" or row["error_code"] not in RECOVERABLE_OUTPUT_CODES:
+        raise HTTPException(status_code=409, detail="rejected output is not available")
+    if parse_utc(row["expires_at"]) <= time.time():
+        raise HTTPException(status_code=410, detail="rejected output has expired")
+    metadata = get_metadata(job_id)
+    try:
+        bundle = rejected_output_bundle(
+            job_path(job_id) / "output", code=row["error_code"], engine_version=AUDIVERIS_VERSION,
+            pages=[page.model_dump() for page in metadata.pages], read_xml=read_engine_musicxml,
+        )
+    except (OSError, ValueError, RuntimeError, KeyError, zipfile.BadZipFile, ElementTree.ParseError):
+        raise HTTPException(status_code=409, detail="rejected artifacts cannot be safely represented") from None
+    # Read-only: owner deletion during inspection must never recreate files.
+    latest = job_row(job_id)
+    if latest["state"] != "failed":
+        raise HTTPException(status_code=409, detail="rejected output changed")
+    return Response(bundle, media_type="application/json", headers={"Cache-Control": "private, no-store"})
 
 
 @app.post("/v1/jobs/{job_id}/cancel", status_code=204, dependencies=[Depends(require_auth)])

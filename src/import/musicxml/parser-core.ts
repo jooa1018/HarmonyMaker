@@ -50,6 +50,7 @@ import {
 } from "./xml";
 
 import { MusicXmlStructureError } from "./structure-error";
+import { slashNotationForVoice, updateSlashNotation, type SlashNotationState } from "./slash-notation";
 
 type RawChordDraft = Omit<ImportedChordDraft, "key">;
 
@@ -82,6 +83,7 @@ interface ParseScoreResult {
 interface ParseContext {
   readonly diagnostics: ImportDiagnosticInput[];
   readonly partOrdinal: number;
+  readonly slashNotation: SlashNotationState;
 }
 
 const ZERO = fraction(0);
@@ -582,6 +584,8 @@ function parseMeasure(
   for (const child of measure.children) {
     if (child.kind !== "element") continue;
     if (child.name === "attributes") {
+      try { updateSlashNotation(context.slashNotation, child); }
+      catch { throw new MusicXmlStructureError("invalid MusicXML slash notation scope"); }
       const divisionsElement = xmlChild(child, "divisions");
       if (divisionsElement) {
         const nextDivisions = parseInteger(xmlText(divisionsElement));
@@ -668,8 +672,17 @@ function parseMeasure(
       const end = addFractions(onset, duration);
       if (compareFractions(end, maximum) > 0) maximum = end;
       const isRest = xmlChild(child, "rest") !== undefined;
+      const slashStyle = slashNotationForVoice(context.slashNotation, staff, voice);
       if (isRest) {
         leadEvents.push({ kind: "rest", candidateKey: keyForCandidate, onset, duration });
+      } else if (slashStyle && !slashStyle.rhythmic) {
+        context.diagnostics.push({ code: "IMPORT_UNSUPPORTED_ELEMENT",
+          messageKo: "박마다 표시하는 슬래시는 명시된 리듬 음표와 구별해야 합니다. 원본을 보존하고 검토를 중단합니다.",
+          details: { issue: "unsupported-beat-slash", measureOrdinal: ordinal, partOrdinal: context.partOrdinal, diagnosticScope: "lead-part" } });
+      } else if (slashStyle?.rhythmic || (xmlChild(child, "unpitched") && xmlText(xmlChild(child, "notehead")) === "slash")) {
+        const ties = new Set([...xmlChildren(child, "tie"), ...xmlDescendants(child, "tied")].map((tie) => tie.attributes.type));
+        leadEvents.push({ kind: "rhythm", candidateKey: keyForCandidate, onset, duration,
+          tieStart: ties.has("start"), tieStop: ties.has("stop"), lyrics: parseLyrics(child, false, context, ordinal, keyForCandidate) });
       } else {
         const pitch = parsePitch(child);
         if (!pitch) {
@@ -823,7 +836,7 @@ function parsePart(
   displayPartName: string,
   diagnostics: ImportDiagnosticInput[],
 ): ParsedPart {
-  const context: ParseContext = { diagnostics, partOrdinal };
+  const context: ParseContext = { diagnostics, partOrdinal, slashNotation: new Map() };
   let inherited: {
     divisions: number;
     time?: TimeSignature;

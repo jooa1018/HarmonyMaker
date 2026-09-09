@@ -78,6 +78,7 @@ function alternativeForTarget(source: SongSourceDocument, target: RevisionScoped
       const event = measure.leadEvents.find((candidate) => candidate.id === correctionTarget.eventId);
       if (event?.kind === "note") return { labelKo: `${event.pitch.step}${event.pitch.alter === 1 ? "♯" : event.pitch.alter === -1 ? "♭" : ""}${event.pitch.octave} 인식값`, patch: { kind: "pitch", pitch: event.pitch } };
       if (event?.kind === "rest") return { labelKo: "쉼표 인식값", patch: { kind: "replace-event", event: { kind: "rest", onset: event.onset, duration: event.duration } } };
+      if (event?.kind === "rhythm") return { labelKo: "리듬 슬래시 · 음높이 없음 · 리듬 확인", patch: { kind: "duration", duration: event.duration } };
     }
     if (correctionTarget.kind === "chord-event") {
       const chord = measure.chordEvents.find((candidate) => candidate.id === correctionTarget.chordEventId);
@@ -157,7 +158,8 @@ export async function attachOmrReviewContext(input: {
       ...(input.source.importInfo?.originalFileName ? { originalFileName: input.source.importInfo.originalFileName } : {}),
       ...(input.source.importInfo?.importedAt ? { importedAt: input.source.importInfo.importedAt } : {}),
       importerVersion: OMR_NORMALIZER_VERSION,
-      providerMetadata: { vendorId: input.providerResult.vendorId, vendorResultDigest: input.providerResult.vendorResultDigest, evidenceGranularity: input.providerResult.evidence.granularity },
+      providerMetadata: { vendorId: input.providerResult.vendorId, vendorResultDigest: input.providerResult.vendorResultDigest, evidenceGranularity: input.providerResult.evidence.granularity,
+        ...(input.source.importInfo?.musicXmlMetadata?.recoveryProof ? { recoveryProof: input.source.importInfo.musicXmlMetadata.recoveryProof } : {}) },
       omrReviewRecord: input.reviewRecord, omrEvidenceArchive: context.evidenceArchive,
       musicXmlSourceTargetMap,
     },
@@ -205,6 +207,7 @@ export async function finalizeReviewedOmrSource(input: {
         vendorId: input.providerResult.vendorId,
         vendorResultDigest: input.providerResult.vendorResultDigest,
         evidenceGranularity: input.providerResult.evidence.granularity,
+        ...(finalized.source.importInfo?.musicXmlMetadata?.recoveryProof ? { recoveryProof: finalized.source.importInfo.musicXmlMetadata.recoveryProof } : {}),
       },
       omrReviewRecord: input.reviewRecord,
       omrEvidenceArchive: input.evidenceArchive,

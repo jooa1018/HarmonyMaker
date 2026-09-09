@@ -54,12 +54,50 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
     ...document.sourceLeadTrack.atoms.flatMap((atom) => leadEvent(atom, starts, document) ?? []),
     ...document.generatedHarmonyTracks.flatMap((track) => track.events.flatMap((event) => harmonyEvent(event, track.trackPlanId, starts, document) ?? [])),
   ];
-  const band = accompaniment?.spans.flatMap((span) => [span.bassPitch, ...span.padPitches].map((pitch, index): PlaybackEvent => ({
-    eventId: `${span.id}:${index}`, trackId: "track:band", kind: "band",
-    startQuarter: absolute(starts, span.range.start.performanceMeasureIndex, span.range.start.offset),
-    durationQuarter: value(canonicalRangeDuration(document.measures, span.range)),
-    midi: pitchMidiNumber(pitch), lyricOnset: false,
-  }))) ?? [];
+  // Slash rhythm drives generated band attacks; it never supplies a Source pitch.
+  // Outside slash measures the existing sustained accompaniment stays unchanged.
+  const rhythmAtoms = document.sourceLeadTrack.atoms.filter((atom) => atom.rhythmOnly)
+    .map((atom) => ({ atom, start: absolute(starts, atom.range.start.performanceMeasureIndex, atom.range.start.offset),
+      end: absolute(starts, atom.range.start.performanceMeasureIndex, atom.range.start.offset) + value(canonicalRangeDuration(document.measures, atom.range)) }))
+    .sort((left, right) => left.start - right.start);
+  const rhythmMeasures = new Set(rhythmAtoms.map(({ atom }) => atom.range.start.performanceMeasureIndex));
+  const rhythmPulses: { start: number; end: number; tiedToNext: boolean }[] = [];
+  for (const { atom, start, end } of rhythmAtoms) {
+    const previous = rhythmPulses.at(-1);
+    if (atom.tiedFromPrevious && previous?.tiedToNext && previous.end === start) {
+      previous.end = end; previous.tiedToNext = atom.tiedToNext;
+    } else rhythmPulses.push({ start, end, tiedToNext: atom.tiedToNext });
+  }
+  const rhythmWindows: { start: number; end: number }[] = [];
+  for (const measureIndex of [...rhythmMeasures].sort((a, b) => a - b)) {
+    const start = value(starts[measureIndex]);
+    const end = start + value(document.measures[measureIndex].duration);
+    const previous = rhythmWindows.at(-1);
+    if (previous?.end === start) previous.end = end;
+    else rhythmWindows.push({ start, end });
+  }
+  const band = accompaniment?.spans.flatMap((span) => {
+    const start = absolute(starts, span.range.start.performanceMeasureIndex, span.range.start.offset);
+    const end = start + value(canonicalRangeDuration(document.measures, span.range));
+    const pulses: { start: number; end: number }[] = [];
+    const windows = rhythmWindows.filter((window) => window.start < end && window.end > start);
+    let cursor = start;
+    for (const window of windows) {
+      if (cursor < window.start) pulses.push({ start: cursor, end: Math.min(end, window.start) });
+      for (const pulse of rhythmPulses) {
+        const pulseStart = Math.max(start, window.start, pulse.start);
+        const pulseEnd = Math.min(end, window.end, pulse.end);
+        if (pulseStart < pulseEnd) pulses.push({ start: pulseStart, end: pulseEnd });
+      }
+      cursor = Math.max(cursor, window.end);
+    }
+    if (cursor < end) pulses.push({ start: cursor, end });
+    return pulses.flatMap((pulse, pulseIndex) => [span.bassPitch, ...span.padPitches].map((pitch, index): PlaybackEvent => ({
+      eventId: windows.length ? `${span.id}:rhythm:${pulseIndex}:${index}` : `${span.id}:${index}`,
+      trackId: "track:band", kind: "band", startQuarter: pulse.start, durationQuarter: pulse.end - pulse.start,
+      midi: pitchMidiNumber(pitch), lyricOnset: false,
+    })));
+  }) ?? [];
   const events = [...voices, ...band].sort((left, right) => left.startQuarter - right.startQuarter || left.trackId.localeCompare(right.trackId) || left.eventId.localeCompare(right.eventId));
   const trackLabels = {
     "track:source-lead": "Lead",

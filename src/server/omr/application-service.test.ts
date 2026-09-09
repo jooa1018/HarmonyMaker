@@ -77,6 +77,75 @@ async function createStartedJob(h: Awaited<ReturnType<typeof harness>>, idempote
 }
 
 describe("durable provider-neutral OMR application lifecycle", () => {
+  it("captures all rejected fragments once and only exposes them to the owner as failed output", async () => {
+    const h = await harness([{ kind: "failed", code: "AUDIVERIS_OUTPUT_INCOMPLETE", message: "incomplete" }]);
+    const rejected = { version: "hm-omr-rejected-output-v1", status: "incomplete", code: "AUDIVERIS_OUTPUT_INCOMPLETE", engineVersion: "5.10.2",
+      pages: [{ pageIndex: 0, pageDigest: h.pageDigest, widthPixels: 100, heightPixels: 120 }],
+      documents: [1, 2].map((i) => ({ id: `fragment-${i}`, rawMusicXml: musicXml, sha256: "" })) } as const;
+    const digest = await binaryDigest(new TextEncoder().encode(musicXml));
+    const bundle = { ...rejected, documents: rejected.documents.map((d) => ({ ...d, sha256: digest })) };
+    const capture = vi.fn(async () => bundle);
+    Object.assign(h.adapter, { exportRejectedOutput: capture });
+    const handle = await createStartedJob(h, "rejected-capture-once");
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_OUTPUT_INCOMPLETE" });
+    await expect(h.service.exportResult(handle)).rejects.toThrow("OMR_RESULT_UNAVAILABLE");
+    expect((await h.service.exportRejectedOutput(handle)).documents).toHaveLength(2);
+    const reloaded = new DurableOmrApplicationService(h.dependencies);
+    expect((await reloaded.exportRejectedOutput(handle)).documents.map((d) => d.rawMusicXml)).toEqual([musicXml, musicXml]);
+    await reloaded.synchronizeStatus(handle);
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(h.adapter.callCounts.create).toBe(1);
+    const other = new DurableOmrApplicationService({ ...h.dependencies, actor: { sessionId: "session:2" as PrivateRowId, ipOwnerHash: "ip:2" } });
+    await expect(other.exportRejectedOutput(handle)).rejects.toThrow();
+    await h.service.delete(handle);
+    expect(h.objects.buffers.size).toBe(0);
+    await expect(reloaded.exportRejectedOutput(handle)).rejects.toThrow();
+  });
+  it("does not publish rejected output whose input binding or XML digest differs", async () => {
+    const h = await harness([{ kind: "failed", code: "AUDIVERIS_OUTPUT_INVALID", message: "invalid" }]);
+    Object.assign(h.adapter, { exportRejectedOutput: async () => ({ version: "hm-omr-rejected-output-v1", status: "incomplete", code: "AUDIVERIS_OUTPUT_INVALID", engineVersion: "5.10.2",
+      pages: [{ pageIndex: 0, pageDigest: "0".repeat(64), widthPixels: 100, heightPixels: 120 }],
+      documents: [{ id: "fragment-1", rawMusicXml: musicXml, sha256: await binaryDigest(new TextEncoder().encode(musicXml)) }] }) });
+    const handle = await createStartedJob(h, "rejected-wrong-binding");
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_OUTPUT_INVALID" });
+    await expect(h.service.exportRejectedOutput(handle)).rejects.toThrow("OMR_RESULT_INTEGRITY_FAILED");
+    expect(h.store.listJobs()[0].resultObjectReferenceId).toBeUndefined();
+  });
+  it("retrieves the same failed job after a transient artifact capture failure without another recognition", async () => {
+    const h = await harness([{ kind: "failed", code: "AUDIVERIS_OUTPUT_INCOMPLETE", message: "incomplete" }]);
+    const bundle = { version: "hm-omr-rejected-output-v1", status: "incomplete", code: "AUDIVERIS_OUTPUT_INCOMPLETE", engineVersion: "5.10.2",
+      pages: [{ pageIndex: 0, pageDigest: h.pageDigest, widthPixels: 100, heightPixels: 120 }],
+      documents: [{ id: "fragment-1", rawMusicXml: musicXml, sha256: await binaryDigest(new TextEncoder().encode(musicXml)) }] };
+    const capture = vi.fn().mockRejectedValueOnce(new Error("temporary read failure")).mockResolvedValue(bundle);
+    Object.assign(h.adapter, { exportRejectedOutput: capture });
+    const handle = await createStartedJob(h, "rejected-transient-capture");
+    expect(await h.service.synchronizeStatus(handle)).toMatchObject({ kind: "failed", code: "OMR_OUTPUT_INCOMPLETE" });
+    expect(h.store.listJobs()[0].resultObjectReferenceId).toBeUndefined();
+    expect(await new DurableOmrApplicationService(h.dependencies).exportRejectedOutput(handle)).toEqual(bundle);
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(h.adapter.callCounts.create).toBe(1);
+    await expect(h.service.exportResult(handle)).rejects.toThrow("OMR_RESULT_UNAVAILABLE");
+    await h.service.delete(handle);
+    await expect(h.service.exportRejectedOutput(handle)).rejects.toThrow();
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+  it("cleans a rejected capture superseded by owner deletion without resurrecting the job", async () => {
+    const h = await harness([{ kind: "failed", code: "AUDIVERIS_OUTPUT_INCOMPLETE", message: "incomplete" }]);
+    let captured!: () => void; let release!: () => void;
+    const started = new Promise<void>((resolve) => { captured = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    Object.assign(h.adapter, { exportRejectedOutput: async () => {
+      captured(); await pending;
+      return { version: "hm-omr-rejected-output-v1", status: "incomplete", code: "AUDIVERIS_OUTPUT_INCOMPLETE", engineVersion: "5.10.2",
+        pages: [{ pageIndex: 0, pageDigest: h.pageDigest, widthPixels: 100, heightPixels: 120 }],
+        documents: [{ id: "fragment-1", rawMusicXml: musicXml, sha256: await binaryDigest(new TextEncoder().encode(musicXml)) }] };
+    } });
+    const handle = await createStartedJob(h, "rejected-delete-race");
+    const synchronization = h.service.synchronizeStatus(handle).catch(() => undefined);
+    await started; await h.service.delete(handle); release(); await synchronization;
+    expect(h.objects.buffers.size).toBe(0);
+    await expect(h.service.exportRejectedOutput(handle)).rejects.toThrow();
+  });
   it.each([
     ["AUDIVERIS_OUTPUT_INCOMPLETE", "OMR_OUTPUT_INCOMPLETE"],
     ["AUDIVERIS_OUTPUT_AMBIGUOUS", "OMR_OUTPUT_INCOMPLETE"],

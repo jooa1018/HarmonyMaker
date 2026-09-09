@@ -25,8 +25,8 @@ function fifths(key: KeySignature): number {
   return names[relativeMajor] ?? 0;
 }
 
-interface XmlEvent { readonly kind: "note" | "rest"; readonly offset: Fraction; readonly duration: Fraction; readonly pitch?: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[] }
-function fromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration: canonicalRangeDuration(measures, atom.range), ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds }; }
+interface XmlEvent { readonly kind: "note" | "rest" | "rhythm"; readonly offset: Fraction; readonly duration: Fraction; readonly pitch?: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[] }
+function fromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration: canonicalRangeDuration(measures, atom.range), ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds }; }
 function fromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: event.kind, offset: event.range.start.offset, duration: canonicalRangeDuration(measures, event.range), ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.kind === "note" && event.tieStart, tieStop: event.kind === "note" && event.tieStop, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] }; }
 
 const NOTE_TYPES = [
@@ -78,7 +78,8 @@ function noteXml(event: XmlEvent, divisions: number, lyricById: Readonly<Record<
   const lyricXml = lyric ? `<lyric number="${lyric.verse}"><syllabic>${lyric.syllabic}</syllabic><text>${xml(lyric.text)}</text>${lyric.extend ? "<extend/>" : ""}</lyric>` : "";
   const dots = "<dot/>".repeat(notation.dots);
   const tuplet = notation.actualNotes === undefined ? "" : `<time-modification><actual-notes>${notation.actualNotes}</actual-notes><normal-notes>${notation.normalNotes}</normal-notes></time-modification>`;
-  return `<note>${event.kind === "note" && event.pitch ? pitchXml(event.pitch) : "<rest/>"}<duration>${duration}</duration><voice>1</voice><type>${notation.type}</type>${dots}${tuplet}${ties}${tied}${lyricXml}</note>`;
+  const symbol = event.kind === "rhythm" ? "<unpitched><display-step>B</display-step><display-octave>4</display-octave></unpitched>" : event.kind === "note" && event.pitch ? pitchXml(event.pitch) : "<rest/>";
+  return `<note>${symbol}<duration>${duration}</duration>${ties}<voice>1</voice><type>${notation.type}</type>${dots}${tuplet}${event.kind === "rhythm" ? "<notehead>slash</notehead>" : ""}${tied}${lyricXml}</note>`;
 }
 
 function pitchClassSymbol(pitch: ParsedChord["root"]): string {
@@ -173,6 +174,17 @@ function harmonyXml(document: ArrangementRenderDocument, measureIndex: number, d
     const structured = structuredHarmony(chord);
     return `<harmony><root><root-step>${chord.root.step}</root-step>${chord.root.alter === 0 ? "" : `<root-alter>${chord.root.alter}</root-alter>`}</root><kind text="${xml(chordSuffix(chord))}">${structured.kind}</kind>${structured.degrees.map((degree) => degreeXml(degree.value, degree.alter, degree.type)).join("")}${chord.bass ? `<bass><bass-step>${chord.bass.step}</bass-step>${chord.bass.alter === 0 ? "" : `<bass-alter>${chord.bass.alter}</bass-alter>`}</bass>` : ""}${offset ? `<offset>${offset}</offset>` : ""}</harmony>`;
   }).join("");
+}
+
+/** Shared exact chord serialization for explicit pre-import corrections. */
+export function exportChordMusicXml(symbol: string, offset: number): string {
+  if (!Number.isSafeInteger(offset)) throw new RangeError("MUSICXML_HARMONY_OFFSET_UNREPRESENTABLE");
+  const parsed = parseChord(symbol);
+  if (parsed.status === "no-chord") return `<harmony><kind text="N.C.">none</kind><offset>${offset}</offset></harmony>`;
+  if (parsed.status !== "ok") throw new RangeError("MUSICXML_CHORD_UNREPRESENTABLE");
+  const chord = parsed.chord;
+  const structured = structuredHarmony(chord);
+  return `<harmony><root><root-step>${chord.root.step}</root-step>${chord.root.alter ? `<root-alter>${chord.root.alter}</root-alter>` : ""}</root><kind text="${xml(chordSuffix(chord))}">${structured.kind}</kind>${structured.degrees.map((degree) => degreeXml(degree.value, degree.alter, degree.type)).join("")}${chord.bass ? `<bass><bass-step>${chord.bass.step}</bass-step>${chord.bass.alter ? `<bass-alter>${chord.bass.alter}</bass-alter>` : ""}</bass>` : ""}<offset>${offset}</offset></harmony>`;
 }
 
 function fullMeasureDuration(measure: ArrangementRenderDocument["measures"][number]): Fraction {

@@ -678,10 +678,11 @@ function isAtomization(value: unknown): boolean {
     || !hasDigestFields(value, ["musicalSourceDigest", "effectiveChordTimelineDigest", "digest"])
     || !Array.isArray(value.atoms)
     || !value.atoms.every((atom) => isPlainRecord(atom)
-      && hasExactKeys(atom, ["id", "sourceEventId", "range", "pitch", "tiedFromPrevious", "tiedToNext", "lyricTokenIds"])
+      && hasExactKeys(atom, ["id", "sourceEventId", "range", "pitch", "tiedFromPrevious", "tiedToNext", "lyricTokenIds"], ["rhythmOnly"])
       && isCanonicalId(atom.id) && isCanonicalId(atom.sourceEventId)
       && isMusicalRange(atom.range)
       && (atom.pitch === null || isCanonicalSpelledPitch(atom.pitch))
+      && (atom.rhythmOnly === undefined || (atom.rhythmOnly === true && atom.pitch === null))
       && typeof atom.tiedFromPrevious === "boolean"
       && typeof atom.tiedToNext === "boolean"
       && isCanonicalIdArray(atom.lyricTokenIds))) return false;

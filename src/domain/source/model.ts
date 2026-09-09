@@ -80,7 +80,18 @@ export interface LeadRestEvent {
   readonly onset: Fraction;
   readonly duration: Fraction;
 }
-export type LeadEvent = LeadNoteEvent | LeadRestEvent;
+/** Rhythmic slash instruction; deliberately has no pitch and is not silence. */
+export interface LeadRhythmEvent {
+  readonly kind: "rhythm";
+  readonly id: string;
+  readonly sourceMeasureId: string;
+  readonly onset: Fraction;
+  readonly duration: Fraction;
+  readonly tieStart: boolean;
+  readonly tieStop: boolean;
+  readonly lyricTokenIds: readonly string[];
+}
+export type LeadEvent = LeadNoteEvent | LeadRestEvent | LeadRhythmEvent;
 export interface SourceChordEvent {
   readonly id: string;
   readonly sourceMeasureId: string;

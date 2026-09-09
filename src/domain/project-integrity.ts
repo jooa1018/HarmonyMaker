@@ -247,6 +247,7 @@ async function digestStoredAtomization(
         sourceEventOrdinal: lead.sourceEventOrdinal,
         range: atom.range,
         pitch: atom.pitch,
+        ...(atom.rhythmOnly ? { rhythmOnly: true } : {}),
         tiedFromPrevious: atom.tiedFromPrevious,
         tiedToNext: atom.tiedToNext,
         lyricTokens,

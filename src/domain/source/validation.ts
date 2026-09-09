@@ -103,7 +103,7 @@ export function phrasesCoverMelodyBearingIntervals(source: Pick<
       const measure = occurrence ? measureById.get(occurrence.sourceMeasureId) : undefined;
       if (!occurrence || !measure) return false;
       for (const event of measure.leadEvents) {
-        if (event.kind !== "note") continue;
+        if (event.kind === "rest") continue;
         const start = { performanceMeasureIndex: performanceIndex, offset: event.onset };
         const end = leadEventEnd(performanceIndex, event.onset, event.duration, occurrence.duration);
         if (!end) return false;
@@ -188,6 +188,9 @@ function isLeadEvent(value: unknown, measureId: string): value is LeadEvent {
     || !isCanonicalFraction(value.onset) || value.onset.n < 0
     || !isCanonicalFraction(value.duration) || !isPositiveFraction(value.duration)) return false;
   if (value.kind === "rest") return hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration"]);
+  if (value.kind === "rhythm") return hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration", "tieStart", "tieStop", "lyricTokenIds"])
+    && typeof value.tieStart === "boolean" && typeof value.tieStop === "boolean"
+    && Array.isArray(value.lyricTokenIds) && value.lyricTokenIds.every(isCanonicalId) && hasUniqueStrings(value.lyricTokenIds);
   return value.kind === "note"
     && hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration", "pitch", "tieStart", "tieStop", "lyricTokenIds"])
     && isCanonicalSpelledPitch(value.pitch)
@@ -206,7 +209,8 @@ function eventFitsMeasure(event: LeadEvent, measure: SourceMeasure): boolean {
   }
 }
 
-function samePitch(left: Extract<LeadEvent, { readonly kind: "note" }>, right: Extract<LeadEvent, { readonly kind: "note" }>): boolean {
+function compatibleTie(left: Exclude<LeadEvent, { readonly kind: "rest" }>, right: Exclude<LeadEvent, { readonly kind: "rest" }>): boolean {
+  if (left.kind === "rhythm" || right.kind === "rhythm") return left.kind === right.kind;
   return left.pitch.step === right.pitch.step
     && left.pitch.alter === right.pitch.alter
     && left.pitch.octave === right.pitch.octave;
@@ -233,17 +237,17 @@ function hasValidMonophonicLead(source: SongSourceDocument): boolean {
     const previous = events[index - 1];
     const next = events[index + 1];
     if (previous && compareFractions(previous.end, current.start) > 0) return false;
-    if (current.event.kind !== "note") continue;
+    if (current.event.kind === "rest") continue;
     if (current.event.tieStop && (!previous
-      || previous.event.kind !== "note"
+      || previous.event.kind === "rest"
       || compareFractions(previous.end, current.start) !== 0
       || !previous.event.tieStart
-      || !samePitch(previous.event, current.event))) return false;
+      || !compatibleTie(previous.event, current.event))) return false;
     if (current.event.tieStart && (!next
-      || next.event.kind !== "note"
+      || next.event.kind === "rest"
       || compareFractions(current.end, next.start) !== 0
       || !next.event.tieStop
-      || !samePitch(current.event, next.event))) return false;
+      || !compatibleTie(current.event, next.event))) return false;
   }
   return true;
 }
@@ -366,7 +370,7 @@ function isSourceMeasure(value: unknown): value is SourceMeasure {
     && leadIds.includes(token.leadEventId as string))) return false;
   const lyricById = new Map(typedMeasure.lyricTokens.map((token) => [token.id, token]));
   for (const event of typedMeasure.leadEvents) {
-    if (event.kind === "note" && event.lyricTokenIds.some((id) => lyricById.get(id)?.leadEventId !== event.id)) return false;
+    if (event.kind !== "rest" && event.lyricTokenIds.some((id) => lyricById.get(id)?.leadEventId !== event.id)) return false;
   }
   if (!value.chordEvents.every((event) => isPlainRecord(event)
     && hasExactKeys(event, ["id", "sourceMeasureId", "onset", "sourceText", "parseResult", "source", "confirmation"])

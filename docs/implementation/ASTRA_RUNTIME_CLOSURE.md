@@ -1,5 +1,51 @@
 # Astra runtime closure — 2026-09-07 KST
 
+## 2026-09-10 — 교정 후보 보존·리듬 슬래시·native 메모리 예산 (INCOMPLETE)
+
+이 항목은 아래 9월 7일 기록과 별개의 실행이다. 재개 시점과 재확인한 원격 HEAD는 `d341d21997b3748964b20c1b1317eb647b1cf865`, PR #13은 Draft/OPEN이며 base는 `chatgpt/harmonymaker-audiveris-provider` (`82c01d28a8e862ed96b48da8ab405589329a8553`)였다. 더 최신 변경을 되돌리지 않았다. 이 항목의 로컬 시험은 그 위의 이번 변경과 명시한 실행 설정으로 수행했다. 최종 commit/CI checkout/Preview/provider 배포 관찰은 [PR #13](https://github.com/jooa1018/HarmonyMaker/pull/13)의 최신 검증 기록과 연결한다.
+
+**실제 사용자 JPEG의 전곡 복구는 여전히 INCOMPLETE다.** 보존된 인식 조각을 제품에서 열어 음높이·길이·점·붙임줄·박자·코드를 교정하고 취소/재편집/새로고침 복구할 수 있다. 원본의 첫 실패 마디에서 F4 4분→16분, D4 점4분→점8분의 명시적 교정 2건을 일반 UI로 적용하여 5.5박→4박을 확인했다. 그러나 나머지 과다 길이 마디, 누락된 마디선/음표, 잘못된 movement 분할을 복구하지 못했다. 이 JPEG의 Source 확정/WAG/재생/내보내기는 성공으로 세지 않는다. 전곡 재입력이나 정답 파일 주입도 하지 않았다.
+
+### 구현한 경계
+
+- `recovery_output.py`와 소유자 전용 `rejected-output` API가 알려진 불완전 출력 실패의 XML/MXL을 제한된 묶음으로 보존한다. 모든 조각을 유지하며 중복 내용도 임의로 버리거나 결합하지 않는다. 정상 result API는 계속 409다. 앱은 입력 페이지 digest와 각 문서 digest를 검증하고 기존 소유자 객체 저장소에 보존한다. 최초 회수의 일시적 실패는 같은 작업에서 읽기로 재개할 수 있다. 소유자 삭제 중에는 결과를 다시 게시하지 않는다.
+- `src/import/review/recovery*`와 `RecoveryEditor.tsx`는 정상 Source와 분리된 후보를 보존한다. 원본 XML/이미지, 수정 출처, 수정 전후 값/digest, 순서 있는 교정 기록을 저장하고 재생 검증한다. 같은 실패 결과 재회수가 기존 교정을 덮어쓰지 않는다. 새로고침 직후 폼이 교정 전 길이를 표시하던 문제도 수정했다. 수정 때 기존 Review 승격을 무효화하고 전체 importer 검증을 다시 요구한다.
+- 누락 음표/마디 추가와 movement 연결은 아직 지원하지 않는다. 회수한 불완전 조각은 이 제약을 표시하고 Source 승격을 차단한다. 복잡한 divisions 변경·tuplet 등의 의미를 이 작은 편집기로 안전하게 보존할 수 없으면 원본을 유지하고 해당 교정을 거절한다.
+- Source에 명시적인 `kind: "rhythm"` 이벤트를 추가했다. pitch 필드가 없고 rest와 구별된다. onset/duration/붙임줄/가사/마디·코드 대응을 유지한다. MusicXML의 unpitched slash 및 `measure-style/slash use-stems="yes"`의 시작/끝/오선/제외 voice를 지원한다. 매 박 채우기 형태의 추상 슬래시는 별도 미지원 진단이며 숨은 pitch를 멜로디로 가져오지 않는다.
+- 정본 digest/atomization/project/share/악보/MusicXML 내보내기까지 리듬 종류를 유지한다. 표시 위치용 좌표는 Source pitch가 아니다. Source Lead에서 음높이를 합성하지 않으며 생성된 Band 보이싱은 별도 트랙에서 슬래시 리듬과 붙임줄을 따른다. 일반 구간의 지속 반주를 불필요하게 마디마다 재발음하지 않는다.
+- OMR 검토에는 슬래시의 리듬 확인 항목을 포함한다. Source의 정규 직렬화 순서를 시간 순서로 오인하던 readiness/자동 교정 제안도 실제 onset/end 기준으로 검사하도록 수정했다. 정상 리듬에 허위 겹침이나 음 길이 늘리기 제안을 만들지 않으며, 실제 초과·겹침·잘못된 붙임줄 검사는 유지한다.
+
+### 실제 JPEG와 엔진 실험
+
+원본 이미지를 직접 대조한 구조는 1페이지/8시스템/40개 표기 마디(못갖춘마디 0 포함)다. 시스템별 표기 범위는 0–5, 6–11, 12–16, 17–22, 23–27, 28–33, 34–37, 38–39다. 38–39의 리듬 슬래시는 사용자 확인에 따라 pitch 미지정 표기이며, pitch 없음 자체는 오류가 아니다. 슬래시 개수/리듬/onset/박자/코드 대응은 별도 검사 대상이다. 전곡 pitch·tie·voice의 독립 oracle은 완성되지 않았으며 정확도 PASS로 보고하지 않는다.
+
+보존된 .omr/전체 3개 MXL에서 빔 후보의 위·아래 경계 분할 불일치를 확인했다. Audiveris 5.10.2의 고정 소스에서 실제 대응 경계만 채택하는 최소 실험 패치를 컴파일하여 BEAMS 이후를 재실행했으나, 출력은 3조각/30마디를 유지하면서 pitched note가 189→185로 줄고 overfull이 6→9로 늘었다. **실험을 기각했고 해당 엔진 패치는 제품이나 Docker 이미지에 넣지 않았다.** smallBeams/indentations의 기각된 설정을 다시 채택하지 않았다.
+
+변경 전 wrapper의 256MiB Java heap으로 실제 JPEG를 0.1 CPU/512MiB에서 실행한 시험은 약 790초에 TEXTS 단계 OOM으로 실패했다(`oom_kill=1`). 관측된 정상 상태 조회 최대 지연은 7.375초였고 15초 client timeout도 발생했다. 같은 작업을 유지하며 조회를 재개했으며 새 작업으로 바꾸지 않았다.
+
+Render 기존 인스턴스의 API 기록(9월 7일 11:50 UTC)은 CPU limit 0.15, memory limit 약 512MiB였다. 이 자원에 맞춘 별도 로컬 시험에서 native eng+kor OCR의 heap 밖 메모리 여유를 위해 heap을 192MiB로 제한했다. 동일 JPEG는 약 658초에 출력 단계까지 마쳤고 `oom=0, oom_kill=0`, 상태 조회 최대 3.797초였다. cgroup memory peak는 512MiB 한계에 닿았으므로 메모리 여유가 충분하다고 주장하지 않는다. 서로 다른 CPU 조건의 두 시험으로 heap 변경만의 인과 효과를 과장하지 않는다.
+
+이 실행의 음악 결과는 이전 보존 결과와 전체 note/rest/pitch/onset/duration/dot/voice/meter/chord 투영이 동일했다: 3조각/30개 인식 마디/205 note 요소(189 pitched + 16 rest), overfull 6개. 원본 40마디와 일치하지 않으므로 인식 성공은 아니다. 정상 결과 409, 실패 출력 묶음 200/3조각 회수를 확인했다. 이 검증된 192MiB 예산을 wrapper 및 두 Dockerfile의 기본값으로 반영했고 실제 JVM MaxHeapSize 확인을 CI에 추가했다. timeout/메모리 사양/quota/언어 모델/음악 검증 gate는 늘리거나 완화하지 않았다.
+
+### 이번 검증의 구분
+
+| 입력/경로 | 환경·자동/수동 구분 | 결과 |
+| --- | --- | --- |
+| A. 실제 JPEG 전체, 현재 엔진/192MiB heap | LOCAL 실제 provider, 0.15 CPU/512MiB, 자동 | 출력 회수 가능, 음악 보존 FAIL, INCOMPLETE |
+| A. 보존된 첫 조각의 일반 교정 UI | LOCAL production build, 인식 재호출 없는 replay, 수동 2건 | 첫 5.5박→4박 및 새로고침 복구 PASS; 전곡 재검증 계속 차단 |
+| B. 기존 빔·점음표 4마디 이미지 standard/small | LOCAL 실제 provider, 0.15 CPU/512MiB/192MiB heap | 각각 32개 pitch/duration·4개 코드/위치·native title 일치, 291/254초. 두 크기는 동일 곡이며 독립 C로 세지 않음 |
+| C. 별도 제작 8마디 6/8 D minor 악보 이미지 | LOCAL 실제 provider, 0.15 CPU/512MiB/192MiB heap, 수동 음표 교정 0건 | 8마디·30개 pitch/duration·박자·8개 코드 및 위치 일치, 약 254초, OOM 없음 |
+| 손상된 자체 제작 MusicXML + 리듬 슬래시 | LOCAL production build, 명시적 길이 교정 1건 | 교정/취소/재편집/새로고침→Review→WAG→악보→PCM/Play/Pause/Resume→저장/복구→XML/project 내용 파싱 PASS; 8개 리듬 이벤트에 가짜 Source pitch 0개 |
+| 기존 MusicXML/MXL/PNG/PDF 브라우저 회귀 | LOCAL production build, OMR API 부분은 모의 응답/의도적 미설정 | 기존 일반 UI·공유·긴 악보 모바일 reflow·오디오 해제·같은 작업 재개 검사 PASS. 실제 외부 OMR로 세지 않음 |
+
+최종 코드의 로컬 gate는 typecheck/lint, 단위 테스트 939개(101파일), PostgreSQL 연동 39개(4파일), provider 테스트 91개, Next production build, Docker build 및 실제 JVM MaxHeapSize 201326592 확인, diff check가 모두 PASS다. 최종 production build에서 기존 브라우저 23개 검사, 위 실제 인식 조각의 명시적 교정 2건, 리듬 슬래시 fixture의 교정→WAG→오디오→저장/복구→내보내기를 다시 실행하여 PASS를 확인했다. PostgreSQL의 앞선 build 동시 실행에서 lock-waiter 타이밍 검사 1건이 실패한 적이 있으며, assertion 변경 없이 독립 실행 및 최종 재실행 모두 39개가 통과했다.
+
+배포 전 읽기 재확인(2026-09-09 17:03 UTC)에서 프로젝트 당일 UTC 신규 작업/예약·소모 credit/미만료 진행 작업/미만료 결과 참조가 모두 0이었다. 원래 만료된 processing row나 사용자 결과를 삭제하지 않았다. 기존 테스트 provider의 autoDeploy=commit 설정을 확인했다. 외부 최종 실행과 최종 CI/배포 상태는 고정된 commit을 기준으로 PR 검증 기록에서 별도로 보고하며 위 로컬 결과로 대신하지 않는다. 비공개 JPEG/전체 XML/.omr/인증 정보/handle은 저장소와 CI artifact에 포함하지 않는다.
+
+근거: [MusicXML slash의 use-stems/except-voice](https://www.w3.org/2021/06/musicxml40/musicxml-reference/elements/slash/), [MusicXML duration/clock](https://www.w3.org/2021/06/musicxml40/musicxml-reference/elements/duration/), [Audiveris 5.10.2 BeamsBuilder](https://github.com/Audiveris/audiveris/blob/5.10.2/app/src/main/java/org/audiveris/omr/sheet/beam/BeamsBuilder.java).
+
+---
+
 ## Native OCR·인식 연동 개선 — INCOMPLETE (2026-09-07)
 
 294ee2e의 기존 수정과 불완전 출력 차단을 보존했다. 문자 OCR 초기화와 일부 코드 보완 결함은 실제 엔진으로 개선을 확인했다. **사용자 JPEG의 전체 악보 보존·유효한 Review 입력은 아직 FAIL이며, 편곡 가능 상태로 보고하지 않는다.** 원래 서버 XML은 여전히 별도 BLOCKED_EXTERNAL이고 아래 로컬 결과와 동일하다고 주장하지 않는다.

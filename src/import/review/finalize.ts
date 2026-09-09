@@ -73,6 +73,7 @@ function blockedInput(
 }
 
 function leadProjection(event: ImportedLeadEventDraft): object {
+  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
     ? { kind: "rest", onset: event.onset, duration: event.duration }
     : {
@@ -129,7 +130,7 @@ function materializeLead(
     .filter((event) => event.candidateKey === selectedLeadKey)
     .sort((left, right) => compareCanonicalValues(leadProjection(left), leadProjection(right)));
   assertUniqueProjections(ordered, leadProjection, "lead event");
-  const tokenEntries = ordered.flatMap((event, leadOrdinal) => event.kind === "note"
+  const tokenEntries = ordered.flatMap((event, leadOrdinal) => event.kind !== "rest"
     ? event.lyrics.map((lyric) => ({ leadOrdinal, lyric }))
     : []);
   const tokenProjection = (entry: typeof tokenEntries[number]) => ({
@@ -174,12 +175,11 @@ function materializeLead(
         duration: event.duration,
       }
     : {
-        kind: "note",
+        ...(event.kind === "note" ? { kind: "note" as const, pitch: event.pitch } : { kind: "rhythm" as const }),
         id: leadEventId(measureOrdinal, eventOrdinal),
         sourceMeasureId: sourceMeasure,
         onset: event.onset,
         duration: event.duration,
-        pitch: event.pitch,
         tieStart: event.tieStart,
         tieStop: event.tieStop,
         lyricTokenIds: tokenIdsByLead.get(eventOrdinal) ?? [],
@@ -714,7 +714,7 @@ async function finalizeNormalization(
         ...(source.importInfo?.importedAt ? { importedAt: source.importInfo.importedAt } : {}),
         rawDigest: draft.rawDigest,
         importerVersion: draft.importerVersion,
-        musicXmlMetadata: { containerKind: draft.containerKind },
+        musicXmlMetadata: { containerKind: draft.containerKind, ...(draft.recoveryProof ? { recoveryProof: draft.recoveryProof } : {}) },
         musicXmlSourceTargetMap: await buildMusicXmlSourceTargetMap(draft, source),
       },
     });

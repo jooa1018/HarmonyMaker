@@ -43,12 +43,14 @@ export async function validateRuntimeOmrReadiness(
     measureStart = addFractions(measureStart, measure.duration);
   }
   timeline.sort((left, right) => compareFractions(left.start, right.start) || compareFractions(left.end, right.end) || left.ordinal - right.ordinal);
-  const sameSpelledPitch = (left: Extract<(typeof timeline)[number]["event"], { readonly kind: "note" }>, right: Extract<(typeof timeline)[number]["event"], { readonly kind: "note" }>) => left.pitch.step === right.pitch.step && left.pitch.alter === right.pitch.alter && left.pitch.octave === right.pitch.octave;
+  const tieCompatible = (left: Exclude<(typeof timeline)[number]["event"], { readonly kind: "rest" }>, right: Exclude<(typeof timeline)[number]["event"], { readonly kind: "rest" }>) =>
+    left.kind === "rhythm" || right.kind === "rhythm" ? left.kind === right.kind
+      : left.pitch.step === right.pitch.step && left.pitch.alter === right.pitch.alter && left.pitch.octave === right.pitch.octave;
   for (const [index, entry] of timeline.entries()) {
-    if (entry.event.kind !== "note") continue;
+    if (entry.event.kind === "rest") continue;
     const previous = timeline[index - 1]; const next = timeline[index + 1];
-    if ((entry.event.tieStop && (!previous || previous.event.kind !== "note" || !previous.event.tieStart || compareFractions(previous.end, entry.start) !== 0 || !sameSpelledPitch(previous.event, entry.event)))
-      || (entry.event.tieStart && (!next || next.event.kind !== "note" || !next.event.tieStop || compareFractions(entry.end, next.start) !== 0 || !sameSpelledPitch(entry.event, next.event)))) {
+    if ((entry.event.tieStop && (!previous || previous.event.kind === "rest" || !previous.event.tieStart || compareFractions(previous.end, entry.start) !== 0 || !tieCompatible(previous.event, entry.event)))
+      || (entry.event.tieStart && (!next || next.event.kind === "rest" || !next.event.tieStop || compareFractions(entry.end, next.start) !== 0 || !tieCompatible(entry.event, next.event)))) {
       diagnostics.push({ code: "OMR_TIE_INVALID", severity: "blocking", messageKo: "타이의 연결 음높이 또는 인접 관계가 올바르지 않습니다.", details: { sourceMeasureId: entry.sourceMeasureId, eventId: entry.event.id } });
     }
   }
@@ -59,13 +61,14 @@ export async function validateRuntimeOmrReadiness(
       diagnostics.push({ code: "OMR_MEASURE_DURATION_INVALID", severity: "blocking", messageKo: "마디 길이가 박자표와 일치하지 않습니다.", details: { sourceMeasureId: measure.id, measureIndex } });
     }
     let cursor = fraction(0);
-    for (const [eventIndex, event] of measure.leadEvents.entries()) {
+    const orderedEvents = [...measure.leadEvents].sort((left, right) => compareFractions(left.onset, right.onset));
+    for (const [eventIndex, event] of orderedEvents.entries()) {
       if (compareFractions(event.onset, cursor) < 0 || compareFractions(addFractions(event.onset, event.duration), measure.duration) > 0) {
         diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "blocking", messageKo: "성부 시간축이 겹치거나 마디 범위를 벗어납니다.", details: { sourceMeasureId: measure.id, eventIndex, issue: "voice-timeline" } });
       }
       cursor = addFractions(event.onset, event.duration);
       if (event.kind === "note") {
-        const previousNote = [...measure.leadEvents.slice(0, eventIndex)].reverse().find((candidate) => candidate.kind === "note");
+        const previousNote = orderedEvents.slice(0, eventIndex).reverse().find((candidate) => candidate.kind === "note");
         if (previousNote?.kind === "note" && Math.abs(pitchMidiNumber(previousNote.pitch) - pitchMidiNumber(event.pitch)) > 24) {
           diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "두 옥타브를 넘는 도약을 확인해 주세요.", details: { sourceMeasureId: measure.id, eventId: event.id, issue: "octave-jump" } });
         }

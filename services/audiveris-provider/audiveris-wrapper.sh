@@ -34,7 +34,7 @@ export TESSDATA_PREFIX="${HM_AUDIVERIS_NATIVE_TESSDATA:-/opt/audiveris-tessdata}
 # image/native buffers in the existing 512 MiB test-service envelope. Appending
 # wins over a pre-existing general JAVA_TOOL_OPTIONS heap value; a deployment
 # can explicitly supply a different native budget through this dedicated knob.
-export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} ${HM_AUDIVERIS_JVM_LIMITS:--Xms32m -Xmx256m}"
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} ${HM_AUDIVERIS_JVM_LIMITS:--Xms32m -Xmx192m}"
 
 exec /usr/local/bin/audiveris \
   -constant org.audiveris.omr.sheet.ProcessingSwitches.chordNames=true \

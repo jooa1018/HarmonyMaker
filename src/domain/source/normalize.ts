@@ -28,6 +28,7 @@ function sortUnique<T>(
 }
 
 function leadOrderingProjection(event: LeadEvent): object {
+  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
     ? { kind: "rest", onset: event.onset, duration: event.duration }
     : {
@@ -187,7 +188,7 @@ export function hasCanonicalSongSourceOrder(source: SongSourceDocument): boolean
     const ids = (document: SongSourceDocument) => ({
       measures: document.sourceMeasures.map((measure) => ({
         id: measure.id,
-        lead: measure.leadEvents.map((event) => ({ id: event.id, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] })),
+        lead: measure.leadEvents.map((event) => ({ id: event.id, lyricTokenIds: event.kind !== "rest" ? event.lyricTokenIds : [] })),
         chord: measure.chordEvents.map((event) => event.id),
         lyric: measure.lyricTokens.map((token) => token.id),
         text: measure.textEvents.map((event) => event.id),

@@ -32,6 +32,7 @@ COPY services/audiveris-provider/app.py \
      services/audiveris-provider/chord_ocr_model.py \
      services/audiveris-provider/demo_app.py \
      services/audiveris-provider/musicxml_output.py \
+     services/audiveris-provider/recovery_output.py \
      services/audiveris-provider/provider_entrypoint.py \
      services/audiveris-provider/audiveris-wrapper.sh \
      services/audiveris-provider/recognition_preprocess.py \
@@ -44,7 +45,7 @@ ENV PATH=/opt/venv/bin:$PATH \
     HM_AUDIVERIS_OCR_LANGUAGES=eng+kor \
     HM_AUDIVERIS_CHORD_OCR=1 \
     TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
-    JAVA_TOOL_OPTIONS="-Xmx384m -Djava.awt.headless=true" \
+    JAVA_TOOL_OPTIONS="-Xms32m -Xmx192m -Djava.awt.headless=true" \
     HOME=/data/home \
     PORT=8000
 

@@ -210,6 +210,8 @@ export type OmrDeleteResult = {
 );
 
 export interface OmrVendorAdapter {
+  /** Rejected fragments remain isolated from exportMusicXml and normal Source. */
+  exportRejectedOutput?(vendorJobId: VendorJobId): Promise<import("./rejected-output").OmrRejectedOutput>;
   getCapabilities(): Promise<OmrVendorCapabilities>;
   createVendorJob(request: { readonly pageCount: number; readonly idempotencyKey: string }): Promise<VendorJobId>;
   uploadPage(vendorJobId: VendorJobId, page: OmrPageUpload): Promise<void>;

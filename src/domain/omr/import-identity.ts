@@ -12,6 +12,7 @@ function currentRevision(source: SongSourceDocument): SourceRevisionRef {
 }
 
 function leadProjection(event: ImportedLeadEventDraft): object {
+  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
     ? { kind: "rest", onset: event.onset, duration: event.duration }
     : { kind: "note", onset: event.onset, duration: event.duration, pitch: event.pitch, tieStart: event.tieStart, tieStop: event.tieStop };

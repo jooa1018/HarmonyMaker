@@ -8,7 +8,7 @@ import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
 
 interface AdapterEvent {
-  readonly kind: "note" | "rest";
+  readonly kind: "note" | "rest" | "rhythm";
   readonly offset: Fraction;
   readonly duration: Fraction;
   readonly pitch?: SpelledPitch;
@@ -35,7 +35,7 @@ function abcLength(duration: Fraction): string {
 
 function eventFromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
   const duration = canonicalRangeDuration(measures, atom.range);
-  return { kind: atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, lyricTokenIds: atom.lyricTokenIds };
+  return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, lyricTokenIds: atom.lyricTokenIds };
 }
 
 function eventFromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
@@ -73,7 +73,10 @@ function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: Arran
     for (const event of selected) {
       if (compareFractions(cursor, event.offset) < 0) tokens.push(`z${abcLength(subtractFractions(event.offset, cursor))}`);
       const chord = includeChords ? chordAt[`${measureIndex}:${event.offset.n}/${event.offset.d}`] : undefined;
-      tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${event.kind === "note" && event.pitch ? abcPitch(event.pitch) : "z"}${abcLength(event.duration)}${event.tieStart ? "-" : ""}`);
+      // B is only ABC's staff position for its rhythm glyph; playback uses the
+      // pitch-free domain atom, never this engraving placeholder.
+      const glyph = event.kind === "rhythm" ? "!style=rhythm!B" : event.kind === "note" && event.pitch ? abcPitch(event.pitch) : "z";
+      tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${glyph}${abcLength(event.duration)}${event.tieStart ? "-" : ""}`);
       cursor = addFractions(event.offset, event.duration);
     }
     if (compareFractions(cursor, durations[measureIndex]) < 0) tokens.push(`z${abcLength(subtractFractions(durations[measureIndex], cursor))}`);

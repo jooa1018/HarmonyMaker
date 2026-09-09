@@ -49,6 +49,16 @@ export interface ImportedLyricDraft {
 
 export type ImportedLeadEventDraft =
   | {
+      readonly kind: "rhythm";
+      readonly candidateKey: string;
+      readonly musicXmlEventOrdinal?: number;
+      readonly onset: Fraction;
+      readonly duration: Fraction;
+      readonly tieStart: boolean;
+      readonly tieStop: boolean;
+      readonly lyrics: readonly ImportedLyricDraft[];
+    }
+  | {
       readonly kind: "note";
       readonly candidateKey: string;
       readonly musicXmlEventOrdinal?: number;
@@ -183,6 +193,8 @@ export interface MusicXmlImportDraft {
   readonly rawDigest: BinaryDigest;
   readonly containerKind: "xml" | "mxl";
   readonly originalFileName?: string;
+  /** Explicit corrections to a quarantined candidate, separately from the original bytes. */
+  readonly recoveryProof?: string;
   readonly title: string;
   readonly composer?: string;
   readonly parts: readonly ImportedPartDraft[];

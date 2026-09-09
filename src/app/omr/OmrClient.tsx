@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 
 import { binaryDigest, type BinaryDigest } from "../../domain/digest/canonical";
 import { storeOmrImportHandoff } from "../../domain/omr/browser-handoff";
+import { parseOmrRejectedOutput, type OmrRejectedOutput } from "../../domain/omr/rejected-output";
+import { createImportRecovery } from "../../import/review/recovery";
+import { retainImportRecovery } from "../../import/review/recovery-store";
 import { rasterizePdfPages } from "../../domain/omr/browser-raster";
 import type { OmrDeleteResult, OmrProviderPreflight, OmrProviderResult, OmrPublicStatus } from "../../domain/omr/contracts";
 import { analyzeImageQuality, type ImageQualityReport } from "../../domain/omr/image-quality";
@@ -931,6 +934,27 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
     finally { setBusy(false); }
   };
 
+  const recoverRejected = async () => {
+    if (!handle || !manifest || status?.kind !== "failed") return;
+    setBusy(true); setError(undefined);
+    try {
+      const response = await json<{ readonly result: OmrRejectedOutput }>(await fetch(`/api/omr/jobs/${encodeURIComponent(handle)}/rejected-output`, { cache: "no-store" }));
+      const rejected = await parseOmrRejectedOutput(new TextEncoder().encode(JSON.stringify(response.result)));
+      const authority = manifestRef.current;
+      if (!authority || authority.jobHandle !== handle || authority.manifestDigest !== manifest.manifestDigest) throw new RangeError("OMR_BROWSER_MANIFEST_BINDING_CONFLICT");
+      if (rejected.pages.length !== authority.pages.length || rejected.pages.some((page, index) => page.pageDigest !== authority.pages[index]?.canonicalPageDigest)) throw new RangeError("RECOVERY_PROVIDER_BINDING_INVALID");
+      const pageImages = authority.pages.map((page) => ({ pageIndex: page.pageIndex, rawDigest: page.rawDigest,
+        canonicalPageDigest: page.canonicalPageDigest, mimeType: page.mimeType, blob: page.bytes }));
+      for (const document of rejected.documents) {
+        const recovery = await createImportRecovery(new TextEncoder().encode(document.rawMusicXml), `${document.id}.musicxml`);
+        await retainImportRecovery({ id: `${authority.manifestId}:${document.id}`, updatedAt: new Date().toISOString(), recovery,
+          pages: pageImages, incompleteReason: `${rejected.code} · ${rejected.documents.length}개 출력 조각의 연결·누락 확인 필요` });
+      }
+      // Keep the server job and its original browser manifest available for retrieval/deletion.
+      router.push("/import");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "실패 출력 회수에 실패했습니다. 같은 작업을 보존합니다."); setBusy(false); }
+  };
+
   const handoff = async () => {
     if (!result) return;
     abortCurrentAuthorityRequests();
@@ -1023,6 +1047,10 @@ export function OmrClient({ fixtureControlsEnabled }: { readonly fixtureControls
         <dl className={styles.meta}><dt>opaque handle</dt><dd><code>{handle}</code></dd></dl>
       </section> : null}
 
+      {status?.kind === "failed" ? <section className="panel"><h2>실패 결과 복구</h2>
+        <p>보존 기한 안의 인식 후보를 같은 작업에서 회수합니다. 여러 출력의 연결이나 누락이 미확정인 동안은 Source로 확정되지 않습니다.</p>
+        <button type="button" disabled={busy || !manifest || manifest.lifecycle === "delete-pending"} onClick={() => void recoverRejected()}>실패한 인식 후보 보존·교정</button>
+      </section> : null}
       {result ? <section className="panel" aria-labelledby="review-heading">
         <h2 id="review-heading">4. 인식 증거와 Quick Review</h2>
         <dl className={styles.meta}><dt>adapter</dt><dd>{result.vendorId}</dd><dt>결과 digest</dt><dd><code>{result.vendorResultDigest}</code></dd><dt>증거 granularity</dt><dd>{result.evidence.granularity}</dd><dt>즉시 삭제</dt><dd>{String(result.retentionInfo.canDeleteImmediately)}</dd><dt>보관 정책</dt><dd>{result.retentionInfo.policyReference ?? "제공자 고지 없음"}</dd></dl>
