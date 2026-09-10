@@ -1,9 +1,9 @@
 import type { DeterministicAccompaniment } from "../accompaniment/deterministic";
 import { addFractions, fraction, type Fraction } from "../domain/fraction";
-import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/generation/model";
-import { pitchMidiNumber } from "../domain/pitch";
-import type { TimelineAtom } from "../domain/source/atomization";
+import type { ArrangementRenderDocument } from "../domain/generation/model";
+import { pitchMidiNumber, type SpelledPitch } from "../domain/pitch";
 import type { TempoSpec } from "../domain/source/model";
+import { comparePositions, type MusicalRange } from "../domain/time";
 import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
 
@@ -38,21 +38,41 @@ function measureStarts(document: ArrangementRenderDocument): readonly Fraction[]
   return starts;
 }
 function absolute(start: readonly Fraction[], measureIndex: number, offset: Fraction): number { return value(addFractions(start[measureIndex], offset)); }
-function leadEvent(atom: TimelineAtom, starts: readonly Fraction[], document: ArrangementRenderDocument): PlaybackEvent | undefined {
-  if (!atom.pitch) return undefined;
-  return { eventId: atom.id, trackId: "track:source-lead", kind: "voice", startQuarter: absolute(starts, atom.range.start.performanceMeasureIndex, atom.range.start.offset), durationQuarter: value(canonicalRangeDuration(document.measures, atom.range)), midi: pitchMidiNumber(atom.pitch), lyricOnset: atom.lyricTokenIds.length > 0 && !atom.tiedFromPrevious };
+interface VoiceSound {
+  readonly id: string;
+  readonly range: MusicalRange;
+  readonly pitch: SpelledPitch | null;
+  readonly tieStart: boolean;
+  readonly tieStop: boolean;
+  readonly lyricTokenIds: readonly string[];
 }
-function harmonyEvent(event: GeneratedVoiceEvent, trackId: string, starts: readonly Fraction[], document: ArrangementRenderDocument): PlaybackEvent | undefined {
-  if (event.kind !== "note") return undefined;
-  return { eventId: event.id, trackId, kind: "voice", startQuarter: absolute(starts, event.range.start.performanceMeasureIndex, event.range.start.offset), durationQuarter: value(canonicalRangeDuration(document.measures, event.range)), midi: pitchMidiNumber(event.pitch), lyricOnset: event.lyricTokenIds.length > 0 && !event.tieStop };
+
+function voiceEvents(trackId: string, entries: readonly VoiceSound[], starts: readonly Fraction[], document: ArrangementRenderDocument): readonly PlaybackEvent[] {
+  const sounds: VoiceSound[] = [];
+  for (const entry of [...entries].sort((left, right) => comparePositions(left.range.start, right.range.start))) {
+    const previous = sounds.at(-1);
+    // Only explicit matching ties sustain one oscillator. Slurs, repeated
+    // pitches, rests, and pitchless rhythm cannot create a melodic connection.
+    if (entry.pitch && previous?.pitch && previous.tieStart && entry.tieStop
+      && previous.pitch.step === entry.pitch.step && previous.pitch.alter === entry.pitch.alter && previous.pitch.octave === entry.pitch.octave
+      && comparePositions(previous.range.end, entry.range.start) === 0) {
+      sounds[sounds.length - 1] = { ...previous, range: { start: previous.range.start, end: entry.range.end }, tieStart: entry.tieStart };
+    } else sounds.push(entry);
+  }
+  return sounds.flatMap((sound): PlaybackEvent[] => sound.pitch ? [{
+    eventId: sound.id, trackId, kind: "voice",
+    startQuarter: absolute(starts, sound.range.start.performanceMeasureIndex, sound.range.start.offset),
+    durationQuarter: value(canonicalRangeDuration(document.measures, sound.range)),
+    midi: pitchMidiNumber(sound.pitch), lyricOnset: sound.lyricTokenIds.length > 0 && !sound.tieStop,
+  }] : []);
 }
 
 export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, accompaniment?: DeterministicAccompaniment): PlaybackPlan {
   if (accompaniment && accompaniment.effectiveChordTimelineDigest !== document.effectiveChordTimeline.digest) throw new RangeError("ACCOMPANIMENT_AUTHORITY_MISMATCH");
   const starts = measureStarts(document);
   const voices = [
-    ...document.sourceLeadTrack.atoms.flatMap((atom) => leadEvent(atom, starts, document) ?? []),
-    ...document.generatedHarmonyTracks.flatMap((track) => track.events.flatMap((event) => harmonyEvent(event, track.trackPlanId, starts, document) ?? [])),
+    ...voiceEvents("track:source-lead", document.sourceLeadTrack.atoms.map((atom) => ({ ...atom, tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious })), starts, document),
+    ...document.generatedHarmonyTracks.flatMap((track) => voiceEvents(track.trackPlanId, track.events.map((event): VoiceSound => event.kind === "note" ? event : { ...event, pitch: null, tieStart: false, tieStop: false, lyricTokenIds: [] }), starts, document)),
   ];
   // Slash rhythm drives generated band attacks; it never supplies a Source pitch.
   // Outside slash measures the existing sustained accompaniment stays unchanged.

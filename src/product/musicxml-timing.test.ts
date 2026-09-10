@@ -98,6 +98,48 @@ async function exportAndReimport(specs: readonly MeasureSpec[], tempo: TempoSpec
 }
 
 describe("MusicXML timing authority round-trip campaign", () => {
+  it("sustains explicit fractional tie chains without changing the Source atoms", () => {
+    const base = renderDocument([{ time: COMMON_TIME, duration: 4 }]);
+    const atoms = [0, 1, 2].map((index) => ({
+      ...base.sourceLeadTrack.atoms[0], id: `tie:${index}`,
+      range: musicalRange({ performanceMeasureIndex: 0, offset: fraction(index, 3) }, { performanceMeasureIndex: 0, offset: fraction(index + 1, 3) }, [fraction(4)]),
+      tiedFromPrevious: index > 0, tiedToNext: index < 2,
+      lyricTokenIds: index === 0 ? ["ly:attack"] : [],
+    }));
+    const document = { ...base, sourceLeadTrack: { ...base.sourceLeadTrack, atoms } };
+    const before = structuredClone(document);
+    expect(buildPlaybackPlan(document, roles).events).toEqual([{ eventId: "tie:0", trackId: "track:source-lead", kind: "voice", startQuarter: 0, durationQuarter: 1, midi: 60, lyricOnset: true }]);
+    expect(document).toEqual(before);
+  });
+
+  it.each(["untied", "slur", "different-pitch", "gap", "missing-start", "missing-stop", "rhythm"] as const)("does not infer a melodic tie from %s", (condition) => {
+    const base = renderDocument([{ time: COMMON_TIME, duration: 4 }, { time: COMMON_TIME, duration: 4 }]);
+    const pitch = base.sourceLeadTrack.atoms[0].pitch;
+    const atoms = [
+      { ...base.sourceLeadTrack.atoms[0], tiedToNext: !["untied", "slur", "missing-start"].includes(condition), ...(condition === "slur" ? { slurs: [{ number: 1, type: "start" as const }] } : {}) },
+      { ...base.sourceLeadTrack.atoms[1], pitch: condition === "rhythm" ? null : condition === "different-pitch" ? base.sourceLeadTrack.atoms[1].pitch : pitch, tiedFromPrevious: !["untied", "slur", "missing-stop"].includes(condition),
+        ...(condition === "rhythm" ? { rhythmOnly: true as const } : {}),
+        ...(condition === "slur" ? { slurs: [{ number: 1, type: "stop" as const }] } : {}),
+        ...(condition === "gap" ? { range: musicalRange({ performanceMeasureIndex: 1, offset: fraction(1) }, { performanceMeasureIndex: 2, offset: fraction(0) }, [fraction(4), fraction(4)]) } : {}),
+      },
+    ];
+    const events = buildPlaybackPlan({ ...base, sourceLeadTrack: { ...base.sourceLeadTrack, atoms } }, roles).events;
+    expect(events).toHaveLength(condition === "rhythm" ? 1 : 2);
+    expect(events[0].durationQuarter).toBe(4);
+  });
+
+  it("sustains ties across barlines independently for Source and generated voices", () => {
+    const base = renderDocument([{ time: COMMON_TIME, duration: 4 }, { time: COMMON_TIME, duration: 4 }]);
+    const pitch = { step: "C" as const, alter: 0 as const, octave: 4 };
+    const atoms = base.sourceLeadTrack.atoms.map((atom, index) => ({ ...atom, pitch, tiedToNext: index === 0, tiedFromPrevious: index === 1 }));
+    const generated = { trackPlanId: "track:h1", events: atoms.map((atom) => ({ id: `generated:${atom.id}`, kind: "note" as const, range: atom.range, pitch: atom.pitch, tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: [], source: "unison" as const })) };
+    const metadata = { trackPlanId: "track:h1", harmonyRole: "H1" as const, placements: [], label: "Lower / H1" };
+    const events = buildPlaybackPlan({ ...base, sourceLeadTrack: { ...base.sourceLeadTrack, atoms }, generatedHarmonyTracks: [generated] }, { generatedTracks: [metadata], byTrackPlanId: { "track:h1": metadata } }).events;
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.trackId).sort()).toEqual(["track:h1", "track:source-lead"]);
+    expect(events.every((event) => event.startQuarter === 0 && event.durationQuarter === 8)).toBe(true);
+  });
+
   it.each([
     ["uniform 4/4", [{ time: COMMON_TIME, duration: 4 }, { time: COMMON_TIME, duration: 4 }]],
     ["one-quarter pickup", [{ time: COMMON_TIME, duration: 1 }, { time: COMMON_TIME, duration: 4 }]],
