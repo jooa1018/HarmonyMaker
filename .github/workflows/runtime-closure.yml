@@ -1,0 +1,53 @@
+name: Runtime closure browser
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/harmonymaker-astra-runtime-closure
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-closure-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  product-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      HM_CODE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: npm ci
+      - run: python -m pip install -r services/audiveris-provider/requirements-test.txt playwright==1.57.0
+      - name: Provider regressions at exact branch HEAD
+        run: PYTHONPATH=services/audiveris-provider python -m pytest -q services/audiveris-provider/tests
+      - run: python -m playwright install --with-deps chromium
+      - run: npm run build
+      - name: Ordinary Product Core entry on disposable production build
+        run: python scripts/runtime-browser-smoke.py
+      - name: Whitespace and frozen change boundary
+        run: |
+          git diff-tree --check HEAD^ HEAD
+          git diff --exit-code 82c01d28a8e862ed96b48da8ab405589329a8553 -- docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.freeze.json src/grammar/worship-arrangement-grammar-v1.0.1.canonical.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-browser-${{ github.sha }}
+          path: runtime-browser-evidence/
+          retention-days: 7
+          if-no-files-found: warn

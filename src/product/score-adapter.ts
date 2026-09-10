@@ -8,7 +8,8 @@ import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
 
 interface AdapterEvent {
-  readonly kind: "note" | "rest";
+  readonly slurs?: TimelineAtom["slurs"];
+  readonly kind: "note" | "rest" | "rhythm";
   readonly offset: Fraction;
   readonly duration: Fraction;
   readonly pitch?: SpelledPitch;
@@ -35,7 +36,7 @@ function abcLength(duration: Fraction): string {
 
 function eventFromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
   const duration = canonicalRangeDuration(measures, atom.range);
-  return { kind: atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, lyricTokenIds: atom.lyricTokenIds };
+  return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}) };
 }
 
 function eventFromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
@@ -64,19 +65,23 @@ function abcTempo(tempo: TempoSpec): string {
   return `${numerator}/${denominator}=${tempo.bpm}`;
 }
 
-function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: ArrangementRenderDocument["measures"], durations: readonly Fraction[], chordAt: Readonly<Record<string, string>>, includeChords: boolean): string {
+function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: ArrangementRenderDocument["measures"], durations: readonly Fraction[], chordAt: Readonly<Record<string, string>>, includeChords: boolean, invisibleGaps = false): string {
   const measures: string[] = [];
   for (let measureIndex = 0; measureIndex < measuresAuthority.length; measureIndex += 1) {
     const selected = events.filter((event) => (event as AdapterEvent & { measureIndex?: number }).measureIndex === measureIndex).sort((a, b) => compareFractions(a.offset, b.offset));
     let cursor = fraction(0);
     const tokens: string[] = [];
     for (const event of selected) {
-      if (compareFractions(cursor, event.offset) < 0) tokens.push(`z${abcLength(subtractFractions(event.offset, cursor))}`);
+      if (compareFractions(cursor, event.offset) < 0) tokens.push(`${invisibleGaps ? "x" : "z"}${abcLength(subtractFractions(event.offset, cursor))}`);
       const chord = includeChords ? chordAt[`${measureIndex}:${event.offset.n}/${event.offset.d}`] : undefined;
-      tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${event.kind === "note" && event.pitch ? abcPitch(event.pitch) : "z"}${abcLength(event.duration)}${event.tieStart ? "-" : ""}`);
+      // B is only ABC's staff position for its rhythm glyph; playback uses the
+      // pitch-free domain atom, never this engraving placeholder.
+      const glyph = event.kind === "rhythm" ? "!style=rhythm!B" : event.kind === "note" && event.pitch ? abcPitch(event.pitch) : "z";
+      const openSlurs = "(".repeat(event.slurs?.filter((mark) => mark.type === "start").length ?? 0), closeSlurs = ")".repeat(event.slurs?.filter((mark) => mark.type === "stop").length ?? 0);
+      tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${openSlurs}${glyph}${abcLength(event.duration)}${event.tieStart ? "-" : ""}${closeSlurs}`);
       cursor = addFractions(event.offset, event.duration);
     }
-    if (compareFractions(cursor, durations[measureIndex]) < 0) tokens.push(`z${abcLength(subtractFractions(durations[measureIndex], cursor))}`);
+    if (compareFractions(cursor, durations[measureIndex]) < 0) tokens.push(`${invisibleGaps ? "x" : "z"}${abcLength(subtractFractions(durations[measureIndex], cursor))}`);
     const previous = measuresAuthority[measureIndex - 1];
     const current = measuresAuthority[measureIndex];
     const meterChange = measureIndex > 0 && previous
@@ -95,14 +100,21 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const lead = document.sourceLeadTrack.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex }));
   const tracks = [
     { id: "lead", label: "Lead", events: lead },
+    ...(document.sourceRhythmTracks?.map((track) => ({ id: `rhythm${track.voice}`, label: `Source Rhythm ${track.voice}`, events: track.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) })) ?? []),
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
       return { id: metadata.harmonyRole.toLowerCase(), label: metadata.label, events: track.events.map((event) => ({ ...eventFromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
     }),
   ];
-  const voices = tracks.map((track, index) => `[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, chordAt, index === 0)}`).join("\n");
-  const score = tracks.map((track) => track.id).join(" ");
+  const rhythm = document.sourceRhythmTracks ?? [];
+  const sourceCount = 1 + rhythm.length;
+  const chordOwner = (measureIndex: number) => { const index = rhythm.findIndex((track) => track.atoms.some((atom) => atom.range.start.performanceMeasureIndex === measureIndex)); return index < 0 ? 0 : index + 1; };
+  const voices = tracks.map((track, index) => {
+    const ownedChords = Object.fromEntries(Object.entries(chordAt).filter(([key]) => chordOwner(Number(key.split(":")[0])) === index));
+    return `[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, rhythm.length > 0 && index < sourceCount)}`;
+  }).join("\n");
+  const score = rhythm.length ? `(${tracks.slice(0, sourceCount).map((track) => track.id).join(" ")}) ${tracks.slice(sourceCount).map((track) => track.id).join(" ")}` : tracks.map((track) => track.id).join(" ");
   const declarations = tracks.map((track) => `V:${track.id} name="${encodeAbcFreeText(track.label)}" clef=treble`).join("\n");
   return `X:1\nT:${encodeAbcFreeText(input.title)}\nM:${document.measures[0]?.time.numerator ?? 4}/${document.measures[0]?.time.denominator ?? 4}\nL:1/16\nQ:${abcTempo(input.tempo)}\nK:${abcKey(input.key)}\n%%score ${score}\n${declarations}\n${voices}`;
 }

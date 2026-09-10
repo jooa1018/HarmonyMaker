@@ -28,6 +28,7 @@ function sortUnique<T>(
 }
 
 function leadOrderingProjection(event: LeadEvent): object {
+  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
     ? { kind: "rest", onset: event.onset, duration: event.duration }
     : {
@@ -95,6 +96,7 @@ function normalizeMeasure(measure: SourceMeasure): SourceMeasure {
   return {
     ...measure,
     leadEvents,
+    ...(measure.rhythmVoices ? { rhythmVoices: [...measure.rhythmVoices].sort((a, b) => a.voice - b.voice).map((voice) => ({ ...voice, events: sortUnique(voice.events, leadOrderingProjection, "rhythm event").map((entry) => entry.value) })) } : {}),
     chordEvents: sortUnique(
       measure.chordEvents,
       chordOrderingProjection,
@@ -187,7 +189,8 @@ export function hasCanonicalSongSourceOrder(source: SongSourceDocument): boolean
     const ids = (document: SongSourceDocument) => ({
       measures: document.sourceMeasures.map((measure) => ({
         id: measure.id,
-        lead: measure.leadEvents.map((event) => ({ id: event.id, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] })),
+        lead: measure.leadEvents.map((event) => ({ id: event.id, lyricTokenIds: event.kind !== "rest" ? event.lyricTokenIds : [] })),
+        ...(measure.rhythmVoices ? { rhythm: measure.rhythmVoices.map((voice) => ({ voice: voice.voice, events: voice.events.map((event) => event.id) })) } : {}),
         chord: measure.chordEvents.map((event) => event.id),
         lyric: measure.lyricTokens.map((token) => token.id),
         text: measure.textEvents.map((event) => event.id),

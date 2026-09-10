@@ -19,6 +19,7 @@ import {
   type Step,
 } from "../../domain/pitch";
 import { performerId } from "../../domain/ids";
+import { isSourceSlurMarks } from "../../domain/source/notation";
 import { validateCoreInputLimits } from "../../domain/limits";
 import { extractMusicXmlFromMxl } from "../mxl/archive";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
@@ -48,6 +49,9 @@ import {
   xmlText,
   type XmlElement,
 } from "./xml";
+
+import { MusicXmlStructureError } from "./structure-error";
+import { slashNotationForVoice, updateSlashNotation, type SlashNotationState } from "./slash-notation";
 
 type RawChordDraft = Omit<ImportedChordDraft, "key">;
 
@@ -80,6 +84,7 @@ interface ParseScoreResult {
 interface ParseContext {
   readonly diagnostics: ImportDiagnosticInput[];
   readonly partOrdinal: number;
+  readonly slashNotation: SlashNotationState;
 }
 
 const ZERO = fraction(0);
@@ -127,7 +132,7 @@ function candidateIdentity(key: string): { readonly staffNumber: number; readonl
 function durationFraction(durationText: string | undefined, divisions: number): Fraction {
   const duration = parseInteger(durationText);
   if (duration === undefined || duration <= 0 || !Number.isSafeInteger(divisions) || divisions <= 0) {
-    throw new RangeError("invalid MusicXML duration/divisions");
+    throw new MusicXmlStructureError("invalid MusicXML duration/divisions");
   }
   return fraction(duration, divisions);
 }
@@ -449,7 +454,7 @@ function flowFromDirection(
   const texts = [
     ...xmlDescendants(direction, "words").map(xmlText),
     ...xmlDescendants(direction, "rehearsal").map(xmlText),
-  ].filter((text): text is string => text !== undefined);
+  ].filter((text): text is string => text !== undefined && SUPPORTED_FLOW_PATTERN.test(text));
   const sound = xmlDescendants(direction, "sound");
   for (const item of sound) {
     for (const attribute of ["dacapo", "dalsegno", "segno", "coda", "tocoda", "fine"] as const) {
@@ -459,7 +464,9 @@ function flowFromDirection(
   }
   if (xmlDescendants(direction, "segno").length > 0) texts.push("segno");
   if (xmlDescendants(direction, "coda").length > 0) texts.push("coda");
-  return [...new Set(texts.filter((text) => SUPPORTED_FLOW_PATTERN.test(text) || text.includes(":")))]
+  // Structured sound attributes above are flow directives regardless of their
+  // labels. A colon in ordinary words/rehearsal text is not a flow instruction.
+  return [...new Set(texts)]
     .sort(fixedCompare)
     .map((text) => ({ partOrdinal, measureOrdinal, text }));
 }
@@ -580,6 +587,8 @@ function parseMeasure(
   for (const child of measure.children) {
     if (child.kind !== "element") continue;
     if (child.name === "attributes") {
+      try { updateSlashNotation(context.slashNotation, child); }
+      catch { throw new MusicXmlStructureError("invalid MusicXML slash notation scope"); }
       const divisionsElement = xmlChild(child, "divisions");
       if (divisionsElement) {
         const nextDivisions = parseInteger(xmlText(divisionsElement));
@@ -606,7 +615,7 @@ function parseMeasure(
     if (child.name === "backup" || child.name === "forward") {
       const amount = durationFraction(xmlText(xmlChild(child, "duration")), divisions);
       cursor = child.name === "backup" ? subtractFractions(cursor, amount) : addFractions(cursor, amount);
-      if (cursor.n < 0) throw new RangeError("MusicXML backup moved before measure start");
+      if (cursor.n < 0) throw new MusicXmlStructureError("MusicXML backup moved before measure start");
       if (compareFractions(cursor, maximum) > 0) maximum = cursor;
       continue;
     }
@@ -661,13 +670,26 @@ function parseMeasure(
       }
       const duration = durationFraction(xmlText(xmlChild(child, "duration")), divisions);
       const onset = isChordMember ? lastOnset.get(keyForCandidate) : cursor;
-      if (!onset) throw new RangeError("MusicXML chord member has no preceding note");
+      if (!onset) throw new MusicXmlStructureError("MusicXML chord member has no preceding note");
       if (!isChordMember) lastOnset.set(keyForCandidate, onset);
       const end = addFractions(onset, duration);
       if (compareFractions(end, maximum) > 0) maximum = end;
       const isRest = xmlChild(child, "rest") !== undefined;
+      const slurValues = xmlDescendants(child, "slur").map((mark) => ({ number: Number(mark.attributes.number ?? "1"), type: mark.attributes.type }));
+      if (slurValues.length && !isSourceSlurMarks(slurValues)) throw new MusicXmlStructureError("Unsupported or duplicate slur markings");
+      const slurs = isSourceSlurMarks(slurValues) ? slurValues : undefined;
+      const slashStyle = slashNotationForVoice(context.slashNotation, staff, voice);
       if (isRest) {
         leadEvents.push({ kind: "rest", candidateKey: keyForCandidate, onset, duration });
+      } else if (slashStyle && !slashStyle.rhythmic) {
+        context.diagnostics.push({ code: "IMPORT_UNSUPPORTED_ELEMENT",
+          messageKo: "박마다 표시하는 슬래시는 명시된 리듬 음표와 구별해야 합니다. 원본을 보존하고 검토를 중단합니다.",
+          details: { issue: "unsupported-beat-slash", measureOrdinal: ordinal, partOrdinal: context.partOrdinal, diagnosticScope: "lead-part" } });
+      } else if (slashStyle?.rhythmic || (xmlChild(child, "unpitched") && xmlText(xmlChild(child, "notehead")) === "slash")) {
+        const ties = new Set([...xmlChildren(child, "tie"), ...xmlDescendants(child, "tied")].map((tie) => tie.attributes.type));
+        leadEvents.push({ kind: "rhythm", candidateKey: keyForCandidate, onset, duration,
+          ...(slurs ? { slurs } : {}),
+          tieStart: ties.has("start"), tieStop: ties.has("stop"), lyrics: parseLyrics(child, false, context, ordinal, keyForCandidate) });
       } else {
         const pitch = parsePitch(child);
         if (!pitch) {
@@ -694,6 +716,7 @@ function parseMeasure(
             onset,
             duration,
             pitch,
+            ...(slurs ? { slurs } : {}),
             tieStart: tieTypes.has("start"),
             tieStop: tieTypes.has("stop"),
             lyrics: parseLyrics(child, accent, context, ordinal, keyForCandidate),
@@ -721,7 +744,7 @@ function parseMeasure(
       }
       const offset = fraction(parsedOffset, divisions);
       const onset = addFractions(cursor, offset);
-      if (onset.n < 0) throw new RangeError("MusicXML harmony offset precedes measure start");
+      if (onset.n < 0) throw new MusicXmlStructureError("MusicXML harmony offset precedes measure start");
       rawChords.push(parseHarmony(child, context, ordinal, onset));
       continue;
     }
@@ -743,17 +766,17 @@ function parseMeasure(
       }
       const offset = fraction(parsedOffset, divisions);
       const onset = addFractions(cursor, offset);
-      if (onset.n < 0) throw new RangeError("MusicXML direction offset precedes measure start");
+      if (onset.n < 0) throw new MusicXmlStructureError("MusicXML direction offset precedes measure start");
       textEvents.push(...directionTextEvents(child, onset));
       flowTexts.push(...flowFromDirection(child, context.partOrdinal, ordinal));
       const tempo = parseTempo(child, ordinal, onset);
       if (tempo) tempos.push(tempo);
     }
   }
-  if (!time) throw new RangeError("MusicXML has no initial time signature");
+  if (!time) throw new MusicXmlStructureError("MusicXML has no initial time signature");
   const meterDuration = fullMeasureDuration(time);
   if (compareFractions(maximum, meterDuration) > 0 || compareFractions(cursor, meterDuration) > 0) {
-    throw new RangeError("MusicXML cursor exceeds measure duration");
+    throw new MusicXmlStructureError("MusicXML cursor exceeds measure duration", { element: "measure", maximum: `${maximum.n}/${maximum.d}`, meterDuration: `${meterDuration.n}/${meterDuration.d}` });
   }
   const implicit = measure.attributes.implicit === "yes";
   const actualDuration = implicit && maximum.n > 0 ? maximum : meterDuration;
@@ -821,7 +844,7 @@ function parsePart(
   displayPartName: string,
   diagnostics: ImportDiagnosticInput[],
 ): ParsedPart {
-  const context: ParseContext = { diagnostics, partOrdinal };
+  const context: ParseContext = { diagnostics, partOrdinal, slashNotation: new Map() };
   let inherited: {
     divisions: number;
     time?: TimeSignature;
@@ -833,13 +856,23 @@ function parsePart(
   const tempoEvents: TempoEvent[] = [];
   const flowTexts: Omit<UnsupportedPerformanceFlow, "id">[] = [];
   for (const [ordinal, measureElement] of xmlChildren(part, "measure").entries()) {
-    const parsed = parseMeasure(measureElement, ordinal, context, inherited);
+    let parsed: ReturnType<typeof parseMeasure>;
+    try {
+      parsed = parseMeasure(measureElement, ordinal, context, inherited);
+    } catch (error) {
+      if (error instanceof MusicXmlStructureError) {
+        Object.assign(error.details, { partOrdinal, measureOrdinal: ordinal });
+        const number = parseInteger(measureElement.attributes.number);
+        if (number !== undefined) error.details.measureNumber = number;
+      }
+      throw error;
+    }
     measures.push(parsed.measure);
     tempoEvents.push(...parsed.tempoEvents);
     flowTexts.push(...parsed.flowTexts);
     inherited = parsed.next;
   }
-  if (measures.length === 0) throw new RangeError("MusicXML part has no measures");
+  if (measures.length === 0) throw new MusicXmlStructureError("MusicXML part has no measures");
   if (inherited.activeEnding) {
     diagnostics.push({
       code: "PERFORMANCE_EXPANSION_FAILED",
@@ -1055,10 +1088,11 @@ export async function importMusicXml(
   try {
     score = parseScore(parsedXml.root);
   } catch (error) {
+    if (!(error instanceof MusicXmlStructureError)) throw error;
     const diagnostics = await materializeImportDiagnostics([{
       code: "IMPORT_CORRUPT_XML",
-      messageKo: "MusicXML의 시간축 또는 구조가 유효하지 않습니다.",
-      details: { reason: error instanceof Error ? error.message : "score-parse-failed" },
+      messageKo: error.messageKo,
+      details: error.details,
     }]);
     return { status: "blocked", diagnostics };
   }

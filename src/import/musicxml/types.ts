@@ -1,5 +1,6 @@
 import type { ChordParseResult } from "../../domain/chord/model";
 import type { BinaryDigest } from "../../domain/digest/canonical";
+import type { SourceSlurMark } from "../../domain/source/notation";
 import type { Diagnostic } from "../../domain/diagnostics";
 import type { Fraction } from "../../domain/fraction";
 import type { TimeSignature } from "../../domain/meter";
@@ -49,7 +50,19 @@ export interface ImportedLyricDraft {
 
 export type ImportedLeadEventDraft =
   | {
+      readonly kind: "rhythm";
+      readonly slurs?: readonly SourceSlurMark[];
+      readonly candidateKey: string;
+      readonly musicXmlEventOrdinal?: number;
+      readonly onset: Fraction;
+      readonly duration: Fraction;
+      readonly tieStart: boolean;
+      readonly tieStop: boolean;
+      readonly lyrics: readonly ImportedLyricDraft[];
+    }
+  | {
       readonly kind: "note";
+      readonly slurs?: readonly SourceSlurMark[];
       readonly candidateKey: string;
       readonly musicXmlEventOrdinal?: number;
       readonly onset: Fraction;
@@ -183,6 +196,8 @@ export interface MusicXmlImportDraft {
   readonly rawDigest: BinaryDigest;
   readonly containerKind: "xml" | "mxl";
   readonly originalFileName?: string;
+  /** Explicit corrections to a quarantined candidate, separately from the original bytes. */
+  readonly recoveryProof?: string;
   readonly title: string;
   readonly composer?: string;
   readonly parts: readonly ImportedPartDraft[];

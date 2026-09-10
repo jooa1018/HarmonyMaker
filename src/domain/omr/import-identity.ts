@@ -12,6 +12,7 @@ function currentRevision(source: SongSourceDocument): SourceRevisionRef {
 }
 
 function leadProjection(event: ImportedLeadEventDraft): object {
+  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
     ? { kind: "rest", onset: event.onset, duration: event.duration }
     : { kind: "note", onset: event.onset, duration: event.duration, pitch: event.pitch, tieStart: event.tieStart, tieStop: event.tieStop };
@@ -83,6 +84,17 @@ export async function buildMusicXmlSourceTargetMap(
         measureOrdinal, eventOrdinal: eventDraft.musicXmlEventOrdinal,
       }, { kind: "voice-event", eventId: event.id }));
     });
+    for (const voice of sourceMeasure.rhythmVoices ?? []) {
+      const candidate = draft.leadCandidates[voice.voice - 1];
+      if (!candidate || candidate.partOrdinal !== selected.partOrdinal || candidate.staffNumber !== selected.staffNumber) throw new RangeError("OMR_IMPORT_IDENTITY_INVALID");
+      const rhythm = measure.leadEvents.filter((event) => event.candidateKey === candidate.key)
+        .sort((a, b) => compareCanonicalValues(leadProjection(a), leadProjection(b)));
+      if (rhythm.length !== voice.events.length) throw new RangeError("OMR_IMPORT_IDENTITY_INVALID");
+      rhythm.forEach((event, ordinal) => {
+        if (event.musicXmlEventOrdinal === undefined) throw new RangeError("OMR_IMPORT_IDENTITY_INVALID");
+        entries.push(entry({ kind: "voice-event", musicXmlPartOrdinal: selected.partOrdinal, musicXmlStaffNumber: candidate.staffNumber, musicXmlVoiceKey: candidate.voiceKey, measureOrdinal, eventOrdinal: event.musicXmlEventOrdinal }, { kind: "voice-event", eventId: voice.events[ordinal].id }));
+      });
+    }
 
     const chordDrafts = [...(chordPart.measures[measureOrdinal]?.chords ?? [])]
       .sort((left, right) => compareCanonicalValues(chordProjection(left), chordProjection(right)));
@@ -181,7 +193,7 @@ export async function remapMusicXmlSourceTargetMap(
 }
 
 function targetExists(source: SongSourceDocument, target: MusicXmlCurrentSourceTarget): boolean {
-  if (target.kind === "voice-event") return source.sourceMeasures.some((measure) => measure.leadEvents.some((event) => event.id === target.eventId));
+  if (target.kind === "voice-event") return source.sourceMeasures.some((measure) => [...measure.leadEvents, ...(measure.rhythmVoices?.flatMap((voice) => voice.events) ?? [])].some((event) => event.id === target.eventId));
   if (target.kind === "chord-event") return source.sourceMeasures.some((measure) => measure.chordEvents.some((event) => event.id === target.chordEventId));
   if (target.kind === "section-text") return source.sourceMeasures.some((measure) => measure.textEvents.some((event) => event.id === target.sourceTextId));
   return source.sourceMeasures.some((measure) => measure.id === target.sourceMeasureId);

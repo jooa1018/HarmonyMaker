@@ -13,6 +13,7 @@ import {
   sourceChordEventId,
   sourceMeasureId,
   sourceTextEventId,
+  sourceRhythmEventId,
 } from "../../domain/ids";
 import { expandRepeats } from "../../domain/performance/repeat";
 import type { PerformanceSequence } from "../../domain/performance/repeat";
@@ -27,6 +28,7 @@ import type {
   SourceChordEvent,
   SourceMeasure,
   SourceTextEvent,
+  SourceRhythmVoice,
 } from "../../domain/source/model";
 import { computeSourceProvenanceDigest } from "../../domain/source/provenance";
 import { validateSectionPartition } from "../../domain/source/model";
@@ -47,6 +49,7 @@ import type {
   UnsupportedPerformanceFlow,
 } from "../musicxml/types";
 import { materializeImportDiagnostics, type ImportDiagnosticInput } from "../musicxml/diagnostics";
+import { importedRhythmVoices } from "./rhythm-voices";
 import {
   buildImportedSectionOccurrenceReviews,
   buildImportedSectionOccurrenceRuns,
@@ -73,6 +76,7 @@ function blockedInput(
 }
 
 function leadProjection(event: ImportedLeadEventDraft): object {
+  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
     ? { kind: "rest", onset: event.onset, duration: event.duration }
     : {
@@ -129,7 +133,7 @@ function materializeLead(
     .filter((event) => event.candidateKey === selectedLeadKey)
     .sort((left, right) => compareCanonicalValues(leadProjection(left), leadProjection(right)));
   assertUniqueProjections(ordered, leadProjection, "lead event");
-  const tokenEntries = ordered.flatMap((event, leadOrdinal) => event.kind === "note"
+  const tokenEntries = ordered.flatMap((event, leadOrdinal) => event.kind !== "rest"
     ? event.lyrics.map((lyric) => ({ leadOrdinal, lyric }))
     : []);
   const tokenProjection = (entry: typeof tokenEntries[number]) => ({
@@ -174,15 +178,15 @@ function materializeLead(
         duration: event.duration,
       }
     : {
-        kind: "note",
+        ...(event.kind === "note" ? { kind: "note" as const, pitch: event.pitch } : { kind: "rhythm" as const }),
         id: leadEventId(measureOrdinal, eventOrdinal),
         sourceMeasureId: sourceMeasure,
         onset: event.onset,
         duration: event.duration,
-        pitch: event.pitch,
         tieStart: event.tieStart,
         tieStop: event.tieStop,
         lyricTokenIds: tokenIdsByLead.get(eventOrdinal) ?? [],
+        ...(event.slurs ? { slurs: event.slurs } : {}),
       });
   return { leadEvents, lyricTokens };
 }
@@ -283,8 +287,25 @@ function materializeMeasures(
   selectedLeadKey: string,
 ): readonly SourceMeasure[] {
   const chordPart = chordAuthorityPart(draft, selectedPart);
+  const rhythmCandidates = importedRhythmVoices(draft);
+  const structuralRecovery = Boolean(draft.recoveryProof && JSON.parse(draft.recoveryProof).version === "hm-structural-recovery-v1");
   return selectedPart.measures.map((measure, measureOrdinal): SourceMeasure => {
     const lead = materializeLead(measureOrdinal, measure, selectedLeadKey);
+    const rhythmVoices: SourceRhythmVoice[] = rhythmCandidates.flatMap(({ candidate, voice }) => {
+      const events = measure.leadEvents.filter((event) => event.candidateKey === candidate.key)
+        .sort((a, b) => compareCanonicalValues(leadProjection(a), leadProjection(b)));
+      if (!events.length) return [];
+      assertUniqueProjections(events, leadProjection, "rhythm event");
+      return [{ voice, events: events.map((event, ordinal) => {
+        if (event.kind === "note" || event.kind === "rhythm" && event.lyrics.length) throw new RangeError("RHYTHM_VOICE_CONTENT_UNSUPPORTED");
+        const base = { id: sourceRhythmEventId(measureOrdinal, voice, ordinal), sourceMeasureId: sourceMeasureId(measureOrdinal), onset: event.onset, duration: event.duration };
+        return event.kind === "rest" ? { ...base, kind: "rest" as const } : { ...base, kind: "rhythm" as const, tieStart: event.tieStart, tieStop: event.tieStop, lyricTokenIds: [], ...(event.slurs ? { slurs: event.slurs } : {}) };
+      }) }];
+    });
+    if (structuralRecovery
+      && (draft.parts.length !== 1 || lead.leadEvents.length + rhythmVoices.reduce((count, voice) => count + voice.events.length, 0) !== measure.leadEvents.length)) {
+      throw new RangeError("RECOVERY_SOURCE_VOICES_UNSELECTED");
+    }
     return {
       id: sourceMeasureId(measureOrdinal),
       number: measure.number,
@@ -293,6 +314,7 @@ function materializeMeasures(
       duration: measure.duration,
       ...(measure.key ? { key: measure.key } : {}),
       leadEvents: lead.leadEvents,
+      ...(rhythmVoices.length ? { rhythmVoices } : {}),
       chordEvents: materializeChords(measureOrdinal, chordPart.measures[measureOrdinal]),
       lyricTokens: lead.lyricTokens,
       textEvents: materializeTexts(measureOrdinal, measure),
@@ -714,7 +736,7 @@ async function finalizeNormalization(
         ...(source.importInfo?.importedAt ? { importedAt: source.importInfo.importedAt } : {}),
         rawDigest: draft.rawDigest,
         importerVersion: draft.importerVersion,
-        musicXmlMetadata: { containerKind: draft.containerKind },
+        musicXmlMetadata: { containerKind: draft.containerKind, ...(draft.recoveryProof ? { recoveryProof: draft.recoveryProof } : {}) },
         musicXmlSourceTargetMap: await buildMusicXmlSourceTargetMap(draft, source),
       },
     });

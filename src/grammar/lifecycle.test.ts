@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { digestActivityPlan, digestIntentPlan } from "../domain/digest/plans";
 import { fraction } from "../domain/fraction";
 import type { ActivityLock, PitchLock, VariantStageLocks } from "../domain/locks";
-import { COMMON_TIME, COMPOUND_DUPLE } from "../domain/meter";
+import { COMMON_TIME, COMPOUND_DUPLE, timeSignature } from "../domain/meter";
 import { musicalRange } from "../domain/time";
 import {
   REQUIRED_SEGMENT_B_FIXTURE_IDS,
@@ -284,6 +284,24 @@ describe("WAG v1.0.1 Activity lifecycle", () => {
     const compoundIntent = await planWagIntent(compound);
     expect(compoundIntent.status).toBe("complete");
     if (compoundIntent.status === "complete") expect(compoundIntent.value.phraseIntents[0].harmonyExpectation).toBe("H1-required");
+  });
+
+  it("plans explicit 2/4 bars with quarter pulses and retains their two-beat duration", async () => {
+    const input = await createWagFixtureInput({ meter: timeSignature(2, 4, [1, 1]), leadNotes: [
+      { onset: fraction(0), duration: fraction(1), pitch: pitch("C", 4) },
+      { onset: fraction(1), duration: fraction(1), pitch: pitch("D", 4) },
+    ] });
+    expect(input.source.sourceMeasures[0].duration).toEqual(fraction(2));
+    const prepared = await prepareWagLifecycle(input);
+    expect(prepared.status).toBe("complete");
+    if (prepared.status !== "complete") throw new Error("duple preparation failed");
+    expect(primaryPulseAt(prepared.value, { performanceMeasureIndex: 0, offset: fraction(1) })).toEqual(fraction(1));
+    const intent = await planWagIntent(input);
+    if (intent.status !== "complete") throw new Error("duple intent failed");
+    const activity = await planWagActivity(input, intent.value);
+    expect(activity.status).toBe("complete");
+    if (activity.status !== "complete") throw new Error("duple activity failed");
+    expect((await planWagAnchor(input, intent.value, activity.value)).status).toBe("complete");
   });
 
   it("splits Activity at an exact lock boundary without creating persistent source atoms", async () => {

@@ -135,7 +135,7 @@ function measureProjection(measure: SourceMeasure): unknown {
     leadEvents: measure.leadEvents.map((event) => event.kind === "rest"
       ? { kind: event.kind, onset: event.onset, duration: event.duration }
       : {
-          kind: event.kind, onset: event.onset, duration: event.duration, pitch: event.pitch,
+          kind: event.kind, onset: event.onset, duration: event.duration, ...(event.kind === "note" ? { pitch: event.pitch } : {}),
           tieStart: event.tieStart, tieStop: event.tieStop,
           lyricOrdinals: event.lyricTokenIds.map((id) => measure.lyricTokens.findIndex((token) => token.id === id)),
         }),

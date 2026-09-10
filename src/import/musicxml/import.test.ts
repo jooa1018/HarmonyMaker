@@ -310,6 +310,19 @@ describe("MusicXML import and canonical review", () => {
     expect(review.diagnostics.some((item) => item.code === "UNSUPPORTED_PERFORMANCE_FLOW")).toBe(true);
   });
 
+  it.each(["Verse: softly", "Am:"])("does not invent a playback jump for ordinary colon text %s", async (words) => {
+    const draft = await imported(scoreXml({ flowWords: words }));
+    expect(draft.unsupportedPerformanceFlows).toEqual([]);
+    expect((await deriveQuickReview(finishReview(draft))).state.readyForPlanning).toBe(true);
+  });
+
+  it("still blocks structured flow targets even when their labels are ordinary text", async () => {
+    const input = scoreXml({ flowWords: "Verse: softly" }).replace('<sound tempo="100"/>', '<sound tempo="100" dalsegno="A"/>');
+    const draft = await imported(input);
+    expect(draft.unsupportedPerformanceFlows.map((flow) => flow.text)).toEqual(["dalsegno:A"]);
+    expect((await deriveQuickReview(finishReview(draft))).state.readyForPlanning).toBe(false);
+  });
+
   it("recomputes chord parsing and coverage after review commands", async () => {
     let draft = await imported(scoreXml());
     const chord = draft.parts[0].measures[0].chords[0];

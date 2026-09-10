@@ -377,7 +377,7 @@ export async function unsupportedOmrAutoRepairDiagnostics(source: SongSourceDocu
       diagnostics.push({ code: "OMR_REVIEW_REQUIRED", severity: "warning", messageKo: "임시표 문맥 자동 수리는 지원되지 않아 검토가 필요합니다.", details: { sourceMeasureId: measure.id, unsupportedAutoRepair: "ACCIDENTAL_CONTEXT" } });
     }
     let cursor = { n: 0, d: 1 } as Fraction;
-    if (measure.leadEvents.some((event) => {
+    if ([...measure.leadEvents].sort((left, right) => compareFractions(left.onset, right.onset)).some((event) => {
       const noncontiguous = compareFractions(event.onset, cursor) !== 0;
       cursor = addFractions(event.onset, event.duration);
       return noncontiguous;
@@ -410,7 +410,7 @@ export async function proposeOmrAutoRepairs(source: SongSourceDocument): Promise
   const proposals: OmrAutoRepairProposal[] = [];
   const revision = currentRevision(source);
   for (const measure of source.sourceMeasures) {
-    const lastEvent = measure.leadEvents.at(-1);
+    const lastEvent = [...measure.leadEvents].sort((left, right) => compareFractions(addFractions(left.onset, left.duration), addFractions(right.onset, right.duration))).at(-1);
     if (lastEvent) {
       const end = addFractions(lastEvent.onset, lastEvent.duration);
       if (end.n !== measure.duration.n || end.d !== measure.duration.d) {

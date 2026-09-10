@@ -16,6 +16,7 @@ import {
   type VendorInputRequest, type VendorInputResponse, type VendorJobId,
 } from "../../domain/omr/contracts";
 import { validateRights } from "../../domain/source/model";
+import { parseOmrRejectedOutput, REJECTED_OUTPUT_CODES, type OmrRejectedOutput } from "../../domain/omr/rejected-output";
 import type { PrivateRowId } from "../persistence/store";
 import {
   decryptAeadV1, encryptAeadV1, generateOpaqueToken, keyedTokenHash, timingSafeHashEquals,
@@ -144,7 +145,13 @@ type ExistingJobAdapterResolution =
   | { readonly status: "available"; readonly adapter: OmrVendorAdapter }
   | { readonly status: "binding-unavailable"; readonly code: "OMR_PROVIDER_BINDING_UNAVAILABLE" };
 
-function sanitizeVendorFailure(): { readonly code: string; readonly messageKo: string } {
+function sanitizeVendorFailure(vendorCode?: string): { readonly code: string; readonly messageKo: string } {
+  if (vendorCode === "AUDIVERIS_OUTPUT_INCOMPLETE" || vendorCode === "AUDIVERIS_OUTPUT_AMBIGUOUS") {
+    return { code: "OMR_OUTPUT_INCOMPLETE", messageKo: "인식 결과가 여러 구간으로 나뉘거나 서로 달라 전체 악보를 확정하지 못했습니다. 일부 구간만 가져오지 않았습니다. 원본과 모든 구간을 검토·교정한 MusicXML을 가져오세요. 새 인식을 반복하지 마세요." };
+  }
+  if (vendorCode === "AUDIVERIS_OUTPUT_INVALID") {
+    return { code: "OMR_OUTPUT_INVALID", messageKo: "인식 출력의 전체 구간 목록이나 파일을 확인하지 못했습니다. 원본과 결과 파일을 확인하세요." };
+  }
   return { code: "OMR_VENDOR_OPERATION_FAILED", messageKo: "악보 인식 서비스 작업을 완료하지 못했습니다." };
 }
 
@@ -729,8 +736,27 @@ export class DurableOmrApplicationService implements OmrApplicationService {
       await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "failed", creditState: "released", ...this.clearRetry(), publicFailureCode: "OMR_VENDOR_STATUS_UNKNOWN", publicFailureMessageKo: "인식 작업 상태를 확인할 수 없습니다." }, now: now.toISOString() });
       await this.recordAuditBestEffort(job.id, "job-failed", "unknown-vendor-status", now.toISOString());
     } else if (status.kind === "failed") {
-      const failure = sanitizeVendorFailure();
-      await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "failed", creditState: "released", ...this.clearRetry(), publicFailureCode: failure.code, publicFailureMessageKo: failure.messageKo }, now: now.toISOString() });
+      const failure = sanitizeVendorFailure(status.code);
+      let rejectedReference: PrivateRowId | undefined;
+      const adapter = this.adapterFor(job);
+      if (REJECTED_OUTPUT_CODES.includes(status.code as typeof REJECTED_OUTPUT_CODES[number]) && adapter.exportRejectedOutput) {
+        try {
+          const rejected = await adapter.exportRejectedOutput(this.vendorJobId(job));
+          const bytes = new TextEncoder().encode(JSON.stringify(rejected));
+          const validated = await parseOmrRejectedOutput(bytes);
+          if (validated.code !== status.code || validated.pages.length !== job.pages.length
+            || validated.pages.some((page, i) => page.pageDigest !== job.pages[i].pageDigest)) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+          const object = await this.dependencies.objects.put({ ownerSessionId: job.ownerSessionId,
+            publicationId: `omr-rejected:${job.id}:${observationLeaseToken}`, bytes,
+            contentType: "application/vnd.harmonymaker.omr-rejected+json", expiresAt: job.handleExpiresAt });
+          rejectedReference = object.id;
+        } catch {
+          // Legacy/expired/malformed fragments do not change the failure into success.
+          await this.recordAuditBestEffort(job.id, "job-rejected-output-unavailable", "artifacts-not-captured", now.toISOString());
+        }
+      }
+      const applied = await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "failed", creditState: "released", ...this.clearRetry(), publicFailureCode: failure.code, publicFailureMessageKo: failure.messageKo, ...(rejectedReference ? { resultObjectReferenceId: rejectedReference } : {}) }, now: now.toISOString() });
+      if (!applied && rejectedReference) await this.dependencies.objects.delete(rejectedReference, job.ownerSessionId, now).catch(() => undefined);
       await this.recordAuditBestEffort(job.id, "job-failed", failure.code, now.toISOString());
     } else if (status.kind === "cancelled") {
       await this.dependencies.store.completeStatusObservation({ jobId: job.id, leaseToken: observationLeaseToken, expectedStates: STATUS_OBSERVATION_STATES, update: { state: "cancelled", creditState: "released", ...this.clearRetry() }, now: now.toISOString() });
@@ -811,6 +837,29 @@ export class DurableOmrApplicationService implements OmrApplicationService {
     const result = await this.dependencies.objects.get(job.resultObjectReferenceId, job.ownerSessionId);
     if (result.binaryDigest !== job.vendorResultDigest) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
     return { vendorId: job.capabilities.vendorId, vendorResultDigest: job.vendorResultDigest, rawMusicXml: new TextDecoder("utf-8", { fatal: true }).decode(result.bytes), evidence: structuredClone(job.evidence), normalizationMapping: structuredClone(job.normalizationMapping), retentionInfo: structuredClone(job.retentionInfo) };
+  }
+
+  async exportRejectedOutput(handle: OmrJobHandle): Promise<OmrRejectedOutput> {
+    const job = await this.owned(handle);
+    if (job.state !== "failed"
+      || !["OMR_OUTPUT_INCOMPLETE", "OMR_OUTPUT_INVALID"].includes(job.publicFailureCode ?? "")) throw new RangeError("OMR_RESULT_UNAVAILABLE");
+    let bytes: Uint8Array;
+    if (job.resultObjectReferenceId) {
+      const object = await this.dependencies.objects.get(job.resultObjectReferenceId, job.ownerSessionId);
+      if (object.contentType !== "application/vnd.harmonymaker.omr-rejected+json") throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+      bytes = object.bytes;
+    } else {
+      // An earlier transient capture failure must not require a new recognition.
+      // This read-only fallback is retained by the browser before Review opens.
+      const adapter = this.adapterFor(job);
+      if (!adapter.exportRejectedOutput) throw new RangeError("OMR_RESULT_UNAVAILABLE");
+      bytes = new TextEncoder().encode(JSON.stringify(await adapter.exportRejectedOutput(this.vendorJobId(job))));
+    }
+    const result = await parseOmrRejectedOutput(bytes);
+    if (sanitizeVendorFailure(result.code).code !== job.publicFailureCode
+      || result.pages.length !== job.pages.length || result.pages.some((page, i) => page.pageDigest !== job.pages[i].pageDigest)) throw new RangeError("OMR_RESULT_INTEGRITY_FAILED");
+    if ((await this.owned(handle)).state !== "failed") throw new RangeError("OMR_RESULT_UNAVAILABLE");
+    return result;
   }
 
   async getPageImage(handle: OmrJobHandle, pageIndex: number): Promise<OwnedObjectRead> {

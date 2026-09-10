@@ -26,6 +26,28 @@ async function resolve(chords: readonly SourceChordEvent[], gapPolicy: "carry-un
 }
 
 describe("EffectiveChordTimeline authority", () => {
+  it("resolves fractional chord changes in time order without changing canonical ordinals", async () => {
+    const chords = [event("ch:0", 0, "C"), { ...event("ch:1", 0, "F"), onset: fraction(1, 2) }, event("ch:2", 1, "G"), { ...event("ch:3", 0, "Am"), onset: fraction(3, 2) }];
+    const expected = [fraction(0), fraction(1, 2), fraction(1), fraction(3, 2)];
+    const forward = await resolve(chords);
+    const reverse = await resolve([...chords].reverse());
+    expect(forward.status).toBe("resolved");
+    expect(reverse).toEqual(forward);
+    if (forward.status !== "resolved") return;
+    expect(forward.timeline.spans.map((span) => span.range.start.offset)).toEqual(expected);
+    expect(forward.timeline.spans.map((span) => span.range.end)).toEqual([
+      ...expected.slice(1).map((offset) => ({ performanceMeasureIndex: 0, offset })),
+      { performanceMeasureIndex: 1, offset: fraction(0) },
+    ]);
+    expect(forward.timeline.spans.map((span) => span.parseResult.status === "ok" ? span.parseResult.chord.canonicalSymbol : null)).toEqual(["C", "F", "G", "Am"]);
+  });
+
+  it("still rejects two chords at the same fractional onset", async () => {
+    const result = await resolve([event("ch:0", 0, "C"), { ...event("ch:1", 0, "F"), onset: fraction(1, 2) }, { ...event("ch:2", 0, "G"), onset: fraction(1, 2) }]);
+    expect(result.status).toBe("blocked");
+    expect(result.diagnostics.some((entry) => entry.code === "INPUT_EVENT_OVERLAP")).toBe(true);
+  });
+
   it("distinguishes explicit carry provenance", async () => {
     const result = await resolve([event("ch:0", 0, "C"), event("ch:1", 2, "%")]);
     expect(result.status).toBe("resolved");

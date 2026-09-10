@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type DragEvent,
@@ -54,6 +55,11 @@ import {
 } from "../../import/review/commands";
 import { deriveQuickReview, type QuickReviewAnalysis } from "../../import/review/quick-review";
 import { DIRECT_IMPORT_DRAFT_RELOAD_NOTICE } from "../../import/review/draft-durability";
+import { createImportRecovery, importRecoveryProof, replayImportRecovery } from "../../import/review/recovery";
+import { loadImportRecoveries, saveImportRecovery, type StoredImportRecovery } from "../../import/review/recovery-store";
+import type { OmrImportHandoff } from "../../domain/omr/browser-handoff";
+import { RecoveryEditor } from "./RecoveryEditor";
+import { StructuralRecoveryEditor } from "./StructuralRecoveryEditor";
 import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { loadProductExecutionRegistry } from "../../product/registry";
 import { createProjectFromQuickReview } from "../../product/workspace";
@@ -287,7 +293,12 @@ function DiagnosticSummary({ diagnostics }: { readonly diagnostics: readonly Dia
   return (
     <div className={styles.errorBox} role="alert" aria-live="polite">
       <strong>확인이 필요한 항목 {diagnostics.length}개</strong>
-      <ul>{diagnostics.map((diagnostic) => <li key={diagnostic.id}><code>{diagnostic.code}</code> — {diagnostic.messageKo}</li>)}</ul>
+      <ul>{diagnostics.map((diagnostic) => <li key={diagnostic.id}><code>{diagnostic.code}</code> — {diagnostic.messageKo}
+        {typeof diagnostic.details?.partOrdinal === "number" && Number.isSafeInteger(diagnostic.details.partOrdinal) && diagnostic.details.partOrdinal >= 0 ? <span className={styles.meta}>파트 {diagnostic.details.partOrdinal + 1}
+          {typeof diagnostic.details.measureOrdinal === "number" && Number.isSafeInteger(diagnostic.details.measureOrdinal) && diagnostic.details.measureOrdinal >= 0 ? ` · ${diagnostic.details.measureOrdinal + 1}번째 마디` : ""}
+          {typeof diagnostic.details.measureNumber === "number" && Number.isSafeInteger(diagnostic.details.measureNumber) ? ` (악보 마디 번호 ${diagnostic.details.measureNumber})` : ""}
+        </span> : null}
+      </li>)}</ul>
     </div>
   );
 }
@@ -359,6 +370,12 @@ export function ImportReviewClient() {
   const [diagnostics, setDiagnostics] = useState<readonly Diagnostic[]>([]);
   const [fileStatus, setFileStatus] = useState("MusicXML 또는 MXL 파일을 선택하세요.");
   const [loading, setLoading] = useState(false);
+  const loadSequence = useRef(0);
+  const [recoveryEntry, setRecoveryEntry] = useState<StoredImportRecovery>();
+  const [savedRecoveries, setSavedRecoveries] = useState<readonly StoredImportRecovery[]>([]);
+  const [inputOrigin, setInputOrigin] = useState<"file" | "omr">("file");
+  const [retainedHandoff, setRetainedHandoff] = useState<{ file: File; expiresAt: string }>();
+  const handoffReadBusy = useRef(false);
   const [reviewing, setReviewing] = useState(false);
   const [tempoText, setTempoText] = useState("");
   const [keyText, setKeyText] = useState("");
@@ -393,48 +410,129 @@ export function ImportReviewClient() {
     return () => { active = false; };
   }, [draft]);
 
-  const loadFile = useCallback(async (file: File): Promise<boolean> => {
+  const restoreRecovery = useCallback((entry: StoredImportRecovery) => {
+    setRecoveryEntry(entry); setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined);
+    setDiagnostics([]);
+    setInputOrigin(entry.providerResult || entry.incompleteReason ? "omr" : "file");
+    setOmrHandoff(entry.providerResult ? { handoffId: entry.id, result: entry.providerResult, pageUrls: entry.pages.map((page) => URL.createObjectURL(page.blob)) } : undefined);
+    setFileStatus("저장된 교정 후보를 복구했습니다. 전체 재검증 후 Review를 진행하세요.");
+  }, []);
+  const loadFile = useCallback(async (file: File, seed?: OmrImportHandoff, corrected?: StoredImportRecovery): Promise<boolean> => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     setAnalysis(undefined);
     setDraft(undefined);
     setDiagnostics([]);
     setFileStatus(`${file.name} 보안 검사 중…`);
     try {
-      const result = await importMusicXml(new Uint8Array(await file.arrayBuffer()), {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!corrected) {
+        try {
+          const recovery = await createImportRecovery(bytes, file.name);
+          const entry: StoredImportRecovery = { id: seed?.handoffId ?? crypto.randomUUID(), recovery, pages: seed?.pageImages ?? [],
+            updatedAt: new Date().toISOString(), ...(seed?.omrProviderResult ? { providerResult: seed.omrProviderResult } : {}) };
+          const existing = seed ? (await loadImportRecoveries()).find((value) => value.id === entry.id) : undefined;
+          if (existing) {
+            if (existing.recovery.originalDigest !== recovery.originalDigest) throw new RangeError("RECOVERY_BINDING_INVALID");
+            if (sequence !== loadSequence.current) return false;
+            restoreRecovery(existing);
+            return false;
+          }
+          await saveImportRecovery(entry);
+          if (sequence !== loadSequence.current) return false;
+          setRecoveryEntry(entry);
+        } catch {
+          if (sequence !== loadSequence.current) return false;
+          setRecoveryEntry(undefined);
+        }
+      }
+      const proof = corrected ? await importRecoveryProof(corrected.recovery) : undefined;
+      const result = await importMusicXml(bytes, {
         algorithmVersions: STEP3_ALGORITHM_VERSIONS,
         originalFileName: file.name,
       });
+      if (sequence !== loadSequence.current) return false;
       if (result.status === "blocked") {
         setDiagnostics(result.diagnostics);
         setFileStatus("가져오기가 안전하게 차단되었습니다.");
         return false;
       } else {
         setReviewing(true);
-        setDraft(result.draft);
+        setDraft({ ...result.draft, ...(proof ? { recoveryProof: proof } : {}) });
         setDiagnostics(result.diagnostics);
         setFileStatus(`${result.draft.containerKind.toUpperCase()} 구조 파싱 완료 · Quick Review 필요`);
         return true;
       }
-    } catch (error) {
-      setFileStatus(error instanceof Error ? error.message : "파일을 읽지 못했습니다.");
+    } catch {
+      setFileStatus("가져오기 처리 중 오류가 발생했습니다. 원본 손상 여부는 판정하지 못했습니다. 파일을 보존하고 다시 열어 주세요.");
       return false;
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
-  }, []);
+  }, [restoreRecovery]);
 
-  useEffect(() => {
-    void takeOmrImportHandoff().then((handoff) => {
+  const validateRecovery = async (entry: StoredImportRecovery) => {
+    if (entry.incompleteReason) throw new RangeError("RECOVERY_STRUCTURE_UNRESOLVED");
+    const xml = await replayImportRecovery(entry.recovery);
+    const file = new File([xml], entry.providerResult ? "omr-result.musicxml" : entry.recovery.originalFileName, { type: "application/vnd.recordare.musicxml+xml" });
+    await loadFile(file, undefined, entry);
+  };
+
+  const loadHandoff = useCallback(() => {
+    if (handoffReadBusy.current) return;
+    handoffReadBusy.current = true;
+    return takeOmrImportHandoff().then(async (handoff) => {
       if (handoff) {
+        setInputOrigin(handoff.omrProviderResult ? "omr" : "file");
+        // Materialize the verified bytes before the failure counter writes the
+        // IndexedDB record again. Downloads must not depend on its Blob backing.
+        const file = new File([await handoff.file.arrayBuffer()], handoff.file.name, { type: handoff.file.type });
+        setRetainedHandoff({ file, expiresAt: handoff.expiresAt });
         if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image.blob)) });
-        void loadFile(handoff.file).then((loaded) => loaded
-          ? (!handoff.omrProviderResult ? completeOmrImportHandoff(handoff.handoffId) : undefined)
-          : recordOmrImportHandoffFailure(handoff.handoffId));
+        const loaded = await loadFile(file, handoff);
+        if (loaded && !handoff.omrProviderResult) {
+          await completeOmrImportHandoff(handoff.handoffId);
+          setRetainedHandoff(undefined);
+        } else if (!loaded) {
+          // Parsing failures are retained in quarantine; reload is not another recognition attempt.
+          const stored = (await loadImportRecoveries()).some((entry) => entry.id === handoff.handoffId);
+          if (!stored && !await recordOmrImportHandoffFailure(handoff.handoffId)) setRetainedHandoff(undefined);
+        }
+      } else {
+        setRetainedHandoff(undefined);
+        const saved = await loadImportRecoveries();
+        setSavedRecoveries(saved);
+        if (saved[0]) restoreRecovery(saved[0]);
       }
     }).catch(() => {
+      setRetainedHandoff(undefined);
       setFileStatus("OMR 결과 전달값을 읽지 못했습니다. OMR 검토 화면에서 다시 시도하세요.");
-    });
-  }, [loadFile]);
+    }).finally(() => { handoffReadBusy.current = false; });
+  }, [loadFile, restoreRecovery]);
+
+  useEffect(() => { void loadHandoff(); }, [loadHandoff]);
+
+  useEffect(() => {
+    if (!retainedHandoff) return;
+    const remaining = Date.parse(retainedHandoff.expiresAt) - Date.now();
+    const timer = window.setTimeout(() => setRetainedHandoff(undefined), Math.max(0, remaining));
+    return () => { window.clearTimeout(timer); };
+  }, [retainedHandoff]);
+
+  const downloadHandoff = () => {
+    if (!retainedHandoff || Date.parse(retainedHandoff.expiresAt) <= Date.now()) {
+      setRetainedHandoff(undefined);
+      return;
+    }
+    const url = URL.createObjectURL(retainedHandoff.file);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = retainedHandoff.file.name.split(/[\\/]/u).pop() || "import-result.musicxml";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  };
 
   useEffect(() => () => { for (const url of omrHandoff?.pageUrls ?? []) URL.revokeObjectURL(url); }, [omrHandoff]);
 
@@ -475,13 +573,13 @@ export function ImportReviewClient() {
 
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) void loadFile(file);
+    if (file) { setInputOrigin("file"); setOmrHandoff(undefined); setOmrSession(undefined); setRetainedHandoff(undefined); void loadFile(file); }
     event.target.value = "";
   };
   const onDrop = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault();
     const file = event.dataTransfer.files[0];
-    if (file) void loadFile(file);
+    if (file) { setInputOrigin("file"); setOmrHandoff(undefined); setOmrSession(undefined); setRetainedHandoff(undefined); void loadFile(file); }
   };
 
   const selectedCandidate = draft?.leadCandidates.find((candidate) => candidate.key === draft.selectedLeadStaffKey);
@@ -578,6 +676,15 @@ export function ImportReviewClient() {
     <div className={styles.flow}>
       <section className={styles.panel} aria-labelledby="file-heading">
         <h2 id="file-heading">1. 안전한 파일 읽기</h2>
+        {inputOrigin === "omr" || retainedHandoff ? <div className={styles.notice}>
+          <strong>{inputOrigin === "omr" ? "이미지 인식 결과를 검토하는 중입니다." : "이전 화면에서 전달한 파일을 읽는 중입니다."}</strong>
+          {inputOrigin === "omr" ? <p>OMR에서 받은 MusicXML을 읽고 있습니다. 파일 선택란이 비어 있어도 JPEG를 잘못 가져왔다는 뜻은 아닙니다.</p> : null}
+          {!draft ? <p>결과의 시간축·구조를 먼저 확인해야 합니다. 보존된 후보를 원본과 대조하고 아래 교정 화면에서 수정한 뒤 전체 재검증하세요.</p> : null}
+          {retainedHandoff ? <div className={styles.presetRow}>
+            <button type="button" onClick={downloadHandoff}>{inputOrigin === "omr" ? "인식 원본 MusicXML 보존" : "전달받은 원본 파일 보존"}</button>
+          </div> : !draft && !recoveryEntry ? <p>이 탭의 임시 전달 자료가 없습니다. 보존한 결과 파일을 열어 주세요.</p> : null}
+          {recoveryEntry ? <p>교정 후보와 원본은 이 브라우저에 보존되어 새로고침 후 이어서 검토할 수 있습니다. 새 인식 요청은 필요하지 않습니다.</p> : null}
+        </div> : null}
         <label className={styles.dropZone} onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
           <span>{loading ? "검사 중…" : "MusicXML / XML / MXL 선택 또는 드롭"}</span>
           <input type="file" accept=".musicxml,.xml,.mxl,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFileChange} disabled={loading} />
@@ -585,6 +692,27 @@ export function ImportReviewClient() {
         <p className={styles.status} aria-live="polite">{fileStatus}</p>
         {!draft ? <DiagnosticSummary diagnostics={diagnostics} /> : null}
       </section>
+
+      <StructuralRecoveryEditor retained={recoveryEntry && !savedRecoveries.some((r) => r.id === recoveryEntry.id) ? [...savedRecoveries, recoveryEntry] : savedRecoveries}
+        onInvalidate={() => { loadSequence.current += 1; setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
+        onValidate={async (candidate) => {
+          const sequence = ++loadSequence.current;
+          setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setOmrHandoff(undefined); setDiagnostics([]);
+          const result = await importMusicXml(new TextEncoder().encode(candidate.xml), { algorithmVersions: STEP3_ALGORITHM_VERSIONS, originalFileName: "explicitly-recovered.musicxml" });
+          if (sequence !== loadSequence.current) return;
+          setInputOrigin("file");
+          setDiagnostics(result.diagnostics);
+          if (result.status === "blocked") { setFileStatus("구조 교정 후보의 전체 importer 검증이 차단되었습니다. 원본과 교정 이력은 유지됩니다."); return; }
+          setReviewing(true); setDraft({ ...result.draft, recoveryProof: candidate.proof });
+          setFileStatus("명시적 구조 교정 revision 검증 완료 · 기존 Quick Review와 Source 검증이 필요합니다.");
+        }} />
+      {savedRecoveries.length > 1 ? <label className={styles.field}><span>보존된 후보 선택 · 서로 다른 출력 조각은 자동 결합되지 않습니다</span><select value={recoveryEntry?.id ?? ""} disabled={loading} onChange={(event) => { const entry = savedRecoveries.find((item) => item.id === event.target.value); if (entry) restoreRecovery(entry); }}>
+        {savedRecoveries.map((entry) => <option value={entry.id} key={entry.id}>{entry.recovery.originalFileName} · 교정 {entry.recovery.operations.length}건</option>)}
+      </select></label> : null}
+      {recoveryEntry && !loading ? <RecoveryEditor key={recoveryEntry.id} entry={recoveryEntry}
+        onInvalidate={() => { setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
+        onChanged={(entry) => { setRecoveryEntry(entry); setSavedRecoveries((rows) => rows.map((row) => row.id === entry.id ? entry : row)); setFileStatus("교정이 저장되었습니다. 전체 재검증이 필요합니다."); }}
+        onValidate={validateRecovery} /> : null}
 
       {draft ? (
         <>
@@ -638,7 +766,7 @@ export function ImportReviewClient() {
           </section> : null}
           <section className={styles.panel} aria-labelledby="summary-heading">
             <h2 id="summary-heading">2. 악보 요약과 Source Lead</h2>
-            {!omrHandoff ? <p className={styles.help}>{DIRECT_IMPORT_DRAFT_RELOAD_NOTICE}</p> : null}
+            {!omrHandoff ? <p className={styles.help}>{recoveryEntry ? "원본과 교정 이력은 이 브라우저에 보존됩니다. 새로고침 후 전체 재검증과 Quick Review 확인을 다시 진행하세요. 프로젝트 생성 후에는 편곡과 저장 상태도 복구됩니다." : DIRECT_IMPORT_DRAFT_RELOAD_NOTICE}</p> : null}
             <dl className={styles.summary}><div><dt>제목</dt><dd>{draft.title}</dd></div><div><dt>파트</dt><dd>{draft.parts.length}</dd></div><div><dt>마디</dt><dd>{draft.parts[0]?.measures.length ?? 0}</dd></div><div><dt>형식</dt><dd>{draft.containerKind.toUpperCase()}</dd></div></dl>
             <fieldset className={styles.subpanel}>
               <legend>멜로디 staff / voice — 반드시 직접 선택</legend>
@@ -648,6 +776,7 @@ export function ImportReviewClient() {
                   <span><strong>{candidate.displayPartName}</strong> · staff {candidate.staffNumber} · voice {candidate.voiceKey} · note {candidate.noteCount} · lyric {candidate.lyricCount}</span>
                 </label>
               ))}
+              <p>같은 staff의 별도 리듬 전용 성부는 선택한 멜로디와 함께 Source에 보존합니다. 음높이를 만들거나 멜로디 성부에 합치지 않습니다.</p>
             </fieldset>
             {!draft.defaultTempo ? (
               <form className={styles.addRow} onSubmit={(event: FormEvent) => { event.preventDefault(); const bpm = Number(tempoText); if (Number.isSafeInteger(bpm) && bpm >= 20 && bpm <= 300) updateDraft((current) => setDefaultTempo(current, { beatUnit: 4, dotted: false, bpm })); }}>

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "scripts/native-ocr-smoke.py"
       - "Dockerfile"
       - ".dockerignore"
       - "services/audiveris-provider/**"
@@ -16,6 +17,7 @@ on:
     branches:
       - chatgpt/harmonymaker-audiveris-provider
     paths:
+      - "scripts/native-ocr-smoke.py"
       - "Dockerfile"
       - ".dockerignore"
       - "services/audiveris-provider/**"
@@ -57,6 +59,7 @@ jobs:
             test -f /app/chord_ocr.py
             test -f /app/chord_ocr_image.py
             test -f /app/chord_ocr_model.py
+            test -f /app/recovery_output.py
             test "$HM_AUDIVERIS_OCR_LANGUAGES" = "eng+kor"
             test "$HM_AUDIVERIS_CHORD_OCR" = "1"
             grep -Fq "recognition_preprocess.py" "$AUDIVERIS_BIN"
@@ -64,8 +67,34 @@ jobs:
             grep -Fq "org.audiveris.omr.text.Language.defaultSpecification" "$AUDIVERIS_BIN"
             tesseract --list-langs 2>/dev/null | grep -Fxq eng
             tesseract --list-langs 2>/dev/null | grep -Fxq kor
+            cd "$HM_AUDIVERIS_NATIVE_TESSDATA"
+            for lang in eng kor; do
+              combine_tessdata -d "$lang.traineddata" 2>&1 | grep -q "inttemp:size="
+            done
             "$AUDIVERIS_BIN" -version
           '
+      - name: Verify effective native OCR heap headroom
+        run: |
+          docker run --rm --entrypoint sh hm-audiveris:${{ github.sha }} -c '
+            export JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -XX:+PrintFlagsFinal"
+            "$AUDIVERIS_BIN" -version
+          ' > /tmp/hm-jvm-flags.txt 2>&1
+          grep -E 'MaxHeapSize[[:space:]]*=[[:space:]]*201326592' /tmp/hm-jvm-flags.txt
+      - name: Native OCR and chord integration within free-service resources
+        timeout-minutes: 15
+        run: |
+          docker run -d --name hm-native-ocr --memory 512m --memory-swap 512m --cpus 0.1 \
+            -p 127.0.0.1:8003:8000 \
+            -e HM_AUDIVERIS_API_KEY=test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            -e 'JAVA_TOOL_OPTIONS=-Xms32m -Xmx192m -Djava.awt.headless=true' \
+            hm-audiveris:${{ github.sha }}
+          for attempt in $(seq 1 30); do curl -fsS http://127.0.0.1:8003/health && break; sleep 2; done
+          python scripts/native-ocr-smoke.py http://127.0.0.1:8003 test-provider-key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          docker exec hm-native-ocr sh -c 'cat /sys/fs/cgroup/memory.peak; cat /sys/fs/cgroup/memory.events'
+      - if: always()
+        run: |
+          docker logs hm-native-ocr || true
+          docker rm -f hm-native-ocr || true
       - name: Fake-engine HTTP protocol smoke
         run: |
           docker run -d --name hm-audiveris-smoke -p 127.0.0.1:8001:8000 \

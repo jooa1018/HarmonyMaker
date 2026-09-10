@@ -241,7 +241,9 @@ export async function resolveEffectiveChordTimeline(input: {
   for (const occurrence of input.performanceSequence.occurrences) {
     const measure = byId.get(occurrence.sourceMeasureId);
     if (!measure) { diagnostics.push(diagnostic("PERFORMANCE_EXPANSION_FAILED", occurrence.occurrenceId)); continue; }
-    const events = orderedChordEvents(measure);
+    // Canonical ordinals remain stable, but interval construction needs musical
+    // time order: canonical fraction serialization does not order 1/2 before 1.
+    const events = [...orderedChordEvents(measure)].sort((left, right) => compareFractions(left.onset, right.onset));
     let cursor = fraction(0);
     const resolveUncovered = (startOffset: Fraction, endOffset: Fraction): void => {
       for (const gapRange of soundingLeadSegments(

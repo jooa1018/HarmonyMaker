@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Sequence
@@ -8,7 +9,7 @@ from PIL import Image, ImageOps
 
 from chord_ocr_model import OcrHypothesis, StaffGeometry, clean_text
 
-WHITELIST = "ABCDEFGabcdefg#b0123456789/()+-majindomsuMN.C"
+WHITELIST = "ABCDEFGabcdefg#b0123456789/()+-majindomsuMN.C♯♭Δ°ø"
 
 
 def otsu(gray: Image.Image) -> int:
@@ -105,6 +106,22 @@ def segment_chord_boxes(frame: Image.Image, staff: StaffGeometry) -> list[tuple[
     left, right = max(0, staff.left - round(0.5 * spacing)), min(frame.width, staff.right + round(0.5 * spacing))
     band = ImageOps.autocontrast(ImageOps.grayscale(frame.crop((left, top, right + 1, bottom))), cutoff=0.2)
     binary = mask(band, min(210, max(135, otsu(band) + 18)))
+    # Stems/beams entering from below the chord band must not join otherwise
+    # separate text boxes through their horizontal projection. Only clear the
+    # connected pixels in this temporary segmentation mask, never the frame.
+    # Text touching the boundary is clipped/ambiguous and is left unrecognized.
+    pixels = binary.load()
+    pending = [(x, binary.height - 1) for x in range(binary.width) if pixels[x, binary.height - 1]]
+    while pending:
+        x, y = pending.pop()
+        if not pixels[x, y]:
+            continue
+        pixels[x, y] = 0
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < binary.width and 0 <= ny < binary.height and pixels[nx, ny]:
+                    pending.append((nx, ny))
     active = [x for x in range(binary.width) if sum(binary.getpixel((x, y)) > 0 for y in range(binary.height)) >= max(1, round(binary.height * 0.035))]
     result = []
     for run in groups(active, max(2, round(0.82 * spacing))):
@@ -139,7 +156,13 @@ def prepare(image: Image.Image, height: int = 160) -> Image.Image:
 
 def tesseract_hypothesis(image: Image.Image, directory: Path, stem: str, psm: int) -> OcrHypothesis | None:
     directory.mkdir(parents=True, exist_ok=True); path = directory / f"{stem}-psm{psm}.png"; prepare(image).save(path)
-    command = ["tesseract", str(path), "stdout", "-l", "eng", "--psm", str(psm), "-c", f"tessedit_char_whitelist={WHITELIST}", "tsv"]
+    command = ["tesseract", str(path), "stdout", "-l", "eng", "--oem", "1"]
+    # Native Audiveris uses legacy data. Preserve the independent chord model
+    # even when the parent environment selects a different TESSDATA_PREFIX.
+    tessdata = os.environ.get("HM_AUDIVERIS_CHORD_TESSDATA")
+    if tessdata:
+        command.extend(["--tessdata-dir", tessdata])
+    command.extend(["--psm", str(psm), "-c", f"tessedit_char_whitelist={WHITELIST}", "tsv"])
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=12, check=False)
     except (OSError, subprocess.TimeoutExpired):

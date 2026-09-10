@@ -237,7 +237,7 @@ function leadMaterial(
 export async function createWagFixtureInput(options: WagFixtureOptions = {}): Promise<WagLifecycleInput> {
   const fixtureId = options.fixtureId ?? "hm-original-major-stepwise-v0";
   const meter = options.meter ?? COMMON_TIME;
-  const duration = meter.numerator === 6 && meter.denominator === 8 ? fraction(3) : fraction(4);
+  const duration = fraction(meter.numerator * 4, meter.denominator);
   const notes = options.leadNotes ?? [
     { onset: fraction(0), duration: fraction(1), pitch: pitch("C", 4), lyric: "la" },
     { onset: fraction(1), duration: fraction(1), pitch: pitch("D", 4), lyric: "la" },

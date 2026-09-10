@@ -56,10 +56,11 @@ interface PositionedDraftEvent {
   readonly end: Fraction;
 }
 
-function samePitch(
-  left: Extract<ImportedLeadEventDraft, { readonly kind: "note" }>,
-  right: Extract<ImportedLeadEventDraft, { readonly kind: "note" }>,
+function compatibleTie(
+  left: Exclude<ImportedLeadEventDraft, { readonly kind: "rest" }>,
+  right: Exclude<ImportedLeadEventDraft, { readonly kind: "rest" }>,
 ): boolean {
+  if (left.kind === "rhythm" || right.kind === "rhythm") return left.kind === right.kind;
   return left.pitch.step === right.pitch.step
     && left.pitch.alter === right.pitch.alter
     && left.pitch.octave === right.pitch.octave;
@@ -90,9 +91,9 @@ function selectedLeadDiagnostics(draft: MusicXmlImportDraft): readonly ImportDia
   positioned.sort((left, right) => compareFractions(left.start, right.start)
     || compareFractions(left.end, right.end));
   const diagnostics: ImportDiagnosticInput[] = [];
-  if (!positioned.some((entry) => entry.event.kind === "note")) diagnostics.push({
+  if (!positioned.some((entry) => entry.event.kind !== "rest")) diagnostics.push({
     code: "IMPORT_UNSUPPORTED_ELEMENT",
-    messageKo: "선택한 Source Lead에 pitched note가 없습니다.",
+    messageKo: "선택한 Source Lead에 음표 또는 리듬 슬래시가 없습니다.",
     details: { issue: "lead-has-no-notes" },
   });
   for (let index = 0; index < positioned.length; index += 1) {
@@ -104,23 +105,23 @@ function selectedLeadDiagnostics(draft: MusicXmlImportDraft): readonly ImportDia
       messageKo: "선택한 Source Lead voice에 겹치는 event가 있습니다.",
       details: { issue: "selected-lead-overlap", eventOrdinal: index },
     });
-    if (current.event.kind !== "note") continue;
+    if (current.event.kind === "rest") continue;
     if (current.event.tieStop && (!previous
-      || previous.event.kind !== "note"
+      || previous.event.kind === "rest"
       || compareFractions(previous.end, current.start) !== 0
       || !previous.event.tieStart
-      || !samePitch(previous.event, current.event))) diagnostics.push({
+      || !compatibleTie(previous.event, current.event))) diagnostics.push({
       code: "INPUT_INVALID_TIE",
-      messageKo: "tie stop이 같은 pitch의 연속 tie start와 연결되지 않습니다.",
+      messageKo: "tie stop이 같은 음높이 또는 같은 리듬 표기의 연속 tie start와 연결되지 않습니다.",
       details: { issue: "tie-stop-mismatch", eventOrdinal: index },
     });
     if (current.event.tieStart && (!next
-      || next.event.kind !== "note"
+      || next.event.kind === "rest"
       || compareFractions(current.end, next.start) !== 0
       || !next.event.tieStop
-      || !samePitch(current.event, next.event))) diagnostics.push({
+      || !compatibleTie(current.event, next.event))) diagnostics.push({
       code: "INPUT_INVALID_TIE",
-      messageKo: "tie start가 같은 pitch의 연속 tie stop과 연결되지 않습니다.",
+      messageKo: "tie start가 같은 음높이 또는 같은 리듬 표기의 연속 tie stop과 연결되지 않습니다.",
       details: { issue: "tie-start-mismatch", eventOrdinal: index },
     });
   }
@@ -130,9 +131,9 @@ function selectedLeadDiagnostics(draft: MusicXmlImportDraft): readonly ImportDia
 function supportedPlanningMeter(sourceMeasures: readonly SourceMeasure[]): boolean {
   return sourceMeasures.every((measure) => {
     const time = measure.time;
-    return (time.numerator === 4
+    return ((time.numerator === 2 || time.numerator === 4)
         && time.denominator === 4
-        && canonicalJson(time.beatGroups) === canonicalJson([1, 1, 1, 1]))
+        && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1))
       || (time.numerator === 6
         && time.denominator === 8
         && canonicalJson(time.beatGroups) === canonicalJson([3, 3]));
@@ -275,7 +276,7 @@ export async function deriveQuickReview(
   if (normalization) {
     if (!supportedPlanningMeter(normalization.sourceMeasures)) diagnosticInputs.push({
       code: "UNSUPPORTED_METER",
-      messageKo: "Core planning readiness는 4/4와 6/8만 지원합니다.",
+      messageKo: "Core planning readiness는 2/4, 4/4, 6/8을 지원합니다.",
       details: { issue: "planning-meter" },
     });
     if (hasUnsupportedModulation(normalization.sourceMeasures, draft.defaultKey)) diagnosticInputs.push({

@@ -40,9 +40,10 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     sourceEventId: `share:source-event:${index}`,
     range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
     pitch: event.kind === "note" ? { step: event.pitch[0], alter: event.pitch[1], octave: event.pitch[2] } : null,
-    tiedFromPrevious: event.kind === "note" && event.tieStop === true,
-    tiedToNext: event.kind === "note" && event.tieStart === true,
-    lyricTokenIds: event.kind === "note" ? event.lyricTokenIds ?? [] : [],
+    ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}),
+    tiedFromPrevious: event.kind !== "rest" && event.tieStop === true,
+    tiedToNext: event.kind !== "rest" && event.tieStart === true,
+    lyricTokenIds: event.kind !== "rest" ? event.lyricTokenIds ?? [] : [],
   }));
   const trackRoles = practiceShareTrackRoles(payload.arrangement.tracks);
   const generatedHarmonyTracks = payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => {
@@ -52,13 +53,15 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     if (!metadata) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
     return {
     trackPlanId: metadata.trackPlanId,
-    events: track.events.map((event, eventIndex): GeneratedVoiceEvent => event.kind === "rest" ? {
+    events: track.events.map((event, eventIndex): GeneratedVoiceEvent => {
+      if (event.kind === "rhythm") throw new RangeError("SHARE_GENERATED_RHYTHM_INVALID");
+      return event.kind === "rest" ? {
       kind: "rest", id: `share:${metadata.harmonyRole.toLowerCase()}:event:${eventIndex}`, range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
     } : {
       kind: "note", id: `share:${metadata.harmonyRole.toLowerCase()}:event:${eventIndex}`, range: rangeFor(event.occurrenceIndex, event.offset, event.duration),
       pitch: { step: event.pitch[0], alter: event.pitch[1], octave: event.pitch[2] },
       tieStart: event.tieStart === true, tieStop: event.tieStop === true, lyricTokenIds: event.lyricTokenIds ?? [], source: "connection",
-    }),
+    }; }),
   }});
   const spans: PerformanceChordSpan[] = (payload.chords ?? []).map((chord, index) => {
     const range = musicalRange(

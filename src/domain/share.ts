@@ -14,7 +14,8 @@ export type CompactPitch = readonly [step: Step, alter: Alter, octave: number];
 export interface CompactMeasureOccurrence { readonly index: number; readonly sourceMeasureNumber?: number; readonly lyricVerseIndex: number; readonly timeSignature: readonly [numerator: number, denominator: 4 | 8]; readonly duration: CompactFraction }
 export interface CompactNoteEvent { readonly kind: "note"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly pitch: CompactPitch; readonly tieStart?: true; readonly tieStop?: true; readonly lyricTokenIds?: readonly string[] }
 export interface CompactRestEvent { readonly kind: "rest"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction }
-export type CompactVocalEvent = CompactNoteEvent | CompactRestEvent;
+export interface CompactRhythmEvent { readonly kind: "rhythm"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly tieStart?: true; readonly tieStop?: true; readonly lyricTokenIds?: readonly string[] }
+export type CompactVocalEvent = CompactNoteEvent | CompactRestEvent | CompactRhythmEvent;
 export type CompactHarmonyRole = "H1" | "H2";
 export type CompactPlacementRole = "upper" | "lower";
 export type LegacyCompactTrack = { readonly kind: "source-lead" | "generated-harmony"; readonly label: string; readonly events: readonly CompactVocalEvent[] };
@@ -132,9 +133,9 @@ function isCompactEvent(value: unknown, measureCount: number): value is CompactV
   if (value.kind === "rest") {
     return hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration"]);
   }
-  return value.kind === "note"
-    && hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration", "pitch"], ["tieStart", "tieStop", "lyricTokenIds"])
-    && isCompactPitch(value.pitch)
+  return (value.kind === "note" || value.kind === "rhythm")
+    && hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration", ...(value.kind === "note" ? ["pitch"] : [])], ["tieStart", "tieStop", "lyricTokenIds"])
+    && (value.kind === "rhythm" || isCompactPitch(value.pitch))
     && (value.tieStart === undefined || value.tieStart === true)
     && (value.tieStop === undefined || value.tieStop === true)
     && (value.lyricTokenIds === undefined || (Array.isArray(value.lyricTokenIds)
@@ -206,7 +207,8 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
       ))
       && Array.isArray(track.events)
       && track.events.length <= PRACTICE_SHARE_LIMITS.maxEventsPerTrack
-      && track.events.every((event) => isCompactEvent(event, measures.length)))) return false;
+      && track.events.every((event) => isCompactEvent(event, measures.length)
+        && (track.kind === "source-lead" || event.kind !== "rhythm")))) return false;
   const generatedRoles = tracks.flatMap((track) => schemaVersion === 4 && isPlainRecord(track) && track.kind === "generated-harmony"
     ? [track.harmonyRole as string]
     : []);
@@ -219,7 +221,7 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
       try {
         if (compareFractions(addFractions(compactFraction(event.offset), compactFraction(event.duration)), compactFraction(measureDuration)) > 0) return false;
       } catch { return false; }
-      if (event.kind === "note" && event.lyricTokenIds?.some((id) => !lyricIds.includes(id))) return false;
+      if (event.kind !== "rest" && event.lyricTokenIds?.some((id) => !lyricIds.includes(id))) return false;
     }
   }
   if (value.chords !== undefined && (!Array.isArray(value.chords)

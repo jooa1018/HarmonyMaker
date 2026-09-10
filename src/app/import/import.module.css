@@ -2,14 +2,15 @@
 .hero { display: grid; gap: .45rem; }
 .hero p { margin: 0; line-height: 1.55; }
 .backLink { color: #4e3a8c; font-weight: 700; width: fit-content; }
-.flow { display: grid; gap: 1rem; }
+.flow { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 .panel { background: #fff; border: 1px solid #dbe0ea; border-radius: 16px; padding: clamp(.85rem, 3vw, 1.3rem); box-shadow: 0 8px 30px #27324a12; }
 .panel h2 { margin: 0 0 .85rem; font-size: 1.25rem; }
 .subpanel { border: 1px solid #cfd5e2; border-radius: 12px; padding: .85rem; margin: .75rem 0; min-width: 0; }
 .subpanel legend { font-weight: 750; padding: 0 .35rem; }
 .dropZone { min-height: 118px; display: grid; place-items: center; gap: .65rem; border: 2px dashed #7b68b6; border-radius: 12px; background: #f7f4ff; padding: 1rem; font-weight: 750; text-align: center; cursor: pointer; }
 .dropZone:focus-within { outline: 3px solid #d9ccff; outline-offset: 3px; }
-.dropZone input { max-width: 100%; }
+.dropZone { min-width: 0; overflow-wrap: anywhere; }
+.dropZone input { width: 100%; min-width: 0; max-width: 100%; font: inherit; }
 .status, .notice, .okBox, .errorBox { margin: .75rem 0 0; border-radius: 9px; padding: .75rem; line-height: 1.5; }
 .status { background: #edf5ff; }
 .notice { background: #fff8df; border-left: 4px solid #b17a00; }

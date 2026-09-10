@@ -21,6 +21,7 @@ import {
   type VendorEvidenceBundle,
 } from "../../domain/omr/foundation";
 import { hasExactKeys, isPlainRecord } from "../../domain/validation";
+import { MAX_REJECTED_OUTPUT_BYTES, parseOmrRejectedOutput, type OmrRejectedOutput } from "../../domain/omr/rejected-output";
 
 export interface AudiverisHttpAdapterConfig {
   readonly baseUrl: string;
@@ -40,6 +41,30 @@ interface AudiverisPageMetadata {
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_ERROR_BYTES = 4 * 1024;
 const MAX_MUSICXML_BYTES = 4 * 1024 * 1024;
+
+async function readBoundedBody(response: Response, limit: number, timeoutMs: number): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new RangeError("OMR_REJECTED_OUTPUT_INVALID");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { void reader.cancel(); reject(new Error("provider body timed out")); }, timeoutMs);
+  });
+  try {
+    return await Promise.race([timeout, (async () => {
+      const chunks: Uint8Array[] = []; let length = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        length += chunk.value.byteLength;
+        if (length > limit) { void reader.cancel(); throw new RangeError("OMR_PROVIDER_PAYLOAD_LIMIT_EXCEEDED"); }
+        chunks.push(chunk.value);
+      }
+      const bytes = new Uint8Array(length); let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      return bytes;
+    })()]);
+  } finally { clearTimeout(timer); }
+}
 
 function canonicalBaseUrl(value: string): string {
   const parsed = new URL(value);
@@ -223,6 +248,11 @@ export class AudiverisHttpOmrAdapter implements OmrVendorAdapter {
       return { kind: "unknown", rawStatus: value.rawStatus };
     }
     throw new RangeError("OMR_PROVIDER_CONTRACT_INVALID");
+  }
+
+  async exportRejectedOutput(vendorJobId: VendorJobId): Promise<OmrRejectedOutput> {
+    const response = await this.request(`/v1/jobs/${encodeURIComponent(vendorJobId)}/rejected-output`, {}, "read");
+    return parseOmrRejectedOutput(await readBoundedBody(response, MAX_REJECTED_OUTPUT_BYTES, this.timeoutMs));
   }
 
   async exportMusicXml(vendorJobId: VendorJobId): Promise<string> {

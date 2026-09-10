@@ -59,7 +59,7 @@ function densityMetrics(input: WagLifecycleInput, tracks: readonly GeneratedHarm
   for (const section of input.source.sectionOccurrences) {
     const sectionAtoms = input.sourceLeadAtomization.atoms.filter((atom) => atom.range.start.performanceMeasureIndex >= section.startPerformanceMeasureIndex && atom.range.start.performanceMeasureIndex < section.endPerformanceMeasureIndexExclusive);
     const pitchedAtoms = sectionAtoms.filter((atom) => atom.pitch !== null);
-    const restAtoms = sectionAtoms.filter((atom) => atom.pitch === null);
+    const restAtoms = sectionAtoms.filter((atom) => atom.pitch === null && !atom.rhythmOnly);
     const denominator = pitchedAtoms.reduce((sum, atom) => addFractions(sum, rangeDuration(atom.range, durations)), ZERO);
     const leadRestDuration = restAtoms.reduce((sum, atom) => addFractions(sum, rangeDuration(atom.range, durations)), ZERO);
     let participation = ZERO;
@@ -74,7 +74,7 @@ function densityMetrics(input: WagLifecycleInput, tracks: readonly GeneratedHarm
       const duration = rangeDuration(atom.range, durations);
       maxSimultaneous = Math.max(maxSimultaneous, notes.length);
       if (atom.pitch === null) {
-        if (notes.length > 0) overLeadRest = addFractions(overLeadRest, duration);
+        if (notes.length > 0 && !atom.rhythmOnly) overLeadRest = addFractions(overLeadRest, duration);
         continue;
       }
       if (notes.length > 0) participation = addFractions(participation, duration);

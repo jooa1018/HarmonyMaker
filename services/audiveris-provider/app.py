@@ -21,6 +21,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.responses import JSONResponse, PlainTextResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
+from musicxml_output import normalize_audiveris_musicxml
+from recovery_output import RECOVERABLE_OUTPUT_CODES, rejected_output_bundle
 
 AUDIVERIS_VERSION = os.environ.get("AUDIVERIS_VERSION", "5.10.2")
 PROVIDER_VERSION = "hm-audiveris-provider-v1"
@@ -56,6 +58,7 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="HarmonyMaker Audiveris OMR provider", version=PROVIDER_VERSION)
 processing_gate = asyncio.Semaphore(1)
 running_processes: dict[str, asyncio.subprocess.Process] = {}
+running_postprocessing: dict[str, asyncio.Task[str]] = {}
 
 
 class StrictModel(BaseModel):
@@ -198,7 +201,7 @@ def cleanup_expired() -> None:
             shutil.rmtree(JOBS_DIR / job_id, ignore_errors=True)
 
 
-def decode_musicxml(result_file: Path) -> str:
+def read_engine_musicxml(result_file: Path) -> str:
     data = result_file.read_bytes()
     if result_file.suffix.lower() == ".mxl" or data.startswith(b"PK\x03\x04"):
         with zipfile.ZipFile(result_file) as archive:
@@ -223,6 +226,18 @@ def decode_musicxml(result_file: Path) -> str:
     if len(text.encode("utf-8")) > 4 * 1024 * 1024:
         raise RuntimeError("Audiveris MusicXML exceeds the provider limit")
     return text
+
+
+def decode_musicxml(result_file: Path) -> str:
+    return read_engine_musicxml(result_file)
+
+
+class OutputSelectionError(RuntimeError):
+    """A bounded, user-safe failure; original engine artifacts remain retained."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def fake_musicxml(page_count: int) -> str:
@@ -257,12 +272,51 @@ def combine_pages(job_id: str, pages: list[sqlite3.Row], workspace: Path) -> Pat
 
 
 def find_result(output_dir: Path) -> Path:
+    # One image can contain several movements. Audiveris records their identity
+    # in book.xml and exports each score separately; filenames are not a musical
+    # ordering contract. Even identical movements must not be collapsed.
+    books = list(output_dir.rglob("*.omr"))
+    try:
+        if len(books) > 1:
+            raise OutputSelectionError("AUDIVERIS_OUTPUT_AMBIGUOUS", "여러 인식 책의 전체 구간 연결을 확정할 수 없습니다. 원본과 전체 구간을 확인한 MusicXML을 가져오세요.")
+        if books:
+            with zipfile.ZipFile(books[0]) as archive:
+                if archive.getinfo("book.xml").file_size > 4 * 1024 * 1024:
+                    raise ValueError("book metadata exceeds limit")
+                metadata = archive.read("book.xml")
+            if b"<!DOCTYPE" in metadata or b"<!ENTITY" in metadata:
+                raise ValueError("active book metadata")
+            book = ElementTree.fromstring(metadata)
+            scores = book.findall("score")
+            if book.tag != "book" or not scores:
+                raise ValueError("missing score inventory")
+            if len(scores) > 1:
+                raise OutputSelectionError("AUDIVERIS_OUTPUT_INCOMPLETE", "악보가 여러 구간으로 나뉘어 일부만 반환할 수 없습니다. 원본과 모든 구간의 연결을 검토·교정한 MusicXML을 가져오세요. 새 인식을 반복하지 마세요.")
+    except OutputSelectionError:
+        raise
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+        raise OutputSelectionError("AUDIVERIS_OUTPUT_INVALID", "인식 결과의 전체 구간 목록을 확인하지 못했습니다. 원본과 결과 파일을 확인하세요.") from error
     candidates = sorted(
         [*output_dir.rglob("*.mxl"), *output_dir.rglob("*.musicxml"), *output_dir.rglob("*.xml")],
         key=lambda path: (path.suffix.lower() != ".mxl", len(path.parts), str(path)),
     )
     if not candidates:
         raise RuntimeError("Audiveris produced no MusicXML result")
+    # Only duplicate serializations of the SAME artifact may coexist. Read raw
+    # engine output here, before entrypoint chord OCR, so checking candidates
+    # cannot run OCR repeatedly or compare postprocessed fragments.
+    try:
+        identities = []
+        for candidate in candidates:
+            text = normalize_audiveris_musicxml(read_engine_musicxml(candidate))
+            root = ElementTree.fromstring(text)
+            if root.tag not in ("score-partwise", "score-timewise"):
+                raise ValueError("unsupported score container")
+            identities.append((candidate.with_suffix(""), ElementTree.canonicalize(text, strip_text=True)))
+    except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+        raise OutputSelectionError("AUDIVERIS_OUTPUT_INVALID", "인식 결과 파일을 안전하게 확인하지 못했습니다. 원본과 결과 파일을 확인하세요.") from error
+    if any(identity != identities[0] for identity in identities[1:]):
+        raise OutputSelectionError("AUDIVERIS_OUTPUT_AMBIGUOUS", "서로 다른 인식 출력이 있어 전체 악보를 확정할 수 없습니다. 일부 파일을 자동 선택하지 않았습니다. 모든 구간을 검토한 MusicXML을 가져오세요.")
     return candidates[0]
 
 
@@ -324,7 +378,19 @@ async def run_job(job_id: str) -> None:
                     combined = (stdout + b"\n" + stderr).decode("utf-8", errors="replace")[-8_000:]
                     raise RuntimeError(f"Audiveris failed with exit code {process.returncode}: {combined}")
                 exported = find_result(output_dir)
-                result_path.write_text(decode_musicxml(exported), encoding="utf-8")
+                # Native export decoding also runs the independent chord OCR.
+                # Keep status/cancel requests responsive while it uses the CPU.
+                decoding = asyncio.create_task(asyncio.to_thread(decode_musicxml, exported))
+                running_postprocessing[job_id] = decoding
+                try:
+                    musicxml = await decoding
+                finally:
+                    running_postprocessing.pop(job_id, None)
+                with database() as connection:
+                    current = connection.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if current is None or current["state"] == "cancelled":
+                    return
+                result_path.write_text(musicxml, encoding="utf-8")
             with database() as connection:
                 connection.execute(
                     "UPDATE jobs SET state='completed',progress_bp=10000,result_path=?,updated_at=? WHERE id=? AND state<>'cancelled'",
@@ -335,8 +401,8 @@ async def run_job(job_id: str) -> None:
                 current = connection.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
                 if current is not None and current["state"] != "cancelled":
                     connection.execute(
-                        "UPDATE jobs SET state='failed',error_code='AUDIVERIS_FAILED',error_message=?,updated_at=? WHERE id=?",
-                        (str(error)[-4_000:], utc_now(), job_id),
+                        "UPDATE jobs SET state='failed',error_code=?,error_message=?,updated_at=? WHERE id=?",
+                        (error.code if isinstance(error, OutputSelectionError) else "AUDIVERIS_FAILED", str(error)[-4_000:], utc_now(), job_id),
                     )
 
 
@@ -524,6 +590,28 @@ def get_metadata(job_id: str) -> MetadataResponse:
     )
 
 
+@app.get("/v1/jobs/{job_id}/rejected-output", dependencies=[Depends(require_auth)])
+def get_rejected_output(job_id: str) -> Response:
+    row = job_row(job_id)
+    if row["state"] != "failed" or row["error_code"] not in RECOVERABLE_OUTPUT_CODES:
+        raise HTTPException(status_code=409, detail="rejected output is not available")
+    if parse_utc(row["expires_at"]) <= time.time():
+        raise HTTPException(status_code=410, detail="rejected output has expired")
+    metadata = get_metadata(job_id)
+    try:
+        bundle = rejected_output_bundle(
+            job_path(job_id) / "output", code=row["error_code"], engine_version=AUDIVERIS_VERSION,
+            pages=[page.model_dump() for page in metadata.pages], read_xml=read_engine_musicxml,
+        )
+    except (OSError, ValueError, RuntimeError, KeyError, zipfile.BadZipFile, ElementTree.ParseError):
+        raise HTTPException(status_code=409, detail="rejected artifacts cannot be safely represented") from None
+    # Read-only: owner deletion during inspection must never recreate files.
+    latest = job_row(job_id)
+    if latest["state"] != "failed":
+        raise HTTPException(status_code=409, detail="rejected output changed")
+    return Response(bundle, media_type="application/json", headers={"Cache-Control": "private, no-store"})
+
+
 @app.post("/v1/jobs/{job_id}/cancel", status_code=204, dependencies=[Depends(require_auth)])
 async def cancel_job(job_id: str, payload: IdempotentOperationRequest) -> Response:
     job_row(job_id)
@@ -556,6 +644,14 @@ async def delete_job(
     if process is not None and process.returncode is None:
         process.kill()
         await process.wait()
+    # The decoder can create diagnostic crops. Wait for that worker before
+    # removing the owned workspace, so deletion cannot leave recreated files.
+    decoding = running_postprocessing.get(job_id)
+    if decoding is not None:
+        with database() as connection:
+            connection.execute("UPDATE jobs SET state='cancelled',updated_at=? WHERE id=?", (utc_now(), job_id))
+        with suppress(Exception):
+            await asyncio.shield(decoding)
     with database() as connection:
         connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
     shutil.rmtree(JOBS_DIR / job_id, ignore_errors=True)

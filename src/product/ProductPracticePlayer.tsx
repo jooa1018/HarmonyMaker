@@ -76,13 +76,31 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
 
   useEffect(() => {
     let disposed = false;
+    let observer: ResizeObserver | undefined;
     void import("abcjs").then(({ default: abcjs }) => {
       if (disposed || !scoreRef.current) return;
-      scoreRef.current.replaceChildren();
-      abcjs.renderAbc(scoreRef.current, abc, { responsive: "resize", staffwidth: Math.max(680, scoreRef.current.clientWidth - 24), add_classes: true });
-      setScoreReadyIdentity(identity);
-    }).catch(() => setError("악보를 표시하지 못했습니다."));
-    return () => { disposed = true; };
+      const score = scoreRef.current;
+      let renderedWidth = 0;
+      const render = () => {
+        const width = Math.floor(score.clientWidth);
+        if (disposed || width <= 0 || width === renderedWidth) return;
+        try {
+          score.replaceChildren();
+          // Responsive SVG alone shrinks an unbroken voice to fit. Wrap the
+          // existing notation into systems at the actual available width.
+          abcjs.renderAbc(score, abc, {
+            responsive: "resize", staffwidth: Math.max(240, width - 24), add_classes: true,
+            wrap: { minSpacing: 1.8, maxSpacing: 2.7, preferredMeasuresPerLine: 4 },
+          });
+          renderedWidth = width;
+          setScoreReadyIdentity(identity);
+        } catch { setError("악보를 표시하지 못했습니다."); }
+      };
+      render();
+      observer = new ResizeObserver(render);
+      observer.observe(score);
+    }).catch(() => { if (!disposed) setError("악보를 표시하지 못했습니다."); });
+    return () => { disposed = true; observer?.disconnect(); };
   }, [abc, identity]);
 
   useEffect(() => () => {
