@@ -454,7 +454,7 @@ function flowFromDirection(
   const texts = [
     ...xmlDescendants(direction, "words").map(xmlText),
     ...xmlDescendants(direction, "rehearsal").map(xmlText),
-  ].filter((text): text is string => text !== undefined);
+  ].filter((text): text is string => text !== undefined && SUPPORTED_FLOW_PATTERN.test(text));
   const sound = xmlDescendants(direction, "sound");
   for (const item of sound) {
     for (const attribute of ["dacapo", "dalsegno", "segno", "coda", "tocoda", "fine"] as const) {
@@ -464,7 +464,9 @@ function flowFromDirection(
   }
   if (xmlDescendants(direction, "segno").length > 0) texts.push("segno");
   if (xmlDescendants(direction, "coda").length > 0) texts.push("coda");
-  return [...new Set(texts.filter((text) => SUPPORTED_FLOW_PATTERN.test(text) || text.includes(":")))]
+  // Structured sound attributes above are flow directives regardless of their
+  // labels. A colon in ordinary words/rehearsal text is not a flow instruction.
+  return [...new Set(texts)]
     .sort(fixedCompare)
     .map((text) => ({ partOrdinal, measureOrdinal, text }));
 }
