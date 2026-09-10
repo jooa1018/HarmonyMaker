@@ -6,6 +6,7 @@ import { validateRenderDocumentAuthority } from "../domain/generation/render";
 import type { HarmonyProject } from "../domain/project";
 import { isVerifiedEditedSnapshot } from "../integrity/edited-snapshot-authority";
 import { productTrackRoles, trackRoleHasPlacement, type ProductTrackRoleRegistry } from "./track-roles";
+import { sourceRhythmTracks } from "./source-rhythm";
 
 export type ScoreProjection = "lead" | "upper" | "lower" | "full";
 export interface MaterializedArrangement {
@@ -39,9 +40,11 @@ export function materializeActiveArrangement(project: HarmonyProject, presetId: 
   if (project.chordTimelineState.status !== "resolved" || project.sourceLeadAtomizationState.status !== "resolved") throw new RangeError("PROJECT_AUTHORITY_STALE");
   const artifact = activeArtifact(project, presetId);
   const ordinal = Object.fromEntries(project.trackPlans.map((track) => [track.id, track.canonicalOrdinal]));
+  const rhythm = sourceRhythmTracks(project.source);
   const document: ArrangementRenderDocument = {
     measures: project.source.performanceSequence.occurrences,
     sourceLeadTrack: { trackPlanId: "track:source-lead", atomizationDigest: project.sourceLeadAtomizationState.atomization.digest, atoms: project.sourceLeadAtomizationState.atomization.atoms },
+    ...(rhythm.length ? { sourceRhythmTracks: rhythm } : {}),
     generatedHarmonyTracks: artifact.tracks.slice().sort((left, right) => ordinal[left.trackPlanId] - ordinal[right.trackPlanId]),
     effectiveChordTimeline: project.chordTimelineState.timeline,
     lyricTokens: project.source.sourceMeasures.flatMap((measure) => measure.lyricTokens),

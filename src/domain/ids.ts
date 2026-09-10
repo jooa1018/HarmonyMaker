@@ -14,6 +14,7 @@ export const positionKey = (value: MusicalPosition): string => `${ordinal(value.
 export const sourceRevisionId = (revisionOrdinal: number, digest: SemanticDigest): string => `rev:${ordinal(revisionOrdinal, "revision ordinal")}:${digest}`;
 export const sourceMeasureId = (sourceMeasureIndex: number): string => `sm:${ordinal(sourceMeasureIndex, "source measure index")}`;
 export const leadEventId = (sourceMeasureIndex: number, eventOrdinal: number): string => `le:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(eventOrdinal, "event ordinal")}`;
+export const sourceRhythmEventId = (measure: number, voice: number, event: number): string => `sr:${ordinal(measure, "source measure index")}:${ordinal(voice, "rhythm voice")}:${ordinal(event, "event ordinal")}`;
 export const sourceChordEventId = (sourceMeasureIndex: number, chordOrdinal: number): string => `ch:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(chordOrdinal, "chord ordinal")}`;
 export const lyricTokenId = (sourceMeasureIndex: number, leadEventOrdinal: number, verse: number, tokenOrdinal: number): string => `ly:${ordinal(sourceMeasureIndex, "source measure index")}:${ordinal(leadEventOrdinal, "lead event ordinal")}:${ordinal(verse - 1, "verse") + 1}:${ordinal(tokenOrdinal, "token ordinal")}`;
 export const sourceTextEventId = (sourceMeasureIndex: number, onset: Fraction, kind: string, eventOrdinal: number): string => `tx:${ordinal(sourceMeasureIndex, "source measure index")}:${fractionKey(onset)}:${kind}:${ordinal(eventOrdinal, "text event ordinal")}`;

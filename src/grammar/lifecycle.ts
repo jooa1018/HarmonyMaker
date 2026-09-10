@@ -193,8 +193,8 @@ export function primaryPulseAt(
   const measure = prepared.sourceMeasureById[occurrence.sourceMeasureId];
   if (!measure) throw new RangeError("UNSUPPORTED_METER");
   const time = measure.time;
-  if (time.numerator === 4 && time.denominator === 4
-    && time.beatGroups.length === 4 && time.beatGroups.every((group) => group === 1)) {
+  if ((time.numerator === 2 || time.numerator === 4) && time.denominator === 4
+    && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1)) {
     return fraction(1);
   }
   if (time.numerator === 6 && time.denominator === 8

@@ -1,5 +1,6 @@
 import type { ChordParseResult } from "../../domain/chord/model";
 import type { BinaryDigest } from "../../domain/digest/canonical";
+import type { SourceSlurMark } from "../../domain/source/notation";
 import type { Diagnostic } from "../../domain/diagnostics";
 import type { Fraction } from "../../domain/fraction";
 import type { TimeSignature } from "../../domain/meter";
@@ -50,6 +51,7 @@ export interface ImportedLyricDraft {
 export type ImportedLeadEventDraft =
   | {
       readonly kind: "rhythm";
+      readonly slurs?: readonly SourceSlurMark[];
       readonly candidateKey: string;
       readonly musicXmlEventOrdinal?: number;
       readonly onset: Fraction;
@@ -60,6 +62,7 @@ export type ImportedLeadEventDraft =
     }
   | {
       readonly kind: "note";
+      readonly slurs?: readonly SourceSlurMark[];
       readonly candidateKey: string;
       readonly musicXmlEventOrdinal?: number;
       readonly onset: Fraction;

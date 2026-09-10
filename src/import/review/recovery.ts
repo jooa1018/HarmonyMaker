@@ -52,7 +52,7 @@ export interface RecoveryMeasure {
 }
 const encoder = new TextEncoder();
 const typeQuarters = { whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625 } as const;
-function root(xml: string): XmlElement {
+export function recoveryXmlRoot(xml: string): XmlElement {
   const parsed = parseSafeXml(encoder.encode(xml), DEFAULT_IMPORT_SECURITY_LIMITS);
   if (parsed.status !== "complete" || parsed.root.name !== "score-partwise") throw new RangeError("RECOVERY_XML_UNREPRESENTABLE");
   const parts = xmlChildren(parsed.root, "part");
@@ -60,11 +60,13 @@ function root(xml: string): XmlElement {
   if (parts.length > 32 || measures.length > 512 || measures.some((measure) => xmlChildren(measure, "note").length > 1024)) throw new RangeError("RECOVERY_EDITOR_LIMIT");
   return parsed.root;
 }
+const root = recoveryXmlRoot;
 function escape(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
-function serialize(node: XmlChild): string {
+export function serializeRecoveryXml(node: XmlChild): string {
   if (node.kind === "text") return escape(node.value);
-  return `<${node.name}${Object.entries(node.attributes).map(([key, value]) => ` ${key}="${escape(value)}"`).join("")}>${node.children.map(serialize).join("")}</${node.name}>`;
+  return `<${node.name}${Object.entries(node.attributes).map(([key, value]) => ` ${key}="${escape(value)}"`).join("")}>${node.children.map(serializeRecoveryXml).join("")}</${node.name}>`;
 }
+const serialize = serializeRecoveryXml;
 function el(name: string, text?: string, attributes: Record<string, string> = {}): XmlElement {
   return { kind: "element", name, attributes, children: text === undefined ? [] : [{ kind: "text", value: text }] };
 }
@@ -144,7 +146,7 @@ export function inspectRecoveryXml(xml: string): readonly RecoveryMeasure[] {
     });
   });
 }
-function applyEdit(xml: string, edit: RecoveryEdit): string {
+export function applyRecoveryXmlEdit(xml: string, edit: RecoveryEdit): string {
   const tree = root(xml);
   if (![edit.part, edit.measure].every((n) => Number.isSafeInteger(n) && n >= 0)) throw new RangeError("RECOVERY_TARGET_INVALID");
   const part = xmlChildren(tree, "part")[edit.part];
@@ -225,6 +227,7 @@ function applyEdit(xml: string, edit: RecoveryEdit): string {
   }
   return serialize(replaceChild(tree, part, replaceChild(part, measure, nextMeasure)));
 }
+const applyEdit = applyRecoveryXmlEdit;
 export async function createImportRecovery(bytes: Uint8Array, originalFileName: string): Promise<ImportRecovery> {
   let xmlBytes = bytes;
   if (bytes[0] === 0x50 && bytes[1] === 0x4b) {

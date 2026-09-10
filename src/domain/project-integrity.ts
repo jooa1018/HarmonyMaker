@@ -250,6 +250,7 @@ async function digestStoredAtomization(
         ...(atom.rhythmOnly ? { rhythmOnly: true } : {}),
         tiedFromPrevious: atom.tiedFromPrevious,
         tiedToNext: atom.tiedToNext,
+        ...(atom.slurs ? { slurs: atom.slurs } : {}),
         lyricTokens,
       },
     };

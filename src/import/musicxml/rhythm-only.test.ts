@@ -40,6 +40,45 @@ async function reviewed(onlyRhythm = false, input = score(onlyRhythm)) {
   return { draft, analysis: await deriveQuickReview(draft, versions) };
 }
 describe("pitch-unspecified rhythmic slashes", () => {
+  it("keeps an independent rhythmic voice beside melody through Source, WAG, reload, engraving and MusicXML", async () => {
+    const melody = '<note><pitch><step>G</step><octave>4</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type></note>';
+    const rhythm = slash(8, "half").replace("<type>", '<voice>2</voice><type>');
+    const input = `<score-partwise><part-list><score-part id="P"><part-name>Lead</part-name></score-part></part-list><part id="P"><measure number="1">${attrs}${harmony}${melody}<backup><duration>16</duration></backup>${rhythm}${rhythm}</measure><measure number="2">${harmony}${rhythm}${rhythm}</measure></part></score-partwise>`;
+    const { draft, analysis } = await reviewed(false, input);
+    expect(analysis.state.readyForPlanning, JSON.stringify(analysis.diagnostics)).toBe(true);
+    const source = analysis.source!;
+    expect(source.sourceMeasures[0].leadEvents).toHaveLength(1);
+    expect(source.sourceMeasures[1].leadEvents).toHaveLength(0);
+    expect(source.sourceMeasures.flatMap((m) => m.rhythmVoices!.flatMap((v) => v.events))).toHaveLength(4);
+    expect(isSongSourceDocument(source)).toBe(true);
+    const recoveryDraft = { ...draft, recoveryProof: JSON.stringify({ version: "hm-structural-recovery-v1" }) };
+    expect((await deriveQuickReview(recoveryDraft, versions)).state.readyForPlanning).toBe(true);
+    const wrongVoice = selectLeadCandidate(recoveryDraft, draft.leadCandidates[1].key);
+    expect((await deriveQuickReview(wrongVoice, versions)).state.readyForPlanning).toBe(false);
+    const forged = structuredClone(source);
+    Object.assign(forged.sourceMeasures[0].rhythmVoices![0].events[0], { pitch: { step: "C", alter: 0, octave: 4 } });
+    expect(isSongSourceDocument(forged)).toBe(false);
+    const overlap = structuredClone(source);
+    Object.assign(overlap.sourceMeasures[0].rhythmVoices![0].events[1], { onset: fraction(0) });
+    expect(isSongSourceDocument(overlap)).toBe(false);
+    const generated = await generateProjectVariant(await createProjectFromQuickReview(draft, analysis, "standard"), "standard");
+    expect(generated.status).not.toBe("blocked");
+    if (generated.status === "blocked") return;
+    const project = await importHarmonyProject(await exportHarmonyProject(generated.project));
+    expect(project.source.sourceMeasures).toEqual(source.sourceMeasures);
+    const rendered = materializeActiveArrangement(project, "standard"), metadata = { title: source.title, key: source.defaultKey, tempo: source.defaultTempo };
+    const abc = arrangementRenderDocumentToAbc(rendered.document, rendered.trackRoles, metadata);
+    expect(abc).toContain("%%score (lead rhythm"); expect(abc.match(/!style=rhythm!/gu)).toHaveLength(4);
+    const xml = exportArrangementMusicXml(rendered.document, rendered.trackRoles, metadata);
+    const reparsed = await importMusicXml(encoder.encode(xml), { algorithmVersions: versions });
+    if (reparsed.status !== "review-required") throw new Error(JSON.stringify(reparsed.diagnostics));
+    expect(reparsed.draft.parts[0].measures[0].leadEvents.map((event) => event.kind)).toEqual(["note", "rhythm", "rhythm"]);
+    expect(reparsed.draft.parts[0].measures[1].leadEvents.map((event) => event.kind)).toEqual(["rhythm", "rhythm"]);
+    const plan = buildPlaybackPlan(rendered.document, rendered.trackRoles, await generateDeterministicAccompaniment(rendered.document.effectiveChordTimeline));
+    expect(plan.events.filter((event) => event.trackId === "track:source-lead")).toHaveLength(1);
+    expect([...new Set(plan.events.filter((event) => event.kind === "band").map((event) => event.startQuarter))]).toEqual([0, 2, 4, 6]);
+    expect(() => materializePracticeShare({ project: confirmShareRights(project), presetId: "standard", materialized: rendered })).toThrow("SEPARATE_RHYTHM");
+  });
   it("preserves count, onset and dotted durations without a pitch or rest", async () => {
     const { analysis } = await reviewed();
     expect(analysis.state.readyForPlanning, JSON.stringify(analysis.diagnostics)).toBe(true);
@@ -53,6 +92,21 @@ describe("pitch-unspecified rhythmic slashes", () => {
     const forged = structuredClone(analysis.source!);
     Object.assign(forged.sourceMeasures[1].leadEvents[0], { pitch: { step: "C", alter: 0, octave: 4 } });
     expect(isSongSourceDocument(forged)).toBe(false);
+  });
+  it("preserves confirmed Source slur endpoints separately from ties and rejects broken spanners", async () => {
+    const note = (step: string, duration: number, marks = "", tie = "") => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${duration}</duration>${tie}<voice>1</voice><type>${duration === 8 ? "half" : "quarter"}</type>${marks ? `<notations>${marks}</notations>` : ""}</note>`;
+    const input = `<score-partwise><part-list><score-part id="P"><part-name>Lead</part-name></score-part></part-list><part id="P"><measure number="1">${attrs}${harmony}${note("C", 4, '<slur type="start" number="2"/>', '<tie type="start"/>')}${note("C", 4, '', '<tie type="stop"/>')}${note("D", 8, '<slur type="stop" number="2"/>')}</measure></part></score-partwise>`;
+    const { draft, analysis } = await reviewed(false, input);
+    expect(analysis.state.readyForPlanning, JSON.stringify(analysis.diagnostics)).toBe(true);
+    const generated = await generateProjectVariant(await createProjectFromQuickReview(draft, analysis, "standard"), "standard");
+    if (generated.status === "blocked") throw new Error(JSON.stringify(generated.diagnostics));
+    const project = await importHarmonyProject(await exportHarmonyProject(generated.project));
+    const rendered = materializeActiveArrangement(project, "standard");
+    expect(rendered.document.sourceLeadTrack.atoms.flatMap((atom) => atom.slurs ?? [])).toEqual([{ number: 2, type: "start" }, { number: 2, type: "stop" }]);
+    const exported = exportArrangementMusicXml(rendered.document, rendered.trackRoles, { title: project.source.title, key: project.source.defaultKey, tempo: project.source.defaultTempo });
+    expect(exported).toContain('<slur number="2" type="start"/>'); expect(exported).toContain('<slur number="2" type="stop"/>');
+    const broken = await reviewed(false, input.replace('<slur type="stop" number="2"/>', ''));
+    expect(broken.analysis.state.readyForPlanning).toBe(false);
   });
   it("accepts an entirely rhythm-only lead without asking for a missing melody", async () => {
     const { analysis } = await reviewed(true);

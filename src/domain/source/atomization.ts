@@ -8,8 +8,10 @@ import { comparePositions, compareRanges, musicalRange, positionWithinRange, typ
 import { timelineAtomId } from "../ids";
 import { resolveProductionLyricEmphasis } from "./lyrics";
 import type { LyricToken, PhraseRegion, SectionOccurrence, SourceMeasure } from "./model";
+import type { SourceSlurMark } from "./notation";
 
 export interface TimelineAtom {
+  readonly slurs?: readonly SourceSlurMark[];
   /** No melodic pitch. This is a rhythmic instruction, not a rest. */
   readonly rhythmOnly?: true;
   readonly id: string;
@@ -105,10 +107,11 @@ export async function atomizeSourceLead(input: {
           ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}),
           tiedFromPrevious: event.kind !== "rest" && (event.tieStop || segmentIndex > 0),
           tiedToNext: event.kind !== "rest" && (event.tieStart || segmentIndex < boundaries.length - 2),
+          ...(event.kind !== "rest" && event.slurs && segmentIndex === 0 ? { slurs: event.slurs } : {}),
           lyricTokens: tokenProjection,
         };
         const id = timelineAtomId(occurrence.performanceIndex, eventOrdinal, range.start.offset, range.end.offset);
-        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}), tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [] }, projection });
+        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}), tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [], ...(projection.slurs ? { slurs: projection.slurs } : {}) }, projection });
       }
     }
   }

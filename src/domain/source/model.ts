@@ -7,6 +7,7 @@ import type { MusicalRange } from "../time";
 import type { OmrEvidenceArchive, OmrReviewRecord, SourceEvidenceIndex } from "../omr/foundation";
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SourceRevisionRecord, SourceRevisionRef } from "./revision";
+import type { SourceSlurMark } from "./notation";
 
 export type MusicXmlSourceTargetSelector =
   | { readonly kind: "measure"; readonly musicXmlPartOrdinal: number; readonly measureOrdinal: number }
@@ -63,6 +64,7 @@ export interface SourceTextEvent {
   readonly text: string;
 }
 export interface LeadNoteEvent {
+  readonly slurs?: readonly SourceSlurMark[];
   readonly kind: "note";
   readonly id: string;
   readonly sourceMeasureId: string;
@@ -82,6 +84,7 @@ export interface LeadRestEvent {
 }
 /** Rhythmic slash instruction; deliberately has no pitch and is not silence. */
 export interface LeadRhythmEvent {
+  readonly slurs?: readonly SourceSlurMark[];
   readonly kind: "rhythm";
   readonly id: string;
   readonly sourceMeasureId: string;
@@ -92,6 +95,11 @@ export interface LeadRhythmEvent {
   readonly lyricTokenIds: readonly string[];
 }
 export type LeadEvent = LeadNoteEvent | LeadRestEvent | LeadRhythmEvent;
+/** A separate original rhythmic voice, independent of the selected pitched melody. */
+export interface SourceRhythmVoice {
+  readonly voice: number;
+  readonly events: readonly (LeadRhythmEvent | LeadRestEvent)[];
+}
 export interface SourceChordEvent {
   readonly id: string;
   readonly sourceMeasureId: string;
@@ -123,6 +131,7 @@ export interface SourceMeasure {
   readonly duration: Fraction;
   readonly key?: KeySignature;
   readonly leadEvents: readonly LeadEvent[];
+  readonly rhythmVoices?: readonly SourceRhythmVoice[];
   readonly chordEvents: readonly SourceChordEvent[];
   readonly lyricTokens: readonly LyricToken[];
   readonly textEvents: readonly SourceTextEvent[];

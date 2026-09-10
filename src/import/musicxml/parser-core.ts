@@ -19,6 +19,7 @@ import {
   type Step,
 } from "../../domain/pitch";
 import { performerId } from "../../domain/ids";
+import { isSourceSlurMarks } from "../../domain/source/notation";
 import { validateCoreInputLimits } from "../../domain/limits";
 import { extractMusicXmlFromMxl } from "../mxl/archive";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
@@ -672,6 +673,9 @@ function parseMeasure(
       const end = addFractions(onset, duration);
       if (compareFractions(end, maximum) > 0) maximum = end;
       const isRest = xmlChild(child, "rest") !== undefined;
+      const slurValues = xmlDescendants(child, "slur").map((mark) => ({ number: Number(mark.attributes.number ?? "1"), type: mark.attributes.type }));
+      if (slurValues.length && !isSourceSlurMarks(slurValues)) throw new MusicXmlStructureError("Unsupported or duplicate slur markings");
+      const slurs = isSourceSlurMarks(slurValues) ? slurValues : undefined;
       const slashStyle = slashNotationForVoice(context.slashNotation, staff, voice);
       if (isRest) {
         leadEvents.push({ kind: "rest", candidateKey: keyForCandidate, onset, duration });
@@ -682,6 +686,7 @@ function parseMeasure(
       } else if (slashStyle?.rhythmic || (xmlChild(child, "unpitched") && xmlText(xmlChild(child, "notehead")) === "slash")) {
         const ties = new Set([...xmlChildren(child, "tie"), ...xmlDescendants(child, "tied")].map((tie) => tie.attributes.type));
         leadEvents.push({ kind: "rhythm", candidateKey: keyForCandidate, onset, duration,
+          ...(slurs ? { slurs } : {}),
           tieStart: ties.has("start"), tieStop: ties.has("stop"), lyrics: parseLyrics(child, false, context, ordinal, keyForCandidate) });
       } else {
         const pitch = parsePitch(child);
@@ -709,6 +714,7 @@ function parseMeasure(
             onset,
             duration,
             pitch,
+            ...(slurs ? { slurs } : {}),
             tieStart: tieTypes.has("start"),
             tieStop: tieTypes.has("stop"),
             lyrics: parseLyrics(child, accent, context, ordinal, keyForCandidate),

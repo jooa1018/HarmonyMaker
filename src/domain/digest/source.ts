@@ -45,8 +45,9 @@ export async function digestMusicalSourceComponents(
       number: measure.number, implicit: measure.implicit, time: measure.time, duration: measure.duration, key: measure.key ?? null,
       leadEvents: measure.leadEvents.map((event) => event.kind === "rest"
         ? { kind: "rest", onset: event.onset, duration: event.duration }
-        : { kind: event.kind, onset: event.onset, duration: event.duration, ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.tieStart, tieStop: event.tieStop, lyricTokenOrdinals: event.lyricTokenIds.map((id) => lyricOrdinal.get(id) ?? -1) }),
+        : { kind: event.kind, onset: event.onset, duration: event.duration, ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.tieStart, tieStop: event.tieStop, lyricTokenOrdinals: event.lyricTokenIds.map((id) => lyricOrdinal.get(id) ?? -1), ...(event.slurs ? { slurs: event.slurs } : {}) }),
       chords: measure.chordEvents.map(chordProjection).filter((item): item is object => item !== undefined),
+      ...(measure.rhythmVoices ? { rhythmVoices: measure.rhythmVoices.map((voice) => ({ voice: voice.voice, events: voice.events.map((event) => ({ kind: event.kind, onset: event.onset, duration: event.duration, ...(event.kind === "rhythm" ? { tieStart: event.tieStart, tieStop: event.tieStop, ...(event.slurs ? { slurs: event.slurs } : {}) } : {}) })) })) } : {}),
       lyrics: measure.lyricTokens.map((token) => ({ verse: token.verse, leadEventOrdinal: leadOrdinal.get(token.leadEventId) ?? -1, syllabic: token.syllabic, extend: token.extend, productionEmphasis: resolveProductionLyricEmphasis(token) })),
       textEvents: measure.textEvents.map((event) => ({ onset: event.onset, kind: event.kind, text: event.kind === "section-label" ? event.text.normalize("NFC") : null })),
       repeat: measure.repeat,

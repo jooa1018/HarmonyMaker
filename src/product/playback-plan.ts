@@ -56,7 +56,7 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
   ];
   // Slash rhythm drives generated band attacks; it never supplies a Source pitch.
   // Outside slash measures the existing sustained accompaniment stays unchanged.
-  const rhythmAtoms = document.sourceLeadTrack.atoms.filter((atom) => atom.rhythmOnly)
+  const rhythmAtoms = [...document.sourceLeadTrack.atoms, ...(document.sourceRhythmTracks?.flatMap((track) => track.atoms) ?? [])].filter((atom) => atom.rhythmOnly)
     .map((atom) => ({ atom, start: absolute(starts, atom.range.start.performanceMeasureIndex, atom.range.start.offset),
       end: absolute(starts, atom.range.start.performanceMeasureIndex, atom.range.start.offset) + value(canonicalRangeDuration(document.measures, atom.range)) }))
     .sort((left, right) => left.start - right.start);

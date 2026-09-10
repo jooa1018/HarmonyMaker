@@ -25,8 +25,8 @@ function fifths(key: KeySignature): number {
   return names[relativeMajor] ?? 0;
 }
 
-interface XmlEvent { readonly kind: "note" | "rest" | "rhythm"; readonly offset: Fraction; readonly duration: Fraction; readonly pitch?: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[] }
-function fromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration: canonicalRangeDuration(measures, atom.range), ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds }; }
+interface XmlEvent { readonly kind: "note" | "rest" | "rhythm"; readonly offset: Fraction; readonly duration: Fraction; readonly pitch?: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[]; readonly slurs?: TimelineAtom["slurs"] }
+function fromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration: canonicalRangeDuration(measures, atom.range), ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}) }; }
 function fromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: event.kind, offset: event.range.start.offset, duration: canonicalRangeDuration(measures, event.range), ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.kind === "note" && event.tieStart, tieStop: event.kind === "note" && event.tieStop, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] }; }
 
 const NOTE_TYPES = [
@@ -69,17 +69,18 @@ function notationForDuration(duration: Fraction): { readonly type: string; reado
   return { type: selected.type, dots: 0, actualNotes: selected.actualNotes, normalNotes: selected.normalNotes };
 }
 
-function noteXml(event: XmlEvent, divisions: number, lyricById: Readonly<Record<string, ArrangementRenderDocument["lyricTokens"][number]>>): string {
+function noteXml(event: XmlEvent, divisions: number, lyricById: Readonly<Record<string, ArrangementRenderDocument["lyricTokens"][number]>>, voice = 1): string {
   const duration = scaledInteger(event.duration, divisions, "MUSICXML_DURATION_UNREPRESENTABLE");
   const notation = notationForDuration(event.duration);
   const ties = `${event.tieStop ? '<tie type="stop"/>' : ""}${event.tieStart ? '<tie type="start"/>' : ""}`;
-  const tied = event.tieStart || event.tieStop ? `<notations>${event.tieStop ? '<tied type="stop"/>' : ""}${event.tieStart ? '<tied type="start"/>' : ""}</notations>` : "";
+  const marks = `${event.tieStop ? '<tied type="stop"/>' : ""}${event.tieStart ? '<tied type="start"/>' : ""}${event.slurs?.map((mark) => `<slur number="${mark.number}" type="${mark.type}"/>`).join("") ?? ""}`;
+  const tied = marks ? `<notations>${marks}</notations>` : "";
   const lyric = event.lyricTokenIds.flatMap((id) => lyricById[id] ? [lyricById[id]] : [])[0];
   const lyricXml = lyric ? `<lyric number="${lyric.verse}"><syllabic>${lyric.syllabic}</syllabic><text>${xml(lyric.text)}</text>${lyric.extend ? "<extend/>" : ""}</lyric>` : "";
   const dots = "<dot/>".repeat(notation.dots);
   const tuplet = notation.actualNotes === undefined ? "" : `<time-modification><actual-notes>${notation.actualNotes}</actual-notes><normal-notes>${notation.normalNotes}</normal-notes></time-modification>`;
   const symbol = event.kind === "rhythm" ? "<unpitched><display-step>B</display-step><display-octave>4</display-octave></unpitched>" : event.kind === "note" && event.pitch ? pitchXml(event.pitch) : "<rest/>";
-  return `<note>${symbol}<duration>${duration}</duration>${ties}<voice>1</voice><type>${notation.type}</type>${dots}${tuplet}${event.kind === "rhythm" ? "<notehead>slash</notehead>" : ""}${tied}${lyricXml}</note>`;
+  return `<note>${symbol}<duration>${duration}</duration>${ties}<voice>${voice}</voice><type>${notation.type}</type>${dots}${tuplet}${event.kind === "rhythm" ? "<notehead>slash</notehead>" : ""}${tied}${lyricXml}</note>`;
 }
 
 function pitchClassSymbol(pitch: ParsedChord["root"]): string {
@@ -220,7 +221,28 @@ function partXml(input: { readonly id: string; readonly events: readonly (XmlEve
       ? `<attributes><divisions>${input.divisions}</divisions><key><fifths>${fifths(input.key)}</fifths><mode>${input.key.mode}</mode></key>${timeXml(measure)}<clef><sign>G</sign><line>2</line></clef></attributes>`
       : meterChanged ? `<attributes>${timeXml(measure)}</attributes>` : "";
     const implicit = !equalFraction(measure.duration, fullMeasureDuration(measure));
-    return `<measure number="${measureIndex + 1}"${implicit ? ' implicit="yes"' : ""}>${attributes}${input.includeTempo && measureIndex === 0 ? tempoXml(input.tempo) : ""}${input.includeHarmony ? harmonyXml(input.document, measureIndex, input.divisions) : ""}${filled.map((event) => noteXml(event, input.divisions, lyricById)).join("")}</measure>`;
+    let content = filled.map((event) => noteXml(event, input.divisions, lyricById)).join("");
+    if (input.id === "P1" && input.document.sourceRhythmTracks?.length) {
+      const lane = (values: readonly XmlEvent[], voice: number) => {
+        let at = fraction(0), result = "";
+        const advance = (to: Fraction) => {
+          const delta = subtractFractions(to, at);
+          if (delta.n < 0) throw new RangeError("MUSICXML_SOURCE_VOICE_OVERLAP");
+          if (delta.n) result += `<forward><duration>${scaledInteger(delta, input.divisions, "MUSICXML_DURATION_UNREPRESENTABLE")}</duration><voice>${voice}</voice></forward>`;
+          at = to;
+        };
+        for (const event of [...values].sort((a, b) => compareFractions(a.offset, b.offset))) {
+          advance(event.offset); result += noteXml(event, input.divisions, lyricById, voice); at = addFractions(event.offset, event.duration);
+        }
+        advance(measure.duration); return result;
+      };
+      content = lane(events, 1);
+      for (const [index, track] of input.document.sourceRhythmTracks.entries()) {
+        const values = track.atoms.filter((atom) => atom.range.start.performanceMeasureIndex === measureIndex).map((atom) => fromAtom(atom, input.document.measures));
+        if (values.length) content += `<backup><duration>${scaledInteger(measure.duration, input.divisions, "MUSICXML_DURATION_UNREPRESENTABLE")}</duration></backup>${lane(values, index + 2)}`;
+      }
+    }
+    return `<measure number="${measureIndex + 1}"${implicit ? ' implicit="yes"' : ""}>${attributes}${input.includeTempo && measureIndex === 0 ? tempoXml(input.tempo) : ""}${input.includeHarmony ? harmonyXml(input.document, measureIndex, input.divisions) : ""}${content}</measure>`;
   }).join("");
   return `<part id="${input.id}">${measures}</part>`;
 }
@@ -229,6 +251,7 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
   const allFractions = [
     ...document.measures.map((measure) => measure.duration),
     ...document.sourceLeadTrack.atoms.flatMap((atom) => [atom.range.start.offset, canonicalRangeDuration(document.measures, atom.range)]),
+    ...(document.sourceRhythmTracks?.flatMap((track) => track.atoms.flatMap((atom) => [atom.range.start.offset, canonicalRangeDuration(document.measures, atom.range)])) ?? []),
     ...document.generatedHarmonyTracks.flatMap((track) => track.events.flatMap((event) => [event.range.start.offset, canonicalRangeDuration(document.measures, event.range)])),
     ...document.effectiveChordTimeline.spans.map((span) => span.range.start.offset),
   ];

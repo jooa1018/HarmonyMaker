@@ -131,9 +131,9 @@ function selectedLeadDiagnostics(draft: MusicXmlImportDraft): readonly ImportDia
 function supportedPlanningMeter(sourceMeasures: readonly SourceMeasure[]): boolean {
   return sourceMeasures.every((measure) => {
     const time = measure.time;
-    return (time.numerator === 4
+    return ((time.numerator === 2 || time.numerator === 4)
         && time.denominator === 4
-        && canonicalJson(time.beatGroups) === canonicalJson([1, 1, 1, 1]))
+        && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1))
       || (time.numerator === 6
         && time.denominator === 8
         && canonicalJson(time.beatGroups) === canonicalJson([3, 3]));
@@ -276,7 +276,7 @@ export async function deriveQuickReview(
   if (normalization) {
     if (!supportedPlanningMeter(normalization.sourceMeasures)) diagnosticInputs.push({
       code: "UNSUPPORTED_METER",
-      messageKo: "Core planning readiness는 4/4와 6/8만 지원합니다.",
+      messageKo: "Core planning readiness는 2/4, 4/4, 6/8을 지원합니다.",
       details: { issue: "planning-meter" },
     });
     if (hasUnsupportedModulation(normalization.sourceMeasures, draft.defaultKey)) diagnosticInputs.push({

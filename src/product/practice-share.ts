@@ -35,6 +35,9 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
   if (input.materialized.validity !== "valid") throw new RangeError("SHARE_ARTIFACT_INVALID");
   if (!input.project.source.rights.allowedUses.includes("share")) throw new RangeError("SHARE_RIGHTS_REQUIRED");
   const document = input.materialized.document;
+  // V4 share has one Source voice. Refuse a lossy public payload until that schema expands.
+  if (document.sourceRhythmTracks?.length) throw new RangeError("SHARE_SEPARATE_RHYTHM_VOICES_UNSUPPORTED");
+  if (document.sourceLeadTrack.atoms.some((atom) => atom.slurs?.length)) throw new RangeError("SHARE_SOURCE_SLURS_UNSUPPORTED");
   const localLyrics = lyricMap(document);
   const tracks: CompactTrack[] = [
     { kind: "source-lead", label: "Lead", events: document.sourceLeadTrack.atoms.map((atom) => atomEvent(atom, document, localLyrics.sourceToLocal)) },

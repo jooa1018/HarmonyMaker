@@ -1,5 +1,6 @@
 const MESSAGES = {
   "invalid MusicXML slash notation scope": "리듬 슬래시의 시작·끝 또는 적용 오선 지시가 올바르지 않습니다.",
+  "Unsupported or duplicate slur markings": "프레이즈선의 번호·종류가 지원되지 않거나 중복되었습니다.",
   "invalid MusicXML duration/divisions": "음표·쉼표 또는 이동 요소의 길이와 divisions를 확인하세요.",
   "MusicXML backup moved before measure start": "backup 이동이 마디 시작보다 앞섭니다. 성부별 시간축을 확인하세요.",
   "MusicXML chord member has no preceding note": "동시음에 연결할 앞선 음표가 없습니다.",

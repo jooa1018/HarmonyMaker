@@ -104,8 +104,8 @@ function primaryPulse(input: WagLifecycleInput, position: MusicalPosition): Frac
   const occurrence = input.source.performanceSequence.occurrences[position.performanceMeasureIndex];
   if (!occurrence) throw new RangeError("UNSUPPORTED_METER");
   const groups = occurrence.time.beatGroups;
-  if (occurrence.time.numerator === 4 && occurrence.time.denominator === 4
-    && groups.length === 4 && groups.every((group) => group === 1)) return fraction(1);
+  if ((occurrence.time.numerator === 2 || occurrence.time.numerator === 4) && occurrence.time.denominator === 4
+    && groups.length === occurrence.time.numerator && groups.every((group) => group === 1)) return fraction(1);
   if (occurrence.time.numerator === 6 && occurrence.time.denominator === 8
     && groups.length === 2 && groups[0] === 3 && groups[1] === 3) return fraction(3, 2);
   throw new RangeError("UNSUPPORTED_METER");

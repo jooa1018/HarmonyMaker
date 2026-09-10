@@ -59,6 +59,7 @@ import { createImportRecovery, importRecoveryProof, replayImportRecovery } from 
 import { loadImportRecoveries, saveImportRecovery, type StoredImportRecovery } from "../../import/review/recovery-store";
 import type { OmrImportHandoff } from "../../domain/omr/browser-handoff";
 import { RecoveryEditor } from "./RecoveryEditor";
+import { StructuralRecoveryEditor } from "./StructuralRecoveryEditor";
 import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { loadProductExecutionRegistry } from "../../product/registry";
 import { createProjectFromQuickReview } from "../../product/workspace";
@@ -692,6 +693,19 @@ export function ImportReviewClient() {
         {!draft ? <DiagnosticSummary diagnostics={diagnostics} /> : null}
       </section>
 
+      <StructuralRecoveryEditor retained={recoveryEntry && !savedRecoveries.some((r) => r.id === recoveryEntry.id) ? [...savedRecoveries, recoveryEntry] : savedRecoveries}
+        onInvalidate={() => { loadSequence.current += 1; setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
+        onValidate={async (candidate) => {
+          const sequence = ++loadSequence.current;
+          setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setOmrHandoff(undefined); setDiagnostics([]);
+          const result = await importMusicXml(new TextEncoder().encode(candidate.xml), { algorithmVersions: STEP3_ALGORITHM_VERSIONS, originalFileName: "explicitly-recovered.musicxml" });
+          if (sequence !== loadSequence.current) return;
+          setInputOrigin("file");
+          setDiagnostics(result.diagnostics);
+          if (result.status === "blocked") { setFileStatus("구조 교정 후보의 전체 importer 검증이 차단되었습니다. 원본과 교정 이력은 유지됩니다."); return; }
+          setReviewing(true); setDraft({ ...result.draft, recoveryProof: candidate.proof });
+          setFileStatus("명시적 구조 교정 revision 검증 완료 · 기존 Quick Review와 Source 검증이 필요합니다.");
+        }} />
       {savedRecoveries.length > 1 ? <label className={styles.field}><span>보존된 후보 선택 · 서로 다른 출력 조각은 자동 결합되지 않습니다</span><select value={recoveryEntry?.id ?? ""} disabled={loading} onChange={(event) => { const entry = savedRecoveries.find((item) => item.id === event.target.value); if (entry) restoreRecovery(entry); }}>
         {savedRecoveries.map((entry) => <option value={entry.id} key={entry.id}>{entry.recovery.originalFileName} · 교정 {entry.recovery.operations.length}건</option>)}
       </select></label> : null}
@@ -762,6 +776,7 @@ export function ImportReviewClient() {
                   <span><strong>{candidate.displayPartName}</strong> · staff {candidate.staffNumber} · voice {candidate.voiceKey} · note {candidate.noteCount} · lyric {candidate.lyricCount}</span>
                 </label>
               ))}
+              <p>같은 staff의 별도 리듬 전용 성부는 선택한 멜로디와 함께 Source에 보존합니다. 음높이를 만들거나 멜로디 성부에 합치지 않습니다.</p>
             </fieldset>
             {!draft.defaultTempo ? (
               <form className={styles.addRow} onSubmit={(event: FormEvent) => { event.preventDefault(); const bpm = Number(tempoText); if (Number.isSafeInteger(bpm) && bpm >= 20 && bpm <= 300) updateDraft((current) => setDefaultTempo(current, { beatUnit: 4, dotted: false, bpm })); }}>
