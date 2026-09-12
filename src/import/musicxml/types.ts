@@ -48,7 +48,13 @@ export interface ImportedLyricDraft {
   readonly musicXmlAccent: boolean;
 }
 
-export type ImportedLeadEventDraft =
+export interface ImportedWorkspaceEventInfo {
+  /** Stable input identity. It is not a canonical Source event ID. */
+  readonly workspaceEventId?: string;
+  readonly fermata?: boolean;
+}
+
+export type ImportedLeadEventDraft = ImportedWorkspaceEventInfo & (
   | {
       readonly kind: "rhythm";
       readonly slurs?: readonly SourceSlurMark[];
@@ -78,7 +84,14 @@ export type ImportedLeadEventDraft =
       readonly musicXmlEventOrdinal?: number;
       readonly onset: Fraction;
       readonly duration: Fraction;
-    };
+    });
+
+export interface ImportedKeyObservation {
+  readonly contextId: string;
+  readonly fifths: number;
+  readonly explicitMode?: string;
+  readonly interpretation: "explicit-source-mode" | "importer-major-default";
+}
 
 export interface ImportedChordDraft {
   readonly key: string;
@@ -100,6 +113,13 @@ export interface ImportedTextDraft {
 }
 
 export interface ImportedMeasureDraft {
+  readonly workspaceMeasureId?: string;
+  readonly keyObservation?: ImportedKeyObservation;
+  /** Preserved unknown pitches are neither rests nor rhythm slashes. */
+  readonly unresolvedEvents?: readonly {
+    readonly id: string; readonly kind: "unknown"; readonly candidateKey: string;
+    readonly onset: Fraction; readonly duration: Fraction;
+  }[];
   readonly ordinal: number;
   readonly number: number;
   readonly implicit: boolean;
@@ -191,6 +211,9 @@ export interface MusicXmlImportIdentityInventory {
 }
 
 export interface MusicXmlImportDraft {
+  /** A preservation-only inspection must pass the workspace compiler before Source. */
+  readonly workspaceInspectionOnly?: true;
+  readonly workspaceProof?: string;
   readonly importerVersion: typeof MUSICXML_IMPORTER_VERSION;
   readonly documentId: string;
   readonly rawDigest: BinaryDigest;

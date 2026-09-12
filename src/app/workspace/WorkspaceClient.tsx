@@ -17,6 +17,7 @@ import { materializeEditedArrangement } from "../../product/edited-arrangement";
 import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { replaceStageLocks } from "../../product/locks";
 import { exportArrangementMusicXml } from "../../product/musicxml-export";
+import { ProjectionNotice } from "../score-workspace/ProjectionNotice";
 import { buildPlaybackPlan } from "../../product/playback-plan";
 import { confirmShareRights, materializePracticeShare } from "../../product/practice-share";
 import { exportHarmonyProject, importHarmonyProject } from "../../product/project-transfer";
@@ -47,7 +48,9 @@ function download(name: string, content: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type }));
   const anchor = document.createElement("a");
   anchor.href = url; anchor.download = name; anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  // The browser consumes the blob asynchronously after the click dispatch.
+  // Keep it alive through download startup, as in the workspace bundle export.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function parsePitch(text: string): SpelledPitch | undefined {
   const match = /^([A-G])(bb|b|#|##)?(-?\d+)$/u.exec(text.trim());
@@ -297,7 +300,7 @@ export function WorkspaceClient() {
 
   const exportMusicXml = () => {
     if (!project || !materialized || !canDefaultExportOrShare(materialized)) return;
-    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey, tempo: project.source.defaultTempo }), "application/vnd.recordare.musicxml+xml");
+    download(`${safeName(project.source.title)}-${presetId}.musicxml`, exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, ...(project.source.composer ? { composer: project.source.composer } : {}), key: project.source.defaultKey, tempo: project.source.defaultTempo, ...(project.source.importInfo?.sourceKind==="score-workspace"?{workspaceProjection:project.source.importInfo.workspaceMetadata}:{}) }), "application/vnd.recordare.musicxml+xml");
   };
   const exportProject = async () => { if (project) download(`${safeName(project.source.title)}.harmonymaker.json`, await exportHarmonyProject(project), "application/json"); };
   const importProject = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -423,6 +426,7 @@ export function WorkspaceClient() {
   return <>
     <header className={styles.header}><div><p className="eyebrow">PRODUCT CORE · CANONICAL WORKSPACE</p><h1>{project.source.title}</h1><p>{project.source.composer ?? "작곡자 미기재"} · {project.source.defaultKey.tonic.step}{project.source.defaultKey.mode === "minor" ? " minor" : " major"}</p></div><Link href="/import">새 Source 가져오기</Link></header>
     <p className="status" aria-live="polite">{message}</p>
+    {project.source.importInfo?.sourceKind==="score-workspace"&&<ProjectionNotice metadata={project.source.importInfo.workspaceMetadata}/>}
 
     <section className="panel">
       <h2>1. Setup · generation</h2>

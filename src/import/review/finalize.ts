@@ -1,5 +1,6 @@
 import { chordSemanticProjection } from "../../domain/chord/parser";
 import { verifiedStructuralCandidate, type StructuralRecovery } from "./structural-recovery";
+import { validateProjectedWorkspaceDraft, workspaceProjectionMetadata } from "../workspace/projection";
 import { semanticDigest, compareCanonicalValues } from "../../domain/digest/canonical";
 import { digestMusicalSource, digestMusicalSourceComponents } from "../../domain/digest/source";
 import { buildMusicXmlSourceTargetMap } from "../../domain/omr/import-identity";
@@ -530,7 +531,13 @@ export async function normalizeImportedSource(
   versions: Step3ImportVersions,
 ): Promise<ImportedSourceNormalizationResult> {
   const prerequisiteErrors: ImportDiagnosticInput[] = [...versionMismatchInputs(draft, versions)];
-  if (draft.localCandidateReviewRequired) {
+  if (draft.workspaceInspectionOnly) prerequisiteErrors.push(blockedInput("workspace-projection-required",
+    "보존용 악보 초안은 작업 공간의 요청별 검증과 투영을 거쳐야 합니다.", "IMPORT_UNSUPPORTED_ELEMENT"));
+  if (draft.workspaceProof) {
+    try { await validateProjectedWorkspaceDraft(draft); }
+    catch { prerequisiteErrors.push(blockedInput("workspace-proof-invalid", "작업 공간의 원본·이력·요청·투영이 일치하지 않습니다.", "IMPORT_UNSUPPORTED_ELEMENT")); }
+  }
+  if (draft.localCandidateReviewRequired && !draft.workspaceProof) {
     let reviewed = false;
     try {
       const proof = JSON.parse(draft.recoveryProof ?? "{}");
@@ -744,7 +751,13 @@ async function finalizeNormalization(
     source = { ...source, revisionDigest: normalized.musicalSourceDigest ?? await digestMusicalSource(source) };
     source = normalizeSongSourceDocument({
       ...source,
-      importInfo: {
+      importInfo: draft.workspaceProof ? {
+        sourceKind: "score-workspace",
+        importerVersion: "hm-workspace-projection-v1",
+        ...(draft.originalFileName ? { originalFileName: draft.originalFileName } : {}),
+        rawDigest: draft.rawDigest,
+        workspaceMetadata: await workspaceProjectionMetadata(draft, source),
+      } : {
         sourceKind: "musicxml",
         ...(source.importInfo?.originalFileName ? { originalFileName: source.importInfo.originalFileName } : {}),
         ...(source.importInfo?.importedAt ? { importedAt: source.importInfo.importedAt } : {}),

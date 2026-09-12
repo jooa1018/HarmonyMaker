@@ -146,7 +146,7 @@ function isRightsMetadata(value: unknown): value is RightsMetadata {
 
 function isImportInfo(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !["manual", "musicxml", "omr"].includes(String(value.sourceKind))
+    || !["manual", "musicxml", "omr", "score-workspace"].includes(String(value.sourceKind))
     || typeof value.importerVersion !== "string" || value.importerVersion.length === 0
     || (value.originalFileName !== undefined && typeof value.originalFileName !== "string")
     || (value.importedAt !== undefined && (typeof value.importedAt !== "string" || !Number.isFinite(Date.parse(value.importedAt))))) return false;
@@ -158,6 +158,20 @@ function isImportInfo(value: unknown): boolean {
       && isSemanticDigest(value.rawDigest) && isPlainRecord(value.musicXmlMetadata)
       && Object.values(value.musicXmlMetadata).every((item) => typeof item === "string")
       && isPlainRecord(value.musicXmlSourceTargetMap);
+  }
+  if (value.sourceKind === "score-workspace") {
+    const m=value.workspaceMetadata;
+    return hasExactKeys(value,["sourceKind","importerVersion","rawDigest","workspaceMetadata"],["originalFileName","importedAt"])
+      &&isSemanticDigest(value.rawDigest)&&isPlainRecord(m)
+      &&hasExactKeys(m,["version","originKind","workspaceId","workspaceRevision","workspaceDigest","evidenceDigest","requestDigest","initialSourceDigest","selectedVoices","excludedVoices","targetMap","proof"])
+      &&m.version==="hm-workspace-projection-v1"&&["musicxml","local-omr","legacy-recovery"].includes(String(m.originKind))
+      &&isCanonicalId(m.workspaceId)&&Number.isSafeInteger(m.workspaceRevision)&&(m.workspaceRevision as number)>=0
+      &&[m.workspaceDigest,m.evidenceDigest,m.requestDigest,m.initialSourceDigest].every(isSemanticDigest)
+      &&typeof m.proof==="string"&&m.proof.length<=64_000_000
+      &&Array.isArray(m.selectedVoices)&&m.selectedVoices.length>0&&m.selectedVoices.every(isCanonicalId)
+      &&Array.isArray(m.excludedVoices)&&m.excludedVoices.every(isCanonicalId)
+      &&Array.isArray(m.targetMap)&&m.targetMap.every(t=>isPlainRecord(t)&&hasExactKeys(t,["workspaceId","sourceId","kind"])
+        &&isCanonicalId(t.workspaceId)&&isCanonicalId(t.sourceId)&&["measure","event","chord"].includes(String(t.kind)));
   }
   return hasExactKeys(value, ["sourceKind", "importerVersion", "rawDigest", "providerMetadata", "omrReviewRecord", "omrEvidenceArchive", "musicXmlSourceTargetMap"], ["originalFileName", "importedAt", "omrRuntimeWarningAcknowledgements"])
     && isSemanticDigest(value.rawDigest)
@@ -531,6 +545,10 @@ export async function validateSongSourceDocumentIntegrity(
   expectation: string | Pick<AlgorithmExecutionRegistry, "versions">,
 ): Promise<boolean> {
   if (!isSongSourceDocument(value)) return false;
+  if (value.importInfo?.sourceKind === "score-workspace") {
+    const { validateWorkspaceSourceIntegrity } = await import("../../import/workspace/source-integrity");
+    if (!await validateWorkspaceSourceIntegrity(value)) return false;
+  }
   if (!await validateMusicXmlSourceTargetMap(value)) return false;
   if ((await validatePersistedOmrContext(value)).length > 0) return false;
   const expectedExpanderVersion = typeof expectation === "string"

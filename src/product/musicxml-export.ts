@@ -4,7 +4,7 @@ import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/g
 import type { ParsedChord, ChordDegree } from "../domain/chord/model";
 import type { KeySignature, SpelledPitch } from "../domain/pitch";
 import type { TimelineAtom } from "../domain/source/atomization";
-import type { TempoSpec } from "../domain/source/model";
+import type { TempoSpec, WorkspaceProjectionMetadata } from "../domain/source/model";
 import type { PerformanceMeasureOccurrence } from "../domain/performance/repeat";
 import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
@@ -247,7 +247,7 @@ function partXml(input: { readonly id: string; readonly events: readonly (XmlEve
   return `<part id="${input.id}">${measures}</part>`;
 }
 
-export function exportArrangementMusicXml(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly composer?: string; readonly key: KeySignature; readonly tempo: TempoSpec }): string {
+export function exportArrangementMusicXml(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly composer?: string; readonly key: KeySignature; readonly tempo: TempoSpec; readonly workspaceProjection?: WorkspaceProjectionMetadata }): string {
   const allFractions = [
     ...document.measures.map((measure) => measure.duration),
     ...document.sourceLeadTrack.atoms.flatMap((atom) => [atom.range.start.offset, canonicalRangeDuration(document.measures, atom.range)]),
@@ -267,5 +267,8 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
   ];
   const partList = tracks.map((track) => `<score-part id="${track.id}"><part-name>${xml(track.name)}</part-name></score-part>`).join("");
   const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
-  return `<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"><work><work-title>${xml(input.title)}</work-title></work>${input.composer ? `<identification><creator type="composer">${xml(input.composer)}</creator></identification>` : ""}<part-list>${partList}</part-list>${parts}</score-partwise>`;
+  const projection=input.workspaceProjection;
+  const selection=projection?`<miscellaneous><miscellaneous-field name="harmonymaker-workspace-projection">${xml(JSON.stringify({version:projection.version,originKind:projection.originKind,workspaceId:projection.workspaceId,workspaceRevision:projection.workspaceRevision,workspaceDigest:projection.workspaceDigest,requestDigest:projection.requestDigest,range:"whole-score",selectedVoices:projection.selectedVoices,excludedVoices:projection.excludedVoices,policy:"existing-wag-v1"}))}</miscellaneous-field></miscellaneous>`:"";
+  const identification=input.composer||selection?`<identification>${input.composer?`<creator type="composer">${xml(input.composer)}</creator>`:""}${selection}</identification>`:"";
+  return `<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"><work><work-title>${xml(input.title)}</work-title></work>${identification}<part-list>${partList}</part-list>${parts}</score-partwise>`;
 }

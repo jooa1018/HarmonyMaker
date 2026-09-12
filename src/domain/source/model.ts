@@ -196,7 +196,32 @@ export interface OmrImportInfo extends ImportInfoBase {
   readonly musicXmlMetadata?: never;
   readonly omrRuntimeWarningAcknowledgements?: readonly OmrRuntimeWarningAcknowledgement[];
 }
-export type ImportInfo = ManualImportInfo | MusicXmlImportInfo | OmrImportInfo;
+export interface WorkspaceProjectionMetadata {
+  readonly version: "hm-workspace-projection-v1";
+  readonly originKind: "musicxml" | "local-omr" | "legacy-recovery";
+  readonly workspaceId: string;
+  readonly workspaceRevision: number;
+  readonly workspaceDigest: string;
+  readonly evidenceDigest: string;
+  readonly requestDigest: string;
+  readonly initialSourceDigest: string;
+  readonly selectedVoices: readonly string[];
+  readonly excludedVoices: readonly string[];
+  readonly targetMap: readonly { readonly workspaceId: string; readonly sourceId: string; readonly kind: "measure" | "event" | "chord" }[];
+  readonly proof: string;
+}
+export interface WorkspaceImportInfo extends ImportInfoBase {
+  readonly sourceKind: "score-workspace";
+  readonly rawDigest: BinaryDigest;
+  readonly workspaceMetadata: WorkspaceProjectionMetadata;
+  readonly musicXmlMetadata?: never;
+  readonly providerMetadata?: never;
+  readonly omrReviewRecord?: never;
+  readonly omrEvidenceArchive?: never;
+  readonly musicXmlSourceTargetMap?: never;
+  readonly omrRuntimeWarningAcknowledgements?: never;
+}
+export type ImportInfo = ManualImportInfo | MusicXmlImportInfo | OmrImportInfo | WorkspaceImportInfo;
 export interface SongSourceDocument {
   readonly schemaVersion: 9;
   readonly documentId: string;

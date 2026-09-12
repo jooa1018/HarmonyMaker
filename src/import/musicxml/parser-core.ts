@@ -31,6 +31,7 @@ import {
   type ImportedChordDraft,
   type ImportedLeadEventDraft,
   type ImportedMeasureDraft,
+  type ImportedKeyObservation,
   type ImportedPartDraft,
   type ImportedSectionDraft,
   type ImportedTextDraft,
@@ -82,6 +83,7 @@ interface ParseScoreResult {
 }
 
 interface ParseContext {
+  readonly workspaceInspection?: boolean;
   readonly diagnostics: ImportDiagnosticInput[];
   readonly partOrdinal: number;
   readonly slashNotation: SlashNotationState;
@@ -185,6 +187,7 @@ function keyFromFifths(fifths: number, mode: KeyMode): KeySignature | undefined 
 function parseKey(attributes: XmlElement, context: ParseContext, measureOrdinal: number): {
   readonly key?: KeySignature;
   readonly fifths?: number;
+  readonly observation?: ImportedKeyObservation;
 } {
   const keys = xmlChildren(attributes, "key");
   if (keys.length === 0) return {};
@@ -197,7 +200,8 @@ function parseKey(attributes: XmlElement, context: ParseContext, measureOrdinal:
     return {};
   }
   const fifths = parseInteger(xmlText(xmlChild(keys[0], "fifths")));
-  const modeText = (xmlText(xmlChild(keys[0], "mode")) ?? "major").toLowerCase();
+  const explicitMode = xmlText(xmlChild(keys[0], "mode"));
+  const modeText = (explicitMode ?? "major").toLowerCase();
   if (fifths === undefined || (modeText !== "major" && modeText !== "minor")) {
     context.diagnostics.push({
       code: "UNSUPPORTED_KEY_SIGNATURE",
@@ -222,7 +226,11 @@ function parseKey(attributes: XmlElement, context: ParseContext, measureOrdinal:
       details: { fifths, measureOrdinal, partOrdinal: context.partOrdinal },
     });
   }
-  return { key, fifths };
+  return { key, fifths, observation: {
+    contextId: `p${context.partOrdinal}m${measureOrdinal}:key`, fifths,
+    ...(explicitMode === undefined ? {} : { explicitMode: modeText }),
+    interpretation: explicitMode === undefined ? "importer-major-default" : "explicit-source-mode",
+  } };
 }
 
 function parseTime(attributes: XmlElement, context: ParseContext, measureOrdinal: number): TimeSignature | undefined {
@@ -518,6 +526,7 @@ function parseMeasure(
     time?: TimeSignature;
     key?: KeySignature;
     importedFifths?: number;
+    keyObservation?: ImportedKeyObservation;
     activeEnding?: readonly (1 | 2)[];
   },
 ): {
@@ -530,6 +539,9 @@ function parseMeasure(
   let time = inherited.time;
   let key = inherited.key;
   let importedFifths = inherited.importedFifths;
+  let keyObservation = inherited.keyObservation;
+  let rawNoteOrdinal = 0;
+  const unresolvedEvents: NonNullable<ImportedMeasureDraft["unresolvedEvents"]>[number][] = [];
   let cursor = ZERO;
   let maximum = ZERO;
   const lastOnset = new Map<string, Fraction>();
@@ -610,6 +622,7 @@ function parseMeasure(
       const parsedKey = parseKey(child, context, ordinal);
       if (parsedKey.key) key = parsedKey.key;
       if (parsedKey.fifths !== undefined) importedFifths = parsedKey.fifths;
+      if (parsedKey.observation) keyObservation = parsedKey.observation;
       continue;
     }
     if (child.name === "backup" || child.name === "forward") {
@@ -620,6 +633,7 @@ function parseMeasure(
       continue;
     }
     if (child.name === "note") {
+      const workspaceEventId = `p${context.partOrdinal}m${ordinal}n${rawNoteOrdinal++}`;
       const staffElement = xmlChild(child, "staff");
       const staff = staffElement === undefined ? 1 : parseInteger(xmlText(staffElement));
       const voice = xmlText(xmlChild(child, "voice")) ?? "1";
@@ -661,12 +675,12 @@ function parseMeasure(
         });
         const durationText = xmlText(xmlChild(child, "duration"));
         const parsedDuration = durationText === undefined ? undefined : parseInteger(durationText);
-        if (!isChordMember && parsedDuration !== undefined && parsedDuration > 0) {
+        if (!context.workspaceInspection && !isChordMember && parsedDuration !== undefined && parsedDuration > 0) {
           const duration = fraction(parsedDuration, divisions);
           cursor = addFractions(cursor, duration);
           if (compareFractions(cursor, maximum) > 0) maximum = cursor;
         }
-        continue;
+        if (!context.workspaceInspection) continue;
       }
       const duration = durationFraction(xmlText(xmlChild(child, "duration")), divisions);
       const onset = isChordMember ? lastOnset.get(keyForCandidate) : cursor;
@@ -678,21 +692,23 @@ function parseMeasure(
       const slurValues = xmlDescendants(child, "slur").map((mark) => ({ number: Number(mark.attributes.number ?? "1"), type: mark.attributes.type }));
       if (slurValues.length && !isSourceSlurMarks(slurValues)) throw new MusicXmlStructureError("Unsupported or duplicate slur markings");
       const slurs = isSourceSlurMarks(slurValues) ? slurValues : undefined;
+      const workspaceInfo = context.workspaceInspection ? { workspaceEventId, fermata: xmlDescendants(child, "fermata").length > 0 } : {};
       const slashStyle = slashNotationForVoice(context.slashNotation, staff, voice);
       if (isRest) {
-        leadEvents.push({ kind: "rest", candidateKey: keyForCandidate, onset, duration });
+        leadEvents.push({ ...workspaceInfo, kind: "rest", candidateKey: keyForCandidate, onset, duration });
       } else if (slashStyle && !slashStyle.rhythmic) {
         context.diagnostics.push({ code: "IMPORT_UNSUPPORTED_ELEMENT",
           messageKo: "박마다 표시하는 슬래시는 명시된 리듬 음표와 구별해야 합니다. 원본을 보존하고 검토를 중단합니다.",
           details: { issue: "unsupported-beat-slash", measureOrdinal: ordinal, partOrdinal: context.partOrdinal, diagnosticScope: "lead-part" } });
       } else if (slashStyle?.rhythmic || (xmlChild(child, "unpitched") && xmlText(xmlChild(child, "notehead")) === "slash")) {
         const ties = new Set([...xmlChildren(child, "tie"), ...xmlDescendants(child, "tied")].map((tie) => tie.attributes.type));
-        leadEvents.push({ kind: "rhythm", candidateKey: keyForCandidate, onset, duration,
+        leadEvents.push({ ...workspaceInfo, kind: "rhythm", candidateKey: keyForCandidate, onset, duration,
           ...(slurs ? { slurs } : {}),
           tieStart: ties.has("start"), tieStop: ties.has("stop"), lyrics: parseLyrics(child, false, context, ordinal, keyForCandidate) });
       } else {
         const pitch = parsePitch(child);
         if (!pitch) {
+          if (context.workspaceInspection) unresolvedEvents.push({ id: workspaceEventId, kind: "unknown", candidateKey: keyForCandidate, onset, duration });
           context.diagnostics.push({
             code: "IMPORT_UNSUPPORTED_ELEMENT",
             messageKo: "pitched note의 step/alter/octave를 해석할 수 없습니다.",
@@ -711,6 +727,7 @@ function parseMeasure(
           ]);
           const accent = xmlDescendants(child, "accent").length > 0;
           leadEvents.push({
+            ...workspaceInfo,
             kind: "note",
             candidateKey: keyForCandidate,
             onset,
@@ -776,7 +793,9 @@ function parseMeasure(
   if (!time) throw new MusicXmlStructureError("MusicXML has no initial time signature");
   const meterDuration = fullMeasureDuration(time);
   if (compareFractions(maximum, meterDuration) > 0 || compareFractions(cursor, meterDuration) > 0) {
-    throw new MusicXmlStructureError("MusicXML cursor exceeds measure duration", { element: "measure", maximum: `${maximum.n}/${maximum.d}`, meterDuration: `${meterDuration.n}/${meterDuration.d}` });
+    if (!context.workspaceInspection) throw new MusicXmlStructureError("MusicXML cursor exceeds measure duration", { element: "measure", maximum: `${maximum.n}/${maximum.d}`, meterDuration: `${meterDuration.n}/${meterDuration.d}` });
+    context.diagnostics.push({ code: "IMPORT_CORRUPT_XML", messageKo: "후보의 시간이 마디 길이를 넘습니다. 저장·교정은 가능하지만 편곡 전에 시간축을 바로잡아야 합니다.",
+      details: { issue: "workspace-overfull", partOrdinal: context.partOrdinal, measureOrdinal: ordinal, maximum: `${maximum.n}/${maximum.d}` } });
   }
   const implicit = measure.attributes.implicit === "yes";
   const actualDuration = implicit && maximum.n > 0 ? maximum : meterDuration;
@@ -810,6 +829,8 @@ function parseMeasure(
   });
   return {
     measure: {
+      ...(context.workspaceInspection ? { workspaceMeasureId: `p${context.partOrdinal}m${ordinal}`, unresolvedEvents } : {}),
+      ...(keyObservation ? { keyObservation } : {}),
       ordinal,
       number,
       implicit,
@@ -827,6 +848,7 @@ function parseMeasure(
       },
     },
     next: {
+      ...(keyObservation ? { keyObservation } : {}),
       divisions,
       time,
       ...(key ? { key } : {}),
@@ -843,13 +865,15 @@ function parsePart(
   partOrdinal: number,
   displayPartName: string,
   diagnostics: ImportDiagnosticInput[],
+  workspaceInspection = false,
 ): ParsedPart {
-  const context: ParseContext = { diagnostics, partOrdinal, slashNotation: new Map() };
+  const context: ParseContext = { diagnostics, partOrdinal, slashNotation: new Map(), workspaceInspection };
   let inherited: {
     divisions: number;
     time?: TimeSignature;
     key?: KeySignature;
     importedFifths?: number;
+    keyObservation?: ImportedKeyObservation;
     activeEnding?: readonly (1 | 2)[];
   } = { divisions: 1 };
   const measures: ImportedMeasureDraft[] = [];
@@ -887,10 +911,10 @@ function parsePart(
   };
 }
 
-function buildCandidates(parts: readonly ImportedPartDraft[]): readonly LeadVoiceCandidate[] {
+export function buildCandidates(parts: readonly ImportedPartDraft[]): readonly LeadVoiceCandidate[] {
   const result: LeadVoiceCandidate[] = [];
   for (const part of parts) {
-    const keys = [...new Set(part.measures.flatMap((measure) => measure.leadEvents.map((event) => event.candidateKey)))].sort(fixedCompare);
+    const keys = [...new Set(part.measures.flatMap((measure) => [...measure.leadEvents, ...(measure.unresolvedEvents ?? [])].map((event) => event.candidateKey)))].sort(fixedCompare);
     for (const key of keys) {
       const identity = candidateIdentity(key);
       if (!identity) continue;
@@ -954,7 +978,7 @@ function scoreMetadata(root: XmlElement): { readonly title: string; readonly com
   return { title, ...(composer ? { composer } : {}) };
 }
 
-function parseScore(root: XmlElement): ParseScoreResult | undefined {
+function parseScore(root: XmlElement, workspaceInspection = false): ParseScoreResult | undefined {
   if (root.name !== "score-partwise") return undefined;
   const diagnostics: ImportDiagnosticInput[] = [];
   const metadata = scoreMetadata(root);
@@ -971,6 +995,7 @@ function parseScore(root: XmlElement): ParseScoreResult | undefined {
     partOrdinal,
     listedNames.get(part.attributes.id ?? "") ?? `Part ${partOrdinal + 1}`,
     diagnostics,
+    workspaceInspection,
   ));
   if (parsedParts.length === 0) return undefined;
   const parts = parsedParts.map((parsed) => parsed.part);
@@ -1057,7 +1082,7 @@ export function createSecureDocumentId(): string {
   return `doc:${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export async function importMusicXml(
+async function importMusicXmlInternal(
   rawBytes: Uint8Array,
   options: {
     readonly algorithmVersions: Step3ImportVersions;
@@ -1065,6 +1090,7 @@ export async function importMusicXml(
     readonly securityLimits?: ImportSecurityLimits;
     readonly identityFactory?: DocumentIdentityFactory;
   },
+  workspaceInspection = false,
 ): Promise<MusicImportResult> {
   const limits = options.securityLimits ?? DEFAULT_IMPORT_SECURITY_LIMITS;
   const isMxl = rawBytes.byteLength >= 2
@@ -1086,7 +1112,7 @@ export async function importMusicXml(
   }
   let score: ParseScoreResult | undefined;
   try {
-    score = parseScore(parsedXml.root);
+    score = parseScore(parsedXml.root, workspaceInspection);
   } catch (error) {
     if (!(error instanceof MusicXmlStructureError)) throw error;
     const diagnostics = await materializeImportDiagnostics([{
@@ -1122,6 +1148,7 @@ export async function importMusicXml(
     options.algorithmVersions.performanceExpanderVersion,
   );
   const draft: MusicXmlImportDraft = {
+    ...(workspaceInspection ? { workspaceInspectionOnly: true as const } : {}),
     ...(xmlDescendants(parsedXml.root, "miscellaneous-field").some((field) => field.attributes.name === "harmonymaker-local-candidate") ? { localCandidateReviewRequired: true as const } : {}),
     importerVersion: MUSICXML_IMPORTER_VERSION,
     documentId,
@@ -1166,6 +1193,16 @@ export async function importMusicXml(
     diagnostics,
   };
   return { status: "review-required", draft, diagnostics };
+}
+
+export function importMusicXml(rawBytes: Uint8Array, options: Parameters<typeof importMusicXmlInternal>[1]): Promise<MusicImportResult> {
+  return importMusicXmlInternal(rawBytes, options);
+}
+
+/** The security parser is unchanged. This separate entry retains overfull/unsupported
+ * music for editing; its draft is explicitly ineligible for direct finalization. */
+export function inspectMusicXmlWorkspace(rawBytes: Uint8Array, options: Parameters<typeof importMusicXmlInternal>[1]): Promise<MusicImportResult> {
+  return importMusicXmlInternal(rawBytes, options, true);
 }
 
 export const __musicXmlParserInternals = {

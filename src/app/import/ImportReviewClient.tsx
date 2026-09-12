@@ -129,7 +129,7 @@ function NoteSelect({
   );
 }
 
-function PerformerEditor({
+export function PerformerEditor({
   ordinal,
   slot,
   onSave,
@@ -272,7 +272,7 @@ function AddChordForm({
   );
 }
 
-function RightsEditor({ onConfirm }: { readonly onConfirm: (rights: RightsMetadata) => void }) {
+export function RightsEditor({ onConfirm }: { readonly onConfirm: (rights: RightsMetadata) => void }) {
   const [basis, setBasis] = useState<RightsBasis>("self-authored");
   const [sourceReference, setSourceReference] = useState("");
   const [licenseNote, setLicenseNote] = useState("");

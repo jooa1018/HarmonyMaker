@@ -16,6 +16,7 @@ export default function ImportPage() {
         <p className="eyebrow">STEP 3 · SOURCE FIRST</p>
         <h1>MusicXML 가져오기</h1>
         <p>악보를 안전하게 읽고, 멜로디·코드·구간·가수 음역·권리를 직접 확인합니다.</p>
+        <p><Link href="/score-workspace">원본을 보존하며 저장·교정하는 악보 작업 공간 →</Link></p>
       </header>
       <ImportReviewClient />
     </main>
