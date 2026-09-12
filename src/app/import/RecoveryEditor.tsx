@@ -5,6 +5,7 @@ import { fraction, type Fraction } from "../../domain/fraction";
 import { applyRecoveryEdit, inspectRecoveryXml, replayImportRecovery, undoRecoveryEdit, type RecoveryEdit, type RecoveryMeasure } from "../../import/review/recovery";
 import { saveImportRecovery, type StoredImportRecovery } from "../../import/review/recovery-store";
 import styles from "./import.module.css";
+import { LocalCandidateReviewEvidence } from "./LocalCandidateReviewEvidence";
 
 type NoteValue = Extract<RecoveryEdit, { kind: "note" }>["value"];
 function quarterInput(value: string): Fraction | undefined {
@@ -110,6 +111,7 @@ export function RecoveryEditor({ entry, onChanged, onInvalidate, onValidate }: {
     <p>원본 인식 결과와 교정 이력은 이 브라우저에 별도로 보존됩니다. 아래 페이지·시스템·마디 번호는 인식 결과의 좌표이며 원본과 직접 대조해야 합니다.</p>
     <p>음 길이를 바꾸면 뒤 이벤트의 위치도 달라질 수 있습니다. 교정 후 마디 전체와 다른 voice를 다시 확인하세요. 이 편집기는 누락 음표·마디 추가나 조각 연결을 아직 지원하지 않습니다.</p>
     {entry.incompleteReason ? <p role="alert">전체 구조 미확정: {entry.incompleteReason} 이 조각만으로 전체 Source를 확정할 수 없습니다.</p> : null}
+    {entry.localCandidate ? <LocalCandidateReviewEvidence bundle={entry.localCandidate} /> : null}
     {entry.pages.length ? <div>
       <label className={styles.field}><span>원본 페이지</span><select value={pageIndex} onChange={(e) => setPageIndex(Number(e.target.value))}>{entry.pages.map((p, i) => <option key={p.pageIndex} value={i}>{i + 1}페이지</option>)}</select></label>
       {/* Original bytes, never a generated replacement or an inferred crop. */}

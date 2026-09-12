@@ -1122,6 +1122,7 @@ export async function importMusicXml(
     options.algorithmVersions.performanceExpanderVersion,
   );
   const draft: MusicXmlImportDraft = {
+    ...(xmlDescendants(parsedXml.root, "miscellaneous-field").some((field) => field.attributes.name === "harmonymaker-local-candidate") ? { localCandidateReviewRequired: true as const } : {}),
     importerVersion: MUSICXML_IMPORTER_VERSION,
     documentId,
     rawDigest: await binaryDigest(rawBytes),

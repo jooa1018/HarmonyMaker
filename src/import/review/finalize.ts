@@ -1,4 +1,5 @@
 import { chordSemanticProjection } from "../../domain/chord/parser";
+import { verifiedStructuralCandidate, type StructuralRecovery } from "./structural-recovery";
 import { semanticDigest, compareCanonicalValues } from "../../domain/digest/canonical";
 import { digestMusicalSource, digestMusicalSourceComponents } from "../../domain/digest/source";
 import { buildMusicXmlSourceTargetMap } from "../../domain/omr/import-identity";
@@ -529,6 +530,19 @@ export async function normalizeImportedSource(
   versions: Step3ImportVersions,
 ): Promise<ImportedSourceNormalizationResult> {
   const prerequisiteErrors: ImportDiagnosticInput[] = [...versionMismatchInputs(draft, versions)];
+  if (draft.localCandidateReviewRequired) {
+    let reviewed = false;
+    try {
+      const proof = JSON.parse(draft.recoveryProof ?? "{}");
+      const workspace = proof.workspace as StructuralRecovery;
+      if (proof.version === "hm-structural-recovery-v1" && workspace?.documents.some((d) => d.localCandidate)) {
+        const verified = await verifiedStructuralCandidate(workspace);
+        reviewed = JSON.parse(verified.proof).candidateDigest === draft.rawDigest;
+      }
+    } catch { /* Preserve the block when the attachment, review, or revision is missing. */ }
+    if (!reviewed) prerequisiteErrors.push(blockedInput("local-candidate-review",
+      "로컬 자동 후보의 원본·추적 근거·미확정 대조가 필요합니다. 전곡 구조 검증을 통과한 교정 revision만 Source로 확정할 수 있습니다.", "IMPORT_UNSUPPORTED_ELEMENT"));
+  }
   if (!draft.selectedLeadStaffKey) prerequisiteErrors.push(blockedInput(
     "lead-selection",
     "Source Lead staff/voice를 명시적으로 선택해야 합니다.",

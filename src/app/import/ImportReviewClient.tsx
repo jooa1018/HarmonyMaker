@@ -15,7 +15,9 @@ import { useRouter } from "next/navigation";
 import type { Diagnostic } from "../../domain/diagnostics";
 import type { PitchRange, SpelledPitch } from "../../domain/pitch";
 import type { RightsBasis, RightsMetadata } from "../../domain/source/model";
-import { completeOmrImportHandoff, recordOmrImportHandoffFailure, takeOmrImportHandoff } from "../../domain/omr/browser-handoff";
+import { completeOmrImportHandoff, recordOmrImportHandoffFailure, storeOmrImportHandoff, takeOmrImportHandoff } from "../../domain/omr/browser-handoff";
+import { localCandidateImageBytes, parseLocalCandidate } from "../../domain/omr/local-candidate";
+import type { BinaryDigest } from "../../domain/digest/canonical";
 import type { OmrProviderResult } from "../../domain/omr/contracts";
 import {
   mapEvidenceBoxToNormalizedOriginal, validateOmrReviewCompletion,
@@ -413,7 +415,7 @@ export function ImportReviewClient() {
   const restoreRecovery = useCallback((entry: StoredImportRecovery) => {
     setRecoveryEntry(entry); setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined);
     setDiagnostics([]);
-    setInputOrigin(entry.providerResult || entry.incompleteReason ? "omr" : "file");
+    setInputOrigin(entry.providerResult || entry.incompleteReason || entry.localCandidate ? "omr" : "file");
     setOmrHandoff(entry.providerResult ? { handoffId: entry.id, result: entry.providerResult, pageUrls: entry.pages.map((page) => URL.createObjectURL(page.blob)) } : undefined);
     setFileStatus("저장된 교정 후보를 복구했습니다. 전체 재검증 후 Review를 진행하세요.");
   }, []);
@@ -430,7 +432,8 @@ export function ImportReviewClient() {
         try {
           const recovery = await createImportRecovery(bytes, file.name);
           const entry: StoredImportRecovery = { id: seed?.handoffId ?? crypto.randomUUID(), recovery, pages: seed?.pageImages ?? [],
-            updatedAt: new Date().toISOString(), ...(seed?.omrProviderResult ? { providerResult: seed.omrProviderResult } : {}) };
+            updatedAt: new Date().toISOString(), ...(seed?.omrProviderResult ? { providerResult: seed.omrProviderResult } : {}),
+            ...(seed?.localCandidate ? { localCandidate: seed.localCandidate } : {}) };
           const existing = seed ? (await loadImportRecoveries()).find((value) => value.id === entry.id) : undefined;
           if (existing) {
             if (existing.recovery.originalDigest !== recovery.originalDigest) throw new RangeError("RECOVERY_BINDING_INVALID");
@@ -441,9 +444,10 @@ export function ImportReviewClient() {
           await saveImportRecovery(entry);
           if (sequence !== loadSequence.current) return false;
           setRecoveryEntry(entry);
-        } catch {
+        } catch (error) {
           if (sequence !== loadSequence.current) return false;
           setRecoveryEntry(undefined);
+          if (seed?.localCandidate) throw error; // Never downgrade a failed bound handoff to a plain XML import.
         }
       }
       const proof = corrected ? await importRecoveryProof(corrected.recovery) : undefined;
@@ -458,7 +462,8 @@ export function ImportReviewClient() {
         return false;
       } else {
         setReviewing(true);
-        setDraft({ ...result.draft, ...(proof ? { recoveryProof: proof } : {}) });
+        setDraft({ ...result.draft, ...(proof ? { recoveryProof: proof } : {}),
+          ...(seed?.localCandidate || corrected?.localCandidate ? { localCandidateReviewRequired: true } : {}) });
         setDiagnostics(result.diagnostics);
         setFileStatus(`${result.draft.containerKind.toUpperCase()} 구조 파싱 완료 · Quick Review 필요`);
         return true;
@@ -483,7 +488,7 @@ export function ImportReviewClient() {
     handoffReadBusy.current = true;
     return takeOmrImportHandoff().then(async (handoff) => {
       if (handoff) {
-        setInputOrigin(handoff.omrProviderResult ? "omr" : "file");
+        setInputOrigin(handoff.omrProviderResult || handoff.localCandidate ? "omr" : "file");
         // Materialize the verified bytes before the failure counter writes the
         // IndexedDB record again. Downloads must not depend on its Blob backing.
         const file = new File([await handoff.file.arrayBuffer()], handoff.file.name, { type: handoff.file.type });
@@ -511,6 +516,25 @@ export function ImportReviewClient() {
   }, [loadFile, restoreRecovery]);
 
   useEffect(() => { void loadHandoff(); }, [loadHandoff]);
+
+  const openLocalCandidate = async (file: File) => {
+    setLoading(true);
+    try {
+      const bundle = await parseLocalCandidate(file);
+      const image = bundle.image;
+      await storeOmrImportHandoff({
+        fileName: file.name.replace(/\.json$/iu, "") + ".musicxml",
+        mimeType: "application/vnd.recordare.musicxml+xml",
+        bytes: new TextEncoder().encode(bundle.artifacts.candidateXml.text), localCandidate: bundle,
+        pageImages: [{ pageIndex: 0, rawDigest: image.sha256 as BinaryDigest, canonicalPageDigest: image.sha256 as BinaryDigest,
+          mimeType: image.mimeType, bytes: localCandidateImageBytes(bundle) }],
+      });
+      setOmrHandoff(undefined); setOmrSession(undefined); setRetainedHandoff(undefined);
+      await loadHandoff();
+    } catch (error) {
+      setFileStatus(`후보 묶음 전달 차단: ${error instanceof Error ? error.message : "무결성 확인 실패"}. 기존 자료는 유지됩니다.`);
+    } finally { setLoading(false); }
+  };
 
   useEffect(() => {
     if (!retainedHandoff) return;
@@ -690,6 +714,7 @@ export function ImportReviewClient() {
           <input type="file" accept=".musicxml,.xml,.mxl,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" onChange={onFileChange} disabled={loading} />
         </label>
         <p className={styles.status} aria-live="polite">{fileStatus}</p>
+        <label className={styles.field}><span>보존된 로컬 OMR 후보 묶음 열기 · 원본/근거 포함</span><input aria-label="로컬 OMR 후보 묶음 열기" type="file" accept="application/json,.json" disabled={loading} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void openLocalCandidate(file); }} /></label>
         {!draft ? <DiagnosticSummary diagnostics={diagnostics} /> : null}
       </section>
 

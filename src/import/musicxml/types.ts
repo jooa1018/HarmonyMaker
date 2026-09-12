@@ -198,6 +198,8 @@ export interface MusicXmlImportDraft {
   readonly originalFileName?: string;
   /** Explicit corrections to a quarantined candidate, separately from the original bytes. */
   readonly recoveryProof?: string;
+  /** Companion evidence is mandatory; only a bound, fully reviewed structural revision can finalize it. */
+  readonly localCandidateReviewRequired?: true;
   readonly title: string;
   readonly composer?: string;
   readonly parts: readonly ImportedPartDraft[];

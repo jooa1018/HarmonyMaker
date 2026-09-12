@@ -1,6 +1,6 @@
 # Local homr integration experiment
 
-Runnable, isolated candidate generation. This directory is not imported by the app or provider. Outputs are unverified hypotheses and must stay with their `evidence.json`. The MusicXML importer does **not** currently consume that sidecar or enforce its eligibility flag.
+Runnable, isolated candidate generation. This directory is not imported by the app or provider. Outputs are unverified hypotheses. The local [Review handoff](REVIEW.md) now carries the original raster, candidate and exact sidecars together; XML with the prototype notice cannot finalize Source without bound evidence and a verified recovery revision.
 
 Requires the preserved Windows comparison directory, its homr virtual environment, pinned source and models, observation wrapper, and Audiveris-distributed Tesseract libraries/data. It installs nothing, does not contact an image service, and accepts no correction history or evaluation reference as recognition input.
 

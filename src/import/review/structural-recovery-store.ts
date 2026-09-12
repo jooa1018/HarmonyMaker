@@ -25,6 +25,9 @@ async function validate(value: StoredStructuralRecovery): Promise<void> {
     bytes += p.blob.size;
   }
   if (bytes > 32_000_000) throw new RangeError("RECOVERY_PAGE_LIMIT");
+  for (const doc of value.workspace.documents) {
+    if (doc.localCandidate && (value.pages.length !== 1 || value.pages[0].rawDigest !== doc.localCandidate.image.sha256)) throw new RangeError("RECOVERY_LOCAL_PAGE_BINDING_INVALID");
+  }
 }
 export async function saveStructuralRecovery(value: StoredStructuralRecovery, expectedRevision?: number): Promise<void> {
   await validate(value); const db = await database();

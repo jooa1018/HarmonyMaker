@@ -1,10 +1,12 @@
 "use client";
 import { binaryDigest } from "../../domain/digest/canonical";
 import type { OmrProviderResult } from "../../domain/omr/contracts";
-import { validateOmrHandoffPageBinding, type OmrHandoffPageImage } from "../../domain/omr/browser-handoff";
+import { validateLocalCandidateHandoff, validateOmrHandoffPageBinding, type OmrHandoffPageImage } from "../../domain/omr/browser-handoff";
+import type { LocalCandidateBundle } from "../../domain/omr/local-candidate";
 import { replayImportRecovery, type ImportRecovery } from "./recovery";
 
 export interface StoredImportRecovery {
+  readonly localCandidate?: LocalCandidateBundle;
   readonly id: string;
   readonly updatedAt: string;
   readonly recovery: ImportRecovery;
@@ -27,6 +29,10 @@ async function validate(value: StoredImportRecovery): Promise<void> {
     || !Number.isFinite(Date.parse(value.updatedAt)) || !Array.isArray(value.pages) || value.pages.length > 12
     || (value.incompleteReason !== undefined && (typeof value.incompleteReason !== "string" || value.incompleteReason.length > 256))) throw new RangeError("RECOVERY_STORAGE_INVALID");
   await replayImportRecovery(value.recovery);
+  if (value.localCandidate) {
+    if (value.providerResult) throw new RangeError("RECOVERY_PROVIDER_BINDING_INVALID");
+    await validateLocalCandidateHandoff(value.localCandidate, new TextEncoder().encode(value.recovery.originalXml), value.pages);
+  }
   let total = 0;
   for (const [index, page] of value.pages.entries()) {
     if (page.pageIndex !== index || !(page.blob instanceof Blob) || page.blob.size < 1
@@ -54,6 +60,7 @@ async function writeImportRecovery(value: StoredImportRecovery, preserveExisting
           const existing = request.result as StoredImportRecovery | undefined;
           if (!existing) { drafts.add(value); return; }
           if (existing.recovery.originalDigest !== value.recovery.originalDigest
+            || existing.localCandidate?.manifestSha256 !== value.localCandidate?.manifestSha256
             || existing.incompleteReason !== value.incompleteReason
             || existing.pages.length !== value.pages.length
             || existing.pages.some((page, index) => page.rawDigest !== value.pages[index].rawDigest

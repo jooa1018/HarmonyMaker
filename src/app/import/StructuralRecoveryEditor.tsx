@@ -9,6 +9,7 @@ import { applyStructuralEdit, attestStructuralMeasure, createStructuralRecovery,
 import { loadStructuralRecoveries, saveStructuralRecovery, type StoredStructuralRecovery } from "../../import/review/structural-recovery-store";
 import { exportStructuralBundle, importStructuralBundle } from "../../import/review/structural-recovery-bundle";
 import styles from "./import.module.css";
+import { LocalCandidateReviewEvidence } from "./LocalCandidateReviewEvidence";
 
 function quarters(s: string): Fraction | undefined {
   const m = /^(\d+)(?:\/(\d+)|\.(\d{1,6}))?$/u.exec(s.trim()); if (!m) return;
@@ -128,7 +129,7 @@ export function StructuralRecoveryEditor({ retained, onInvalidate, onValidate }:
   const apply = (edit: StructuralEdit) => { void task(async () => { if (entry) await save(await applyStructuralEdit(entry.workspace, digest, edit, source, crypto.randomUUID(), new Date().toISOString())); }); };
   const create = () => task(async () => {
     const chosen = selected.map((id) => retained.find((r) => r.id === id)!);
-    const docs: StructuralRecovery["documents"][number][] = chosen.map((r) => ({ id: r.id, recovery: r.recovery, ...(r.incompleteReason ? { failureReason: r.incompleteReason } : {}) }));
+    const docs: StructuralRecovery["documents"][number][] = chosen.map((r) => ({ id: r.id, recovery: r.recovery, ...(r.incompleteReason ? { failureReason: r.incompleteReason } : {}), ...(r.localCandidate ? { localCandidate: r.localCandidate } : {}) }));
     for (const file of files) docs.push({ id: crypto.randomUUID(), recovery: await createImportRecovery(new Uint8Array(await file.arrayBuffer()), file.name), failureReason: "사용자가 보존한 인식 출력 · 전곡 구조 미확정" });
     const id = crypto.randomUUID(), workspace = await createStructuralRecovery(id, docs);
     let pages = chosen[0]?.pages ?? [];
@@ -151,6 +152,7 @@ export function StructuralRecoveryEditor({ retained, onInvalidate, onValidate }:
     <details><summary>보존한 구조 교정 묶음 열기</summary><p>이 앱에서 보존한 원본·교정 이력을 별도 사본으로 엽니다. 기존 작업은 유지하며, Source 검증은 다시 수행합니다.</p><input aria-label="구조 교정 묶음 열기" type="file" accept="application/json,.json" disabled={busy} onChange={(e) => { const file = e.target.files?.[0]; if (file) void task(async () => { const next = await importStructuralBundle(file); onInvalidate(); setState(undefined); setDigest(""); setEntry(next); setSaved((rs) => [next, ...rs]); setMeasureId(""); setEventId(""); setIssues([]); }); }} /></details>
     {saved.length ? <label className={styles.field}><span>저장된 구조 복구</span><select aria-label="저장된 구조 복구" value={entry?.id ?? ""} disabled={busy} onChange={(e) => { onInvalidate(); setState(undefined); setDigest(""); setEntry(saved.find((r) => r.id === e.target.value)); setMeasureId(""); setEventId(""); setIssues([]); }}>{saved.map((r) => <option value={r.id} key={r.id}>{r.workspace.documents.map((d) => d.recovery.originalFileName).join(" + ")} · {r.workspace.operations.length}건</option>)}</select></label> : null}
     {entry ? <div>
+      {entry.workspace.documents.filter((d) => d.localCandidate).map((d) => <LocalCandidateReviewEvidence key={d.id} bundle={d.localCandidate!} />)}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img ref={pageRef} alt="구조 복구 대조 원본" style={{ maxWidth: "100%", height: "auto" }} />
       <p>원본 문서 {entry.workspace.documents.length}개 · 후보 마디 {state?.measures.length ?? "복구 중"}개 · 명시적 구조 교정 {entry.workspace.operations.length}건 · 이 revision 원본 확인 {entry.workspace.coverage.length}개</p>

@@ -1,4 +1,5 @@
 import { binaryDigest, canonicalJson } from "../../domain/digest/canonical";
+import { localCandidateReviewSummary, validateLocalCandidate, type LocalCandidateBundle } from "../../domain/omr/local-candidate";
 import { addFractions as add, subtractFractions as sub, compareFractions as cmp, fraction as f, type Fraction } from "../../domain/fraction";
 import { xmlChild as child, xmlChildren as children, xmlText as text, type XmlElement } from "../musicxml/xml";
 import { applyRecoveryXmlEdit, inspectRecoveryXml, recoveryDuration, recoveryXmlRoot, replayImportRecovery, serializeRecoveryXml as xml, type ImportRecovery, type RecoveryEdit } from "./recovery";
@@ -37,7 +38,7 @@ export interface StructuralCoverage {
 }
 export interface StructuralRecovery {
   readonly version: "hm-structural-recovery-v1"; readonly id: string;
-  readonly documents: readonly { readonly id: string; readonly recovery: ImportRecovery; readonly failureReason?: string }[];
+  readonly documents: readonly { readonly id: string; readonly recovery: ImportRecovery; readonly failureReason?: string; readonly localCandidate?: LocalCandidateBundle }[];
   readonly operations: readonly StructuralOperation[]; readonly redo: readonly StructuralOperation[];
   readonly coverage: readonly StructuralCoverage[];
 }
@@ -75,9 +76,21 @@ async function seedState(documents: StructuralRecovery["documents"]): Promise<St
   if (!Array.isArray(documents) || !documents.length || documents.length > 16 || new Set(documents.map((d) => d.id)).size !== documents.length) throw new RangeError("RECOVERY_DOCUMENTS_INVALID");
   if (documents.reduce((n, d) => n + enc.encode(d.recovery.originalXml).length, 0) > 4_000_000) throw new RangeError("RECOVERY_COLLECTION_LIMIT");
   const measures: StructuralMeasure[] = [];
+  const uncertainties: Record<string, string> = {};
   for (const doc of documents) {
+    if (doc.localCandidate) {
+      await validateLocalCandidate(doc.localCandidate);
+      if (doc.localCandidate.artifacts.candidateXml.sha256 !== doc.recovery.originalDigest) throw new RangeError("RECOVERY_LOCAL_BINDING_INVALID");
+      // Document-wide obligation shown at its first measure. The full immutable
+      // attachment remains in documents even after a later explicit resolution.
+      uncertainties[`${doc.id}:m0`] = localCandidateReviewSummary(doc.localCandidate);
+    }
     if (!/^[a-zA-Z0-9._:-]{1,128}$/u.test(doc.id)) throw new RangeError("RECOVERY_DOCUMENT_ID_INVALID");
     const tree = recoveryXmlRoot(await replayImportRecovery(doc.recovery));
+    const misc = child(child(tree, "identification") ?? tree, "miscellaneous");
+    if (!doc.localCandidate && misc && children(misc, "miscellaneous-field").some((n) => n.attributes.name === "harmonymaker-local-candidate")) {
+      throw new RangeError("RECOVERY_LOCAL_EVIDENCE_REQUIRED");
+    }
     const parts = children(tree, "part");
     // A one-part score is supported here; never flatten several parts or staves.
     if (parts.length !== 1) throw new RangeError("RECOVERY_PART_MAPPING_REQUIRED");
@@ -117,7 +130,7 @@ async function seedState(documents: StructuralRecovery["documents"]): Promise<St
     }
   }
   if (measures.length > 512) throw new RangeError("RECOVERY_MEASURE_LIMIT");
-  return { measures, joins: [], uncertainties: {} };
+  return { measures, joins: [], uncertainties };
 }
 function measureXml(m: StructuralMeasure): XmlElement {
   const attrs: XmlElement[] = [element("divisions", String(GRID))];
