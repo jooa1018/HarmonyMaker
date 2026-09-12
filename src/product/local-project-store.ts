@@ -42,6 +42,16 @@ export class IndexedDbProjectStore implements LocalProjectStore {
       await transactionDone(transaction);
     } finally { database.close(); }
   }
+  /** File import and first projection must never replace a saved project. */
+  async saveNew(record: LocalProjectRecord): Promise<void> {
+    const encoded = await exportHarmonyProject(record.project);
+    const database = await this.database();
+    try {
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      transaction.objectStore(STORE_NAME).add({ projectId: record.projectId, updatedAt: record.updatedAt, encoded });
+      await transactionDone(transaction);
+    } finally { database.close(); }
+  }
   async saveIfCurrent(record: LocalProjectRecord, expectedUpdatedAt: string, isStillCurrent: () => boolean = () => true): Promise<boolean> {
     const encoded = await exportHarmonyProject(record.project);
     const database = await this.database();

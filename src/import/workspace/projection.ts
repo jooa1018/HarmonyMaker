@@ -75,6 +75,9 @@ export async function workspaceProjectionMetadata(draft:MusicXmlImportDraft,sour
       targetMap.push({workspaceId:matches[0].key,sourceId:c.id,kind:"chord"});
     }
   }
+  const expectedEvents=part.measures.flatMap(m=>m.leadEvents.filter(e=>selected.includes(e.candidateKey)).map(e=>e.workspaceEventId!)).sort();
+  const actualEvents=targetMap.filter(t=>t.kind==="event").map(t=>t.workspaceId).sort();
+  if(canonicalJson(expectedEvents)!==canonicalJson(actualEvents))throw new RangeError("WORKSPACE_TARGET_MAPPING_INCOMPLETE");
   return {version:"hm-workspace-projection-v1" as const,originKind:workspace.origin.kind,workspaceId:workspace.id,workspaceRevision:workspace.revision,
     workspaceDigest:workspace.digest,evidenceDigest:await workspaceEvidenceDigest(workspace.origin),requestDigest:await semanticDigest(clean(state.request)),
     initialSourceDigest:source.revisionDigest,selectedVoices:selected,excludedVoices:state.music!.leadCandidates.map(c=>c.key).filter(k=>!selected.includes(k)),

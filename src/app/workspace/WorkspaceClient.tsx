@@ -35,6 +35,7 @@ import {
 import { activeOutputEditsForCandidate, canonicalLockScopeKey, canonicalLockTargets, lockFromCanonicalTarget, outputEditTargetId, staleBoundaryPresentation, upsertCanonicalStageLock, upsertEditedSnapshotHistory, type UiStageLock } from "../../product/workspace-controls";
 import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
 import styles from "./workspace.module.css";
+import { ProjectLibrary } from "./ProjectLibrary";
 
 const PRESETS: readonly ArrangementPresetId[] = ["simple", "standard", "full"];
 const PROJECTIONS: readonly ScoreProjection[] = ["full", "lead", "upper", "lower"];
@@ -87,10 +88,10 @@ export function WorkspaceClient() {
   const [projection, setProjection] = useState<ScoreProjection>("full");
   const [messageState, setMessageState] = useState<{ readonly projectId: string; readonly value: string }>(() => ({
     projectId,
-    value: projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요.",
+    value: projectId ? "로컬 프로젝트를 확인하는 중…" : "프로젝트 파일을 열거나 저장한 프로젝트를 선택하세요.",
   }));
   const message = !projectId
-    ? "프로젝트 ID가 없습니다. Quick Review에서 시작해 주세요."
+    ? "프로젝트 파일을 열거나 저장한 프로젝트를 선택하세요."
     : routeState.requestedId !== projectId || routeState.loadStatus === "loading"
       ? "로컬 프로젝트를 확인하는 중…"
       : messageState.projectId === projectId ? messageState.value : "로컬 프로젝트를 확인하는 중…";
@@ -306,7 +307,12 @@ export function WorkspaceClient() {
   const importProject = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
     const operationProjectId = routeController.beginMutation(projectId).projectId;
-    try { await saveProject(await importHarmonyProject(await file.text()), "정본 프로젝트 파일을 검증하고 로드했습니다.", operationProjectId); }
+    try {
+      const imported = await importHarmonyProject(await file.text());
+      const importedId = crypto.randomUUID();
+      await projectStore.saveNew({ projectId: importedId, project: imported, updatedAt: new Date().toISOString() });
+      if (routeController.mutationStillCurrent(projectId, operationProjectId)) router.push(`/workspace?project=${encodeURIComponent(importedId)}`);
+    }
     catch (error) {
       if (routeController.mutationStillCurrent(projectId, operationProjectId)) setMessage(error instanceof Error ? error.message : "프로젝트 파일이 손상되었습니다.");
     }
@@ -322,8 +328,9 @@ export function WorkspaceClient() {
     if (!shareOperationGate.tryBegin()) return;
     setBusy(true); setShareUrl(undefined);
     try {
-      const withRights = confirmShareRights(project, new Date().toISOString());
-      const payload = materializePracticeShare({ project: withRights, presetId, materialized, playbackDefaults: { speedPercent: 100, accompanimentEnabled: true } });
+      const workspaceSource = project.source.importInfo?.sourceKind === "score-workspace";
+      const withRights = workspaceSource ? project : confirmShareRights(project, new Date().toISOString());
+      const payload = materializePracticeShare({ project: withRights, presetId, materialized, playbackDefaults: { speedPercent: 100, accompanimentEnabled: true }, ...(workspaceSource ? { workspaceShareConfirmedForThisExport: true as const } : {}) });
       const encoded = encodeProductUrlShare(payload);
       if (urlShareFits(encoded)) {
         const url = `${window.location.origin}/share#p=${encoded}`;
@@ -417,13 +424,14 @@ export function WorkspaceClient() {
     else setMessage("ShareStore 공유를 삭제하지 못했습니다.");
   };
 
-  if (!project) return <><header><p className="eyebrow">PRODUCT CORE · WORKSPACE</p><h1>프로젝트 워크스페이스</h1></header><section className="panel"><p className="status">{message}</p><p><Link href="/import">Quick Review에서 시작하기 →</Link></p></section></>;
+  if (!project) return <><header><p className="eyebrow">PRODUCT CORE · WORKSPACE</p><h1>프로젝트 워크스페이스</h1></header><ProjectLibrary/><section className="panel"><p className="status">{message}</p><p><Link href="/score-workspace">악보 작업 공간에서 시작하기 →</Link></p></section></>;
   const candidates = variant?.lifecycle === "generation-attempted" ? variant.generationResult.candidates : [];
   const snapshots = variant?.lifecycle === "generation-attempted" ? variant.editedSnapshots : [];
   const activeId = variant?.lifecycle === "generation-attempted" ? variant.activeArrangement?.kind === "candidate" ? variant.activeArrangement.candidateId : variant.activeArrangement?.snapshotId : undefined;
   const status = variant?.lifecycle === "generation-attempted" ? variant.generationResult.status : variant?.lifecycle ?? "empty";
 
   return <>
+    <p><Link href="/workspace">← 저장한 프로젝트 · 파일 열기</Link></p>
     <header className={styles.header}><div><p className="eyebrow">PRODUCT CORE · CANONICAL WORKSPACE</p><h1>{project.source.title}</h1><p>{project.source.composer ?? "작곡자 미기재"} · {project.source.defaultKey.tonic.step}{project.source.defaultKey.mode === "minor" ? " minor" : " major"}</p></div><Link href="/import">새 Source 가져오기</Link></header>
     <p className="status" aria-live="polite">{message}</p>
     {project.source.importInfo?.sourceKind==="score-workspace"&&<ProjectionNotice metadata={project.source.importInfo.workspaceMetadata}/>}

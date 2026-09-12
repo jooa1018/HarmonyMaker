@@ -27,13 +27,20 @@ function atomEvent(atom: TimelineAtom, document: ArrangementRenderDocument, sour
 function generatedEvent(event: GeneratedVoiceEvent, document: ArrangementRenderDocument, sourceToLocal: Readonly<Record<string, string>>): CompactVocalEvent { return compactEvent({ measureIndex: event.range.start.performanceMeasureIndex, offset: event.range.start.offset, duration: canonicalRangeDuration(document.measures, event.range), ...(event.kind === "note" ? { pitch: event.pitch, tieStart: event.tieStart, tieStop: event.tieStop, lyricTokenIds: event.lyricTokenIds } : { tieStart: false, tieStop: false, lyricTokenIds: [] }) }, sourceToLocal); }
 
 export function confirmShareRights(project: HarmonyProject, confirmedAt?: string): HarmonyProject {
+  if (project.source.importInfo?.sourceKind === "score-workspace") {
+    throw new RangeError("WORKSPACE_RIGHTS_IMMUTABLE_USE_EXPORT_CONFIRMATION");
+  }
   const allowedUses = [...new Set([...project.source.rights.allowedUses, "share" as const])].sort();
   return { ...project, source: { ...project.source, rights: { ...project.source.rights, allowedUses, ...(confirmedAt ? { confirmedAt } : {}) } } };
 }
 
-export function materializePracticeShare(input: { readonly project: HarmonyProject; readonly presetId: ArrangementPresetId; readonly materialized: MaterializedArrangement; readonly playbackDefaults?: PracticeSettings }): PracticeSharePayload {
+export function materializePracticeShare(input: { readonly project: HarmonyProject; readonly presetId: ArrangementPresetId; readonly materialized: MaterializedArrangement; readonly playbackDefaults?: PracticeSettings; readonly workspaceShareConfirmedForThisExport?: true }): PracticeSharePayload {
   if (input.materialized.validity !== "valid") throw new RangeError("SHARE_ARTIFACT_INVALID");
-  if (!input.project.source.rights.allowedUses.includes("share")) throw new RangeError("SHARE_RIGHTS_REQUIRED");
+  // A per-export confirmation authorizes only the compact practice payload.
+  // It never rewrites the rights attestation sealed in a workspace Source.
+  const workspaceConfirmation = input.project.source.importInfo?.sourceKind === "score-workspace"
+    && input.workspaceShareConfirmedForThisExport === true;
+  if (!workspaceConfirmation && !input.project.source.rights.allowedUses.includes("share")) throw new RangeError("SHARE_RIGHTS_REQUIRED");
   const document = input.materialized.document;
   // V4 share has one Source voice. Refuse a lossy public payload until that schema expands.
   if (document.sourceRhythmTracks?.length) throw new RangeError("SHARE_SEPARATE_RHYTHM_VOICES_UNSUPPORTED");

@@ -112,6 +112,12 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
     }
   }
   if(part) {
+    const lead=state.music!.leadCandidates.find(c=>c.key===state.request.lead)!;
+    for(const voice of state.request.rhythmVoices) {
+      const rhythm=state.music!.leadCandidates.find(c=>c.key===voice);
+      if(rhythm?.partOrdinal!==lead.partOrdinal||rhythm?.staffNumber!==lead.staffNumber)
+        add(`rhythm-staff:${voice}`,"현재 리듬 투영은 Lead와 같은 파트·보표만 지원합니다. 선택한 다른 보표의 리듬은 원본에 보존되며 편곡은 차단합니다.");
+    }
     const chordPart=part.measures.some(m=>m.chords.length)?part:state.music!.parts.find(p=>p.measures.some(m=>m.chords.length));
     if(chordPart&&chordPart.partOrdinal!==part.partOrdinal) add("separate-chord-part","현재 1차 투영은 선택한 Lead 파트의 코드만 지원합니다. 다른 파트의 코드는 원본에 보존하며 자동 확인하지 않습니다.");
     const keys=part.measures.map(m=>effectiveWorkspaceKey(state,m.workspaceMeasureId!));

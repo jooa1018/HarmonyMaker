@@ -17,6 +17,10 @@ import { deriveWorkspaceCapabilities, effectiveWorkspaceKey } from "./review";
 import { projectScoreWorkspace, validateProjectedWorkspaceDraft } from "./projection";
 import { ScoreWorkspaceStore, generatedWorkspaceResultIsCurrent } from "./store";
 import type { ScoreWorkspace, WorkspaceCommand } from "./model";
+import { confirmShareRights, materializePracticeShare } from "../../product/practice-share";
+import { computeSourceProvenanceDigest } from "../../domain/source/provenance";
+import { validateWorkspaceSourceIntegrity } from "./source-integrity";
+import { IndexedDbProjectStore } from "../../product/local-project-store";
 
 // Independently authored musical fixtures. No private score/XML is committed.
 const E=new TextEncoder();
@@ -43,6 +47,83 @@ async function ready(w:ScoreWorkspace) {
 }
 
 describe("persistent score boundary",()=>{
+  it("projects pitch-free rhythm on the Lead staff and blocks a selected rhythm on another staff",async()=>{
+    for(const staff of [1,2]){
+      const slash=`<backup><duration>4</duration></backup><note><unpitched><display-step>B</display-step><display-octave>4</display-octave></unpitched><duration>4</duration><voice>2</voice><type>whole</type><staff>${staff}</staff><notehead>slash</notehead></note>`;
+      let w=await ready(await start(score({body:note()+slash})));const s=await state(w);
+      const rhythm=s.music!.leadCandidates.find(c=>c.key!==s.request.lead)!.key;
+      w=await act(w,{kind:"lead",lead:s.request.lead!,rhythmVoices:[rhythm]});w=await reviewAll(w);
+      if(staff===2){
+        expect((await caps(w)).arrange).toBe(false);await expect(projectScoreWorkspace(w)).rejects.toThrow("NOT_READY");
+      }
+      else {
+        const draft=await projectScoreWorkspace(w),review=await deriveQuickReview(draft,V);
+        expect(review.state.readyForPlanning,JSON.stringify(review.diagnostics)).toBe(true);
+        const events=review.source!.sourceMeasures.flatMap(m=>m.rhythmVoices!.flatMap(v=>v.events));
+        expect(events).toHaveLength(4);expect(events.every(e=>e.kind==="rhythm"&&!("pitch" in e))).toBe(true);
+      }
+    }
+  });
+  it("keeps a workspace snapshot exportable after a separate share confirmation", async()=>{
+    const w=await ready(await start());
+    const draft=await projectScoreWorkspace(w),review=await deriveQuickReview(draft,V);
+    const generated=await generateProjectVariant(await createProjectFromQuickReview(draft,review),"standard");
+    const project=generated.project, before=await exportHarmonyProject(project);
+    expect(()=>confirmShareRights(project,"2026-09-12T12:00:00Z")).toThrow("WORKSPACE_RIGHTS_IMMUTABLE");
+    const materialized=materializeActiveArrangement(project,"standard");
+    expect(()=>materializePracticeShare({project,presetId:"standard",materialized})).toThrow("SHARE_RIGHTS_REQUIRED");
+    const payload=materializePracticeShare({project,presetId:"standard",materialized,workspaceShareConfirmedForThisExport:true});
+    expect(payload.rightsShareConfirmed).toBe(true);
+    expect(JSON.stringify(payload)).not.toMatch(/workspace|proof|originalFile|sourceKind|base64|sourceEvidence/iu);
+    expect(await exportHarmonyProject(project)).toBe(before);
+    expect((await importHarmonyProject(before)).source.importInfo?.sourceKind).toBe("score-workspace");
+  });
+  it("rejects a self-resealed Source whose claimed rights disagree with the workspace request", async()=>{
+    const w=await ready(await start());const draft=await projectScoreWorkspace(w);
+    const source=(await deriveQuickReview(draft,V)).source!;
+    const changed={...source,rights:{...source.rights,allowedUses:[]}};
+    const resealed={...changed,sourceProvenanceDigest:await computeSourceProvenanceDigest(changed)};
+    expect(await validateWorkspaceSourceIntegrity(resealed)).toBe(false);
+  });
+  it("atomically refuses an imported project ID collision and retains the previous valid file", async()=>{
+    const w=await ready(await start()),draft=await projectScoreWorkspace(w);
+    const project=await createProjectFromQuickReview(draft,await deriveQuickReview(draft,V));
+    const store=new IndexedDbProjectStore(new IDBFactory());
+    const record={projectId:"copy:collision",project,updatedAt:"2026-09-12T12:00:00Z"};
+    const results=await Promise.allSettled([store.saveNew(record),store.saveNew({...record,updatedAt:"2026-09-13T12:00:00Z"})]);
+    expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+    expect(results.filter(r=>r.status==="rejected")).toHaveLength(1);
+    expect(await exportHarmonyProject((await store.load(record.projectId))!.project)).toBe(await exportHarmonyProject(project));
+    await store.saveNew({...record,projectId:"copy:second"});
+    expect(await store.list()).toHaveLength(2);
+  });
+  it("rejects divergent history, overlong history and a mismatched selection proof", async()=>{
+    const w=await ready(await start(score({extraVoice:true}))),s=await state(w);
+    const left=await act(w,{kind:"title",title:"left"}),right=await act(w,{kind:"title",title:"right"});
+    const store=new ScoreWorkspaceStore(new IDBFactory());
+    await store.save({workspace:left,storageRevision:0,updatedAt:"2026-09-12T12:00:00Z"});
+    await expect(store.save({workspace:right,storageRevision:1,updatedAt:"2026-09-12T12:01:00Z"},0)).rejects.toThrow("ROLLBACK");
+    expect((await store.load(w.id))!.workspace.historyDigest).toBe(left.historyDigest);
+    await expect(parseScoreWorkspace(JSON.stringify({...w,operations:Array(2049).fill(w.operations[0]),revision:2049}))).rejects.toThrow("HISTORY_INVALID");
+    const draft=await projectScoreWorkspace(w);
+    await expect(validateProjectedWorkspaceDraft({...draft,selectedLeadStaffKey:s.music!.leadCandidates[1].key})).rejects.toThrow("SUBSTITUTED");
+    await expect(originFromMusicXml(E.encode('<score-partwise>'+ '<nested>'.repeat(130)+'</nested>'.repeat(130)+'</score-partwise>'),"deep.xml")).rejects.toThrow();
+  });
+  it("keeps the unselected pitched part intact when selecting the second part",async()=>{
+    const first=score({mode:"minor"});
+    const second=first.match(/<part id="P1">[\s\S]*<\/part>/u)![0].replace('id="P1"','id="P2"').replaceAll('<step>D</step>','<step>F</step>');
+    const xml=first.replace('</part-list>','<score-part id="P2"><part-name>Second part</part-name></score-part></part-list>').replace('</score-partwise>',second+'</score-partwise>');
+    let w=await ready(await start(xml));let s=await state(w);
+    const lead=s.music!.leadCandidates.find(c=>c.partOrdinal===1)!.key;
+    w=await act(w,{kind:"lead",lead,rhythmVoices:[]});
+    w=await act(w,{kind:"sections",sections:(await state(w)).request.sections.map(section=>({...section,type:"verse",confirmation:"confirmed"})),lyricVerses:{}});
+    for(const m of s.music!.parts[1].measures)w=await act(w,{kind:"attest",purpose:"music",scope:{kind:"measure",measureId:m.workspaceMeasureId!,voiceKey:lead}});
+    const draft=await projectScoreWorkspace(w),review=await deriveQuickReview(draft,V);
+    expect(review.state.readyForPlanning,JSON.stringify(review.diagnostics)).toBe(true);
+    expect(review.source!.sourceMeasures.flatMap(m=>m.leadEvents).every(e=>e.kind==="note"&&e.pitch.step==="F")).toBe(true);
+    s=await state(await parseScoreWorkspace(await exportScoreWorkspace(w)));
+    expect(s.music!.parts[0].measures.flatMap(m=>m.leadEvents)).toHaveLength(4);
+  });
   it("distinguishes missing/explicit modes and effective key without rewriting observation or pitch",async()=>{
     for(const [mode,expected]of [["","importer-major-default"],["major","explicit-source-mode"],["minor","explicit-source-mode"]]as const) {
       const w=await start(score({mode})),s=await state(w),m=s.music!.parts[0].measures[0];

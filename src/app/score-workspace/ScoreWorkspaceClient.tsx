@@ -6,6 +6,7 @@ import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../algorithm-versio
 import { PerformerEditor,RightsEditor } from "../import/ImportReviewClient";
 import { LocalCandidateReviewEvidence } from "../import/LocalCandidateReviewEvidence";
 import { fraction,type Fraction } from "../../domain/fraction";
+import { canonicalJson } from "../../domain/digest/canonical";
 import type { KeySignature,SpelledPitch } from "../../domain/pitch";
 import type { LocalCandidateBundle } from "../../domain/omr/local-candidate";
 import { deriveQuickReview } from "../../import";
@@ -102,7 +103,9 @@ export function ScoreWorkspaceClient() {
   const generateSource=()=>run(async ensureCurrent=>{const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");const draft=await projectScoreWorkspace(old.record.workspace),analysis=await deriveQuickReview(draft,V);ensureCurrent();setDiagnostics(analysis.diagnostics.map(d=>`${d.code}: ${d.messageKo}`).join("\n"));if(!analysis.state.readyForPlanning)throw Error("기존 최종 Validator가 편곡 입력을 차단했습니다. 아래 진단을 확인하세요.");const project=await createProjectFromQuickReview(draft,analysis,old.state.request.preset);
     // Each input revision receives a distinct local project; previous results survive.
     const projectId=`${old.record.workspace.id}:r${old.record.workspace.revision}`,projects=new IndexedDbProjectStore();
-    const existingProject=await projects.load(projectId);ensureCurrent();if(!existingProject)await projects.save({projectId,updatedAt:new Date().toISOString(),project});
+    const existingProject=await projects.load(projectId);ensureCurrent();
+    if(existingProject&&canonicalJson(existingProject.project.source)!==canonicalJson(project.source))throw Error("저장한 프로젝트의 확정 입력이 이 초안과 다릅니다. 기존 자료를 보존했으며 연결하지 않았습니다.");
+    if(!existingProject)await projects.saveNew({projectId,updatedAt:new Date().toISOString(),project});
     await persist(old.record.workspace,ensureCurrent,old.record,{projectId,workspaceRevision:old.record.workspace.revision,workspaceDigest:old.record.workspace.digest});router.push(`/workspace?project=${encodeURIComponent(projectId)}`);
   });
   const w=loaded?.record.workspace,s=loaded?.state,c=loaded?.caps;
