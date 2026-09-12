@@ -1,5 +1,53 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-12 후속 로컬 시험판 검증
+
+**LOCAL_TRIAL_PARTIAL / HUMAN_EVALUATION_NOT_RUN.** 이 절은 아래 선행 `BOUNDARY_V1_VERIFIED` 기록 이후 실제 수행한 검수·실행 결과다. 시작 브랜치는 `codex/harmonymaker-source-boundary-v1`, HEAD는 `143f9dd4739d145c30a13dccdf61cf3a26e5b638`이며 작업 트리는 깨끗했다. 첨부 문서와 이 저장소 문서도 당시 SHA-256이 같았다. 기존 작업과 원본·이전 증거를 보존했다.
+
+검증 제품 코드 commit은 **`33c56ae3b713d520573a508a86938977669218d6`**이다. 그 뒤의 이 문서 갱신은 문서 전용 commit이며 build/실행 코드와 구분한다.
+
+| 검사 | 이번 실행 결과 |
+|---|---|
+| 직접 코드·계약 검수 | PASS. 새로운 반례로 아래 결함을 재현·수정. 외부 독립 감사는 수행하지 않음 |
+| 타입·전체 린트 | PASS, 각각 종료 0 |
+| 전체 기본/private | 104파일 992개 기본 PASS. 최초 경로 조건으로 건너뛴 3파일 5개를 실제 보존 자료 복사본으로 모두 후속 실행해 PASS. 합계 107파일 고유 997개. 실제 UI 다운로드를 읽는 관련 2개 재실행도 PASS이며 고유 수에 중복 합산하지 않음 |
+| PostgreSQL | 실제 PostgreSQL 17.11 DB 시험 37개 PASS. 별도 Memory 비교 1개·환경 문자열 검사 1개를 포함한 전용 설정 총 39개 PASS. 시험 DB/스키마만 사용, 종료 후 남은 시험 스키마 0개 |
+| production build | PASS. 기본 `next build`, 종료 0. build ID `DAk-neBCM3KUq1sH4qBb2` |
+| production A 일반 UI | 새 Chrome 152.0.7977.83 / Edge 152.0.4191.66 프로필에서 수정 전 A부터 각각 67단계 PASS. 실제 최초 다운로드·파일 재입력·Play/Pause/Resume/Reset 포함 |
+| 서버·브라우저 재시작 후 읽기 | PASS. 같은 Chrome 프로필·origin에서 프로젝트 및 revision 20 초안 복구, 출처·현재 입력 일치 확인 |
+| 재시작 뒤 JSON 재다운로드 | **BLOCKED_ENVIRONMENT — 실제 브라우저 시험은 FAIL.** 새 전용 프로필 재사용에서도 Chrome/Edge native 종료 `3221225477` 재현. Chrome의 앱·악보 없는 약 950KB JSON Blob도 동일 종료. 작은 plain text는 PASS. 해결 미확정 |
+| 호환·차단 | 구형 정상 v9 프로젝트·XML/MXL 및 손상/revision 거절 15단계 PASS. 두 pitched 성부 보존·한 Lead 투영·선택 변경 후 이전 결과 표시 45단계 PASS. JPEG/B/C 저장·복구·차단 27단계 PASS |
+
+실제 수정:
+
+1. Lead와 다른 보표의 리듬 4개를 선택했는데 기존 투영이 이를 0개로 누락하면서 Source가 승인되는 반례를 재현했다. `src/import/workspace/review.ts`에서 기존 엔진의 같은 파트·보표 조건을 적용하고 `projection.ts`에서 선택 이벤트 전체 대응을 검사한다. 지원을 확대하거나 슬래시에 pitch를 만들지 않았다.
+2. 공유 권리 확인 함수가 확정 Source의 권리만 바꿔 proof와 불일치하고 프로젝트 export가 `PROJECT_INTEGRITY_INVALID`로 실패하는 것을 재현했다. `src/product/practice-share.ts`, `src/app/workspace/WorkspaceClient.tsx`에서 1회 compact 공유 확인을 불변 Source와 분리했다. 원본·전체 proof는 공유 payload에 포함하지 않는다. 실제 외부 공유는 만들지 않았다.
+3. 빈 브라우저에서 프로젝트 가져오기 UI에 접근하지 못하고 기존 화면의 가져오기가 현재 프로젝트를 교체하는 경로를 수정했다. `ProjectLibrary.tsx`, `WorkspaceClient.tsx`, `src/app/page.tsx`와 `local-project-store.ts`의 atomic `saveNew`로 새 사본을 저장한다. 기존 결과 재사용 때 Source 일치도 검사한다. 새 프로필의 포함 snapshot 표시와 초안 파일 별도 복구를 실제 확인했다.
+
+추가 회귀는 `src/import/workspace/workspace.test.ts`에 있다. Source v9 음악 구조·WAG·인식기·provider·secret·quota·Next 설정은 바꾸지 않았다. 해시 재계산 가능성과 Source/proof 구조 일치 요구를 구분하며, 해시를 음악/권리 진술의 인증 서명으로 취급하지 않는다.
+
+원본 A 이미지를 이번에도 직접 열어 대조했다. 원래 30개 음표, 코드·시간축, D minor, 점4분음표=60을 유지했고 음표 수정 명령은 0건이다. 생성 성부 30개 표기 음표 / tie 연속 14개 / 재생 attack 16개를 구간별 pitch·시간·재발음 경계와 대조했다. 24 quarter = 16초이며 Play와 Resume에서 각각 실제 WebAudio 비영 신호를 관측했다. 이는 청감 평가가 아니다.
+
+최초 현재 자원은 가용 RAM 약 0.36GiB, C: 여유 약 9.8GiB였다. 무거운 검사를 순차 실행했고 기존 의존성·PostgreSQL 실행 파일만 재사용했다. 이번 작업 소유 DB/스키마만 생성·시험·종료했으며 기존 사용자 DB를 초기화하지 않았다. 작은 build heap 제한, dev cache 옵션의 production 적용, 필수 환경 검사 우회, production Memory fallback, 캐시 삭제는 없었다. 기존 manifest 329개 파일과 인계 산출물 10개는 종료 시에도 모두 동일했다.
+
+실행은 저장소에서 다음 명령을 사용했다. 시작 후 주소는 `http://127.0.0.1:3196/score-workspace`, 프로젝트 파일 열기는 `/workspace`다.
+
+```powershell
+Set-Location -LiteralPath 'C:\Users\eccto\Documents\Codex\2026-09-07\files-pasted-by-the-user-harmonymaker\work\HarmonyMaker'
+$env:NEXT_TELEMETRY_DISABLED='1'
+node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3196
+```
+
+새 설치 없이 사용하는 실제 안내·수정 전 A·최종 초안·최종 프로젝트·편곡 MusicXML·검증 manifest/로그는 다음 로컬 인계 폴더에 구분해서 보존한다.
+
+`C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-local-trial`
+
+`시작안내.md`는 사용자 실행 절차이고 `검증보고서.md`와 `verification/`은 상세 검증/실패 증거다. `delivery-receipt.json`은 후속 문서 commit과 최종 서버 상태를 기록한다. 초안과 프로젝트 JSON은 원본/proof 복구용이고 편곡 MusicXML은 선택 Lead/생성 성부의 음악 교환용이다. 과거 `1c7569e` reader의 출처 enum은 새 출처를 받지 않으며, 이를 manual/musicxml/omr로 거짓 변환하지 않는다.
+
+재시작 후 JSON 다운로드 문제는 과거 프로필에만 남은 문제로 축소하지 않는다. 이번 새 시험 프로필에서도 재현되므로 기술 판정을 PARTIAL로 제한한다. 저장본 읽기와 최초 다운로드 성공까지 실패로 합치지도 않는다. 인간의 화면 이해·가창·청감·물리 iPhone 평가는 미실행이다. JPEG/C 자동 완전 복원과 3/4·tuplet·임의 다성부 동시 편곡은 미지원/미해결 상태를 유지한다. 실제 OMR 호출과 앱의 음악 자료 외부 전송은 0회, push·원격 CI·배포·승격·main 병합은 미실행이다.
+
+## 선행 단계 기록 — 당시 구현과 검증
+
 2026-09-12. 사용자가 승인한 제한적 계약 변경이다. 출발점은 로컬 `508fb276f915b94b3a1a177b2766b75eb742eaf8`이며, `8170504` 시제품과 원격 `1c7569e`를 모두 포함한다. 시작 시 미커밋 변경은 없었다. 로컬 작업 브랜치는 `codex/harmonymaker-source-boundary-v1`이다. push·배포는 범위 밖이다.
 
 ## 유지하는 계약
@@ -44,7 +92,7 @@
 
 시작 자원: RAM 약 8GB 중 가용 약270MB, C: 여유 약386MB. 기존 의존성을 재사용하고 무거운 실행은 순차 진행한다. Docker/OMR 재실행·사용자 파일 일괄 삭제는 하지 않는다.
 
-## 현재 판정
+## 선행 단계의 판정
 
 **BOUNDARY_V1_VERIFIED — 로컬 1차 입력·교정 경계의 필수 검증 완료.** 자동 OMR 전체 완성·모든 브라우저 지원·출시 완료를 뜻하지 않는다. 기존 보고서의 PASS를 이번 실행의 검증으로 재집계하지 않았다.
 
@@ -161,7 +209,9 @@ node experiments/homr-integration/boundary-ui.cjs "$env:HM_BOUNDARY_PRIVATE\a-de
 
 남은 불편은 긴 한 화면, 최초 후보 근거와 현재 교정 상태를 구분해 읽어야 하는 점, 가수별 음역 입력, 명시적인 마디별 대조다. 음악적 확인을 자동 승인하여 숫자만 줄이지 않았다.
 
-## 로컬 실행·재개
+## 선행 단계의 개발 서버 실행 기록
+
+이 절의 3195 개발 서버 명령은 이전 검증 기록이다. 현재 production 모드 로컬 시험판의 실행은 문서 첫 절과 인계 폴더의 `시작안내.md`를 따른다.
 
 기준 HEAD `508fb276f915b94b3a1a177b2766b75eb742eaf8` 위에 로컬 브랜치 `codex/harmonymaker-source-boundary-v1`로 구현했다. 최종 additive commit은 제출 메시지와 `git log -1`로 확인한다. push·PR 업데이트·원격 CI·배포를 하지 않았다.
 
