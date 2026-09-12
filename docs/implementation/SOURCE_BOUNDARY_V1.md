@@ -1,5 +1,30 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-12 로컬 시험판 최종 안정화
+
+**LOCAL_TRIAL_READY / HUMAN_EVALUATION_NOT_RUN.** 이 절은 아래 `LOCAL_TRIAL_PARTIAL` 기록의 유일한 주요 기술 blocker였던 브라우저 재시작 후 다운로드 종료를 별도 원인 분리하고, 같은 제품 코드로 전체 회귀와 최종 production build를 다시 검증한 결과다. 시작 상태는 `codex/harmonymaker-source-boundary-v1`, HEAD `b074a475abe4a5a873eac8f11e2883b04680dcda`, 깨끗한 작업 트리였고 제품 코드는 계속 **`33c56ae3b713d520573a508a86938977669218d6`**이다. 이번 안정화에서는 제품 코드를 바꾸지 않았다.
+
+다운로드 종료는 HarmonyMaker의 Blob/ObjectURL helper가 아니라 Playwright `launchPersistentContext` 기동 경로로 분리됐다. Chrome 152.0.7977.83과 Edge 152.0.4191.66에서 새 전용 프로필은 26바이트 text, 22바이트 JSON, MusicXML 11,755바이트, workspace 약 806KB, project 약 956KB를 모두 받았지만 같은 프로필을 그 API로 다시 열면 첫 26바이트 text부터 native 종료했다. headless와 창 모드가 같았고, Blob/ObjectURL과 메모리에서 바로 응답하는 same-origin POST attachment도 같았다. 따라서 MIME·파일 크기·Content-Disposition·URL 해제 시점이나 앱 상태가 원인이라는 가설은 배제됐다.
+
+같은 설치 브라우저 실행 파일을 전용 `--user-data-dir`과 loopback CDP 포트로 직접 기동하고 연결하면 Chrome과 Edge 모두 fresh/reused에서 위 5종 파일을 전부 내려받아 SHA-256까지 일치했고 browser process 종료 코드는 0이었다. 이 직접 기동 방식으로 최종 production build에서도 다음을 재검증했다.
+
+| 검사 | 최종 안정화 결과 |
+|---|---|
+| 타입 / 전체 lint | PASS. 각각 종료 0. lint 첫 시도의 `.pytest_cache` ACL 중단은 같은 명령을 읽기 제한 밖에서 재실행해 PASS했으며 파일이나 권한을 바꾸지 않음 |
+| 기본 / private 회귀 | 104파일 992개 기본 PASS, 보존 자료 사본의 3파일 5개 private PASS. 합계 107파일 고유 997개 |
+| PostgreSQL | PostgreSQL 17.11 전용 설정 4파일 39개 PASS. 실제 PostgreSQL 경로 37개와 Memory 비교·환경 문자열 보조 검사 2개를 구분. 남은 `hm_%` 스키마 0, task-owned 서버 종료 |
+| production build | PASS. Next 16.3.0 기본 build, 17개 정적 페이지, build ID `fEJihGtdVIBpRhK2MxmCX` |
+| Chrome / Edge A 전체 UI | 최종 build에서 수정 전 `independent-a.review.json`부터 각각 67단계 PASS. Source·WAG·악보·WebAudio·저장·새로고침·workspace/project/MusicXML 실제 다운로드 포함 |
+| 같은 프로필 재시작 | Chrome/Edge 각각 9단계 PASS. 프로젝트와 revision 20 초안 복구, project/workspace JSON 재다운로드 및 최초 canonical 내용과 일치 |
+| 파일 재입력 | 별도 새 Chrome 프로필 9단계 PASS. 최종 project·workspace·MusicXML을 실제 UI로 재입력. Source 30음표, MusicXML 두 성부 60음표 확인 |
+| 호환·차단 | 최종 build에서 구형 project·XML/MXL 및 손상 거절 15단계, JPEG/B/C 보존·차단 27단계, 두 pitched 성부 보존·한 Lead 투영·stale 표시 45단계 모두 PASS |
+
+두 브라우저의 Source 30음표·D minor·점4분음표 60·WAG 음악 결과는 같았고, 내보낸 MusicXML의 두 성부 60음표도 재파싱해 같음을 확인했다. Play/Pause/Resume/Reset의 실제 AudioContext 연결과 비영 PCM은 통과했지만 음악적 자연스러움이나 가창 적합성의 사람 청감 증거는 아니다.
+
+자동 사용성 감사에서 저장 완료와 revision, 현재/원본 상태, Source 확정 다음 동작, 프로젝트에 포함된 snapshot과 별도 초안의 관계는 화면에서 확인 가능했다. 67단계 동안 필수 입력을 다시 입력하게 하는 경로는 없었다. 긴 교정 화면과 일부 영어 진단 용어는 남은 마찰이지만 이번 범위에서 조치가 불명확한 blocker나 데이터 손실로 재현되지 않아 UI 코드는 바꾸지 않았다.
+
+이 판정은 설치된 Chrome/Edge를 일반 실행 경로로 사용하는 로컬 시험판의 기술 상태다. `launchPersistentContext` 재사용은 이번 환경에서 실패하는 검증 harness 경로이므로 최종 브라우저 증거에 사용하지 않는다. 사람의 화면 이해·가창·스피커/헤드폰·물리 iPhone 평가는 미실행이다. OMR/homr/Audiveris 재실행, JPEG/C 복원, 3/4·tuplet 지원, 외부 공유·push·원격 CI·배포·승격·병합은 수행하지 않았다.
+
 ## 2026-09-12 후속 로컬 시험판 검증
 
 **LOCAL_TRIAL_PARTIAL / HUMAN_EVALUATION_NOT_RUN.** 이 절은 아래 선행 `BOUNDARY_V1_VERIFIED` 기록 이후 실제 수행한 검수·실행 결과다. 시작 브랜치는 `codex/harmonymaker-source-boundary-v1`, HEAD는 `143f9dd4739d145c30a13dccdf61cf3a26e5b638`이며 작업 트리는 깨끗했다. 첨부 문서와 이 저장소 문서도 당시 SHA-256이 같았다. 기존 작업과 원본·이전 증거를 보존했다.
