@@ -1,5 +1,9 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-13 첫 사람 청감 이후 오디오 수정
+
+첫 실제 사람 청취에서 Band OFF의 생성 화음은 대체로 자연스러웠으나 Band ON 마스킹과 음표마다 동반되는 잡음이 보고됐다. 재생 renderer/mixer만 수정한 제품 commit `8fb9a5092a85643998bc6f607e24cfb26c52b300`은 **PLAYBACK_READY / HUMAN_RECHECK_NOT_RUN**이다. Source·WAG·chord·rhythm·tie와 실제 A 프로젝트 전체 내용은 보존됐다. 기본 998개 회귀, type/lint/build, production Chrome/Edge의 실제 재생·믹서·transport·다운로드와 PCM 대조를 수행했다. 새 build ID는 `-_83F5zXnvwJ1UN2_F4Jt`이며 상세 경로·수치·검증 한계는 [PLAYBACK_AUDIO_V1.md](PLAYBACK_AUDIO_V1.md)에 기록한다. 아래 사람 평가 미실행 기록은 그 당시 상태로 보존하며, 수정 후 청감은 아직 재평가하지 않았다.
+
 ## 2026-09-12 로컬 시험판 최종 안정화
 
 **LOCAL_TRIAL_READY / HUMAN_EVALUATION_NOT_RUN.** 이 절은 아래 `LOCAL_TRIAL_PARTIAL` 기록의 유일한 주요 기술 blocker였던 브라우저 재시작 후 다운로드 종료를 별도 원인 분리하고, 같은 제품 코드로 전체 회귀와 최종 production build를 다시 검증한 결과다. 시작 상태는 `codex/harmonymaker-source-boundary-v1`, HEAD `b074a475abe4a5a873eac8f11e2883b04680dcda`, 깨끗한 작업 트리였고 제품 코드는 계속 **`33c56ae3b713d520573a508a86938977669218d6`**이다. 이번 안정화에서는 제품 코드를 바꾸지 않았다.
