@@ -6,6 +6,11 @@ import { storeOmrImportHandoff, takeOmrImportHandoff } from "./browser-handoff";
 import { createImportRecovery } from "../../import/review/recovery";
 import { loadImportRecoveries, saveImportRecovery } from "../../import/review/recovery-store";
 import { createStructuralRecovery, replayStructuralRecovery, validateStructuralRecovery, verifiedStructuralCandidate } from "../../import/review/structural-recovery";
+import { validateLocalImageResult, type LocalImageJob } from "./local-image";
+import { acceptLocalImageWorkspace } from "../../import/workspace/local-image-handoff";
+import { ScoreWorkspaceStore } from "../../import/workspace/store";
+import { applyWorkspaceCommand } from "../../import/workspace/journal";
+import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../../app/algorithm-version-registry";
 
 const enc = new TextEncoder(), digest = (text: string) => binaryDigest(enc.encode(text));
 const xml = '<score-partwise><part-list><score-part id="P1"><part-name>Lead</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note></measure></part></score-partwise>';
@@ -31,6 +36,39 @@ export async function candidateFixture(): Promise<LocalCandidateBundle> {
     artifacts: Object.fromEntries(LOCAL_CANDIDATE_ARTIFACTS.map((key) => [key, { text: files[key], sha256: "" }])) as LocalCandidateBundle["artifacts"] });
 }
 beforeEach(() => { Object.defineProperty(globalThis, "indexedDB", { value: new IDBFactory(), configurable: true }); });
+
+async function imageJobFixture(){
+  let bundle=await candidateFixture();const now="2026-09-13T00:00:00.000Z",id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const job:LocalImageJob={id,fileName:"independent-fixture.png",mimeType:"image/png",bytes:localCandidateImageBytes(bundle).length,width:1,height:1,language:"eng",createdAt:now,updatedAt:now,sequence:4,phase:"candidate-ready",
+    execution:{schema:"hm-local-image-v1",jobId:id,inputSha256:bundle.image.sha256,requestSha256:"a".repeat(64),applicationRevision:"b".repeat(40),runnerSha256:"c".repeat(64),modelsSha256:"d".repeat(64),homrRevision:"e".repeat(40),cacheReused:false,actor:"ui-test"}};
+  const evidence={...JSON.parse(bundle.artifacts.evidence.text),execution:job.execution};
+  bundle=await seal({...bundle,artifacts:{...bundle.artifacts,evidence:{text:JSON.stringify(evidence),sha256:""}}});
+  const text=JSON.stringify(bundle);return{bundle,text,job:{...job,resultSha256:await digest(text)}};
+}
+describe("fresh image job to persistent workspace",()=>{
+  it("binds original bytes, exact evidence and execution without approving unresolved music",async()=>{
+    const {job,text,bundle}=await imageJobFixture(),record=await acceptLocalImageWorkspace(job,text,V);
+    expect(record.workspace.origin.localCandidate).toEqual(bundle);expect(record.workspace.operations).toEqual([]);
+    expect(JSON.parse(record.workspace.origin.localCandidate!.artifacts.evidence.text).sourceEligibility.approved).toBe(false);
+    expect((await new ScoreWorkspaceStore().load(record.workspace.id))!.workspace.digest).toBe(record.workspace.digest);
+  });
+  it("reopening a job retains later corrections and two-tab first saves converge",async()=>{
+    const {job,text}=await imageJobFixture();const [a,b]=await Promise.all([acceptLocalImageWorkspace(job,text,V),acceptLocalImageWorkspace(job,text,V)]);
+    expect(a.workspace.digest).toBe(b.workspace.digest);const store=new ScoreWorkspaceStore();
+    const corrected=await applyWorkspaceCommand(a.workspace,a.workspace,{kind:"title",title:"User correction retained"},{id:"op:fixture",note:"independent test correction",actor:"ui-test",at:"2026-09-13T00:01:00.000Z"});
+    await store.save({workspace:corrected,storageRevision:1,updatedAt:"2026-09-13T00:01:00.000Z"},0);
+    const reopened=await acceptLocalImageWorkspace(job,text,V);expect(reopened.workspace.revision).toBe(1);expect(reopened.workspace.historyDigest).toBe(corrected.historyDigest);
+  });
+  it("rejects swapped job/image/revision/cache metadata even when bundle hashes are resealed",async()=>{
+    const {job,text,bundle}=await imageJobFixture();
+    for(const patch of [{inputSha256:"f".repeat(64)},{applicationRevision:"f".repeat(40)},{runnerSha256:"f".repeat(64)},{modelsSha256:"f".repeat(64)},{jobId:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},{cacheReused:true}]){
+      const changed=await seal({...bundle,artifacts:{...bundle.artifacts,evidence:{text:JSON.stringify({...JSON.parse(bundle.artifacts.evidence.text),execution:{...job.execution,...patch}}),sha256:""}}});
+      const edited=JSON.stringify(changed);await expect(validateLocalImageResult({...job,resultSha256:await digest(edited)},edited)).rejects.toThrow("LOCAL_IMAGE_RESULT_MISMATCH");
+    }
+    await expect(acceptLocalImageWorkspace({...job,phase:"recognizing"},text,V)).rejects.toThrow("LOCAL_IMAGE_RESULT_MISMATCH");
+    expect(await new ScoreWorkspaceStore().list()).toEqual([]);
+  });
+});
 describe("local candidate handoff", () => {
   it("retains image, exact files and unresolved records through handoff, storage and structural recovery", async () => {
     const bundle = await candidateFixture(), bytes = enc.encode(xml), sha = await binaryDigest(localCandidateImageBytes(bundle));

@@ -1,5 +1,9 @@
 # 입력·교정·Source 경계 v1
 
+## 로컬 PNG/JPEG 입력 연결
+
+실제 로컬 homr 실행과 상태·취소·복구·후보 전달 계약은 [LOCAL_IMAGE_V1.md](LOCAL_IMAGE_V1.md)에 정리한다. 이미지 결과는 기존 영속 작업 공간과 Source 검증을 거친다. 아래 선행 실행 기록과 새 이미지 실행 결과를 구분하며, A 성공을 사용자 JPEG 전곡 복원으로 해석하지 않는다. 사용자가 최근 오디오 개선을 확인했으므로 이번 이미지 작업은 해당 믹서·envelope와 WAG 음악 규칙을 보존한다.
+
 ## 2026-09-13 첫 사람 청감 이후 오디오 수정
 
 첫 실제 사람 청취에서 Band OFF의 생성 화음은 대체로 자연스러웠으나 Band ON 마스킹과 음표마다 동반되는 잡음이 보고됐다. 재생 renderer/mixer만 수정한 제품 commit `8fb9a5092a85643998bc6f607e24cfb26c52b300`은 **PLAYBACK_READY / HUMAN_RECHECK_NOT_RUN**이다. Source·WAG·chord·rhythm·tie와 실제 A 프로젝트 전체 내용은 보존됐다. 기본 998개 회귀, type/lint/build, production Chrome/Edge의 실제 재생·믹서·transport·다운로드와 PCM 대조를 수행했다. 새 build ID는 `-_83F5zXnvwJ1UN2_F4Jt`이며 상세 경로·수치·검증 한계는 [PLAYBACK_AUDIO_V1.md](PLAYBACK_AUDIO_V1.md)에 기록한다. 아래 사람 평가 미실행 기록은 그 당시 상태로 보존하며, 수정 후 청감은 아직 재평가하지 않았다.

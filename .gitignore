@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-local-image/
 out/
 *.log
 *.tsbuildinfo
