@@ -4,6 +4,7 @@ import { deriveFifths } from "../../domain/pitch";
 import { validatePerformer } from "../../domain/performer";
 import { clean, measures, requireMeasure } from "./edit";
 import { __musicXmlParserInternals } from "../musicxml/parser-core";
+import { workspaceSlurDependencies } from "./slur-dependencies";
 import type { WorkspaceAttestation, WorkspaceCapabilities, WorkspaceIssue, WorkspaceScope, WorkspaceState } from "./model";
 
 export function effectiveWorkspaceKey(state: WorkspaceState, measureId: string) {
@@ -27,7 +28,7 @@ export function workspaceScopeRelevant(state: WorkspaceState, scope: WorkspaceSc
 
 /** Carry-in chords, absolute time, inherited key/meter and tie neighbors are real
  * dependencies. A title, performer form or unrelated chord is not one. */
-export async function workspaceReviewFingerprint(state: WorkspaceState, scope: WorkspaceScope, evidenceDigest: string): Promise<string> {
+export async function workspaceReviewFingerprint(state: WorkspaceState, scope: WorkspaceScope, evidenceDigest: string, dependencyVersion: 1 | 2 = 1): Promise<string> {
   let projection: unknown;
   if (scope.kind === "metadata") projection = { title: state.music?.title ?? "" };
   else if (scope.kind === "document") projection = { parts: state.music?.parts ?? [], keys: state.request.keys, issues: state.issues };
@@ -56,15 +57,19 @@ export async function workspaceReviewFingerprint(state: WorkspaceState, scope: W
     const chordMeaning = (c: typeof ownChords[number]) => ({ id:c.key, onset:c.onset, text:c.sourceText, parseResult:c.parseResult });
     const previous = priorChords.at(-1);
     const incoming = ownChords.some(c => c.onset.n === 0) || !previous ? null : chordMeaning(previous);
+    const slurDependencies=dependencyVersion===2||state.slurReviewTracking?workspaceSlurDependencies(part,m.ordinal,selected):[];
+    const notationRemovals=state.notationRemovals?.filter(r=>notes.some(e=>e.workspaceEventId===r.eventId))??[];
     projection = { measureId: m.workspaceMeasureId, duration: m.duration, time: m.time, key: effectiveWorkspaceKey(state,scope.measureId) ?? null,
       observation: m.keyObservation ?? null, absoluteStart: start, notes, unknown: m.unresolvedEvents ?? [], chords: ownChords.map(chordMeaning), incoming,
-      repeat: m.repeat, text: m.textEvents, previousTie: tieBoundary(part.measures[m.ordinal-1],"last"), nextTie: tieBoundary(part.measures[m.ordinal+1],"first") };
+      repeat: m.repeat, text: m.textEvents, previousTie: tieBoundary(part.measures[m.ordinal-1],"last"), nextTie: tieBoundary(part.measures[m.ordinal+1],"first"),
+      ...(slurDependencies.length?{slurDependencies}:{}),...(notationRemovals.length?{notationRemovals}:{}) };
   }
-  return semanticDigest({ schema: "hm-workspace-review-dependency-v1", evidenceDigest, scope: clean(scope), projection: clean(projection) });
+  return semanticDigest({ schema: dependencyVersion===2?"hm-workspace-review-dependency-v2":"hm-workspace-review-dependency-v1", evidenceDigest, scope: clean(scope), projection: clean(projection) });
 }
 export async function attestationCurrent(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string): Promise<boolean> {
   if (a.evidenceDigest !== evidenceDigest) return false;
-  try { return a.dependencyFingerprint === await workspaceReviewFingerprint(state,a.scope,evidenceDigest); } catch { return false; }
+  if(a.dependencyVersion===undefined&&state.invalidatedLegacyReviewIds?.includes(a.id))return false;
+  try { return a.dependencyFingerprint === await workspaceReviewFingerprint(state,a.scope,evidenceDigest,a.dependencyVersion??1); } catch { return false; }
 }
 export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string): Promise<boolean> {
   if (issue.requiredAction !== "compare") return false;

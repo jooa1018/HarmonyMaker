@@ -2,8 +2,9 @@ import type { Fraction } from "../../domain/fraction";
 import type { KeySignature, SpelledPitch } from "../../domain/pitch";
 import type { TimeSignature } from "../../domain/meter";
 import type { RightsMetadata, TempoSpec } from "../../domain/source/model";
+import type { SourceSlurMark } from "../../domain/source/notation";
 import type { LocalCandidateBundle } from "../../domain/omr/local-candidate";
-import type { MusicXmlImportDraft, PerformerReviewSlot, ImportedSectionDraft, Step3ImportVersions } from "../musicxml/types";
+import type { MusicXmlImportDraft, PerformerReviewSlot, ImportedSectionDraft, ImportedLyricDraft, Step3ImportVersions } from "../musicxml/types";
 
 export const SCORE_WORKSPACE_VERSION = "hm-score-workspace-v1" as const;
 export interface WorkspaceOrigin {
@@ -51,6 +52,7 @@ export interface WorkspaceAttestation {
   readonly purpose: "music" | "issue";
   readonly issueId?: string;
   readonly dependencyFingerprint: string;
+  readonly dependencyVersion?: 2;
   readonly targetIds: readonly string[];
   readonly evidenceDigest: string;
   readonly note: string;
@@ -63,6 +65,15 @@ export interface WorkspaceState {
   readonly issues: readonly WorkspaceIssue[];
   readonly request: ArrangementRequest;
   readonly attestations: readonly WorkspaceAttestation[];
+  /** Added only by explicit notation edits; the immutable XML remains intact. */
+  readonly notationRemovals?: readonly { readonly eventId: string; readonly feature: string }[];
+  /** New editor histories track immutable unsupported symbols through moves. */
+  readonly notationTracking?: true;
+  readonly removedEventIds?: readonly string[];
+  /** Opt-in preserves the dependency fingerprints of pre-editor histories. */
+  readonly slurReviewTracking?: true;
+  /** Explicit migration invalidations, never replacement user approvals. */
+  readonly invalidatedLegacyReviewIds?: readonly string[];
 }
 export type WorkspaceEdit =
   | { readonly kind: "title"; readonly title: string }
@@ -72,6 +83,16 @@ export type WorkspaceEdit =
   | { readonly kind: "chord"; readonly measureId: string; readonly chordId?: string; readonly text: string; readonly onset: Fraction }
   | { readonly kind: "fermata"; readonly eventId: string; readonly value: boolean }
   | { readonly kind: "note"; readonly eventId: string; readonly value: { readonly kind: "note" | "rest" | "rhythm"; readonly pitch?: SpelledPitch; readonly onset: Fraction; readonly duration: Fraction; readonly tieStart: boolean; readonly tieStop: boolean } }
+  | { readonly kind: "remove-notation"; readonly eventId: string; readonly feature: string }
+  | { readonly kind: "event-voice"; readonly eventId: string; readonly staffNumber: number; readonly voice: string }
+  | { readonly kind: "insert-event"; readonly measureId: string; readonly staffNumber: number; readonly voice: string; readonly eventKind: "note" | "rest" | "rhythm"; readonly pitch?: SpelledPitch; readonly onset: Fraction; readonly duration: Fraction; readonly tieStart?: boolean; readonly tieStop?: boolean }
+  | { readonly kind: "remove-event"; readonly eventId: string }
+  | { readonly kind: "move-event"; readonly eventId: string; readonly measureId: string; readonly onset: Fraction }
+  | { readonly kind: "measure-extent"; readonly measureId: string; readonly duration: Fraction; readonly implicit: boolean }
+  | { readonly kind: "event-lyrics"; readonly eventId: string; readonly lyrics: readonly ImportedLyricDraft[] }
+  | { readonly kind: "event-slurs"; readonly eventId: string; readonly slurs: readonly SourceSlurMark[] }
+  | { readonly kind: "remove-chord"; readonly chordId: string }
+  | { readonly kind: "move-chord"; readonly chordId: string; readonly measureId: string; readonly onset: Fraction }
   | { readonly kind: "meter"; readonly startMeasureId: string; readonly endMeasureIdExclusive?: string; readonly time: TimeSignature }
   | { readonly kind: "split"; readonly measureId: string; readonly at: Fraction }
   | { readonly kind: "performers"; readonly count: 1 | 2 | 3; readonly slots: readonly PerformerReviewSlot[] }
@@ -87,6 +108,10 @@ export interface WorkspaceOperation {
   readonly beforeDigest: string; readonly afterDigest: string;
   readonly affectedIds: readonly string[];
   readonly note: string; readonly actor: "user" | "ui-test"; readonly at: string;
+  /** Absence replays the original dependency contract byte-for-byte. */
+  readonly reviewDependencyVersion?: 2;
+  /** Verified against chronological before/after v2 dependencies on replay. */
+  readonly invalidatedLegacyReviewIds?: readonly string[];
 }
 export interface ScoreWorkspace {
   readonly version: typeof SCORE_WORKSPACE_VERSION;

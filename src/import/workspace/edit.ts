@@ -1,14 +1,16 @@
 import { parseChord } from "../../domain/chord/parser";
 import { canonicalJson } from "../../domain/digest/canonical";
 import { fraction, addFractions, subtractFractions, compareFractions, type Fraction } from "../../domain/fraction";
-import { isCanonicalFraction, isCanonicalKeySignature, isCanonicalSpelledPitch, isCanonicalTimeSignature } from "../../domain/validation";
+import { hasExactKeys, isPlainRecord, isCanonicalFraction, isCanonicalKeySignature, isCanonicalSpelledPitch, isCanonicalTimeSignature } from "../../domain/validation";
+import { isSourceSlurMarks } from "../../domain/source/notation";
 import { tempoSpec, validateRights } from "../../domain/source/model";
 import { validatePerformer } from "../../domain/performer";
 import { performerId } from "../../domain/ids";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { buildCandidates } from "../musicxml/parser-core";
 import type { ImportedLeadEventDraft, ImportedMeasureDraft } from "../musicxml/types";
-import type { WorkspaceEdit, WorkspaceState } from "./model";
+import type { WorkspaceEdit, WorkspaceState, WorkspaceOrigin } from "./model";
+import { removeWorkspaceNotation, synchronizeWorkspaceNotation } from "./notation";
 
 export const clean = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const invalid = (): never => { throw new RangeError("WORKSPACE_EDIT_INVALID"); };
@@ -24,10 +26,40 @@ function mapMeasures(state: WorkspaceState, update: (m: ImportedMeasureDraft) =>
   const music = { ...state.music, parts: state.music.parts.map(p => ({ ...p, measures: p.measures.map(update) })) };
   return { ...state, music: { ...music, leadCandidates: buildCandidates(music.parts) } };
 }
+function eventLocation(state: WorkspaceState, id: string) {
+  const matches = state.music!.parts.flatMap(part => part.measures.flatMap(measure => {
+    const event = measure.leadEvents.find(event => event.workspaceEventId === id), unknown = measure.unresolvedEvents?.find(event => event.id === id);
+    return event || unknown ? [{ part, measure, event, unknown }] : [];
+  }));
+  return matches.length === 1 ? matches[0] : invalid();
+}
+function voiceKey(partOrdinal: number, staff: number, voice: string): string {
+  if (!Number.isSafeInteger(staff) || staff < 1 || staff > 128 || typeof voice !== "string" || !voice.trim() || voice.length > 128 || /\p{Cc}/u.test(voice)) return invalid();
+  const normalized = voice.normalize("NFC");
+  return `lead:p:${partOrdinal}:s:${staff}:v:${normalized.length}:${normalized}`;
+}
+function refreshEditorOccurrences(state: WorkspaceState): WorkspaceState {
+  if (!state.music) return state;
+  const sectionOccurrences = buildImportedSectionOccurrenceReviews(state.music.parts, state.music.leadCandidates, state.request.sections, state.music.algorithmVersions.performanceExpanderVersion);
+  const lyricVerses = Object.fromEntries(Object.entries(state.request.lyricVerses).filter(([key, verse]) => sectionOccurrences.some(occurrence => occurrence.key === key && occurrence.availableLyricVerses.includes(verse))));
+  return { ...state, music: { ...state.music, sectionOccurrences }, request: { ...state.request, lyricVerses } };
+}
+
+/** Optional immutable context is supplied by journal replay, never by a command.
+ * New tracking fields are absent from old seeds and old operation outputs. */
+export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, seed?: WorkspaceState, reviewDependencyVersion: 1 | 2 = 1): WorkspaceState {
+  let next = reduceWorkspaceEditCore(state, edit, opId, origin, reviewDependencyVersion);
+  if (["remove-notation", "event-voice", "remove-event", "move-event"].includes(edit.kind) && origin?.kind !== "legacy-recovery") next = { ...next, notationTracking: true };
+  if (next.notationTracking) {
+    if (!origin || !seed) throw new RangeError("WORKSPACE_NOTATION_ORIGIN_REQUIRED");
+    next = synchronizeWorkspaceNotation(next, origin, seed);
+  }
+  return next;
+}
 
 /** Normal edits operate on Fraction values and imported nodes' stable identities.
  * No MusicXML serializer/parser round trip occurs in this reducer. */
-export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, opId: string): WorkspaceState {
+function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, reviewDependencyVersion: 1 | 2 = 1): WorkspaceState {
   const music = state.music;
   if (!music && edit.kind !== "issue") return invalid();
   const request = state.request;
@@ -85,6 +117,85 @@ export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, 
       });
       return found ? next : invalid();
     }
+    case "remove-notation":
+      return removeWorkspaceNotation(state, origin, edit.eventId, edit.feature);
+    case "event-voice": {
+      const { part, measure, event, unknown } = eventLocation(state, edit.eventId), candidateKey = voiceKey(part.partOrdinal, edit.staffNumber, edit.voice);
+      return refreshEditorOccurrences(mapMeasures(state, current => current !== measure ? current : { ...current,
+        leadEvents: current.leadEvents.map(item => item === event ? { ...item, candidateKey } : item),
+        ...(unknown ? { unresolvedEvents: current.unresolvedEvents!.map(item => item === unknown ? { ...item, candidateKey } : item) } : {}) }));
+    }
+    case "insert-event": {
+      const measure = requireMeasure(state, edit.measureId), part = music!.parts.find(part => part.measures.includes(measure))!;
+      time(edit.onset); time(edit.duration, true);
+      if (!["note", "rest", "rhythm"].includes(edit.eventKind) || edit.eventKind === "note" && !isCanonicalSpelledPitch(edit.pitch)
+        || edit.eventKind !== "note" && edit.pitch !== undefined || edit.tieStart !== undefined && typeof edit.tieStart !== "boolean"
+        || edit.tieStop !== undefined && typeof edit.tieStop !== "boolean" || edit.eventKind === "rest" && (edit.tieStart || edit.tieStop)
+        || measure.leadEvents.length + (measure.unresolvedEvents?.length ?? 0) >= 1024 || measures(state).reduce((count, item) => count + item.leadEvents.length + (item.unresolvedEvents?.length ?? 0), 0) >= 32768) return invalid();
+      const workspaceEventId = `inserted:${opId}`;
+      if (measures(state).some(item => item.leadEvents.some(event => event.workspaceEventId === workspaceEventId) || item.unresolvedEvents?.some(event => event.id === workspaceEventId))) return invalid();
+      const common = { workspaceEventId, candidateKey: voiceKey(part.partOrdinal, edit.staffNumber, edit.voice), onset: clean(edit.onset), duration: clean(edit.duration) };
+      const event: ImportedLeadEventDraft = edit.eventKind === "rest" ? { ...common, kind: "rest" } : {
+        ...common, ...(edit.eventKind === "note" ? { kind: "note" as const, pitch: clean(edit.pitch!) } : { kind: "rhythm" as const }),
+        tieStart: edit.tieStart ?? false, tieStop: edit.tieStop ?? false, lyrics: [] };
+      return refreshEditorOccurrences(mapMeasures(state, current => current !== measure ? current : { ...current, leadEvents: [...current.leadEvents, event] }));
+    }
+    case "remove-event": {
+      const { measure, event, unknown } = eventLocation(state, edit.eventId);
+      const next = mapMeasures(state, current => current !== measure ? current : { ...current, leadEvents: current.leadEvents.filter(item => item !== event),
+        ...(unknown ? { unresolvedEvents: current.unresolvedEvents!.filter(item => item !== unknown) } : {}) });
+      return refreshEditorOccurrences({ ...next, removedEventIds: [...(state.removedEventIds ?? []), edit.eventId] });
+    }
+    case "move-event": {
+      const { part, measure, event, unknown } = eventLocation(state, edit.eventId), target = requireMeasure(state, edit.measureId); time(edit.onset);
+      if (!part.measures.includes(target) || target !== measure && target.leadEvents.length + (target.unresolvedEvents?.length ?? 0) >= 1024) return invalid();
+      return refreshEditorOccurrences(mapMeasures(state, current => {
+        if (current !== measure && current !== target) return current;
+        const leadEvents = current === measure ? current.leadEvents.filter(item => item !== event) : current.leadEvents;
+        const unresolvedEvents = current === measure ? current.unresolvedEvents?.filter(item => item !== unknown) : current.unresolvedEvents;
+        return { ...current, leadEvents: current === target && event ? [...leadEvents, { ...event, onset: clean(edit.onset) }] : leadEvents,
+          ...(unknown ? { unresolvedEvents: current === target ? [...(unresolvedEvents ?? []), { ...unknown, onset: clean(edit.onset) }] : unresolvedEvents } : {}) };
+      }));
+    }
+    case "measure-extent": {
+      const measure = requireMeasure(state, edit.measureId); time(edit.duration, true);
+      if (typeof edit.implicit !== "boolean") return invalid();
+      return mapMeasures(state, current => current !== measure ? current : { ...current, duration: clean(edit.duration), implicit: edit.implicit });
+    }
+    case "event-lyrics": {
+      const { measure, event } = eventLocation(state, edit.eventId);
+      if (!event || event.kind === "rest" || !Array.isArray(edit.lyrics) || edit.lyrics.length > 32 || edit.lyrics.some(lyric => !isPlainRecord(lyric)
+        || !hasExactKeys(lyric, ["text", "verse", "syllabic", "extend", "musicXmlAccent"]) || typeof lyric.text !== "string" || lyric.text.length > 2048
+        || typeof lyric.verse !== "number" || !Number.isSafeInteger(lyric.verse) || lyric.verse < 1 || lyric.verse > 128 || !["single", "begin", "middle", "end"].includes(String(lyric.syllabic))
+        || typeof lyric.extend !== "boolean" || typeof lyric.musicXmlAccent !== "boolean")) return invalid();
+      return refreshEditorOccurrences(mapMeasures(state, current => current !== measure ? current : { ...current,
+        leadEvents: current.leadEvents.map(item => item === event ? { ...event, lyrics: edit.lyrics.map(lyric => ({ ...lyric, text: lyric.text.normalize("NFC") })) } : item) }));
+    }
+    case "event-slurs": {
+      const { measure, event } = eventLocation(state, edit.eventId);
+      if (!event || event.kind === "rest" || !Array.isArray(edit.slurs) || edit.slurs.length && !isSourceSlurMarks(edit.slurs)) return invalid();
+      const next = mapMeasures(state, current => current !== measure ? current : { ...current, leadEvents: current.leadEvents.map(item => {
+        if (item !== event) return item;
+        const changed = { ...event, ...(edit.slurs.length ? { slurs: clean(edit.slurs) } : {}) };
+        if (!edit.slurs.length) delete changed.slurs;
+        return changed;
+      }) });
+      return reviewDependencyVersion === 1 ? { ...next, slurReviewTracking: true } : next;
+    }
+    case "remove-chord":
+    case "move-chord": {
+      const matches = music!.parts.flatMap(part => part.measures.flatMap(measure => measure.chords.filter(chord => chord.key === edit.chordId).map(chord => ({ part, measure, chord }))));
+      if (matches.length !== 1) return invalid();
+      const { part, measure, chord } = matches[0];
+      if (edit.kind === "remove-chord") return mapMeasures(state, current => current !== measure ? current : { ...current, chords: current.chords.filter(item => item !== chord) });
+      time(edit.onset); const target = requireMeasure(state, edit.measureId);
+      if (!part.measures.includes(target) || target !== measure && target.chords.length >= 1024) return invalid();
+      return mapMeasures(state, current => {
+        if (current !== measure && current !== target) return current;
+        const chords = current === measure ? current.chords.filter(item => item !== chord) : current.chords;
+        return { ...current, chords: current !== target ? chords : [...chords, { ...chord, measureOrdinal: target.ordinal, onset: clean(edit.onset), source: "manual" as const, confirmation: "unconfirmed" as const }] };
+      });
+    }
     case "meter": {
       if (!isCanonicalTimeSignature(edit.time)) return invalid();
       const first = requireMeasure(state, edit.startMeasureId), part = music!.parts.find(p => p.measures.includes(first))!;
@@ -135,5 +246,12 @@ export function changedWorkspaceTargets(before: WorkspaceState, after: Workspace
   if (canonicalJson(before.request) !== canonicalJson(after.request)) changed.push("arrangement-request");
   if (before.music?.title !== after.music?.title) changed.push("title");
   if (canonicalJson(before.issues) !== canonicalJson(after.issues)) changed.push("issues");
+  if (canonicalJson(before.notationRemovals ?? null) !== canonicalJson(after.notationRemovals ?? null)) {
+    changed.push(...new Set([...(before.notationRemovals ?? []), ...(after.notationRemovals ?? [])].map(item => item.eventId)));
+  }
+  if (before.notationTracking !== after.notationTracking) changed.push("notation-tracking");
+  if (before.slurReviewTracking !== after.slurReviewTracking) changed.push("slur-review-tracking");
+  if (canonicalJson(before.removedEventIds ?? null) !== canonicalJson(after.removedEventIds ?? null)) changed.push(...new Set([...(before.removedEventIds ?? []), ...(after.removedEventIds ?? [])]));
+  if (canonicalJson(before.invalidatedLegacyReviewIds ?? null) !== canonicalJson(after.invalidatedLegacyReviewIds ?? null)) changed.push("legacy-review-invalidations");
   return changed;
 }

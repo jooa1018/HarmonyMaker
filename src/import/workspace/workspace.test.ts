@@ -47,6 +47,28 @@ async function ready(w:ScoreWorkspace) {
 }
 
 describe("persistent score boundary",()=>{
+  it("invalidates the endpoints and interior of an edited slur, keeping the unrelated measure",async()=>{
+    let w=await ready(await start()),s=await state(w);
+    const event=(i:number)=>s.music!.parts[0].measures[i].leadEvents[0].workspaceEventId!;
+    w=await act(w,{kind:"event-slurs",eventId:event(0),slurs:[{number:2,type:"start"}]});
+    w=await act(w,{kind:"event-slurs",eventId:event(2),slurs:[{number:2,type:"stop"}]});
+    w=await reviewAll(w);s=await state(w);
+    const middle=s.music!.parts[0].measures[1].leadEvents[0];
+    w=await act(w,{kind:"note",eventId:middle.workspaceEventId!,value:{kind:"note",pitch:{step:"F",alter:0,octave:4},onset:middle.onset,duration:middle.duration,tieStart:false,tieStop:false}});
+    expect((await caps(w)).musicReviews.map(m=>m.current)).toEqual([false,false,false,true]);
+    w=await act(w,{kind:"undo"});expect((await caps(w)).musicReviews.every(m=>m.current)).toBe(true);
+    w=await act(w,{kind:"redo"});w=await parseScoreWorkspace(await exportScoreWorkspace(w));
+    expect((await caps(w)).musicReviews.map(m=>m.current)).toEqual([false,false,false,true]);
+  });
+  it("rejects changed lyric text even when it leaves the WAG musical digest unchanged",async()=>{
+    const w=await ready(await start(score({body:note(4,1,"D",'<lyric number="1"><syllabic>single</syllabic><text>fixture</text></lyric>')})));
+    const source=(await deriveQuickReview(await projectScoreWorkspace(w),V)).source!;
+    expect(await validateWorkspaceSourceIntegrity(source)).toBe(true);
+    const changed=structuredClone(source);
+    (changed.sourceMeasures[0].lyricTokens[0] as {text:string}).text="unreviewed replacement";
+    expect(changed.revisionDigest).toBe(source.revisionDigest);
+    expect(await validateWorkspaceSourceIntegrity(changed)).toBe(false);
+  });
   it("projects pitch-free rhythm on the Lead staff and blocks a selected rhythm on another staff",async()=>{
     for(const staff of [1,2]){
       const slash=`<backup><duration>4</duration></backup><note><unpitched><display-step>B</display-step><display-octave>4</display-octave></unpitched><duration>4</duration><voice>2</voice><type>whole</type><staff>${staff}</staff><notehead>slash</notehead></note>`;

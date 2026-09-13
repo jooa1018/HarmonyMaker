@@ -16,6 +16,12 @@ export async function validateWorkspaceSourceIntegrity(source:SongSourceDocument
     if(source.documentId!==workspace.id||source.importInfo.rawDigest!==workspace.origin.xmlDigest)return false;
     const normalized=await normalizeImportedSource(draft,workspace.algorithmVersions);
     if(normalized.status!=="complete"||normalized.normalization.musicalSourceDigest!==source.revisionDigest)return false;
+    // The WAG semantic digest deliberately omits display lyric text. The
+    // immutable workspace contract must still preserve that text and every
+    // normalized event, including notation that does not change WAG pitches.
+    if(canonicalJson(normalized.normalization.sourceMeasures)!==canonicalJson(source.sourceMeasures))return false;
+    for(const field of ["performanceSequence","sectionDefinitions","sectionOccurrences","phraseRegions"] as const)
+      if(canonicalJson(normalized.normalization[field])!==canonicalJson(source[field]))return false;
     const expected=await workspaceProjectionMetadata(draft,source);
     return canonicalJson(expected)===canonicalJson(metadata)&&canonicalJson(source.title)===canonicalJson(draft.title)
       && canonicalJson(source.composer??null)===canonicalJson(draft.composer??null) && source.importInfo.importerVersion==="hm-workspace-projection-v1"
