@@ -1,5 +1,15 @@
 # 로컬 단일 이미지 입력
 
+## 2026-09-13 실제 실행 판정
+
+검증 제품 commit은 `7e557635f9ff1f1f169cc5cde6f121835d09d71a`, production build ID는 `u-QOCE60QJ97VipDOJB24`다. `LOCAL_IMAGE_FLOW_VERIFIED`와 `PLAYBACK_BASELINE_PRESERVED`를 충족했다. 실제 사용자 JPEG는 새 인식·근거 연결·초안 보존까지 통과했지만 미지원 표기·시간축·원본 연결 불확실성으로 `USER_JPEG_BLOCKED`다. 이미지 입력 기능 구현·검증 완료와 사용자 JPEG의 실용적 전곡 목표 미완료를 구분한다.
+
+최종 타입·전체 lint·기본1,025개·opt-in private5개·production build를 실행해 통과했다. 기본 실행에서 건너뛴 private5개를 별도로 실행했고 반복 실행을 고유 개수에 더하지 않았다. 실제 Windows 취소/owner 종료/사전취소/mutex, 실제 HTTP 소유권·CSRF·손상 입력, production Chrome/Edge의 저장·다운로드·재입력·재생을 확인했다. 응답 유실·retry 복구의 오류 주입 시험은 실제 A 주 경로와 구분했다. 기존 원격 OMR/DB 경로는 미변경이어서 PostgreSQL·원격 통합을 재실행하지 않았다.
+
+두 fresh 인식은 e933aac 위 정확한 미커밋 runner 파일 hash를 기록하며 수행했고 최종 commit에 보존됐다. 이후 손상 이미지의 오류 분류와 UI 응답 복구를 수정한 최종 build에서 회귀·일반 경로를 확인했다. 새 인식을 반복하지 않고 동일 결과의 UI/저장을 검증했으며, 과거 실행의 HEAD를 새 commit으로 바꾸지 않았다. 원본·실행 자료·파일별 hash는 저장소 밖 `HarmonyMaker-local-image-v1` 인계에 보존했다.
+
+첫 A 실행은 실제 메모리 압력으로 안전 중단됐다. 명시적인 재시도 때 전용 시험 브라우저를 닫아 여유를 확보하고 동일 프로필로 재개했다. 이 제약과 최초 UI 전달 시간 미측정, 사람의 교정/청감 미측정을 상세 인계에 남긴다. 이번 변경으로 사진 인식 전체 완성·모든 악보 지원·외부 배포를 주장하지 않는다.
+
 `/local-image`는 설치된 Windows homr 환경을 기존 후보·작업 공간 경계에 연결한다. 원본 선택 → 새 로컬 인식 → 보완 → 원본·후보·근거 검증 → IndexedDB 초안 저장 → 교정 화면으로 이어진다. 과거 인식 결과를 새 실행으로 대체하지 않는다.
 
 ```mermaid
