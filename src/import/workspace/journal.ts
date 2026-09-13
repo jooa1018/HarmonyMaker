@@ -19,6 +19,25 @@ interface Replay {
   readonly lastOperation?: StepOperation;
 }
 const cache = new WeakMap<ScoreWorkspace,{serialized:string;value:Replay}>();
+const MAX_REUSED_PROOF_CHARS = 8_000_000;
+interface ProofReplayEntry {
+  readonly text: string; readonly serialized: string;
+  readonly bundle: { readonly workspace: ScoreWorkspace; readonly replay: Replay };
+}
+let proofReplay: ProofReplayEntry | undefined;
+function rememberVerifiedProof(text: string, workspace: ScoreWorkspace, value: Replay): void {
+  if (text.length > MAX_REUSED_PROOF_CHARS) { proofReplay = undefined; return; }
+  const serialized = JSON.stringify(workspace), verified = cache.get(workspace);
+  // replay can yield. Never register a caller mutation made after its check,
+  // or a serialization that differs from the exact bytes being returned/read.
+  if (verified?.serialized !== serialized || verified.value !== value
+    || exactJson(JSON.parse(text)) !== exactJson(workspace)) return;
+  // Keep origin, active commands, maps and states private too. A readonly type
+  // alone would not prevent one parsed workspace from poisoning another call.
+  const bundle = structuredClone({ workspace, replay: value });
+  cache.set(bundle.workspace, { serialized, value: bundle.replay });
+  proofReplay = { text, serialized, bundle };
+}
 export const workspaceStateDigest = (state: WorkspaceState) => semanticDigest({schema:SCORE_WORKSPACE_VERSION,state:clean(state)});
 async function historyDigest(value:Pick<ScoreWorkspace,"id"|"origin"|"algorithmVersions"|"operations">) {
   return binaryDigest(new TextEncoder().encode(exactJson({schema:"hm-workspace-history-seal-v1",id:value.id,
@@ -146,6 +165,17 @@ export async function applyWorkspaceCommand(value: ScoreWorkspace, expected: {re
 }
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
   if(text.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
-  const value=JSON.parse(text) as ScoreWorkspace;await replay(value);return value;
+  const hit = proofReplay;
+  if (hit?.text === text && JSON.stringify(hit.bundle.workspace) === hit.serialized) {
+    await replay(hit.bundle.workspace); // Preserve the ordinary mutation/limit guard.
+    const bundle = structuredClone(hit.bundle);
+    cache.set(bundle.workspace, { serialized: JSON.stringify(bundle.workspace), value: bundle.replay });
+    return bundle.workspace;
+  }
+  const value=JSON.parse(text) as ScoreWorkspace,verified=await replay(value);
+  rememberVerifiedProof(text,value,verified);return value;
 }
-export async function exportScoreWorkspace(value: ScoreWorkspace): Promise<string> { await replay(value);return asciiProofJson(value); }
+export async function exportScoreWorkspace(value: ScoreWorkspace): Promise<string> {
+  const verified=await replay(value),text=asciiProofJson(value);
+  rememberVerifiedProof(text,value,verified);return text;
+}
