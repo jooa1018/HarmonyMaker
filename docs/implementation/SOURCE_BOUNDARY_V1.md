@@ -1,5 +1,17 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-14 JPEG 시험 음역 승인과 일반 UI 전곡 완료
+
+**동일 JPEG를 대량 교정한 뒤, 지정된 시험 음역으로 일반 UI 전체 흐름을 검증했다.** 기존 r550은 보존하고 일반 UI에서 이 JPEG의 Lead hardRange 하한만 C4→F3으로 바꿔 r551로 저장했다. 실제 Lead F3–F5에 대해 기존 하한 위반 43개가 0개가 됐다. comfortableRange, 다른 가수, 기존 A 파일, 원본 음악과 비선택 성부, 코드 공백 및 별도 선행 화성 정책은 그대로다. 사용자 실제 가창 음역이 아닌 기술 시험 설정이며 사람 재확인은 `HUMAN_RECHECK_PENDING`이다.
+
+일반 UI Source 확정 후 WAG는 전곡 complete 후보 1개와 partial 후보 1개를 냈고 complete 후보를 선택했다. 악보, Lead·생성 화음·Band의 실제 재생과 mute/solo, Play/Pause/Resume/Reset, 전곡 재생, 저장·reload, 실제 작업 공간·프로젝트·MusicXML 다운로드와 재입력을 확인했다. 최종 production 제품은 `03dd98e12b967800dc04faff47e519a23959bca4`, build ID `SfsLiNsahUUJPF9QtplBF`다. 같은 Chrome 프로필·`http://127.0.0.1:3198`에서 서버와 브라우저를 모두 재시작하고 파일 가져오기 전에 기존 초안·프로젝트를 복구했다. 재다운로드 파일도 동일했다.
+
+실제 MusicXML 재입력에서 늦게 끝난 초기 저장본 복구가 사용자의 파일 선택을 덮어 Quick Review를 지우는 결함을 재현했다. 위 제품 commit은 `src/app/import/ImportReviewClient.tsx`와 새 startup-read helper/test에서 오래된 비동기 읽기의 UI 반영만 거절한다. Source 검증·parser·proof·WAG·오디오·DB·OMR은 바꾸지 않았다. 지연 promise 반례 7개를 포함한 117파일 1,133개 기본 테스트, 타입·전체 lint·production build가 통과했다. 관련 10개 재실행은 기본 수에 중복 합산하지 않는다. private 3파일 5개와 PostgreSQL/OMR은 변경 경로가 아니므로 반복하지 않았고 새 PASS로 세지 않는다.
+
+최초 Source/WAG와 실제 PCM 측정은 선행 제품 `3ecdbc3`에서 수행했다. 최종 제품에서는 해당 음악 모듈 및 실제 출력 파일 바이트가 같음을 확인하고 production UI의 전체 재생·저장·다운로드·즉시 XML 재입력을 재검증했다. 공식 파일 의미 대조는 13개 PASS이며 별도 browser PlaybackPlan 객체 대조 1개는 NOT_RUN이다. 실제 native 오디오 710개 예약 event 대조 및 출력 12개 검사는 별도 PASS지만 그 원시 실행의 favicon 404 때문에 전체 로그는 FAIL로 보존하고 기능 결과와 구분했다. 자동 PCM 결과는 사람 청감을 대신하지 않는다.
+
+최신 비공개 인계 루트 `HarmonyMaker-user-jpeg-assisted-v1`의 `시작안내.md`, `검증보고서.md`, `실행상태.json`, `f3-final/02-workspaces`, `f3-final/03-project`, `f3-final/04-musicxml`, `artifact-manifest-f3-final.json`을 따른다. 이전 r550 문서와 manifest는 baseline-r550에 보존했고 기존 manifest의 실제 366파일/248,003,945바이트를 재검증했다. 이 절은 제품 검증 뒤의 문서 전용 변경이다. 원본·전체 proof는 저장소에 추가하지 않았으며 자동 OMR 개선·소량 교정 실용성·모든 브라우저 프로필의 안정성을 주장하지 않는다. push·배포·병합·기존 데이터 삭제는 하지 않았다. 아래 r550 차단 기록은 당시 상태다.
+
 ## 2026-09-14 JPEG 후속 요청·원본 재대조·proof 처리
 
 검증 제품은 `3ecdbc347faa237bccd09233f1f26914a9b69850`, 이 절 추가는 문서 전용 변경이다. 이전 revision 395의 원본 미확정과 요청 결정을 사용자 답변 및 원본 재대조로 일반 UI에 반영했다. 현재 초안은 revision 550이며 전곡 39마디 대조가 현재 이력과 일치하고 pending issue는 0개다. 비선택 원본 성부를 보존하면서 Lead 하나만 투영한다.
