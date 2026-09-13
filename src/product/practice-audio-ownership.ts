@@ -1,6 +1,8 @@
 export interface OwnedAudioSession {
   readonly context: Pick<AudioContext, "close">;
-  readonly nodes: readonly Pick<OscillatorNode, "stop">[];
+  readonly nodes: Iterable<Pick<OscillatorNode, "stop">>;
+  /** A renderer can silence its bus before closing the owned context. */
+  readonly disposeAudio?: () => void;
   disposed: boolean;
 }
 
@@ -20,6 +22,7 @@ export type PracticeAudioReleaseReason =
 export function disposeOwnedAudioSession(session: OwnedAudioSession | undefined): void {
   if (!session || session.disposed) return;
   session.disposed = true;
+  if (session.disposeAudio) { session.disposeAudio(); return; }
   for (const node of session.nodes) {
     try { node.stop(); } catch { /* already stopped */ }
   }

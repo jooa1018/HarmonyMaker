@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PracticeSettings } from "../domain/share";
 import type { TempoSpec } from "../domain/source/model";
 import { audibleTrackIds, PRACTICE_SPEEDS, quarterSeconds, type PlaybackPlan, type PracticeSpeed } from "./playback-plan";
+import { PRACTICE_AUDIO_START_LEAD_SECONDS, practiceVolume, releasePracticeAudio, schedulePracticeAudio, updatePracticeAudioMix, type PracticeAudioGraph } from "./practice-audio";
 import {
   PracticeAudioOwnershipController,
   type OwnedAudioSession,
@@ -14,9 +15,10 @@ export { disposeOwnedAudioSession, type OwnedAudioSession } from "./practice-aud
 
 interface ActiveAudio extends OwnedAudioSession {
   readonly context: AudioContext;
-  readonly nodes: readonly OscillatorNode[];
-  readonly startedAt: number;
+  graph?: PracticeAudioGraph;
+  startedAt: number;
   readonly positionQuarter: number;
+  readonly secondsPerQuarter: number;
 }
 
 export interface PracticePlayerInitialState {
@@ -52,15 +54,22 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
   const audioOwner = useMemo(() => new PracticeAudioOwnershipController<ActiveAudio>(), []);
   const resolvedInitial = resolvePracticePlayerInitialState(plan, initialSettings);
   const [scoreReadyIdentity, setScoreReadyIdentity] = useState<string>();
-  const [phase, setPhase] = useState<"ready" | "playing" | "paused" | "finished">("ready");
+  const [phase, setPhase] = useState<"ready" | "starting" | "playing" | "paused" | "finished">("ready");
   const [positionQuarter, setPositionQuarter] = useState(0);
   const [cursorEventId, setCursorEventId] = useState<string>();
   const [speed, setSpeed] = useState<PracticeSpeed>(resolvedInitial.speed);
   const [muted, setMuted] = useState<ReadonlySet<string>>(new Set());
   const [solo, setSolo] = useState<string | undefined>(resolvedInitial.solo);
   const [bandEnabled, setBandEnabled] = useState(resolvedInitial.bandEnabled);
+  const [levels, setLevels] = useState<Readonly<Record<string, number>>>({});
+  const [masterLevel, setMasterLevel] = useState(1);
   const [error, setError] = useState<string>();
   const audible = useMemo(() => new Set(audibleTrackIds(plan, { muted, ...(solo ? { solo } : {}), bandEnabled })), [bandEnabled, muted, plan, solo]);
+
+  useEffect(() => {
+    const graph = audioOwner.active?.graph;
+    if (graph) updatePracticeAudioMix(graph, { audible, levels, masterLevel });
+  }, [audible, levels, masterLevel, phase, audioOwner]);
 
   const stopNodes = useCallback((reason: PracticeAudioReleaseReason) => {
     audioOwner.release(reason);
@@ -112,29 +121,31 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
   const begin = async (fromQuarter: number) => {
     stopNodes("replacement");
     setError(undefined);
+    setPhase("starting");
+    let pending: ActiveAudio | undefined;
     try {
       const AudioContextConstructor = window.AudioContext;
       const context = new AudioContextConstructor();
-      const startedAt = context.currentTime + 0.05;
-      const nodes: OscillatorNode[] = [];
-      const session: ActiveAudio = { context, nodes, startedAt, positionQuarter: fromQuarter, disposed: false };
-      audioOwner.replace(session);
       const secondsPerQuarter = quarterSeconds(tempo, speed);
+      const session: ActiveAudio = {
+        context, get nodes() { return session.graph?.nodes ?? []; }, startedAt: 0,
+        positionQuarter: fromQuarter, secondsPerQuarter, disposed: false,
+        disposeAudio: () => {
+          if (session.graph) releasePracticeAudio(session.graph, context);
+          else void context.close().catch(() => undefined);
+        },
+      };
+      pending = session;
+      audioOwner.replace(session);
+      // Freeze the clock before creating/queuing sources. A slow resume or a
+      // busy main thread can no longer consume the first notes' scheduling lead.
+      await context.suspend();
+      if (!audioOwner.isCurrent(session)) return;
+      session.startedAt = context.currentTime + PRACTICE_AUDIO_START_LEAD_SECONDS;
+      session.graph = schedulePracticeAudio(context, plan, { fromQuarter, secondsPerQuarter,
+        startedAt: session.startedAt, audible, levels, masterLevel });
       await context.resume();
       if (!audioOwner.isCurrent(session)) return;
-      for (const event of plan.events) {
-        if (!audible.has(event.trackId) || event.startQuarter + event.durationQuarter <= fromQuarter) continue;
-        const startQuarter = Math.max(event.startQuarter, fromQuarter);
-        const oscillator = context.createOscillator();
-        const gain = context.createGain();
-        oscillator.type = event.kind === "band" ? "triangle" : "sine";
-        oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
-        gain.gain.value = event.kind === "band" ? 0.018 : 0.028;
-        oscillator.connect(gain).connect(context.destination);
-        oscillator.start(startedAt + (startQuarter - fromQuarter) * secondsPerQuarter);
-        oscillator.stop(startedAt + (event.startQuarter + event.durationQuarter - fromQuarter) * secondsPerQuarter);
-        nodes.push(oscillator);
-      }
       setPhase("playing");
       const timer = setInterval(() => {
         const current = audioOwner.active;
@@ -153,6 +164,7 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
       }, 40);
       audioOwner.installTimer(session, timer);
     } catch {
+      if (pending && !audioOwner.isCurrent(pending)) return;
       stopNodes("startup-failure");
       setError("오디오를 시작하지 못했습니다. 재생 버튼을 다시 눌러 주세요.");
       setPhase("ready");
@@ -162,19 +174,18 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
   const pause = () => {
     const current = audioOwner.active;
     if (!current) return;
-    const next = current.positionQuarter + Math.max(0, current.context.currentTime - current.startedAt) / quarterSeconds(tempo, speed);
+    const next = current.positionQuarter + Math.max(0, current.context.currentTime - current.startedAt) / current.secondsPerQuarter;
     stopNodes("pause");
     setPositionQuarter(Math.min(next, plan.totalQuarter));
     setPhase("paused");
   };
 
-  const changeMixer = (reason: "solo" | "mute" | "band", change: () => void) => { reset(reason); change(); };
   const labels = plan.trackLabels;
 
   return <section className="panel practice-player" aria-label={readOnly ? "공유 연습 플레이어" : "프로젝트 연습 플레이어"}>
     <div ref={scoreRef} className="score-wrap" aria-label="정본 ArrangementRenderDocument 악보" />
     <div className="transport">
-      <button className="primary" type="button" disabled={!scoreReady || phase === "playing"} onClick={() => void begin(0)}>Play</button>
+      <button className="primary" type="button" disabled={!scoreReady || phase === "playing" || phase === "starting"} onClick={() => void begin(0)}>Play</button>
       <button type="button" disabled={phase !== "playing"} onClick={pause}>Pause</button>
       <button type="button" disabled={phase !== "paused"} onClick={() => void begin(positionQuarter)}>Resume</button>
       <button type="button" disabled={phase === "ready" && positionQuarter === 0} onClick={() => reset("reset")}>Reset</button>
@@ -182,14 +193,17 @@ function ProductPracticePlayerSession({ abc, plan, tempo, identity, initialSetti
     <div className="voices">
       {plan.trackIds.map((trackId) => <div className="voice" key={trackId}>
         <strong>{labels[trackId]}</strong>{" "}
-        {trackId === "track:band" ? <button type="button" aria-pressed={bandEnabled} onClick={() => changeMixer("band", () => setBandEnabled((value) => !value))}>Band {bandEnabled ? "On" : "Off"}</button> : <>
-          <button type="button" aria-label={`${labels[trackId]} mute`} aria-pressed={muted.has(trackId)} onClick={() => changeMixer("mute", () => setMuted((current) => { const next = new Set(current); if (next.has(trackId)) next.delete(trackId); else next.add(trackId); return next; }))}>Mute</button>{" "}
-          <button type="button" aria-label={`${labels[trackId]} solo`} aria-pressed={solo === trackId} onClick={() => changeMixer("solo", () => setSolo((current) => current === trackId ? undefined : trackId))}>Solo</button>
+        {trackId === "track:band" ? <button type="button" aria-pressed={bandEnabled} onClick={() => setBandEnabled((value) => !value)}>Band {bandEnabled ? "On" : "Off"}</button> : <>
+          <button type="button" aria-label={`${labels[trackId]} mute`} aria-pressed={muted.has(trackId)} onClick={() => setMuted((current) => { const next = new Set(current); if (next.has(trackId)) next.delete(trackId); else next.add(trackId); return next; })}>Mute</button>{" "}
+          <button type="button" aria-label={`${labels[trackId]} solo`} aria-pressed={solo === trackId} onClick={() => setSolo((current) => current === trackId ? undefined : trackId)}>Solo</button>
         </>}
+        <label className="volume">{labels[trackId]} 음량 <input type="range" min="0" max="200" step="5" aria-label={`${labels[trackId]} volume`} value={Math.round((levels[trackId] ?? 1) * 100)} onChange={(event) => setLevels((current) => ({ ...current, [trackId]: practiceVolume(Number(event.target.value) / 100) }))} /><output>{Math.round((levels[trackId] ?? 1) * 100)}%</output></label>
       </div>)}
     </div>
+    <label className="volume">전체 음량 <input type="range" min="0" max="100" step="5" aria-label="Master volume" value={Math.round(masterLevel * 100)} onChange={(event) => setMasterLevel(practiceVolume(Number(event.target.value) / 100, 1))} /><output>{Math.round(masterLevel * 100)}%</output></label>
     <label className="speed">Speed <select aria-label="Playback speed" value={speed} onChange={(event) => { reset("speed"); setSpeed(Number(event.target.value) as PracticeSpeed); }}>{PRACTICE_SPEEDS.map((value) => <option key={value} value={value}>{value}%</option>)}</select></label>
-    <p className="status" aria-live="polite">{phase === "ready" ? "준비" : phase === "playing" ? "재생 중" : phase === "paused" ? "일시 정지" : "재생 완료"} · {positionQuarter.toFixed(2)} / {plan.totalQuarter.toFixed(2)} quarter · event <code>{cursorEventId ?? "—"}</code></p>
+    <p>음량·Mute·Solo·Band는 재생 중에도 적용됩니다. 음량 100%는 파트별 기본 믹스이며, 속도를 바꾸면 처음으로 돌아갑니다.</p>
+    <p className="status" aria-live="polite">{phase === "ready" ? "준비" : phase === "starting" ? "오디오 준비 중" : phase === "playing" ? "재생 중" : phase === "paused" ? "일시 정지" : "재생 완료"} · {positionQuarter.toFixed(2)} / {plan.totalQuarter.toFixed(2)} quarter · event <code>{cursorEventId ?? "—"}</code></p>
     {error ? <p className="status error" role="alert">{error}</p> : null}
   </section>;
 }
