@@ -432,9 +432,10 @@ export function WorkspaceClient() {
 
   return <>
     <p><Link href="/workspace">← 저장한 프로젝트 · 파일 열기</Link></p>
-    <header className={styles.header}><div><p className="eyebrow">PRODUCT CORE · CANONICAL WORKSPACE</p><h1>{project.source.title}</h1><p>{project.source.composer ?? "작곡자 미기재"} · {project.source.defaultKey.tonic.step}{project.source.defaultKey.mode === "minor" ? " minor" : " major"}</p></div><Link href="/import">새 Source 가져오기</Link></header>
+    <header className={styles.header}><div><p className="eyebrow">PRODUCT CORE · CANONICAL WORKSPACE</p><h1>{project.source.title}</h1><p>{project.source.composer ?? "작곡자 미기재"} · {project.source.defaultKey.tonic.step}{project.source.defaultKey.tonic.alter===-1?"♭":project.source.defaultKey.tonic.alter===1?"♯":""}{project.source.defaultKey.mode === "minor" ? " minor" : " major"}</p></div><Link href="/import">새 Source 가져오기</Link></header>
     <p className="status" aria-live="polite">{message}</p>
     {project.source.importInfo?.sourceKind==="score-workspace"&&<ProjectionNotice metadata={project.source.importInfo.workspaceMetadata}/>}
+    {project.chordTimelineState.status==="resolved"&&project.chordTimelineState.timeline.resolutionPolicy.initialPickup&&<p className="status">편곡 정책: 첫 못갖춘마디에 다음 마디의 첫 코드를 선행 적용했습니다. 원본 Source의 인쇄 코드 없음은 그대로 보존됩니다. 악보의 “편곡 정책” 표시는 원본 코드가 아닙니다.</p>}
 
     <section className="panel">
       <h2>1. Setup · generation</h2>

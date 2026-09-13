@@ -44,6 +44,8 @@ export interface ArrangementRequest {
   readonly sections: readonly ImportedSectionDraft[];
   readonly lyricVerses: Readonly<Record<string, number>>;
   readonly policy: "existing-wag-v1";
+  /** Explicit arrangement choice; never an observed/printed source chord. */
+  readonly initialPickup?: "anticipate-first-chord";
   readonly preset: "simple" | "standard" | "full";
 }
 export interface WorkspaceAttestation {
@@ -76,6 +78,7 @@ export interface WorkspaceState {
   readonly invalidatedLegacyReviewIds?: readonly string[];
 }
 export type WorkspaceEdit =
+  | { readonly kind: "pickup-policy"; readonly value: "none" | "anticipate-first-chord" }
   | { readonly kind: "title"; readonly title: string }
   | { readonly kind: "lead"; readonly lead: string; readonly rhythmVoices: readonly string[] }
   | { readonly kind: "key"; readonly contextId: string; readonly key: KeySignature }

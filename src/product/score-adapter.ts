@@ -96,7 +96,10 @@ function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: Arran
 
 export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly tempo: TempoSpec; readonly key: KeySignature }): string {
   const durations = document.measures.map((measure) => measure.duration);
-  const chordAt = Object.fromEntries(document.effectiveChordTimeline.spans.map((span) => [`${span.range.start.performanceMeasureIndex}:${span.range.start.offset.n}/${span.range.start.offset.d}`, span.parseResult.status === "ok" ? span.parseResult.chord.canonicalSymbol : "N.C."]));
+  const chordAt = Object.fromEntries(document.effectiveChordTimeline.spans.map((span) => {
+    const symbol = span.parseResult.status === "ok" ? span.parseResult.chord.canonicalSymbol : "N.C.";
+    return [`${span.range.start.performanceMeasureIndex}:${span.range.start.offset.n}/${span.range.start.offset.d}`, span.origin.kind === "arrangement-policy" ? `${symbol} (편곡 정책)` : symbol];
+  }));
   const lead = document.sourceLeadTrack.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex }));
   const tracks = [
     { id: "lead", label: "Lead", events: lead },

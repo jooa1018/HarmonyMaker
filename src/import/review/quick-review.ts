@@ -267,7 +267,7 @@ export async function deriveQuickReview(
   let source: SongSourceDocument | undefined;
   let chordTimelineState: EffectiveChordTimelineState = {
     status: "unresolved",
-    resolutionPolicy: { gapPolicy: "carry-until-next" },
+    resolutionPolicy: draft.chordResolutionPolicy ?? { gapPolicy: "carry-until-next" },
     diagnostics: [],
   };
   let atomization: SourceLeadAtomization | undefined;
@@ -305,7 +305,7 @@ export async function deriveQuickReview(
       performanceSequence: normalization.performanceSequence,
       sourceChordProjectionDigest,
       performanceSequenceDigest,
-      policy: { gapPolicy: "carry-until-next" },
+      policy: draft.chordResolutionPolicy ?? { gapPolicy: "carry-until-next" },
       resolverVersion: versions.chordTimelineResolverVersion,
       expectedResolverVersion: versions.chordTimelineResolverVersion,
     });

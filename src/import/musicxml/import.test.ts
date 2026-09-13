@@ -293,12 +293,12 @@ describe("MusicXML import and canonical review", () => {
         expect(ordered).toBe(true);
       }
       if (span.origin.kind === "source-event") expect(sourceIds.has(span.origin.sourceChordEventId)).toBe(true);
-      else {
+      else if (span.origin.kind === "carried") {
         expect(ordinalById.get(span.origin.previousSpanId)).toBeLessThan(index);
         expect(span.origin.previousSpanId).not.toBe(span.id);
         expect(sourceIds.has(span.origin.originatingSourceChordEventId)).toBe(true);
         if (span.origin.carryTokenSourceChordEventId) expect(sourceIds.has(span.origin.carryTokenSourceChordEventId)).toBe(true);
-      }
+      } else throw new Error("This legacy import fixture must not activate an arrangement policy");
     }
   });
 

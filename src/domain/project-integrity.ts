@@ -40,6 +40,7 @@ import type {
   NonChordTonePlan,
 } from "./plans";
 import type { HarmonyProject, ArrangementVariant } from "./project";
+import { workspaceSourceChordPolicyMatches } from "../import/workspace/source-integrity";
 import type { AlgorithmExecutionRegistry } from "./registries";
 import {
   atomizeSourceLead, type SourceLeadAtomization,
@@ -154,6 +155,15 @@ async function validateTimelineArtifact(
       const event = sourceChordById.get(span.origin.sourceChordEventId);
       requireIntegrity(event !== undefined, "chord span references a missing source chord", "STALE_REFERENCE");
       requireIntegrity(exact(resolvedChordFromSource(event), span.parseResult), "source chord span payload mismatch");
+      continue;
+    }
+    if (span.origin.kind === "arrangement-policy") {
+      const event = sourceChordById.get(span.origin.followingSourceChordEventId);
+      requireIntegrity(timeline.resolutionPolicy.initialPickup === span.origin.policy, "pickup span policy differs from selected arrangement policy");
+      requireIntegrity(event !== undefined, "pickup span references a missing following source chord", "STALE_REFERENCE");
+      requireIntegrity(exact(resolvedChordFromSource(event), span.parseResult), "pickup span payload differs from following source chord");
+      // The full resolver replay below verifies eligibility, range and the
+      // following source reference, independently of this stored artifact.
       continue;
     }
     const carriedOrigin = span.origin;
@@ -1237,6 +1247,8 @@ export async function validateHarmonyProjectIntegrity(
     );
     const timeline = resolvedTimeline(project);
     if (timeline) {
+      requireIntegrity(await workspaceSourceChordPolicyMatches(project.source, timeline.resolutionPolicy),
+        "project arrangement chord policy differs from the sealed workspace request", "EFFECTIVE_CHORD_TIMELINE_STALE");
       requireIntegrity(
         timeline.chordTimelineResolverVersion
           === expectedExecutionRegistry.versions.chordTimelineResolverVersion,

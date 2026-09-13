@@ -33,6 +33,7 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
     recoveryProof:undefined,parts,selectedLeadStaffKey:req.lead,sections:req.sections,sectionOccurrences:occurrences,
     defaultKey:effectiveWorkspaceKey(state,part.measures[0].workspaceMeasureId!),defaultTempo:req.tempo,
     singerCount:req.singerCount,performerSlots:req.performers,rights:req.rights,
+    chordResolutionPolicy:req.initialPickup ? { gapPolicy: "carry-until-next", initialPickup: req.initialPickup } : undefined,
     // These imported diagnostics have become derived conditions; all static,
     // uninterpreted diagnostics were gated above, not downgraded to warnings.
     diagnostics:state.music.diagnostics.filter(d=>!["workspace-overfull","invalid-pitch"].includes(String(d.details?.issue))&&d.code!=="UNSUPPORTED_MODULATION"),

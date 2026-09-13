@@ -211,6 +211,10 @@ export interface MusicXmlImportIdentityInventory {
 }
 
 export interface MusicXmlImportDraft {
+  /** Arrangement-only authority, explicitly selected in a workspace request. */
+  readonly chordResolutionPolicy?: import("../../domain/harmony/chord-timeline").ChordResolutionPolicy;
+  /** Export metadata is evidence only; importing it does not approve a policy. */
+  readonly importedArrangementChordPolicy?: import("../../domain/harmony/arrangement-policy-metadata").ArrangementChordPolicyMetadata;
   /** A preservation-only inspection must pass the workspace compiler before Source. */
   readonly workspaceInspectionOnly?: true;
   readonly workspaceProof?: string;

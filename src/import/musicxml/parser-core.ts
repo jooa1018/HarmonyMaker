@@ -52,6 +52,7 @@ import {
 } from "./xml";
 
 import { MusicXmlStructureError } from "./structure-error";
+import { parseArrangementChordPolicyMetadata } from "../../domain/harmony/arrangement-policy-metadata";
 import { slashNotationForVoice, updateSlashNotation, type SlashNotationState } from "./slash-notation";
 
 type RawChordDraft = Omit<ImportedChordDraft, "key">;
@@ -1136,6 +1137,17 @@ async function importMusicXmlInternal(
       diagnostics: await materializeImportDiagnostics(score.diagnostics),
     };
   }
+  const policyFields = xmlDescendants(parsedXml.root, "miscellaneous-field").filter(field => field.attributes.name === "harmonymaker-arrangement-chord-policy");
+  let importedArrangementChordPolicy: MusicXmlImportDraft["importedArrangementChordPolicy"];
+  try {
+    if (policyFields.length > 1) throw new RangeError("duplicate arrangement policy metadata");
+    if (policyFields.length === 1) importedArrangementChordPolicy = parseArrangementChordPolicyMetadata(xmlText(policyFields[0]) ?? "");
+  } catch {
+    return { status: "blocked", diagnostics: await materializeImportDiagnostics([{
+      code: "IMPORT_CORRUPT_XML", messageKo: "편곡 정책 메타데이터가 손상됐거나 지원하지 않는 형식입니다. 원본 코드로 변환하지 않았습니다.",
+      details: { issue: "arrangement-policy-metadata-invalid" },
+    }]) };
+  }
   const documentId = (options.identityFactory ?? createSecureDocumentId)();
   if (!/^[A-Za-z0-9][A-Za-z0-9:._/-]*$/u.test(documentId) || /\s/u.test(documentId)) {
     throw new RangeError("document identity factory returned an invalid canonical ID");
@@ -1148,6 +1160,7 @@ async function importMusicXmlInternal(
     options.algorithmVersions.performanceExpanderVersion,
   );
   const draft: MusicXmlImportDraft = {
+    ...(importedArrangementChordPolicy ? { importedArrangementChordPolicy } : {}),
     ...(workspaceInspection ? { workspaceInspectionOnly: true as const } : {}),
     ...(xmlDescendants(parsedXml.root, "miscellaneous-field").some((field) => field.attributes.name === "harmonymaker-local-candidate") ? { localCandidateReviewRequired: true as const } : {}),
     importerVersion: MUSICXML_IMPORTER_VERSION,

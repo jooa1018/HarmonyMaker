@@ -626,8 +626,9 @@ function isAssignment(value: unknown): value is PerformerTrackAssignment {
 
 function isChordResolutionPolicy(value: unknown): boolean {
   return isPlainRecord(value)
-    && hasExactKeys(value, ["gapPolicy"])
-    && ["carry-until-next", "block-gap"].includes(String(value.gapPolicy));
+    && hasExactKeys(value, ["gapPolicy"], ["initialPickup"])
+    && (value.gapPolicy === "carry-until-next" || value.gapPolicy === "block-gap")
+    && (value.initialPickup === undefined || value.initialPickup === "anticipate-first-chord");
 }
 
 function isChordTimeline(value: unknown): boolean {
@@ -647,6 +648,9 @@ function isChordTimeline(value: unknown): boolean {
       || !isPlainRecord(span.origin)) return false;
     if (span.origin.kind === "source-event") return hasExactKeys(span.origin, ["kind", "sourceChordEventId"])
       && isCanonicalId(span.origin.sourceChordEventId);
+    if (span.origin.kind === "arrangement-policy") return hasExactKeys(span.origin, ["kind", "policy", "followingSourceChordEventId"])
+      && span.origin.policy === "anticipate-first-chord"
+      && isCanonicalId(span.origin.followingSourceChordEventId);
     return span.origin.kind === "carried"
       && hasExactKeys(span.origin, ["kind", "carrySource", "originatingSourceChordEventId", "previousSpanId"], ["carryTokenSourceChordEventId"])
       && ["explicit-carry-token", "gap-policy"].includes(String(span.origin.carrySource))

@@ -2,16 +2,21 @@ import type { ResolvedChordParseResult } from "../chord/model";
 import { chordSemanticProjection } from "../chord/parser";
 import { compareCanonicalValues, semanticDigest, type SemanticDigest } from "../digest/canonical";
 import type { Diagnostic } from "../diagnostics";
-import { addFractions, compareFractions, fraction, type Fraction } from "../fraction";
+import { addFractions, compareFractions, fraction, isFraction, type Fraction } from "../fraction";
 import type { PerformanceSequence } from "../performance/repeat";
 import type { SourceChordEvent, SourceMeasure } from "../source/model";
 import { musicalRange, type MusicalPosition, type MusicalRange } from "../time";
 import { performanceChordSpanId } from "../ids";
 
 export type ChordGapPolicy = "carry-until-next" | "block-gap";
-export interface ChordResolutionPolicy { readonly gapPolicy: ChordGapPolicy }
+export interface ChordResolutionPolicy {
+  readonly gapPolicy: ChordGapPolicy;
+  /** A requested arrangement interpretation; never an inferred Source chord. */
+  readonly initialPickup?: "anticipate-first-chord";
+}
 export type PerformanceChordSpanOrigin =
   | { readonly kind: "source-event"; readonly sourceChordEventId: string }
+  | { readonly kind: "arrangement-policy"; readonly policy: "anticipate-first-chord"; readonly followingSourceChordEventId: string }
   | { readonly kind: "carried"; readonly carrySource: "explicit-carry-token" | "gap-policy"; readonly originatingSourceChordEventId: string; readonly previousSpanId: string; readonly carryTokenSourceChordEventId?: string };
 export interface PerformanceChordSpan { readonly id: string; readonly range: MusicalRange; readonly parseResult: ResolvedChordParseResult; readonly origin: PerformanceChordSpanOrigin }
 export interface EffectiveChordTimeline {
@@ -142,7 +147,14 @@ function timelineProjection(
             span.origin.sourceChordEventId,
           ),
         }
-      : {
+      : span.origin.kind === "arrangement-policy" ? {
+          kind: span.origin.kind,
+          policy: span.origin.policy,
+          followingSourceChordOrdinal: requiredSourceChordOrdinal(
+            sourceChordOrdinalById,
+            span.origin.followingSourceChordEventId,
+          ),
+        } : {
           kind: span.origin.kind,
           carrySource: span.origin.carrySource,
           originatingSourceChordOrdinal: requiredSourceChordOrdinal(
@@ -222,6 +234,47 @@ function soundingLeadSegments(
   ));
 }
 
+function initialPickupAnchor(
+  sourceMeasures: readonly SourceMeasure[],
+  performanceSequence: PerformanceSequence,
+): { readonly chord: SourceChordEvent } | { readonly reason: string } {
+  const [pickup, following] = sourceMeasures;
+  const [firstOccurrence, nextOccurrence] = performanceSequence.occurrences;
+  if (!pickup || !following || !firstOccurrence || !nextOccurrence
+    || firstOccurrence.sourceMeasureId !== pickup.id || nextOccurrence.sourceMeasureId !== following.id
+    || firstOccurrence.performanceIndex !== 0 || nextOccurrence.performanceIndex !== 1
+    || firstOccurrence.occurrenceIndexForSource !== 0 || nextOccurrence.occurrenceIndexForSource !== 0) {
+    return { reason: "nonadjacent-initial-measures" };
+  }
+  if (!pickup.implicit || !isFraction(pickup.duration) || pickup.duration.n <= 0
+    || compareFractions(pickup.duration, fraction(pickup.time.numerator * 4, pickup.time.denominator)) >= 0) {
+    return { reason: "not-a-short-implicit-pickup" };
+  }
+  if (compareCanonicalValues(firstOccurrence.duration, pickup.duration) !== 0
+    || compareCanonicalValues(nextOccurrence.duration, following.duration) !== 0
+    || compareCanonicalValues(firstOccurrence.time, pickup.time) !== 0
+    || compareCanonicalValues(nextOccurrence.time, following.time) !== 0) {
+    return { reason: "performance-context-mismatch" };
+  }
+  if ([pickup, following].some(measure => measure.repeat.startRepeat || measure.repeat.endRepeat
+    || measure.repeat.endingNumbers?.length
+    || performanceSequence.occurrences.filter(item => item.sourceMeasureId === measure.id).length !== 1)) {
+    return { reason: "repeated-pickup-or-anchor" };
+  }
+  if (pickup.chordEvents.length !== 0) return { reason: "pickup-has-explicit-chord" };
+  if (!pickup.leadEvents.some(event => event.kind === "note")
+    || pickup.leadEvents.some(event => !isFraction(event.onset) || !isFraction(event.duration)
+      || event.onset.n < 0 || event.duration.n <= 0
+      || compareFractions(addFractions(event.onset, event.duration), pickup.duration) > 0)) {
+    return { reason: "invalid-pickup-lead-extent" };
+  }
+  const anchors = following.chordEvents.filter(event => event.onset.n === 0);
+  if (anchors.length !== 1 || anchors[0].confirmation !== "confirmed" || anchors[0].parseResult.status !== "ok") {
+    return { reason: "following-chord-not-confirmed-at-zero" };
+  }
+  return { chord: anchors[0] };
+}
+
 export async function resolveEffectiveChordTimeline(input: {
   readonly sourceMeasures: readonly SourceMeasure[];
   readonly performanceSequence: PerformanceSequence;
@@ -232,7 +285,18 @@ export async function resolveEffectiveChordTimeline(input: {
   readonly expectedResolverVersion: string;
 }): Promise<EffectiveChordTimelineState> {
   if (input.policy.gapPolicy !== "carry-until-next" && input.policy.gapPolicy !== "block-gap") throw new RangeError("allow-no-chord is not a Core gap policy");
+  if (input.policy.initialPickup !== undefined && input.policy.initialPickup !== "anticipate-first-chord") throw new RangeError("unsupported initial pickup policy");
   if (input.resolverVersion !== input.expectedResolverVersion) return { status: "blocked", resolutionPolicy: input.policy, diagnostics: [diagnostic("CHORD_RESOLVER_VERSION_MISMATCH", "version")] };
+  const pickup = input.policy.initialPickup === "anticipate-first-chord"
+    ? initialPickupAnchor(input.sourceMeasures, input.performanceSequence) : undefined;
+  if (pickup && "reason" in pickup) return {
+    status: "blocked", resolutionPolicy: input.policy, diagnostics: [{
+      ...diagnostic("SOURCE_CHORD_GAP", "initial-pickup-policy"),
+      messageKo: "첫 못갖춘마디의 다음 코드 선행 적용 조건을 충족하지 않습니다.",
+      details: { issue: "initial-pickup-policy-ineligible", reason: pickup.reason },
+    }],
+  };
+  const pickupChord = pickup?.chord;
   const byId = new Map(input.sourceMeasures.map((measure) => [measure.id, measure]));
   const spans: PerformanceChordSpan[] = [];
   const diagnostics: Diagnostic[] = [];
@@ -253,7 +317,13 @@ export async function resolveEffectiveChordTimeline(input: {
         endOffset,
         durations,
       )) {
-        if (input.policy.gapPolicy === "carry-until-next" && previousState) {
+        if (occurrence.performanceIndex === 0 && pickupChord?.parseResult.status === "ok") {
+          const id = performanceChordSpanId(gapRange.start, gapRange.end);
+          spans.push({ id, range: gapRange, parseResult: { status: "ok", chord: pickupChord.parseResult.chord },
+            origin: { kind: "arrangement-policy", policy: "anticipate-first-chord", followingSourceChordEventId: pickupChord.id } });
+          // The first printed chord still becomes authoritative at its own onset.
+          // Do not manufacture a prior Source state for any later uncovered gap.
+        } else if (input.policy.gapPolicy === "carry-until-next" && previousState) {
           const id = performanceChordSpanId(gapRange.start, gapRange.end);
           spans.push({ id, range: gapRange, parseResult: previousState.parseResult, origin: { kind: "carried", carrySource: "gap-policy", originatingSourceChordEventId: previousState.originatingSourceChordEventId, previousSpanId: previousState.spanId } });
           previousState = { ...previousState, spanId: id };

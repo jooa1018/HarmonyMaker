@@ -42,6 +42,12 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
     && input.workspaceShareConfirmedForThisExport === true;
   if (!workspaceConfirmation && !input.project.source.rights.allowedUses.includes("share")) throw new RangeError("SHARE_RIGHTS_REQUIRED");
   const document = input.materialized.document;
+  // V4 compact chords have no arrangement-policy origin. Do not erase that distinction.
+  if (document.effectiveChordTimeline.resolutionPolicy.initialPickup
+    || document.effectiveChordTimeline.spans.some((span) => span.origin.kind === "arrangement-policy")
+    || (input.project.chordTimelineState.status === "resolved" && input.project.chordTimelineState.timeline.resolutionPolicy.initialPickup)) {
+    throw new RangeError("SHARE_ARRANGEMENT_CHORD_POLICY_UNSUPPORTED");
+  }
   // V4 share has one Source voice. Refuse a lossy public payload until that schema expands.
   if (document.sourceRhythmTracks?.length) throw new RangeError("SHARE_SEPARATE_RHYTHM_VOICES_UNSUPPORTED");
   if (document.sourceLeadTrack.atoms.some((atom) => atom.slurs?.length)) throw new RangeError("SHARE_SOURCE_SLURS_UNSUPPORTED");

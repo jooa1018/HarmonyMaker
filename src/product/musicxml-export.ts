@@ -170,6 +170,10 @@ function structuredHarmony(chord: ParsedChord): { readonly kind: string; readonl
 function harmonyXml(document: ArrangementRenderDocument, measureIndex: number, divisions: number): string {
   return document.effectiveChordTimeline.spans.filter((span) => span.range.start.performanceMeasureIndex === measureIndex).map((span) => {
     const offset = scaledInteger(span.range.start.offset, divisions, "MUSICXML_HARMONY_OFFSET_UNREPRESENTABLE");
+    if (span.origin.kind === "arrangement-policy") {
+      const symbol = span.parseResult.status === "ok" ? span.parseResult.chord.canonicalSymbol : "N.C.";
+      return `<direction placement="above"><direction-type><words>${xml(`${symbol} (편곡 정책: 첫 코드 선행 적용)`)}</words></direction-type>${offset ? `<offset>${offset}</offset>` : ""}</direction>`;
+    }
     if (span.parseResult.status === "no-chord") return `<harmony><kind text="N.C.">none</kind>${offset ? `<offset>${offset}</offset>` : ""}</harmony>`;
     const chord = span.parseResult.chord;
     const structured = structuredHarmony(chord);
@@ -248,6 +252,13 @@ function partXml(input: { readonly id: string; readonly events: readonly (XmlEve
 }
 
 export function exportArrangementMusicXml(document: ArrangementRenderDocument, trackRoles: ProductTrackRoleRegistry, input: { readonly title: string; readonly composer?: string; readonly key: KeySignature; readonly tempo: TempoSpec; readonly workspaceProjection?: WorkspaceProjectionMetadata }): string {
+  const timeline = document.effectiveChordTimeline;
+  const policySpans = timeline.spans.filter((span) => span.origin.kind === "arrangement-policy");
+  if ((timeline.resolutionPolicy.initialPickup !== undefined || policySpans.length > 0)
+    && (timeline.resolutionPolicy.initialPickup !== "anticipate-first-chord" || policySpans.length === 0
+      || policySpans.some((span) => span.origin.kind === "arrangement-policy" && span.origin.policy !== "anticipate-first-chord"))) {
+    throw new RangeError("MUSICXML_ARRANGEMENT_POLICY_INCONSISTENT");
+  }
   const allFractions = [
     ...document.measures.map((measure) => measure.duration),
     ...document.sourceLeadTrack.atoms.flatMap((atom) => [atom.range.start.offset, canonicalRangeDuration(document.measures, atom.range)]),
@@ -268,7 +279,15 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
   const partList = tracks.map((track) => `<score-part id="${track.id}"><part-name>${xml(track.name)}</part-name></score-part>`).join("");
   const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
   const projection=input.workspaceProjection;
-  const selection=projection?`<miscellaneous><miscellaneous-field name="harmonymaker-workspace-projection">${xml(JSON.stringify({version:projection.version,originKind:projection.originKind,workspaceId:projection.workspaceId,workspaceRevision:projection.workspaceRevision,workspaceDigest:projection.workspaceDigest,requestDigest:projection.requestDigest,range:"whole-score",selectedVoices:projection.selectedVoices,excludedVoices:projection.excludedVoices,policy:"existing-wag-v1"}))}</miscellaneous-field></miscellaneous>`:"";
+  const workspaceField=projection?`<miscellaneous-field name="harmonymaker-workspace-projection">${xml(JSON.stringify({version:projection.version,originKind:projection.originKind,workspaceId:projection.workspaceId,workspaceRevision:projection.workspaceRevision,workspaceDigest:projection.workspaceDigest,requestDigest:projection.requestDigest,range:"whole-score",selectedVoices:projection.selectedVoices,excludedVoices:projection.excludedVoices,policy:"existing-wag-v1"}))}</miscellaneous-field>`:"";
+  const policyMetadata = policySpans.length ? {
+    version: "hm-arrangement-chord-policy-v1",
+    resolutionPolicy: timeline.resolutionPolicy,
+    spans: policySpans.map((span) => ({ id: span.id, range: span.range, symbol: span.parseResult.status === "ok" ? span.parseResult.chord.canonicalSymbol : "N.C.", origin: span.origin })),
+  } : undefined;
+  // Exported references describe this arrangement; they are not new Source chord events.
+  const policyField = policyMetadata ? `<miscellaneous-field name="harmonymaker-arrangement-chord-policy">${xml(JSON.stringify(policyMetadata))}</miscellaneous-field>` : "";
+  const selection=workspaceField||policyField?`<miscellaneous>${workspaceField}${policyField}</miscellaneous>`:"";
   const identification=input.composer||selection?`<identification>${input.composer?`<creator type="composer">${xml(input.composer)}</creator>`:""}${selection}</identification>`:"";
   return `<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"><work><work-title>${xml(input.title)}</work-title></work>${identification}<part-list>${partList}</part-list>${parts}</score-partwise>`;
 }

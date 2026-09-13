@@ -64,6 +64,11 @@ function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opI
   if (!music && edit.kind !== "issue") return invalid();
   const request = state.request;
   switch (edit.kind) {
+    case "pickup-policy": {
+      if (!hasExactKeys(edit, ["kind", "value"]) || !["none", "anticipate-first-chord"].includes(edit.value)) return invalid();
+      const { initialPickup: previous, ...withoutPolicy } = request; void previous;
+      return { ...state, request: edit.value === "none" ? withoutPolicy : { ...withoutPolicy, initialPickup: edit.value } };
+    }
     case "title":
       if (typeof edit.title !== "string" || edit.title.length > 512) return invalid();
       return { ...state, music: { ...music!, title: edit.title.normalize("NFC") } };
