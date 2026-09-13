@@ -1,5 +1,19 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-14 JPEG 후속 요청·원본 재대조·proof 처리
+
+검증 제품은 `3ecdbc347faa237bccd09233f1f26914a9b69850`, 이 절 추가는 문서 전용 변경이다. 이전 revision 395의 원본 미확정과 요청 결정을 사용자 답변 및 원본 재대조로 일반 UI에 반영했다. 현재 초안은 revision 550이며 전곡 39마디 대조가 현재 이력과 일치하고 pending issue는 0개다. 비선택 원본 성부를 보존하면서 Lead 하나만 투영한다.
+
+첫 못갖춘마디의 인쇄된 코드 없음은 원본에 유지하고 `anticipate-first-chord`를 명시 편곡 정책으로 추가했다(`68a2fc6`). 짧은 최초 implicit 구간과 인접 최초 확정 코드 등 제한 조건을 검증하며, original chordEvents를 채우지 않는다. 별도 timeline origin과 request/proof에 결합하고 프로젝트의 전체 Source와 대조한다. XML은 원본 harmony와 구분한 설명/metadata로 기록하며 재입력 metadata는 승인 권위가 아니다. 새 정책을 담는 compact share는 거절한다. 배열 gapPolicy를 String 변환으로 수용하던 반례도 literal 검사로 수정했다. WAG 음악 규칙·OMR·오디오·DB는 변경하지 않았다.
+
+550개 이력의 반복 full replay 지연을 관측해 8M 문자 이하 검증된 exact proof 한 건만 재사용하도록 했다(`3ecdbc3`). private workspace+전체 Replay 및 호출별 반환 bundle을 복제하며, 변조/다른 text는 기존 검증을 거친다. 64M 문자/2048-operation 제한을 유지한다. 같은 r550의 Source 버튼 관측은 Chrome에서 약129초→22초였다. 10초 polling·화면 저장·변동 자원을 포함한 단일 호스트 관측이며 통제 벤치마크가 아니다. 호출자가 export await 중 같은 JS객체를 직접 변조할 때 미검증 text가 반환되는 기존 API race는 남지만, 그 결과는 cache에 등록되지 않고 parse/replay에서 거절된다.
+
+이 제품의 깨끗한 트리에서 타입/전체 lint, 116파일1,126개 기본 및 3파일5개 실제 private 회귀(고유1,131개), production build가 통과했다. Build ID는 `9efzprW9bWuOhnFg6pSPU`, origin은 `http://127.0.0.1:3198`이다. Chrome 동일 프로필의 서버/브라우저 재시작과 Edge 새 프로필의 실제 가져오기·저장·reload·다운로드에서 r550 파일 바이트가 같았다. Edge 최초 PID의 정상 compatibility relaunch로 기동기 준비 확인이 실패한 기록을 보존하고 실제 자식 CDP로 검증을 계속했다. 동기화 설정은 조작하지 않았다. 과거 다운로드 실패도 보존한다.
+
+**JPEG 일반 UI Source 이후 목표는 미완료다.** 유일한 현재 진단은 `PERFORMER_RANGE_INVALID`: 요청된 A 시험 Lead 범위보다 낮은 JPEG 음이43개다. 원본 결정 미해결이나 환경 차단으로 바꾸어 보고하지 않는다. 시험 하한 변경 답변을 기다리며 실제 초안은 원래 A 범위를 유지한다. 별도 메모리 진단은 complete후보1+partial후보1을 얻었지만 일반 UI 생성/재생/프로젝트/XML 성공이 아니며 음악 결과 파일을 만들지 않았다. 진단은 당시68a2fc6 위 미커밋cache 모듈 해시를 기록한다. `HUMAN_RECHECK_PENDING`이며 PostgreSQL/실제 OMR은 해당 경로 미변경으로 반복하지 않았다.
+
+같은 비공개 인계 루트의 최신 `시작안내.md`, `검증보고서.md`, `교정기록.md`, `실행상태.json`, `followup/02-workspaces/jpeg-r550-final-resume.hm-workspace.json`과 실제 manifest를 따른다. r395 문서4개는 baseline-r395에 보존했고 선행831파일 크기/해시도 재확인했다. 원본 음악·전체 proof는 저장소에 추가하지 않았고 push·외부공유·배포·병합·기존파일삭제는 하지 않았다.
+
 ## 2026-09-14 실제 JPEG 후보의 명시 교정
 
 검증 제품은 `2c594c2a9b43c916db61271235ad7322b14b7b0e`다. 이후 이 절의 변경은 문서 전용이다. 개별 원본 기호 제거, 성부·이벤트 삽입/이동/제거, 실제 마디 길이, 가사·slur 및 코드 교정에 근거를 남기는 typed command와 일반 UI를 추가했다. 원본과 기존 ID는 보존하며 완성 Source를 주입하지 않는다.
