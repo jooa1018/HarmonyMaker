@@ -1,5 +1,21 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-14 실제 JPEG 후보의 명시 교정
+
+검증 제품은 `2c594c2a9b43c916db61271235ad7322b14b7b0e`다. 이후 이 절의 변경은 문서 전용이다. 개별 원본 기호 제거, 성부·이벤트 삽입/이동/제거, 실제 마디 길이, 가사·slur 및 코드 교정에 근거를 남기는 typed command와 일반 UI를 추가했다. 원본과 기존 ID는 보존하며 완성 Source를 주입하지 않는다.
+
+추가 반례로 수입 slur의 실제 선택 범위 검토 의존성, 구형 attest의 Undo/Redo 이행, Source 본문과 proof의 정확한 일치를 보완했다. 새 의존성 표식 v2와 구형 v1 replay를 구분하고, 구형 확인을 새 사용자 승인으로 자동 전환하지 않는다. WAG digest에서 제외되는 가사·구간 등도 replay/normalize한 본문과 대조한다. WAG·오디오·OMR·DB 및 음악 지원 정책은 변경하지 않았다.
+
+보존된 최신 사용자 JPEG 후보에서 일반 UI로 원본 근거가 있는 음악 교정을 실제 적용했다. 초안은 revision 395이며 원본 이벤트 ID 283개 모두 보존, 삽입 2개, 삭제 0개다. 다수의 코드·가사·시간축을 명시적으로 보완한 결과로서 자동 인식 개선이 아니다. 과거 평가용 교정 이력을 fresh 후보에 재적용하지 않았다. 원본 의미와 편곡 요청이 필요한 조건이 남아 판정은 **SOURCE_DECISION_REQUIRED**이며, JPEG의 Source/WAG/프로젝트/편곡 MusicXML 성공은 아직 아니다.
+
+타입·전체 lint, 기본 1,060개와 별도 private 5개 고유 회귀, production build가 통과했다. `.next-local-jpeg` Build ID는 `ZwU6BDINmGA6fktLg2I9c`, 실제 local production origin은 `http://127.0.0.1:3198`이다. 최종 제품 변경이 있는 commit 전 작업 트리를 검증했으며 build 후 생성된 next-env 타입 참조 외에는 commit 파일과 일치한다. 검증 시작 코드 집계와 commit 후 대응 기록은 비공개 실행 로그에 있다.
+
+Chrome 일반 UI 교정·저장·reload·다운로드와 같은 origin의 서버/브라우저 재시작, Edge 새 프로필의 초안 가져오기·실제 다운로드·재입력에서 전체 proof와 요청/음악 일치를 확인했다. Edge의 기존 A 프로젝트는 새 사본·악보·믹서·Play/Pause/Resume/Reset·저장·project/XML 다운로드·재입력 smoke 및 canonical 음악 비교가 통과했다. 이는 JPEG 전곡 생성/청감 성공을 대신하지 않는다. PostgreSQL과 실제 OMR은 해당 코드 경로가 변경되지 않아 재실행하지 않았다. 사람 재확인은 **HUMAN_RECHECK_PENDING**이다.
+
+Edge 첫 다운로드의 자동화 임시 파일 ENOENT는 실패 기록으로 보존했다. 해당 실행에 두 CDP 연결이 있었으며 브라우저 native 종료는 없었다. 단일 CDP로 재개한 5개 실제 다운로드는 통과했다. 연결 간섭은 가설이며 모든 과거 다운로드 문제가 해결됐다고 일반화하지 않는다. 설치 브라우저를 직접 기동했고 launchPersistentContext는 사용하지 않았다.
+
+로컬 비공개 인계: `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-user-jpeg-assisted-v1`. `시작안내.md`, `실행.ps1`, `검증보고서.md`, `교정기록.md`, 최종 작업 공간 및 실제 manifest를 따른다. 원본 음악·이미지·전체 proof는 저장소에 추가하지 않았다. 선행 manifest의 실제 831개 파일은 크기·해시가 보존됐다. push·원격 CI·외부 공유·배포·병합·기존 파일 삭제는 하지 않았다.
+
 ## 로컬 PNG/JPEG 입력 연결
 
 실제 로컬 homr 실행과 상태·취소·복구·후보 전달 계약은 [LOCAL_IMAGE_V1.md](LOCAL_IMAGE_V1.md)에 정리한다. 이미지 결과는 기존 영속 작업 공간과 Source 검증을 거친다. 아래 선행 실행 기록과 새 이미지 실행 결과를 구분하며, A 성공을 사용자 JPEG 전곡 복원으로 해석하지 않는다. 사용자가 최근 오디오 개선을 확인했으므로 이번 이미지 작업은 해당 믹서·envelope와 WAG 음악 규칙을 보존한다.
