@@ -96,6 +96,7 @@ Pause는 audio clock의 위치를 보관하고 master를 8ms 동안 낮춘 뒤 �
 - 별도 오류 주입: resume 250ms 지연 + 실제 main-thread timer task 350ms 정지. Chrome/Edge에서 long task가 관측되고도 이미 예약된 전체 출력에 late event·30ms gap·clipping이 없었다. 이는 일반 사용자 흐름에 합산하지 않았다.
 - 각 브라우저에서 12개 live mixer 조작은 context 재시작 없이 적용됐다. Pause/Resume/Reset/속도 변경 시험의 10개 context는 각각 한 번씩 닫혔다. Resume 위치 Chrome quarter 2.117, Edge 2.101에서 남은 73개 event의 pitch/start/end를 원 plan과 대조했고 중복·누락이 없었다.
 - 실제 OfflineAudioContext는 각 속도의 Lead/harmony/voices/Band/full/full-max 18조건을 검사했다. harmony의 14개 tie continuation은 계속 같은 enclosing sound 안에 있고 주변 PCM이 이어졌다. 일반 event의 start/end·frequency도 실제 browser AudioParam의 float32 값과 대조했다.
+- 계측 없이 일반 UI로 가져와 Band ON·100%로 전곡을 재생한 콘솔 보충 시험도 Chrome/Edge에서 통과했다. 각 브라우저의 console error·page error·실패한 앱 요청은 0이었다. 각 1개의 CSS preload 사용 시점 warning은 그대로 기록했으며 오디오 결함으로 분류하지 않았다.
 
 측정 가지와 offline render는 OS 드라이버·스피커·헤드폰 뒤의 실제 출력을 녹음하지 않는다. 하드웨어 underrun과 사용자의 잔여 잡음은 재청취로 확인해야 한다. 긴 dropout이 관측되지 않았다는 결과를 모든 환경에서의 부재로 일반화하지 않는다.
 
@@ -118,7 +119,7 @@ Pause는 audio clock의 위치를 보관하고 master를 8ms 동안 낮춘 뒤 �
 | 전체 기본 회귀 | 105파일 998개 PASS, 3파일 5개 opt-in skipped |
 | production build | PASS, 기본 `next build`, 종료 0, 17개 정적 페이지 |
 | production Chrome | PASS, 152.0.7977.83, 실제 UI 6개 전곡 + 12개 mixer 조작 + transport + 다운로드 |
-| production Edge | PASS, 152.0.4191.66, Chrome과 같은 흐름 |
+| production Edge | PASS, 153.0.4234.32, Chrome과 같은 흐름 |
 | PCM / timing / tie / 주입 지연 | PASS, 일반 재생과 주입 시험의 증거 별도 보존 |
 | 프로젝트 음악·내용 보존 | PASS, 실제 UI 다운로드와 원본 동일 |
 | PostgreSQL / OMR 재실행 | NOT_RUN, DB·서버·인식 경로가 바뀌지 않은 오디오 범위이므로 반복하지 않음 |
