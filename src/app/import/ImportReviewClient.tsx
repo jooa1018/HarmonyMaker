@@ -62,6 +62,7 @@ import { loadImportRecoveries, saveImportRecovery, type StoredImportRecovery } f
 import type { OmrImportHandoff } from "../../domain/omr/browser-handoff";
 import { RecoveryEditor } from "./RecoveryEditor";
 import { StructuralRecoveryEditor } from "./StructuralRecoveryEditor";
+import { readImportStartup } from "./startup-read";
 import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { loadProductExecutionRegistry } from "../../product/registry";
 import { createProjectFromQuickReview } from "../../product/workspace";
@@ -377,7 +378,7 @@ export function ImportReviewClient() {
   const [savedRecoveries, setSavedRecoveries] = useState<readonly StoredImportRecovery[]>([]);
   const [inputOrigin, setInputOrigin] = useState<"file" | "omr">("file");
   const [retainedHandoff, setRetainedHandoff] = useState<{ file: File; expiresAt: string }>();
-  const handoffReadBusy = useRef(false);
+  const handoffReadBusy = useRef<number | undefined>(undefined);
   const [reviewing, setReviewing] = useState(false);
   const [tempoText, setTempoText] = useState("");
   const [keyText, setKeyText] = useState("");
@@ -428,6 +429,7 @@ export function ImportReviewClient() {
     setFileStatus(`${file.name} 보안 검사 중…`);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      if (sequence !== loadSequence.current) return false;
       if (!corrected) {
         try {
           const recovery = await createImportRecovery(bytes, file.name);
@@ -469,7 +471,7 @@ export function ImportReviewClient() {
         return true;
       }
     } catch {
-      setFileStatus("가져오기 처리 중 오류가 발생했습니다. 원본 손상 여부는 판정하지 못했습니다. 파일을 보존하고 다시 열어 주세요.");
+      if (sequence === loadSequence.current) setFileStatus("가져오기 처리 중 오류가 발생했습니다. 원본 손상 여부는 판정하지 못했습니다. 파일을 보존하고 다시 열어 주세요.");
       return false;
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
@@ -477,50 +479,69 @@ export function ImportReviewClient() {
   }, [restoreRecovery]);
 
   const validateRecovery = async (entry: StoredImportRecovery) => {
+    const sequence = ++loadSequence.current;
     if (entry.incompleteReason) throw new RangeError("RECOVERY_STRUCTURE_UNRESOLVED");
     const xml = await replayImportRecovery(entry.recovery);
+    if (sequence !== loadSequence.current) return;
     const file = new File([xml], entry.providerResult ? "omr-result.musicxml" : entry.recovery.originalFileName, { type: "application/vnd.recordare.musicxml+xml" });
     await loadFile(file, undefined, entry);
   };
 
   const loadHandoff = useCallback(() => {
-    if (handoffReadBusy.current) return;
-    handoffReadBusy.current = true;
-    return takeOmrImportHandoff().then(async (handoff) => {
-      if (handoff) {
-        setInputOrigin(handoff.omrProviderResult || handoff.localCandidate ? "omr" : "file");
+    const readSequence = loadSequence.current;
+    if (handoffReadBusy.current === readSequence) return;
+    handoffReadBusy.current = readSequence;
+    let sequence = readSequence;
+    return readImportStartup(() => sequence === loadSequence.current, takeOmrImportHandoff, loadImportRecoveries).then(async (startup) => {
+      if (startup.kind === "stale" || sequence !== loadSequence.current) return;
+      if (startup.kind === "handoff") {
+        const handoff = startup.handoff;
         // Materialize the verified bytes before the failure counter writes the
         // IndexedDB record again. Downloads must not depend on its Blob backing.
         const file = new File([await handoff.file.arrayBuffer()], handoff.file.name, { type: handoff.file.type });
+        if (sequence !== loadSequence.current) return;
+        setInputOrigin(handoff.omrProviderResult || handoff.localCandidate ? "omr" : "file");
         setRetainedHandoff({ file, expiresAt: handoff.expiresAt });
         if (handoff.omrProviderResult) setOmrHandoff({ handoffId: handoff.handoffId, result: handoff.omrProviderResult, pageUrls: handoff.pageImages.map((image) => URL.createObjectURL(image.blob)) });
-        const loaded = await loadFile(file, handoff);
+        const pending = loadFile(file, handoff);
+        // loadFile claims its own sequence synchronously; continue only that
+        // invocation, never a later explicit input that finishes before it.
+        sequence = loadSequence.current;
+        const loaded = await pending;
+        if (sequence !== loadSequence.current) return;
         if (loaded && !handoff.omrProviderResult) {
           await completeOmrImportHandoff(handoff.handoffId);
-          setRetainedHandoff(undefined);
+          if (sequence === loadSequence.current) setRetainedHandoff(undefined);
         } else if (!loaded) {
           // Parsing failures are retained in quarantine; reload is not another recognition attempt.
           const stored = (await loadImportRecoveries()).some((entry) => entry.id === handoff.handoffId);
-          if (!stored && !await recordOmrImportHandoffFailure(handoff.handoffId)) setRetainedHandoff(undefined);
+          if (sequence !== loadSequence.current) return;
+          if (!stored) {
+            const retained = await recordOmrImportHandoffFailure(handoff.handoffId);
+            if (sequence === loadSequence.current && !retained) setRetainedHandoff(undefined);
+          }
         }
       } else {
         setRetainedHandoff(undefined);
-        const saved = await loadImportRecoveries();
+        const saved = startup.saved;
         setSavedRecoveries(saved);
         if (saved[0]) restoreRecovery(saved[0]);
       }
     }).catch(() => {
+      if (sequence !== loadSequence.current) return;
       setRetainedHandoff(undefined);
       setFileStatus("OMR 결과 전달값을 읽지 못했습니다. OMR 검토 화면에서 다시 시도하세요.");
-    }).finally(() => { handoffReadBusy.current = false; });
+    }).finally(() => { if (handoffReadBusy.current === readSequence) handoffReadBusy.current = undefined; });
   }, [loadFile, restoreRecovery]);
 
   useEffect(() => { void loadHandoff(); }, [loadHandoff]);
 
   const openLocalCandidate = async (file: File) => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     try {
       const bundle = await parseLocalCandidate(file);
+      if (sequence !== loadSequence.current) return;
       const image = bundle.image;
       await storeOmrImportHandoff({
         fileName: file.name.replace(/\.json$/iu, "") + ".musicxml",
@@ -529,11 +550,12 @@ export function ImportReviewClient() {
         pageImages: [{ pageIndex: 0, rawDigest: image.sha256 as BinaryDigest, canonicalPageDigest: image.sha256 as BinaryDigest,
           mimeType: image.mimeType, bytes: localCandidateImageBytes(bundle) }],
       });
+      if (sequence !== loadSequence.current) return;
       setOmrHandoff(undefined); setOmrSession(undefined); setRetainedHandoff(undefined);
       await loadHandoff();
     } catch (error) {
-      setFileStatus(`후보 묶음 전달 차단: ${error instanceof Error ? error.message : "무결성 확인 실패"}. 기존 자료는 유지됩니다.`);
-    } finally { setLoading(false); }
+      if (sequence === loadSequence.current) setFileStatus(`후보 묶음 전달 차단: ${error instanceof Error ? error.message : "무결성 확인 실패"}. 기존 자료는 유지됩니다.`);
+    } finally { if (sequence === loadSequence.current) setLoading(false); }
   };
 
   useEffect(() => {
@@ -719,7 +741,7 @@ export function ImportReviewClient() {
       </section>
 
       <StructuralRecoveryEditor retained={recoveryEntry && !savedRecoveries.some((r) => r.id === recoveryEntry.id) ? [...savedRecoveries, recoveryEntry] : savedRecoveries}
-        onInvalidate={() => { loadSequence.current += 1; setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
+        onInvalidate={() => { loadSequence.current += 1; setLoading(false); setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
         onValidate={async (candidate) => {
           const sequence = ++loadSequence.current;
           setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setOmrHandoff(undefined); setDiagnostics([]);
@@ -731,11 +753,11 @@ export function ImportReviewClient() {
           setReviewing(true); setDraft({ ...result.draft, recoveryProof: candidate.proof });
           setFileStatus("명시적 구조 교정 revision 검증 완료 · 기존 Quick Review와 Source 검증이 필요합니다.");
         }} />
-      {savedRecoveries.length > 1 ? <label className={styles.field}><span>보존된 후보 선택 · 서로 다른 출력 조각은 자동 결합되지 않습니다</span><select value={recoveryEntry?.id ?? ""} disabled={loading} onChange={(event) => { const entry = savedRecoveries.find((item) => item.id === event.target.value); if (entry) restoreRecovery(entry); }}>
+      {savedRecoveries.length > 1 ? <label className={styles.field}><span>보존된 후보 선택 · 서로 다른 출력 조각은 자동 결합되지 않습니다</span><select value={recoveryEntry?.id ?? ""} disabled={loading} onChange={(event) => { const entry = savedRecoveries.find((item) => item.id === event.target.value); if (entry) { loadSequence.current += 1; setLoading(false); restoreRecovery(entry); } }}>
         {savedRecoveries.map((entry) => <option value={entry.id} key={entry.id}>{entry.recovery.originalFileName} · 교정 {entry.recovery.operations.length}건</option>)}
       </select></label> : null}
       {recoveryEntry && !loading ? <RecoveryEditor key={recoveryEntry.id} entry={recoveryEntry}
-        onInvalidate={() => { setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
+        onInvalidate={() => { loadSequence.current += 1; setLoading(false); setDraft(undefined); setAnalysis(undefined); setOmrSession(undefined); setDiagnostics([]); }}
         onChanged={(entry) => { setRecoveryEntry(entry); setSavedRecoveries((rows) => rows.map((row) => row.id === entry.id ? entry : row)); setFileStatus("교정이 저장되었습니다. 전체 재검증이 필요합니다."); }}
         onValidate={validateRecovery} /> : null}
 
