@@ -16,7 +16,7 @@ export function LocalCandidateReviewEvidence({ bundle }: { readonly bundle: Loca
       ...Object.entries(links.events as Record<string, CandidateRecord>).map(([id, record]) => ({ id: `${id} · ${record.status}`, category: record.status === "physical-candidate" ? "event" : "unresolved", record })),
       ...links.measures.map((record: CandidateRecord & { measure: { id: string } }) => ({ id: `${record.measure.id} · ${record.status}`, category: record.status === "physical-candidate" ? "measure" : "unresolved", record })),
     ];
-    const timeline = e.candidates.filter((r) => r.ruleVersion === "hm-automatic-timeline-v1");
+    const timeline = e.candidates.filter((r) => ["hm-automatic-timeline-v1", "hm-automatic-timeline-v1.1"].includes(String(r.ruleVersion)));
     return { e, rows, timeline };
   }, [bundle]);
   const rows = filter === "all" ? data.rows : data.rows.filter((r) => r.category === filter);

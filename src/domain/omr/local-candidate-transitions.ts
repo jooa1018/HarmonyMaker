@@ -20,6 +20,7 @@ function parse(text: unknown): XmlElement {
   return result.status === "complete" ? result.root : fail();
 }
 const fractionValue = (s: string) => { const [n, d = "1"] = s.split("/"); return Number(n) / Number(d); };
+const timelineVersions = new Set(["hm-automatic-timeline-v1", "hm-automatic-timeline-v1.1"]);
 
 /** Verify the sidecar describes the actual A→C changes, not a different XML with matching counts. */
 export function validateCandidateTransitions(rawXml: string, candidateXml: string, changes: readonly Change[]): void {
@@ -57,7 +58,7 @@ export function validateCandidateTransitions(rawXml: string, candidateXml: strin
       const before = attributes.get(change.measureId ?? "");
       // Narrow additive contract: only the ordinary MusicXML implicit flag.
       // This attests a replayable transformation, never musical correctness.
-      if (!before || change.ruleVersion !== "hm-automatic-timeline-v1"
+      if (!before || !timelineVersions.has(change.ruleVersion ?? "")
         || change.before !== (before.implicit ?? null)
         || after.name !== "implicit" || after.attributes.value !== "yes"
         || Object.keys(after.attributes).length !== 1 || after.children.some((c) => c.kind !== "text" || c.value.trim())) fail();

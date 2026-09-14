@@ -5,10 +5,11 @@ are heuristics, never calibrated confidence or a user's acceptance.
 """
 from fractions import Fraction as F
 from xml.etree import ElementTree as E
-from collections import defaultdict
+from collections import Counter, defaultdict
+from statistics import median
 import copy
 
-VERSION = 'hm-automatic-timeline-v1'
+VERSION = 'hm-automatic-timeline-v1.1'
 
 
 def extent(m):
@@ -109,6 +110,16 @@ def physical_intervals(measures, systems, links):
         rest_links = [links.get(e['id'], {}) for e in rests]
         if any(not r.get('token') or not r.get('attentionEstimate') for r in rest_links):
             row['reason'] = 'rest token correspondence missing'; continue
+        # All model rhythm tokens in the physical interval must be represented by
+        # the XML events. This is distinct from assuming that an absent token is
+        # an absent source symbol; compact-layout evidence below supplies the
+        # independent check against a full bar with missed content.
+        source_rhythms = [t['fields']['rhythm'] for t in s['tokens'] if t.get('attentionOriginal')
+                          and left < t['attentionOriginal'][0] < right
+                          and t['fields'].get('rhythm', '').startswith(('note_', 'rest_'))]
+        event_rhythms = [links[e['id']]['token']['fields']['rhythm'] for e in m['events']]
+        if Counter(source_rhythms) != Counter(event_rhythms):
+            row['reason'] = 'unmatched source rhythm token in interval'; continue
         right_tokens = [t for t in s['tokens'] if ('barline' in t['fields']['rhythm'] or t['fields']['rhythm'].startswith('repeat')) and t.get('attentionOriginal') and abs(t['attentionOriginal'][0]-right) <= 2*sp]
         edge = abs(right-s['bounds'][2]) < sp
         if not right_tokens and not edge:
@@ -116,11 +127,17 @@ def physical_intervals(measures, systems, links):
         xs = [r['geometry']['center'][0] for r in good] + [r['attentionEstimate'][0] for r in rest_links]
         if any(not left < x < right for x in xs):
             row['reason'] = 'event token lies outside source interval'; continue
+        head_spaces=(min(xs)-left)/sp
+        prefix_tokens=[t['fields']['rhythm'] for t in s['tokens'] if t.get('attentionOriginal')
+                       and left < t['attentionOriginal'][0] < min(xs)
+                       and t['fields'].get('rhythm', '').startswith(('clef_', 'keySignature_', 'timeSignature/'))]
         row.update(supported=True, sourceBox=[left, s['bounds'][1], right, s['bounds'][3]],
                    eventIds=[e['id'] for e in m['events']], firstX=min(xs), lastX=max(xs),
-                   tailSpaces=(right-max(xs))/sp, firstInterval=bi == 0, lastInterval=bi == len(boundaries)-2,
+                   headSpaces=head_spaces, tailSpaces=(right-max(xs))/sp,
+                   intervalWidthSpaces=(right-left)/sp, firstInterval=bi == 0, lastInterval=bi == len(boundaries)-2,
+                   rhythmTokenCoverage='exact', rhythmTokens=source_rhythms, layoutPrefixTokens=prefix_tokens,
                    rightBoundaryTokens=[t['fields']['rhythm'] for t in right_tokens],
-                   reason='all pitched glyphs bijective; rests have exact replay tokens; physical boundary corroborated')
+                   reason='all pitched glyphs bijective; model rhythm tokens bijective; rests have exact replay tokens; physical boundary corroborated')
     groups = defaultdict(list)
     for m in measures:
         r = result[m['id']]
@@ -271,6 +288,47 @@ def resolve(root, meter_candidates, physical):
         row.update(status='applied-candidate', before=before, after=E.tostring(t, encoding='unicode'), impact='meter context until next explicit declaration')
         changes.append({**row, 'feature':'meter', 'reviewRequired':True})
     measures, _ = observe(root)
+    # Learn a page-local 4/4 (or matching-meter) width from complete physical
+    # intervals. This is layout evidence, not a duration target. First-system
+    # intervals are excluded because clef/key prelude consumes fixed width.
+    full_layout = defaultdict(list); full_heads = defaultdict(list)
+    for candidate in measures:
+        if not candidate['meter'] or not all(str(v).isdigit() for v in candidate['meter']):
+            continue
+        proof = physical.get(candidate['id'], {})
+        nominal = F(int(candidate['meter'][0])*4, int(candidate['meter'][1]))
+        if (proof.get('supported') and not proof.get('firstInterval') and continuous(candidate)
+                and extent(candidate)==nominal and proof.get('intervalWidthSpaces', 0)>0):
+            key=(candidate['partIndex'], tuple(candidate['meter']))
+            full_layout[key].append(float(proof['intervalWidthSpaces']))
+            if proof.get('headSpaces') is not None:
+                full_heads[key].append(float(proof['headSpaces']))
+
+    def compact_fragment(candidate, proof, nominal):
+        key=(candidate['partIndex'], tuple(candidate['meter']))
+        widths=full_layout.get(key, []); heads=full_heads.get(key, [])
+        result={'supported':False,'calibrationBars':len(widths)}
+        if len(widths)<3 or not heads or proof.get('rhythmTokenCoverage')!='exact':
+            result['reason']='insufficient complete-bar layout calibration or rhythm-token coverage'; return result
+        width=float(proof.get('intervalWidthSpaces', 0)); head=float(proof.get('headSpaces', 999)); tail=float(proof.get('tailSpaces', 999))
+        baseline=float(median(widths)); ordinary_head=float(median(heads))
+        # Remove only the measured extra system-prefix width. Clef/key tokens
+        # corroborate the prefix; their attention coordinates never set time.
+        prefix=max(0.0, head-ordinary_head) if proof.get('firstInterval') and proof.get('layoutPrefixTokens') else 0.0
+        content=max(0.0, width-prefix); ratio=content/baseline if baseline else 999
+        fraction=float(extent(candidate)/nominal)
+        result.update(baselineWidthSpaces=baseline, ordinaryHeadSpaces=ordinary_head,
+                      intervalWidthSpaces=width, prefixAdjustmentSpaces=prefix,
+                      adjustedWidthSpaces=content, adjustedWidthRatio=ratio,
+                      durationFraction=fraction, ratioTolerance=0.18,
+                      scoreMeaning='uncalibrated physical-layout ratio; not probability')
+        # A missed note/rest typically leaves a nominal-width interval or a
+        # large blank edge. Both are rejected even when the recognized durations
+        # happen to complement a neighbour.
+        result['supported']=bool(width>0 and head<=12 and tail<=5.5 and ratio<=fraction+0.18)
+        result['reason']='physically abbreviated interval with exact model-token/glyph coverage' if result['supported'] else 'source interval is not independently abbreviated for its recognized extent'
+        return result
+
     def mark(m, reason, evidence):
         before = m['element'].get('implicit')
         row = {'feature':'timeline-extent', 'ruleVersion':VERSION, 'measureId':m['id'], 'measureIndex':m['measureIndex'],
@@ -294,16 +352,37 @@ def resolve(root, meter_candidates, physical):
         if m['measureIndex']==0 and eligible and no_boundary and (closed_beam_group(m) or p.get('pickupBeamPixels',{}).get('supported')) and all(e['kind']=='note' for e in m['events']) and p.get('firstInterval') and end <= nominal/2:
             mark(m, 'initial short contiguous pitched group with bijective source glyphs and packed right boundary', p)
             continue
-        # A matching cross-system tie plus geometry can distinguish continuation
-        # from independent short measures. Complementary lengths alone never do.
+        # A tie is one possible connection proof. Separately, two displayed
+        # partial measures may form a meter-conserving phrase boundary without
+        # tying their notes. In that case both intervals must be independently
+        # abbreviated in the source layout; complementary lengths alone never do.
         if i+1 < len(measures):
             n = measures[i+1]; q = physical.get(n['id'], {})
             last = m['events'][-1] if m['events'] else None; first = n['events'][0] if n['events'] else None
             tied = last and first and last['kind']=='note' and first['kind']=='note' and last['element'].find('tie[@type="start"]') is not None and first['element'].find('tie[@type="stop"]') is not None and E.tostring(last['element'].find('pitch')) == E.tostring(first['element'].find('pitch'))
             separating = any(b.find('repeat') is not None or b.find('ending') is not None or b.findtext('bar-style', 'regular') not in ('regular', 'none') for b in m['element'].findall('barline'))
-            if eligible and no_boundary and not separating and tied and n['partIndex']==m['partIndex'] and n['systemIndex']==m['systemIndex']+1 and n['meter']==m['meter'] and p.get('lastInterval') and q.get('firstInterval') and q.get('supported') and q.get('tailSpaces',999)<=4 and continuous(n) and 0 < extent(n) < nominal and end+extent(n)==nominal:
-                mark(m, 'cross-system complementary fragment with explicit matching tie and independent source coverage', {'left':p,'right':q,'partner':n['id']})
-                mark(n, 'continuation of preceding tied fragment; displayed IDs retained', {'left':p,'right':q,'partner':m['id']})
+            common = (p.get('supported') and q.get('supported') and no_boundary and not separating
+                      and n['partIndex']==m['partIndex'] and n['systemIndex']==m['systemIndex']+1
+                      and n['meter']==m['meter'] and p.get('lastInterval') and q.get('firstInterval')
+                      and continuous(m) and continuous(n) and {e['voice'] for e in m['events']}=={e['voice'] for e in n['events']}
+                      and 0 < end < nominal and 0 < extent(n) < nominal and end+extent(n)==nominal)
+            explicit_join = p.get('rightBoundaryTokens') and all(token=='barline' for token in p['rightBoundaryTokens'])
+            explicit_right = bool(q.get('rightBoundaryTokens'))
+            left_layout=compact_fragment(m,p,nominal);right_layout=compact_fragment(n,q,nominal)
+            layout_supported=common and explicit_join and explicit_right and left_layout['supported'] and right_layout['supported']
+            # Preserve the stricter v1 tie path; the layout alternative must not
+            # silently relax its packed-edge requirements.
+            tie_supported=common and tied and eligible and q.get('tailSpaces',999)<=4
+            if tie_supported or layout_supported:
+                mode='explicit-matching-tie' if tie_supported else 'independent-compressed-layout'
+                evidence={'left':p,'right':q,'partner':n['id'],'boundaryDecision':'AUTO_APPLIED','connectionMode':mode,
+                          'leftLayout':left_layout,'rightLayout':right_layout,
+                          'checks':['adjacent systems and same part/meter/voice','two physical intervals with exact event-token/glyph coverage',
+                                    'ordinary join boundary without repeat/ending conflict','complementary extents',
+                                    'explicit matching tie or two independently abbreviated source intervals']}
+                mark(m, 'cross-system partial measure supported by '+mode+'; displayed ID retained', evidence)
+                evidence={**evidence,'partner':m['id']}
+                mark(n, 'following cross-system partial measure supported by '+mode+'; displayed ID retained', evidence)
                 continue
         if m['element'].get('implicit')=='yes':
             continue

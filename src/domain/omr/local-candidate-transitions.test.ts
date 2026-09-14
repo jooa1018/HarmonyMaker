@@ -10,6 +10,7 @@ const change = {feature:"timeline-extent",ruleVersion:"hm-automatic-timeline-v1"
 describe("timeline candidate transition boundary", () => {
   it("replays only an explicitly recorded implicit flag", () => {
     expect(() => validateCandidateTransitions(raw,candidate,[change])).not.toThrow();
+    expect(() => validateCandidateTransitions(raw,candidate,[{...change,ruleVersion:"hm-automatic-timeline-v1.1"}])).not.toThrow();
     expect(() => validateCandidateTransitions(raw,candidate,[])).toThrow("LOCAL_CANDIDATE_TRANSITION_INVALID");
     expect(() => validateCandidateTransitions(raw,candidate,[{...change,before:"yes"}])).toThrow();
     expect(() => validateCandidateTransitions(raw,candidate,[{...change,ruleVersion:"unknown"}])).toThrow();

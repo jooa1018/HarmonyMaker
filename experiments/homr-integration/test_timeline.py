@@ -26,7 +26,9 @@ def proof(root):
     ms,_=observe(root)
     return {m['id']:{'supported':True,'firstInterval':m['measureIndex']==0 or m['systemIndex']!=ms[m['measureIndex']-1]['systemIndex'],
             'lastInterval':m['measureIndex']==len(ms)-1 or m['systemIndex']!=ms[m['measureIndex']+1]['systemIndex'],
-            'tailSpaces':2,'reason':'synthetic independent complete source coverage'}for m in ms}
+            'headSpaces':2,'tailSpaces':2,'intervalWidthSpaces':30,'rhythmTokenCoverage':'exact',
+            'layoutPrefixTokens':['clef_G2'] if m['measureIndex']==0 or m['systemIndex']!=ms[m['measureIndex']-1]['systemIndex'] else [],
+            'rightBoundaryTokens':['barline'],'reason':'synthetic independent complete source coverage'}for m in ms}
 
 
 def meter(i, beats, den=4):
@@ -77,6 +79,37 @@ class TimelineFixtures(unittest.TestCase):
             before=music(r);out=resolve(r,[],proof(r))
             self.assertEqual(len(out['changes']),2 if tied and not separate else 0);self.assertEqual(before,music(r))
             if tied and not separate:self.assertEqual([ms[1].get('implicit'),ms[2].get('implicit')],['yes','yes'])
+
+    def test_tie_free_system_partials_need_independent_compact_layout(self):
+        r=score([[4],[3],[1],[4],[4],[4]],systems=(2,));p=proof(r);before=music(r)
+        p['p0m1'].update(intervalWidthSpaces=23,headSpaces=2,tailSpaces=2)
+        p['p0m2'].update(intervalWidthSpaces=12,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2','keySignature_0'])
+        out=resolve(r,[],p);ms=r.findall('part/measure')
+        self.assertEqual([ms[1].get('implicit'),ms[2].get('implicit')],['yes','yes'])
+        self.assertEqual(len(out['changes']),2);self.assertEqual(before,music(r))
+        self.assertTrue(all(c['evidence']['connectionMode']=='independent-compressed-layout' for c in out['changes']))
+
+    def test_system_boundary_full_width_or_missing_token_is_not_shortened(self):
+        for failure in ('full-width','missing-token'):
+            r=score([[4],[3],[1],[4],[4],[4]],systems=(2,));p=proof(r);before=music(r)
+            p['p0m1'].update(intervalWidthSpaces=23,headSpaces=2,tailSpaces=2)
+            p['p0m2'].update(intervalWidthSpaces=12,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2'])
+            if failure=='full-width':
+                p['p0m1']['intervalWidthSpaces']=30;p['p0m2']['intervalWidthSpaces']=38
+            else:p['p0m1']['rhythmTokenCoverage']='incomplete'
+            self.assertEqual(resolve(r,[],p)['changes'],[]);self.assertEqual(before,music(r))
+
+    def test_compact_but_noncomplementary_system_bars_stay_separate(self):
+        r=score([[4],[2],[1],[4],[4],[4]],systems=(2,));p=proof(r);before=music(r)
+        p['p0m1'].update(intervalWidthSpaces=15,headSpaces=2,tailSpaces=2)
+        p['p0m2'].update(intervalWidthSpaces=12,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2'])
+        self.assertEqual(resolve(r,[],p)['changes'],[]);self.assertEqual(before,music(r))
+
+    def test_tie_does_not_override_a_separating_barline(self):
+        r=score([[4],[3],[1],[4]],systems=(2,));ms=r.findall('part/measure');p=proof(r)
+        E.SubElement(ms[1].find('note'),'tie',type='start');E.SubElement(ms[2].find('note'),'tie',type='stop')
+        E.SubElement(E.SubElement(ms[1],'barline'),'repeat',direction='backward')
+        self.assertEqual(resolve(r,[],p)['changes'],[])
 
     def test_polyphony_uses_extent_not_sum_or_first_voice(self):
         r=score([[1,1]]);m=r.find('part/measure');E.SubElement(E.SubElement(m,'backup'),'duration').text='8'
