@@ -1,5 +1,17 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-15 자동 시간축 후보 v1
+
+**TIMELINE_V1_PARTIAL.** 구현 commit은 `70f15c547df3b7d1260b5a89615e54df599b11f8`다. 기존 로컬 이미지 pipeline의 보완 뒤에 근거 제한형 시간축 단계를 연결했다. 원시 token/원본 glyph/자동 geometry로 박자표와 첫 pickup을 처리하고, 좁은 typed 자동 변경 이력·runner hash·요청 버전·미확정 UI를 유지한다. 정답 r551과 수동 좌표는 runtime 입력이 아니다. 기존 importer 길이 계약, Source 검증, WAG, 오디오, 믹서는 변경하지 않았다.
+
+수정 전 B_FILE/B_APP_OLD를 먼저 동결하고 변경하지 않은 `hm-omr-audit-v1.1`로 평가했다. 같은 JPEG에서 인쇄 박자 1/7→7/7, 유효 박자 36/39→39/39, 구간 길이 FILE 22/39→26/39 및 APP 23/39→27/39, 구간 시작 1/39→5/39, 전곡 이벤트 onset 2/285→34/285다. 총길이는 FILE 157.5→148, APP 156→146.5 quarter로 기준 122.5와 여전히 다르다. 기존에 맞던 구조의 회귀는 0이다. 283개 이벤트와 국소 위치·음높이·음 길이·tie/slur·가사·코드는 그대로다.
+
+박자 7건과 pickup 1건을 자동 후보로 적용하고 14건은 보류했다. 시스템 경계 6쌍은 합/배치만으로 연결하지 않았으며 실제 JPEG에 필요한 연결 증거가 없어 미완료다. 마지막 overfull로 FILE/APP 1.5 차이도 남는다. 합성 연결 반례의 성공을 실제 JPEG 경계 복원 성공으로 세지 않는다. 별도 실제 A는 30이벤트/8구간/24 quarter를 보존하며 초기 중복 3/4·6/8을 원본 6/8로 정리했다.
+
+타입·전체 lint·기본 118파일 1,136개·Python 독립 11개·관련 private 8검사·production build가 통과했다. 기본 opt-in 3파일 5개와 PostgreSQL/원격 OMR은 NOT_RUN이며 구분 기록했다. Build ID `r2zOb90gPa3SDDLMyFvkO`, origin `http://127.0.0.1:3199`에서 정확한 JPEG로 새 homr 1회와 새 단계 연결을 일반 UI로 검증했다. Chrome 직접 기동·동일 프로필 서버/브라우저 재시작, Edge 새 프로필 가져오기, 실제 다운로드/재입력 파일과 앱 시간 의미가 같았다. 새 후보는 revision 0/사용자 대조 승인 0이며 Source 차단을 유지한다. 기존 r551/A 프로젝트 재생·저장·내보내기 비회귀도 확인했다.
+
+비공개 인계 루트는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-timeline-v1`이다. `검증보고서.md`, `시작안내.md`, `실행.ps1`, `재현.ps1`, 최종 metrics/원장/manifest를 따른다. 이전 입력 506개·동결 평가기 48개 해시는 보존됐다. 이 절과 build 자동 생성 `next-env.d.ts` 타입 참조 갱신은 검증 구현 후 인계 변경이다. 사람 재확인은 `HUMAN_RECHECK_PENDING`이고 기존 문제 프로필까지 해결됐다고 주장하지 않는다. private 음악·정답·proof는 저장소에 추가하지 않았으며 push·배포·병합·삭제를 하지 않았다.
+
 ## 2026-09-14 JPEG 시험 음역 승인과 일반 UI 전곡 완료
 
 **동일 JPEG를 대량 교정한 뒤, 지정된 시험 음역으로 일반 UI 전체 흐름을 검증했다.** 기존 r550은 보존하고 일반 UI에서 이 JPEG의 Lead hardRange 하한만 C4→F3으로 바꿔 r551로 저장했다. 실제 Lead F3–F5에 대해 기존 하한 위반 43개가 0개가 됐다. comfortableRange, 다른 가수, 기존 A 파일, 원본 음악과 비선택 성부, 코드 공백 및 별도 선행 화성 정책은 그대로다. 사용자 실제 가창 음역이 아닌 기술 시험 설정이며 사람 재확인은 `HUMAN_RECHECK_PENDING`이다.
