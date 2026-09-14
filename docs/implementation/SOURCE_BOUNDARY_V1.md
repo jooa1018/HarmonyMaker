@@ -1,5 +1,21 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-15 자동 시간축 v1.1 시스템 경계 완료
+
+**TIMELINE_V1_VERIFIED.** 검증한 구현 commit은 `0c5fe4598d4b33095931fb03c9ad3474b85c65c5`다. 기존 명시적 tie 경로는 유지하고, tie/slur와 별개로 표시 구간의 시간 연속성을 판정하는 `independent-compressed-layout` 경로를 추가했다. 정답 r551, 목표 총길이, 특정 마디 번호는 runtime 입력에 사용하지 않는다.
+
+새 경로는 인접 시스템의 마지막/첫 물리 구간, 같은 part·박자·단일 voice, 보통 barline, 반복·ending 충돌 없음, 원시 note/rest token과 원본 glyph 및 XML event의 정확한 대응을 모두 요구한다. 같은 시스템·박자의 완전한 마디를 최소 3개 학습해 물리 폭 기준을 만들고, 양쪽 구간이 그 기준과 각자의 event extent에 비례해 독립적으로 짧게 배치됐는지 확인한다. 두 extent가 박자를 완성하는 조건은 이 독립 근거 뒤에만 사용한다. 표시 구간 ID와 event·text·chord는 옮기거나 병합하지 않고 두 구간에 `implicit=yes`만 기록해 importer가 각 구간의 실제 extent를 사용하게 한다.
+
+실제 JPEG의 여섯 쌍 `(5,6)`, `(11,12)`, `(16,17)`, `(22,23)`, `(27,28)`, `(33,34)`은 모두 **AUTO_APPLIED**다. extent는 각각 `7/2+1/2`, `2+2`, `7/2+1/2`, `2+2`, `2+2`, `7/2+1/2` quarter이고 모두 4/4다. 여섯 쌍 모두 cross-boundary tie/slur가 없지만, 위의 독립 구조 근거와 보통 join barline을 충족했다. 쌍별 staff geometry, token, chord·가사 문맥, 내부 tie/slur, 지지·반대 근거는 비공개 인계의 `six-pair-decisions.json`에 보존한다.
+
+변경하지 않은 `hm-omr-audit-v1.1` 평가에서 이전 v1의 APP 구간 길이 `27/39`, 구간 시작 `5/39`, event absolute onset `34/285`, 총길이 `146.5` quarter가 새 APP에서 각각 `39/39`, `39/39`, `271/285`, `122.5`가 됐다. 총길이는 구조 판정 후의 평가 결과일 뿐 runtime 목표가 아니다. FILE은 마지막 overfull을 그대로 보존해 길이 `38/39`, 총길이 `124` quarter다. 기존에 맞던 항목의 회귀는 0이고, 기존 283개 event의 pitch/kind/duration/local onset/voice/tie/slur/chord/lyrics와 비시간 XML은 모두 보존됐다. 남은 event onset 14건 차이는 기존 local event 인식 차이이며 시스템 시간축 오프셋은 해소됐다.
+
+독립 Python 반례 15개는 tie 없는 실제 형태의 연속 구간, 정상 폭 또는 token 누락 구간, 합이 맞지 않는 짧은 구간, 반복 기호로 분리된 tie 구간을 구분한다. 별도 실제 `independent-a.png`는 30 event·8구간·24 quarter와 전체 음악·시간을 그대로 유지하고 새 경계 변경 0건이다. 같은 JPEG v1.1 결과에 판정기를 재적용하면 XML이 byte-identical이고 추가 변경 0건이다.
+
+타입, 전체 lint, 기본 118파일 1,136개, Python 15개, 관련 private 8검사, production build가 통과했다. Build ID는 `nX75eovUmqL8h11KPhMgX`다. `http://127.0.0.1:3199`의 production 모드에서 같은 원본 JPEG를 일반 UI로 새 homr 1회 실행했고 `cacheReused=false`, 외부 전송 0회였다. Chrome에서 새 후보를 저장·reload·실제 다운로드·작업 공간 파일 재입력했으며 세 파일 SHA-256과 제품 parser/replay 결과가 일치했다. revision 0과 사용자 확인 0건을 유지해 Source는 계속 차단한다.
+
+이 변경은 박자·pickup·시스템 경계 시간축에만 한정한다. 마지막 불완전 glyph coverage 1건과 overfull 1건, 코드·가사·슬래시·끝부분 다성부 OMR은 남아 있다. WAG·재생·믹서·Source 승인 조건·DB/schema는 바꾸지 않았다. PostgreSQL과 원격 OMR은 변경 경로가 아니므로 다시 실행하지 않고 새 PASS로 세지 않는다. 보존 입력 506개와 동결 평가기 48개 해시는 모두 재확인했다. 비공개 인계 루트는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-timeline-v1-system-boundary-v2`다. private 음악·정답·proof는 저장소에 추가하지 않았고 push·배포·병합·기존 자료 삭제를 하지 않았다.
+
 ## 2026-09-15 자동 시간축 후보 v1
 
 **TIMELINE_V1_PARTIAL.** 구현 commit은 `70f15c547df3b7d1260b5a89615e54df599b11f8`다. 기존 로컬 이미지 pipeline의 보완 뒤에 근거 제한형 시간축 단계를 연결했다. 원시 token/원본 glyph/자동 geometry로 박자표와 첫 pickup을 처리하고, 좁은 typed 자동 변경 이력·runner hash·요청 버전·미확정 UI를 유지한다. 정답 r551과 수동 좌표는 runtime 입력이 아니다. 기존 importer 길이 계약, Source 검증, WAG, 오디오, 믹서는 변경하지 않았다.
