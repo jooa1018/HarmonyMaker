@@ -77,10 +77,17 @@ def main(v):
     before=time.monotonic();text_candidates=lyrics(frame,systems,measures,events,links,regions,ocr,out,raw_ocr,changes,v.language);timing['lyricSeconds']=time.monotonic()-before
     before=time.monotonic();meter_candidates=meter(frame,systems,measures,events,links,regions,ocr,out,raw_ocr,changes);timing['meterSeconds']=time.monotonic()-before
     before=time.monotonic();slash_candidates=slashes(frame,systems,measures,events,links,regions,out,changes);timing['slashSeconds']=time.monotonic()-before
+    # Preserve the pre-timeline automatic candidate, then apply exactly once.
+    ET.ElementTree(root).write(out/'C-before-timeline.candidate.musicxml',encoding='utf-8',xml_declaration=True)
+    from timeline import reconstruct
+    before=time.monotonic();timeline=reconstruct(root,frame,systems,links,ocr);timing['timelineSeconds']=time.monotonic()-before
+    changes.extend(timeline['changes'])
+    write(out/'timeline-decisions.json',timeline)
     ocr.close()
     ET.ElementTree(root).write(out/'C-integrated.candidate.musicxml',encoding='utf-8',xml_declaration=True)
-    all_candidates=candidates+text_candidates+meter_candidates+slash_candidates
+    all_candidates=candidates+text_candidates+meter_candidates+slash_candidates+timeline['decisions']
     evidence={'schemaVersion':1,'runtimeOracleUsed':False,'input':{'path':str(source),'sha256':sha(source.read_bytes()),'size':frame.size},'engine':{'homr':'457e7c6518a10ba755db2e60883419e56c4d7369','rawXmlSha256':sha(raw.read_bytes()),'mode':'reuse immutable inference cache; supplements are new automatic OCR, not a new homr run'},'coordinatePolicy':'exact pixel/XML replay + geometric corroboration; attention is an estimate; no rendered-coordinate or measure-count association','sourceEligibility':{'approved':False,'reason':'Automatic candidates do not establish original fidelity; unresolved mapping, unsupported symbols, source semantics and text must remain in Review.'},'changes':changes,'candidates':all_candidates,'unresolvedEventLinks':[id for id,r in links.items() if r['status']=='unresolved'],'unresolvedMeasureLinks':[r['measure']['id'] for r in regions if r['status']=='unresolved'],'networkAttemptsBlocked':attempts,'timing':{**timing,'totalSupplementSeconds':time.monotonic()-start},'counts':{'changesByFeature':dict(Counter(c['feature'] for c in changes)),'candidatesByStatus':dict(Counter(c['feature']+':'+c['status'] for c in all_candidates))},'limitations':['A/B/C are automatic hypotheses, not Source-approved.','No tempo, repeat, key, curve or lyric semantics are guessed from measure length.','One staff per detected system; multiple voices may be unresolved.','Manual correction burden unmeasured.','Native OCR C API uses existing official legacy-compatible traineddata; not identical to Linux provider LSTM model bundle.']}
+    evidence['timeline']=timeline
     write(out/'ocr.raw.json',raw_ocr);write(out/'evidence.json',evidence)
     print(json.dumps(evidence['counts']),flush=True)
 

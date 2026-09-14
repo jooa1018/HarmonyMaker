@@ -5,6 +5,7 @@ import { DEFAULT_IMPORT_SECURITY_LIMITS } from "../../import/musicxml/types";
 interface Change {
   readonly feature: string; readonly eventIds?: readonly string[]; readonly measureId?: string;
   readonly before: unknown; readonly after: string; readonly onset?: string;
+  readonly ruleVersion?: string;
 }
 const fail = (): never => { throw new RangeError("LOCAL_CANDIDATE_TRANSITION_INVALID"); };
 function shape(node: XmlChild): unknown {
@@ -27,6 +28,7 @@ export function validateCandidateTransitions(rawXml: string, candidateXml: strin
   const newMeasures = xmlChildren(candidate, "part").flatMap((p) => xmlChildren(p, "measure"));
   const inspectedOld = inspectRecoveryXml(rawXml), inspectedNew = inspectRecoveryXml(candidateXml);
   const notes = new Map<string, XmlElement>(), meters = new Map<string, XmlElement[]>();
+  const attributes = new Map(oldMeasures.map(({m, id}) => [id, { ...m.attributes }]));
   const harmonies = new Map<string, { node: XmlElement; at: number }[]>();
   for (const [{ m, id }, inspected] of oldMeasures.map((m, i) => [m, inspectedOld[i]] as const)) {
     xmlChildren(m, "note").forEach((n, i) => notes.set(`d0${id}n${i}`, n));
@@ -51,6 +53,15 @@ export function validateCandidateTransitions(rawXml: string, candidateXml: strin
       if (!before || after.name !== "time" || !Array.isArray(change.before)
         || JSON.stringify(change.before.map((s) => key(parse(s)))) !== JSON.stringify(before.map(key))) fail();
       meters.set(change.measureId!, [after]);
+    } else if (change.feature === "timeline-extent") {
+      const before = attributes.get(change.measureId ?? "");
+      // Narrow additive contract: only the ordinary MusicXML implicit flag.
+      // This attests a replayable transformation, never musical correctness.
+      if (!before || change.ruleVersion !== "hm-automatic-timeline-v1"
+        || change.before !== (before.implicit ?? null)
+        || after.name !== "implicit" || after.attributes.value !== "yes"
+        || Object.keys(after.attributes).length !== 1 || after.children.some((c) => c.kind !== "text" || c.value.trim())) fail();
+      attributes.set(change.measureId!, { ...before!, implicit: "yes" });
     } else if (change.feature === "chord") {
       const before = harmonies.get(change.measureId ?? "");
       if (!before || after.name !== "harmony" || change.before !== null || typeof change.onset !== "string") fail();
@@ -59,7 +70,7 @@ export function validateCandidateTransitions(rawXml: string, candidateXml: strin
   }
   for (const [{ m, id }, index] of oldMeasures.map((m, i) => [m, i] as const)) {
     const current = newMeasures[index];
-    if (!current || JSON.stringify(current.attributes) !== JSON.stringify(m.attributes)) fail();
+    if (!current || JSON.stringify(Object.entries(current.attributes).sort()) !== JSON.stringify(Object.entries(attributes.get(id)!).sort())) fail();
     const actualNotes = xmlChildren(current, "note");
     if (actualNotes.some((n, i) => key(n) !== key(notes.get(`d0${id}n${i}`)!))) fail();
     const actualMeters = xmlChildren(current, "attributes").flatMap((a) => xmlChildren(a, "time"));

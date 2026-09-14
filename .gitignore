@@ -2,6 +2,7 @@ node_modules/
 .next/
 .next-local-image/
 .next-local-jpeg/
+.next-local-timeline/
 out/
 *.log
 *.tsbuildinfo
