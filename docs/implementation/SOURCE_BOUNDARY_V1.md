@@ -1,5 +1,17 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-16 Lyrics Recovery v1
+
+**LYRIC_RECOVERY_V1_PARTIAL.** 제품 구현/최종 build revision은 `d0d6eb9b3f6c710348f1e60155e69fccb658ebcf`다. 이후 인계 commit은 build가 생성한 타입 경로와 문서만 보존한다. 가사 전용 보표 상대 row 검출, 온전한 획의 OCR와 실제 symbol box 역변환, 자동 물리 구간·token/glyph·경쟁 column·성부 시간 순서·중복 제약을 local-image pipeline에 연결했다. 내부 verse 순서는 인쇄 번호 판독과 구분한다. extend는 인쇄 지속 표시와 완전한 같은 pitch/voice의 연속 tie를 함께 요구한다. 명시적 사용자 가사는 보존하고, 정확한 자동 before 이력이 있는 경우에만 좁은 transition으로 교체한다. runner hash와 요청 cache 처리 버전을 갱신했다. 정답·수동 crop·특정 event/파일 예외는 runtime에 없다.
+
+동결 `hm-omr-audit-v1.1`으로 baseline을 재현한 뒤 새 일반 UI 인식 결과를 평가했다. 기준 202개 중 문자+부착+절+성부 일치는 **90→131**, 출력은 **104→142**, precision **92.25%**, recall **64.85%**, F1 **76.16%**다. 엄격 extend/syllabic 일치는 **70→109**, precision **76.76%**다. CER은 **107/202→68/202**(치환 7, 삭제 60, 삽입 1)이다. 개발 목표 150개·95%·엄격 120개에는 미달했다. 기존 정확 90개와 엄격 70개 손실은 0, 누락에서 정확한 추가 37개, 기존 오류 수정 4개, 신규 잘못된 추가 1개, 기존 오류 6개·기준 밖 출력 4개·누락 64개는 남는다. 상관된 OCR 합의가 원본 진실을 인증하지 않는다.
+
+별도 실제 A는 가사 없음 0→0, B는 15→15, C는 서로 다른 두 가사 row의 첫 token을 추가해 6→8이며 기존 가사와 비가사 XML을 보존했다. C는 개발 중 확인한 입력이고 미관측 holdout이 아니다. JPEG의 기존 283 event, 코드 51개, 시간축과 가사 제외 XML 전체가 동일하다. 반복 적용은 음악/이력 동일, 추가 변경 0이다. WAG·재생·믹서·공통 parser·Source 승인 조건·DB는 변경하지 않았다.
+
+타입·전체 lint, 기본 118파일 1,137개, 별도 private 3파일 5개, Python 가사/코드/시간축 38개, 기존 프로젝트 보존 8검사와 production build가 통과했다. 관련 TS 34개는 기본 수에 중복 합산하지 않는다. Build ID `xF2Qp-4KY63W7VOELp06l`, `.next-local-lyrics`, origin `http://127.0.0.1:3201`에서 새 homr 1회를 일반 Chrome UI로 실행했다. cacheReused=false, actor=ui-test, source 미승인을 유지한다. UI 가사 142개를 text/verse/voice/syllabic/extend까지 대조하고 저장·reload·실제 download·재입력·같은 프로필의 브라우저 프로세스 재시작을 검증했다. 네 다운로드의 SHA가 같고 revision/operations/attestations는 모두 0이다. 기존 프로필의 다운로드 문제 해결을 주장하지 않는다.
+
+PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이며 사람 청감·교정 시간도 NOT_RUN이다. 비공개 결과는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1`의 시작안내·검증보고서·상세 원장·원본 사례·manifest를 따른다. 원본과 전체 가사·proof를 repo에 추가하지 않았다. 설치 모델·기존 build·교정본·사용자 프로필을 삭제하거나 초기화하지 않았으며 push·원격 CI·배포·병합은 하지 않았다.
+
 ## 2026-09-15 Chord Recovery v1
 
 **CHORD_RECOVERY_V1_VERIFIED — 자동 코드 복원과 제품 연결의 제한된 검증.** 구현은 `a0c89f1c3f281ec3c581d30c15ee493252cd4c04`, production build가 생성한 타입 경로 보존은 `a2610ce8a2181dcdd5dad4a5db8e97f927a025e3`다. 그 이후 이 절과 README 갱신은 문서 변경이다. 모든 코드의 원본 정확도나 Source 승인 완료를 의미하지 않는다.
