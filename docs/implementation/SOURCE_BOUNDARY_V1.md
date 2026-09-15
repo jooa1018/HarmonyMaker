@@ -1,5 +1,21 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-16 Lyrics Recovery v1 후속 · 품질 목표 충족, 새 UI 실행 대기
+
+**LYRIC_RECOVERY_V1_PARTIAL.** 제품 revision `10ae4a29035ff2f02635a7701bbf3184d4057cda`, 처리 버전 `hm-lyric-recovery-v1.1`. 품질 목표·음악 비회귀·production build는 통과했지만, 이번 build의 fresh 이미지 UI 실행은 아직 하지 않았다. 이전 시험 Chrome PID 17288과 3201 서버 PID 43512의 정상 종료 승인을 요청했고 답변 전에는 유지했다. 동시에 여러 서버를 띄우지 않는 지시에 따라 새 3202 서버를 시작하지 않았다. 이전 v1의 UI PASS를 새 결과로 계산하지 않는다.
+
+실제 raw word/symbol·후보 선출을 재구성하여 잔여 누락 64개를 좁혔다. 문자 후보가 선출됐지만 box/column 부착에서 소실 42개, 선출 confidence/좌표 경쟁 11개, 해당 위치의 원시 문자 판독 실패 5개, 원본 event column 미확정 6개다. 마지막 6개는 원본 글자가 없다는 판정이 아니다. 원본 잉크 간격으로 겹친 symbol box를 다듬고, 실제 음표 column 사이의 온전한 단일 글자 crop을 재판독한다. 새로운 셀 판독과 기존 row symbol 근거를 함께 요구하며 상관된 OCR 합의를 독립된 정확성 인증으로 취급하지 않는다.
+
+기존 확실한 tie 경로를 유지하고 실제 가사 줄·시작/끝 glyph·동일 verse/staff/voice·시간 연속성·끝점의 문자 아닌 지속선 잉크에 근거한 별도 extend 경로를 추가했다. 다른 pitch에서도 처리한다. 기존 boolean 시작 표시와 endpoint 근거를 분리하며, 완전한 MusicXML start/stop span 지원을 주장하지 않는다. 공식 [extend 정의](https://www.w3.org/2021/06/musicxml40/musicxml-reference/elements/extend/)와 [서로 다른 pitch 예제](https://www.w3.org/2021/06/musicxml40/musicxml-reference/examples/extend-element-lyric/)를 확인했다. 원시 자동 가사를 철회할 때는 해당 verse의 정확한 before 이력만 허용한다. 라틴 단어 box의 넓은 포함 관계는 새 부착 근거이며 기존 문자를 교체할 권위가 아니다. 실제 B 재적용에서 발견한 문자 교체 회귀를 이 구분으로 수정했다.
+
+동결 `hm-omr-audit-v1.1`의 보존 raw 재처리 결과는 문자+부착+절+성부 **131→166/202**, precision **96.51%**, recall **82.18%**, F1 **88.77%**, 엄격 정확 **109→164/202**, 엄격 precision **95.35%**다. CER **68→36/202**(치환 5, 삭제 30, 삽입 1). 기존 정확 131개와 엄격 109개 손실 0, 중복 0. 기존 누락의 정확 복원 32개, 기존 문자 오류 수정 3개, 잘못된 지속선 판독의 안전한 보류 3개다. 새 오인식 1개가 있으며 최종 문자 오류 5개·기준 밖 출력 1개·누락 31개가 남는다. 기존 extend 불일치 23개 중 22개를 해결했고, 새로 복원한 가사의 잔존 불일치까지 포함하면 최종 extend 불일치는 2개다.
+
+가사 제외 XML 전체, 283 event, 코드 51개와 근거, 시간축, APP 122.5/FILE 124 계약을 보존했다. 실제 APP 비가사 parts도 동일하고 재적용 음악·이력 추가 변경은 0이다. 별도 실제 A 0→0, B 15→15의 내용·연결을 보존했다. C는 기존 8개를 보존하며 11개로 늘었고 서로 다른 pitch의 인쇄 지속선 복원을 확인했다. 개발 중 확인한 입력이므로 미관측 holdout 성능으로 해석하지 않는다. r551/A 완성 프로젝트의 import/export·악보·재생 계획·MusicXML 보존을 확인했다. 공통 parser, WAG, 오디오, 믹서, Source 승인 조건은 변경하지 않았다.
+
+최종 제품에서 typecheck·전체 lint, 기본 118파일 1,138개, opt-in private 3파일 5개, Python 가사/코드/시간축 49개가 PASS다. 기본에서 빠진 private 5개는 별도 실행했으며 집중 시험과 재실행을 중복 합산하지 않는다. Production build 종료 코드 0, 디렉터리 `.next-local-lyrics-followup`, build ID `2wpke1eMSWsmnz1xrGssm`. 이후 인계 변경은 문서 및 build 생성 타입 경로다. 파일 기반 실제 제품 importer→workspace 저장/replay→export/parse는 PASS지만 브라우저 저장·다운로드·재시작의 대체 증거로 세지 않는다. 새 homr 0회, 새 build의 HTTP/Chrome E2E는 NOT_RUN(이전 시험 프로세스 종료 승인 대기). PostgreSQL·원격 OMR은 이번 변경과 무관하여 NOT_RUN, 사람 평가는 NOT_RUN이다.
+
+비공개 결과: `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1-followup`. `final-audit/` 원장, `final-raw-2/` 동결 결과, `verified-app/` 제품 생성 초안, `verified-code/` 검증 로그, `시작안내.md`와 manifest를 따른다. 실제 원본·전체 가사·proof·평가 정답은 repo에 추가하지 않았다. 기존 모델·교정본·프로젝트·build·프로필을 보존했고 삭제·push·배포·병합은 하지 않았다.
+
 ## 2026-09-16 Lyrics Recovery v1
 
 **LYRIC_RECOVERY_V1_PARTIAL.** 제품 구현/최종 build revision은 `d0d6eb9b3f6c710348f1e60155e69fccb658ebcf`다. 이후 인계 commit은 build가 생성한 타입 경로와 문서만 보존한다. 가사 전용 보표 상대 row 검출, 온전한 획의 OCR와 실제 symbol box 역변환, 자동 물리 구간·token/glyph·경쟁 column·성부 시간 순서·중복 제약을 local-image pipeline에 연결했다. 내부 verse 순서는 인쇄 번호 판독과 구분한다. extend는 인쇄 지속 표시와 완전한 같은 pitch/voice의 연속 tie를 함께 요구한다. 명시적 사용자 가사는 보존하고, 정확한 자동 before 이력이 있는 경우에만 좁은 transition으로 교체한다. runner hash와 요청 cache 처리 버전을 갱신했다. 정답·수동 crop·특정 event/파일 예외는 runtime에 없다.
