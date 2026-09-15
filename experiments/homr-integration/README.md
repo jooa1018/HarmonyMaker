@@ -1,6 +1,14 @@
 # Local homr integration experiment
 
-Runnable, isolated candidate generation. This directory is not imported by the app or provider. Outputs are unverified hypotheses. The local [Review handoff](REVIEW.md) now carries the original raster, candidate and exact sidecars together; XML with the prototype notice cannot finalize Source without bound evidence and a verified recovery revision.
+Runnable, isolated candidate generation. The opt-in local-image service invokes this runner as a local child process; it is not bundled into browser code or the remote provider. Outputs are unverified hypotheses. The local [Review handoff](REVIEW.md) carries the original raster, candidate and exact sidecars together; XML with the prototype notice cannot finalize Source without bound evidence and a verified recovery revision.
+
+## Chord Recovery v1 (2026-09-15)
+
+`chord_recovery.py`는 실제 `pipeline.py`의 코드 판독/부착 단계에 연결된다. 온전한 획 crop과 기존 전처리 OCR을 코드 전용으로 병행하고, 전체 문자열의 판독 계열·정확한 코드 문법·동일 원본의 직접 판독된 기호를 대조한다. 부분 문자 판독이 코드 품질이나 slash bass를 조용히 바꾸지 못한다. 전역 음악 문맥이나 평가 기준으로 미판독 코드를 채우지 않는다. geometry·OCR 원문·canonical 값·대안·부착 근거는 `evidence.chordRecovery`와 후보 레코드에 남는다.
+
+시간축 v1.1 물리 구간, 여러 시스템에서 관측한 인쇄 정렬, 고유한 원본 event column을 이용해 위치를 붙인다. 쉼표는 기존 token과 원본 잉크를 함께 요구한다. 지속음 위 offset을 기록해도 음표·시간·tie를 변경하지 않는다. 같은 onset의 중복 검출은 보류하고, 다른 위치의 반복 인쇄는 보존한다. 재적용 시 기존 동일 코드는 유지하고 충돌은 거절한다. 모든 결과는 원본 대조가 필요한 자동 후보다.
+
+서비스의 요청 hash에는 `hm-chord-recovery-v1`, runner hash에는 새 모듈이 포함된다. 선택적인 `HM_LOCAL_CHORD_BUILD=1`은 `.next-local-chord`에 로컬 production build를 분리한다. 원본·모델·정답·교정 이력은 이 저장소에 포함하지 않는다. 독립 합성 계약은 `test_chord_recovery.py`, 실제 이미지 평가는 비공개 인계에 있으며 서로 다른 증거다. 현재 실제 사례와 남은 누락/미확정은 [Source 경계 인계](../../docs/implementation/SOURCE_BOUNDARY_V1.md)에 기록한다.
 
 Requires the preserved Windows comparison directory, its homr virtual environment, pinned source and models, observation wrapper, and Audiveris-distributed Tesseract libraries/data. It installs nothing, does not contact an image service, and accepts no correction history or evaluation reference as recognition input.
 

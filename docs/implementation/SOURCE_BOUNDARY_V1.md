@@ -1,5 +1,19 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-15 Chord Recovery v1
+
+**CHORD_RECOVERY_V1_VERIFIED — 자동 코드 복원과 제품 연결의 제한된 검증.** 구현은 `a0c89f1c3f281ec3c581d30c15ee493252cd4c04`, production build가 생성한 타입 경로 보존은 `a2610ce8a2181dcdd5dad4a5db8e97f927a025e3`다. 그 이후 이 절과 README 갱신은 문서 변경이다. 모든 코드의 원본 정확도나 Source 승인 완료를 의미하지 않는다.
+
+코드 전용의 온전한 획 crop, 복수 OCR 계열의 전체 문자열 판독, 같은 원본의 직접 판독된 기호에 한정한 시각적 대조, slash 구성 요소 근거를 추가했다. 문자 일부의 판독이 전체 코드값을 덮지 못하며 minor/major·7/M7·accidental·bass 충돌은 보류한다. 시간축 v1.1의 물리 구간과 페이지의 인쇄 정렬 근거로 박 위치를 연결하고, 기존 rest token과 고립된 원본 잉크가 함께 있을 때만 쉼표 위치를 사용한다. 음표를 새로 만들지 않는다. 재처리 시 동일 onset의 기존 코드와 충돌하면 덮어쓰지 않는다. 새 모듈은 실제 local-image pipeline, runner hash, 요청 cache key에 연결했다. 평가 기준·수동 코드 배열·마디 번호 분기는 runtime 입력에 없다.
+
+변경하지 않은 `hm-omr-audit-v1.1`을 새 자동 출력 hash 고정 뒤 실행했다. 기준 63개 중 코드값+위치 일치는 **22 → 50**, 출력은 **25 → 51**, 누락은 **38 → 12**다. 코드값은 51개 모두 r551과 일치하며 위치는 50개 일치한다. 동시 일치 precision 98.04%, recall 79.37%, F1 87.72%다. 기존 정답 22개 손실은 0, 기존 오류 3개 수정, 누락에서 정확한 복원 25개다. 추가 1개는 24구간 마지막 B♭의 위치로, 자동 3 quarter와 r551 11/4가 다르다. 원래 감사부터 원본 위치가 미확정인 필드이며 자동 geometry 근거가 생겼어도 원본 사실로 확정하지 않는다. 이 불일치를 신규 오류 0이라는 말로 숨기지 않는다. 인쇄 코드 12개와 비코드 잉크 후보 2개는 보류한다.
+
+별도 실제 A는 7/8에서 8/8로 마지막 단일 음표 구간 Dm을 복원했고 30개 음표 및 나머지 XML이 같았다. 개발 중 A를 보고 crop 충돌과 중앙 정렬 처리를 조정했으므로 미관측 평가셋이 아니다. JPEG의 기존 283개 event 및 모든 비코드 XML, 시간축 판정·근거는 정확히 보존했다. APP 박자·길이·시작은 각각 39/39, event onset은 271/285, 총길이는 122.5 quarter로 유지한다. FILE 총길이 124와 마지막 overfull도 그대로다. 완성 r551/A 프로젝트의 음악·render·playback plan·내보내기 보존도 별도 검증했다.
+
+타입·전체 lint, 기본 118파일 1,136개, opt-in private 3파일 5개, Python 코드/시간축 27개, 프로젝트 보존 8검사와 production build가 통과했다. 관련 33개 재실행은 기본 수에 중복 합산하지 않는다. Build ID `DT-4dszOxMLtXwIdWhyc6`, origin `http://127.0.0.1:3200`에서 설치 Chrome으로 정확한 JPEG의 새 homr 1회를 일반 UI에서 실행했다. `cacheReused=false`, 자동 chord 51개와 시간축 처리 호출을 확인했다. 39개 구간의 코드 값/위치를 DOM과 대조하고 저장·reload·실제 다운로드·재입력·같은 프로필의 브라우저 재시작을 검증했다. 네 다운로드의 SHA-256이 같으며 revision 0, 사용자 대조 승인 0건, Source 차단을 유지한다. 기존 브라우저 프로필의 과거 다운로드 문제를 해결했다고 주장하지 않는다.
+
+PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이다. 사람 평가도 NOT_RUN이다. WAG·재생·믹서·공통 음악 parser·Source 승인 조건·가사·슬래시·끝부분 다성부는 바꾸지 않았다. 모델·원본·r551·선행 감사 입력 506파일·시간축 인계 91파일·동결 평가기 48파일을 보존했다. 비공개 결과는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-chord-recovery-v1`의 검증보고서, 시작안내, 코드 원장, manifest를 따른다. 정답·음악·원본·proof는 저장소에 추가하지 않았고 외부 전송·push·배포·병합·기존 데이터 삭제를 하지 않았다.
+
 ## 2026-09-15 자동 시간축 v1.1 시스템 경계 완료
 
 **TIMELINE_V1_VERIFIED.** 검증한 구현 commit은 `0c5fe4598d4b33095931fb03c9ad3474b85c65c5`다. 기존 명시적 tie 경로는 유지하고, tie/slur와 별개로 표시 구간의 시간 연속성을 판정하는 `independent-compressed-layout` 경로를 추가했다. 정답 r551, 목표 총길이, 특정 마디 번호는 runtime 입력에 사용하지 않는다.
