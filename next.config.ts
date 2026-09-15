@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
   ...(process.env.HM_LOCAL_TIMELINE_BUILD === "1" ? { distDir: ".next-local-timeline" } : {}),
   ...(process.env.HM_LOCAL_CHORD_BUILD === "1" ? { distDir: ".next-local-chord" } : {}),
   ...(process.env.HM_LOCAL_LYRICS_BUILD === "1" ? { distDir: ".next-local-lyrics" } : {}),
+  ...(process.env.HM_LOCAL_LYRICS_FOLLOWUP_BUILD === "1" ? { distDir: ".next-local-lyrics-followup" } : {}),
   // Local low-disk validation only. No cache deletion or production change.
   ...(process.env.HM_LOCAL_NO_DISK_CACHE === "1"
     ? { experimental: { turbopackFileSystemCacheForDev: false } }

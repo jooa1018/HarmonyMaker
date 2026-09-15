@@ -8,6 +8,17 @@ const raw = '<score-partwise><part-list><score-part id="P"><part-name>Independen
 const candidate = raw.replace('<measure number="arbitrary">', '<measure number="arbitrary" implicit="yes">');
 const change = {feature:"timeline-extent",ruleVersion:"hm-automatic-timeline-v1",measureId:"p0m0",before:null,after:'<implicit value="yes" />'};
 describe("timeline candidate transition boundary", () => {
+  it("retracts only a replayed exact automatic lyric and preserves user text and notes", () => {
+    const lyric='<lyric number="1"><text>가</text></lyric>';
+    const add={feature:"lyric",eventIds:["d0p0m0n0"],before:null,after:lyric};
+    const retract={feature:"lyric-retraction",ruleVersion:"hm-lyric-recovery-v1",eventIds:["d0p0m0n0"],before:lyric,after:null};
+    expect(()=>validateCandidateTransitions(raw,raw,[add,retract])).not.toThrow();
+    expect(()=>validateCandidateTransitions(raw,raw,[retract])).toThrow();
+    expect(()=>validateCandidateTransitions(raw,raw,[add,{...retract,before:'<lyric><text>다</text></lyric>'}])).toThrow();
+    expect(()=>validateCandidateTransitions(raw,raw,[add,{...retract,ruleVersion:'unknown'}])).toThrow();
+    expect(()=>validateCandidateTransitions(raw.replace('</note>',lyric+'</note>'),raw,[retract])).toThrow();
+    expect(()=>validateCandidateTransitions(raw,raw.replace('<step>E</step>','<step>F</step>'),[add,retract])).toThrow();
+  });
   it("replays exact automatic lyric revisions without widening musical or user-lyric authority", () => {
     const first='<lyric number="1"><syllabic>single</syllabic><text>가</text></lyric>';
     const next='<lyric number="1"><syllabic>single</syllabic><text>나</text><extend /></lyric>';
@@ -25,6 +36,10 @@ describe("timeline candidate transition boundary", () => {
     const verse={feature:"lyric-verse",ruleVersion:"hm-lyric-recovery-v1",eventIds:["d0p0m0n0"],before:null,after:wrongVerse};
     expect(()=>validateCandidateTransitions(raw,raw.replace('</note>',first+wrongVerse+'</note>'),[add,verse])).not.toThrow();
     expect(()=>validateCandidateTransitions(raw,raw.replace('</note>',first+first+'</note>'),[add,{...verse,after:first}])).toThrow();
+    const second=wrongVerse.replace('<text>나</text>','<text>다</text>');
+    const secondEdit={...revise,before:wrongVerse,after:second};
+    expect(()=>validateCandidateTransitions(raw,raw.replace('</note>',first+second+'</note>'),[add,verse,secondEdit])).not.toThrow();
+    expect(()=>validateCandidateTransitions(raw.replace('</note>',first+'</note>'),raw.replace('</note>',next+wrongVerse+'</note>'),[verse,revise])).toThrow();
   });
   it("replays only an explicitly recorded implicit flag", () => {
     expect(() => validateCandidateTransitions(raw,candidate,[change])).not.toThrow();

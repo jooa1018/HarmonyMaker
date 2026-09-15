@@ -11,7 +11,37 @@ import re, unicodedata
 import numpy as np
 from PIL import Image, ImageOps
 
-VERSION = 'hm-lyric-recovery-v1'
+VERSION = 'hm-lyric-recovery-v1.1'
+
+
+def tighten_symbol_boxes(image, symbols):
+    """Keep recognized labels; trim overlapping LSTM boxes at a real ink gap.
+
+    Korean result-iterator boxes can cover the following character. Its next
+    independently returned left edge bounds the search, but a blank column
+    run in the actual raster must support the split. No equal-width division.
+    """
+    ink=np.asarray(image)<200;result=[]
+    for i,u in enumerate(symbols):
+        v=dict(u);x0,y0,x1,y1=u['box'];h=y1-y0
+        if re.fullmatch(r'[가-힣]',u['text'])and i+1<len(symbols):
+            nx=symbols[i+1]['box'][0]
+            if x0+.4*h<nx<x1 and h>0:
+                lo=max(x0+1,int(nx-.55*h));hi=min(image.width,int(nx+.08*h)+1)
+                empty=~ink[max(0,y0):min(image.height,y1),lo:hi].any(axis=0);runs=[]
+                for j,on in enumerate(empty):
+                    if on and (not runs or j>runs[-1][-1]+1):runs.append([j])
+                    elif on:runs[-1].append(j)
+                if runs:
+                    gap=max(runs,key=lambda r:len(r));cut=lo+gap[len(gap)//2]
+                    if cut>x0+.4*h:
+                        area=ink[max(0,y0):min(image.height,y1),max(0,x0):cut]
+                        ys,xs=np.nonzero(area)
+                        if len(xs):
+                            v['rawBox']=u['box'];v['box']=[x0+int(xs.min()),y0+int(ys.min()),x0+int(xs.max())+1,y0+int(ys.max())+1]
+                            v['boxEvidence']={'rule':'next OCR symbol start plus actual blank ink columns','gap':[lo+gap[0],lo+gap[-1]+1]}
+        result.append(v)
+    return result
 
 
 def detect_rows(frame, system, next_top=None):
@@ -51,7 +81,8 @@ def read_row(frame,box,ocr,language,raw,si):
         pixels=crop.point(lambda p:0 if p<180 else 255)if preparation=='ink-180'else crop
         image=ImageOps.expand(pixels.resize((crop.width*scale,crop.height*scale),Image.Resampling.BICUBIC),12,255)
         words=ocr.recognize(image,language=lang,psm=7)
-        symbols=ocr.recognize(image,language=lang,psm=7,symbols=True)
+        raw_symbols=ocr.recognize(image,language=lang,psm=7,symbols=True)
+        symbols=tighten_symbol_boxes(image,raw_symbols)
         units=[]
         for w in words:
             text=unicodedata.normalize('NFC',w['text'])
@@ -61,7 +92,21 @@ def read_row(frame,box,ocr,language,raw,si):
                         units.append({'text':unicodedata.normalize('NFC',u['text']),'confidence':min(w['confidence'],u['confidence']),'sourceBox':source_box(u['box'],box,scale)})
             elif re.fullmatch(r'[A-Za-z]+',text):
                 units.append({'text':text,'confidence':w['confidence'],'sourceBox':source_box(w['box'],box,scale)})
-        record={'feature':'lyric-recovery','systemIndex':si,'sourceBox':box,'language':lang,'oem':1,'psm':7,'preparation':preparation,'transform':{'scale':scale,'padding':12},'words':words,'symbols':symbols}
+            elif re.fullmatch(r'[A-Za-z]+_+',text):
+                # OCR sometimes concatenates the actual printed melisma line
+                # to a word. Remove no arbitrary punctuation: verify its ink.
+                prefix=text.rstrip('_')
+                letters=[u for u in symbols if re.fullmatch(r'[A-Za-z]',u['text'])and w['box'][0]<=u['box'][0] and u['box'][2]<=w['box'][2]]
+                if ''.join(u['text']for u in letters)!=prefix:continue
+                x0=min(u['box'][0]for u in letters);x1=max(u['box'][2]for u in letters);y0=min(u['box'][1]for u in letters);y1=max(u['box'][3]for u in letters)
+                # Leave the subpixel resize fringe of the final letter out of
+                # the following-line measurement, not out of its lyric box.
+                line_start=min(w['box'][2],x1+max(1,int(.1*(y1-y0))))
+                line=np.asarray(image.crop((line_start,y0,w['box'][2],y1)))<175
+                ys,xs=np.nonzero(line)
+                if len(xs)and xs.max()-xs.min()>1.5*(y1-y0)and ys.max()-ys.min()<=.25*(y1-y0):
+                    units.append({'text':prefix,'confidence':min(u['confidence']for u in letters),'sourceBox':source_box([x0,y0,x1,y1],box,scale),'segmentationEvidence':'raw Latin symbols followed by an actual long thin raster line'})
+        record={'feature':'lyric-recovery','systemIndex':si,'sourceBox':box,'language':lang,'oem':1,'psm':7,'preparation':preparation,'transform':{'scale':scale,'padding':12},'words':words,'symbols':symbols,'symbolBoxRule':'source-gap-v1'}
         raw.append(record);reads.append(units)
     return reads
 
@@ -89,21 +134,24 @@ def elect_units(reads,spacing):
 
 def attach_units(units,system,links,physical,events):
     sp=system['spacing'];si=system['systemIndex'];em={e['id']:e for e in events}
+    latin_row=sum(bool(re.fullmatch(r'[A-Za-z]{2,}',u.get('text')or ''))for u in units)>3*sum(bool(re.search(r'[가-힣]',u.get('text')or ''))for u in units)
     anchors=[]
     for id,l in links.items():
         if l['status']=='physical-candidate' and l['event']['systemIndex']==si and id in em:
             anchors.append((l['geometry']['center'][0],em[id]))
     for u in units:
         b=u['sourceBox'];x=(b[0]+b[2])/2
-        options=sorted([(abs(ax-x)/sp,e)for ax,e in anchors if abs(ax-x)<=.5*sp],key=lambda v:v[0])
+        word=latin_row and bool(re.fullmatch(r'[A-Za-z]{2,}',u.get('text')or ''))
+        options=sorted([(0 if word and b[0]<=ax<=b[2]else abs(ax-x)/sp,e)for ax,e in anchors if (word and b[0]<=ax<=b[2])or abs(ax-x)<=.5*sp],key=lambda v:v[0])
         u['attachmentOptions']=[{'eventId':e['id'],'distanceSpaces':d}for d,e in options]
         u['status']='unresolved'
         if not u.get('text'):u['reason']='text recognition conflict';continue
+        if b[3]-b[1]<.8*sp:u['reason']='text box lacks full-height character ink';continue
         if not options or (len(options)>1 and options[1][0]-options[0][0]<.35):u['reason']='competing or missing glyph columns';continue
         e=options[0][1];p=physical.get(f"p{e['partIndex']}m{e['measureIndex']}",{})
         if not p.get('supported') or not p['sourceBox'][0]<x<p['sourceBox'][2]:u['reason']='physical interval coverage unresolved';continue
         if e['kind']!='note' or e['element'].find('tie[@type="stop"]') is not None:u['reason']='rest, rhythm or tie continuation';continue
-        u.update(eventId=e['id'],voice=e['voice'],status='supported-candidate',evidence=['source-pixel lyric row','exact raw token to pitch-agreeing glyph','physical interval coverage','centered text/glyph overlap and competing-column margin'])
+        u.update(eventId=e['id'],voice=e['voice'],wordBoxAttachment=word,status='supported-candidate',evidence=['source-pixel lyric row','exact raw token to pitch-agreeing glyph','physical interval coverage','centered text/glyph overlap and competing-column margin'])
         # Partially overlapping OCR boxes can be fragments of a larger glyph.
         # Do not let a narrow fragment claim an adjacent attack.
         for other in units:
@@ -156,7 +204,10 @@ def recover(frame,systems,events,links,timeline,ocr,raw,changes,language='eng+ko
                     if existing:
                         automatic=next((c for c in reversed(changes) if c.get('feature')in ('lyric','lyric-recovery') and c.get('eventIds')==[e['id']]),None)
                         before=ET.tostring(existing[0],encoding='unicode')if len(existing)==1 else None
-                        if before and automatic and automatic['after']==before and existing[0].findtext('text')!=u['text'] and u['readSupport']>=2:
+                        # A word box containing a unique note licenses a new
+                        # attachment, not replacement of an existing reading.
+                        # Repeated OCR on that same word is correlated evidence.
+                        if before and automatic and automatic['after']==before and existing[0].findtext('text')!=u['text'] and u['readSupport']>=2 and not u.get('wordBoxAttachment'):
                             existing[0].find('text').text=u['text'];after=ET.tostring(existing[0],encoding='unicode')
                             changes.append({'feature':'lyric-recovery','ruleVersion':VERSION,'before':before,'after':after,'eventIds':[e['id']],'sourceBox':u['sourceBox'],'source':VERSION,'evidence':u['evidence'],'reviewRequired':True})
                             u.update(status='applied-candidate',before=before)
@@ -167,8 +218,78 @@ def recover(frame,systems,events,links,timeline,ocr,raw,changes,language='eng+ko
                         u['status']='applied-candidate'
                         changes.append({'feature':'lyric-verse'if other_verse else 'lyric','ruleVersion':VERSION,'before':None,'after':ET.tostring(lyric,encoding='unicode'),'eventIds':[u['eventId']],'sourceBox':u['sourceBox'],'source':VERSION,'evidence':u['evidence']+['distinct physical lyric row'],'reviewRequired':True})
                 records.append(u)
+    recover_cells(frame,plans,row_numbers,events,links,ocr,raw,records,changes)
     recover_extensions(frame,systems,events,links,records,changes)
+    recover_printed_extensions(frame,systems,events,links,records,changes)
     return records,{'version':VERSION,'runtimeReferenceUsed':False,'policy':'raster/OCR candidates; explicit user lyrics preserved; exact automatic lyric history required for replacement; no language completion; correlated OCR readings not independent confidence; verse and extend ambiguity deferred'}
+
+
+def recover_cells(frame,plans,row_numbers,events,links,ocr,raw,records,changes):
+    """Re-read actual ink inside independently known note-column boundaries.
+
+    This does not distribute a word over notes. Every cell must contain an
+    intact, isolated printed glyph, two fresh OCR reads and a matching raw
+    row symbol. Unknown columns, clipped ink, rests and ties remain guarded.
+    """
+    if ocr is None:return  # Pure contract fixtures may supply pre-read row units.
+    em={e['id']:e for e in events}
+    for s,boxes,ri,row,units in plans:
+        verse=row_numbers.get((s['systemIndex'],ri))
+        if verse is None:continue
+        sp=s['spacing'];anchors=sorted([(l['geometry']['center'][0],em[id])for id,l in links.items()if id in em and l.get('status')=='physical-candidate'and l['event']['systemIndex']==s['systemIndex']],key=lambda t:t[0])
+        raw_rows=[r for r in raw if r.get('feature')=='lyric-recovery' and r.get('sourceBox')==row and 'symbols'in r]
+        for i,(x,e) in enumerate(anchors):
+            if e['kind']!='note':continue
+            left=anchors[i-1][0]if i else x-3*sp;right=anchors[i+1][0]if i+1<len(anchors)else x+3*sp
+            if x-left<1.3*sp or right-x<1.3*sp:continue
+            x0=max(0,int(max(x-1.7*sp,(left+x)/2)));x1=min(frame.width,int(min(x+1.7*sp,(right+x)/2)))
+            y0=max(0,int(row[1])-2);y1=min(frame.height,int(row[3])+2)
+            pixels=np.asarray(frame.crop((x0,y0,x1,y1)));mask=(pixels<175).astype('uint8');ys,xs=np.nonzero(mask)
+            if not len(xs):continue
+            n=e['element'];lyric=n.find('lyric[@number="'+verse+'"]');before=ET.tostring(lyric,encoding='unicode')if lyric is not None else None
+            automatic=next((c for c in reversed(changes)if c.get('feature')in ('lyric','lyric-recovery','lyric-verse')and c.get('eventIds')==[e['id']]and c.get('after')==before),None)if before else None
+            height=int(ys.max()-ys.min()+1);width=int(xs.max()-xs.min()+1)
+            cell=[x0,y0,x1,y1];inkbox=[x0+int(xs.min()),y0+int(ys.min()),x0+int(xs.max())+1,y0+int(ys.max())+1]
+            # A printed continuation dash cannot also be a printed syllable.
+            if automatic and height<=.45*sp and .35*sp<=width<=2*sp and width>=2*height and i and anchors[i-1][1]['voice']==e['voice']:
+                previous=anchors[i-1][1]
+                oldbox=automatic.get('sourceBox')
+                printed_attack=previous['element'].find('lyric[@number="'+verse+'"]')is not None
+                same_thin_box=oldbox and oldbox[3]-oldbox[1]<=.5*sp
+                if previous['measureIndex']==e['measureIndex']and (printed_attack or same_thin_box)and Fraction(previous['onset'])+Fraction(previous['duration'])==Fraction(e['onset']):
+                    n.remove(lyric)
+                    changes.append({'feature':'lyric-retraction','ruleVersion':VERSION,'before':before,'after':None,'eventIds':[e['id']],'sourceBox':inkbox,'source':VERSION,'evidence':['exact automatic lyric history','source endpoint cell contains only a printed horizontal mark','preceding printed lyric or original OCR box also has only line height','same-voice adjacent columns and contiguous time'],'reviewRequired':True})
+                    records.append({'feature':'lyric','recoveryVersion':VERSION,'eventId':e['id'],'status':'withheld-candidate','sourceBox':inkbox,'reason':'automatic lyric was read from a printed continuation mark','before':before,'reviewRequired':True})
+                continue
+            if n.find('tie[@type="stop"]')is not None:continue
+            if not (.9*sp<=height<=3*sp and .4*height<=width<=1.4*height):continue
+            if xs.min()==0 or xs.max()==mask.shape[1]-1:continue
+            if before and not automatic:continue
+            # Guard against the notehead/upper-score-ink row seen in legacy C.
+            if row[1]<=s['lines'][-1]+.7*sp:continue
+            crop=ImageOps.expand(frame.crop(cell).resize(((x1-x0)*4,(y1-y0)*4),Image.Resampling.BICUBIC),16,255)
+            reads=[ocr.recognize(crop,language='kor',psm=psm)for psm in (8,10,13)]
+            labels=[''.join(r['text']for r in rs)for rs in reads]
+            raw.append({'feature':'lyric-cell','systemIndex':s['systemIndex'],'eventId':e['id'],'sourceBox':cell,'inkBox':inkbox,'language':'kor','psm':[8,10,13],'scale':4,'padding':16,'reads':reads})
+            votes=Counter(label for label,rs in zip(labels,reads)if re.fullmatch(r'[가-힣]',label)and rs and min(r['confidence']for r in rs)>=50)
+            if not votes:continue
+            text,count=votes.most_common(1)[0]
+            if count<2 or not any(label==text and rs and min(r['confidence']for r in rs)>=85 for label,rs in zip(labels,reads)):continue
+            support=[]
+            for qi,q in enumerate(raw_rows):
+                for u in q['symbols']:
+                    b=source_box(u.get('rawBox',u['box']),row,q['transform']['scale'])
+                    if u['text']==text and u['confidence']>=70 and b[0]-sp*.3<=x<=b[2]+sp*.3:support.append({'text':text,'sourceBox':b,'confidence':u['confidence'],'rowRead':qi})
+            if len({q['rowRead']for q in support})<2:continue
+            if abs((inkbox[0]+inkbox[2])/2-x)>.65*sp:continue
+            if lyric is not None and lyric.findtext('text')==text:continue
+            if n.find('lyric')is not None and lyric is None:continue
+            if lyric is None:
+                lyric=ET.SubElement(n,'lyric',number=verse);ET.SubElement(lyric,'syllabic').text='single';ET.SubElement(lyric,'text').text=text
+            else:lyric.find('text').text=text
+            evidence=['unique physical note column and neighboring bounds','intact isolated printed glyph; no cell-edge clipping','two matching local PSM 8/10/13 reads and two raw row symbol readings; correlated evidence','same physical verse row; rest/tie guards']
+            changes.append({'feature':'lyric-recovery'if before else 'lyric','ruleVersion':VERSION,'before':before,'after':ET.tostring(lyric,encoding='unicode'),'eventIds':[e['id']],'sourceBox':inkbox,'source':VERSION,'evidence':evidence,'reviewRequired':True})
+            records.append({'feature':'lyric','recoveryVersion':VERSION,'eventId':e['id'],'status':'applied-candidate','text':text,'sourceBox':inkbox,'rowBox':row,'cellBox':cell,'rowSupport':support,'evidence':evidence,'reviewRequired':True})
 
 
 def visual_corroborate(frame,units):
@@ -211,12 +332,12 @@ def recover_extensions(frame,systems,events,links,records,changes):
     """
     import cv2
     em={e['id']:e for e in events};byvoice=defaultdict(list)
-    for e in events:byvoice[(e['partIndex'],e['voice'])].append(e)
+    for e in events:byvoice[(e['partIndex'],e['element'].findtext('staff','1'),e['voice'])].append(e)
     for r in records:
         if r['status']not in ('applied-candidate','preserved-existing'):continue
         e=em[r['eventId']];n=e['element'];l=n.find('lyric')
         if l is None or l.find('extend')is not None or l.findtext('text')!=r['text']or n.find('tie[@type="start"]')is None:continue
-        voice=byvoice[(e['partIndex'],e['voice'])];index=voice.index(e)
+        voice=byvoice[(e['partIndex'],e['element'].findtext('staff','1'),e['voice'])];index=voice.index(e)
         if index+1>=len(voice):continue
         end=voice[index+1];en=end['element']
         pitch=lambda n:tuple(n.findtext('pitch/'+k,'0'if k=='alter'else '')for k in ('step','alter','octave'))
@@ -238,3 +359,67 @@ def recover_extensions(frame,systems,events,links,records,changes):
         ET.SubElement(l,'extend');after=ET.tostring(l,encoding='unicode')
         changes.append({'feature':'lyric-recovery','ruleVersion':VERSION,'before':before,'after':after,'eventIds':[e['id']],'sourceBox':marks[0],'source':VERSION,'evidence':['printed horizontal continuation mark','paired same-pitch same-voice contiguous tie','no new lyric attack at continuation'],'reviewRequired':True})
         r['extendStatus']='derived from printed mark and complete tie; not tie alone';r['extendEvidence']={'markBoxes':marks,'startEventId':e['id'],'endEventId':end['id']}
+
+
+def recover_printed_extensions(frame,systems,events,links,records,changes):
+    """A printed line at a real continuation column, independent of pitch/tie.
+
+    Both attack and endpoint must have source glyphs. The continuation cell
+    must contain only the isolated lyric-row line, not an unread text glyph.
+    A word hyphen followed by another printed syllable therefore fails.
+    Only the existing boolean start marker is emitted; endpoint provenance
+    stays separate, rather than inventing stop text or changing note ties.
+    """
+    import cv2
+    byvoice=defaultdict(list)
+    for e in events:byvoice[(e['partIndex'],e['element'].findtext('staff','1'),e['voice'])].append(e)
+    for voice in byvoice.values():
+        for i,e in enumerate(voice[:-1]):
+            n=e['element'];start=links.get(e['id'],{});end=voice[i+1];finish=links.get(end['id'],{})
+            for lyric in n.findall('lyric'):
+                if lyric.find('extend')is not None:continue
+                before=ET.tostring(lyric,encoding='unicode')
+                automatic=next((c for c in reversed(changes)if c.get('feature')in ('lyric','lyric-recovery','lyric-verse')and c.get('eventIds')==[e['id']]and c.get('after')==before),None)
+                if not automatic:continue
+                record={'feature':'lyric','recoveryVersion':VERSION,'extensionOnly':True,'eventId':e['id'],'status':'unresolved','reviewRequired':True,'reason':'extension source endpoints unresolved'}
+                records.append(record)
+                if e['kind']!='note'or end['kind']!='note'or start.get('status')!='physical-candidate'or finish.get('status')!='physical-candidate':continue
+                if e['systemIndex']!=end['systemIndex']:
+                    record['reason']='cross-system printed extension endpoints unresolved';continue
+                if e['measureIndex']!=end['measureIndex']:
+                    record['reason']='cross-measure extension duration proof required';continue
+                if Fraction(e['onset'])+Fraction(e['duration'])!=Fraction(end['onset']):continue
+                if end['element'].find('lyric[@number="'+lyric.get('number','')+'"]')is not None:
+                    record['reason']='next event has a new lyric attack';continue
+                s=next(s for s in systems if s['systemIndex']==e['systemIndex']);sp=s['spacing'];sx=start['geometry']['center'][0];ex=finish['geometry']['center'][0]
+                if ex<=sx+sp:continue
+                source=automatic.get('sourceBox')
+                if not source:continue
+                rows=detect_rows(frame,s,systems[s['systemIndex']+1]['lines'][0]-5*sp if s['systemIndex']+1<len(systems)else None)
+                row=next((b for b in rows if b[1]<=sum(source[1::2])/2<=b[3]),None)
+                if row is None:record['reason']='printed lyric row not detected';continue
+                if row[1]<=s['lines'][-1]+.7*sp:record['reason']='line overlaps staff zone';continue
+                y0,y1=int(row[1]),int(row[3]);x0=max(int(sx+.65*sp),int(ex-.85*sp));x1=min(frame.width,int(ex+.85*sp)+1)
+                if x1<=x0:continue
+                mask=(np.asarray(frame.crop((x0,y0,x1,y1)))<175).astype('uint8')
+                attack=np.asarray(frame.crop((max(0,int(sx-.9*sp)),y0,min(frame.width,int(sx+.9*sp)+1),y1)))<175
+                attack_rows=np.flatnonzero(attack.any(axis=1))
+                actual_baseline=y0+int(attack_rows[-1])if len(attack_rows)else None
+                _,_,stats,_=cv2.connectedComponentsWithStats(mask,8)
+                marks=[];text_ink=[]
+                for x,y,w,h,area in stats[1:]:
+                    box=[int(x0+x),int(y0+y),int(x0+x+w),int(y0+y+h)]
+                    row_midline=abs(y+h/2-mask.shape[0]/2)<=sp*.65
+                    word_baseline=actual_baseline is not None and abs(y0+y+h/2-actual_baseline)<=sp*.35
+                    if .35*sp<=w<=2*sp and 1<=h<=.45*sp and w>=2*h and (row_midline or word_baseline):marks.append(box)
+                    elif area>=2:text_ink.append(box)
+                record.update(sourceBox=[x0,y0,x1,y1],printedMarkBoxes=marks,otherInkBoxes=text_ink,endEventId=end['id'])
+                if len(marks)!=1:record['reason']='single printed extension line absent';continue
+                if text_ink:record['reason']='continuation column has text or ambiguous ink';continue
+                # A start syllable must be printed, not merely present in XML.
+                ys=attack_rows
+                if not len(ys)or ys[-1]-ys[0]<sp:record['reason']='printed attack syllable missing';continue
+                ET.SubElement(lyric,'extend');after=ET.tostring(lyric,encoding='unicode')
+                evidence=['printed lyric-row horizontal continuation mark','unique source start and endpoint note columns','same voice and verse with contiguous time','no new printed syllable in endpoint cell; not OCR absence','printed start syllable ink']
+                changes.append({'feature':'lyric-recovery','ruleVersion':VERSION,'before':before,'after':after,'eventIds':[e['id']],'sourceBox':marks[0],'source':VERSION,'evidence':evidence,'reviewRequired':True})
+                record.update(status='applied-candidate',reason='printed extension endpoint proven without pitch/tie requirement',evidence=evidence,extendStatus='derived start boolean; printed endpoint preserved in evidence')

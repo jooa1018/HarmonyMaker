@@ -5,6 +5,7 @@ node_modules/
 .next-local-timeline/
 .next-local-chord/
 .next-local-lyrics/
+.next-local-lyrics-followup/
 out/
 *.log
 *.tsbuildinfo
