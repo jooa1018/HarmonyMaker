@@ -39,7 +39,9 @@
     ".next-local-jpeg/types/**/*.ts",
     ".next-local-jpeg/dev/types/**/*.ts",
     ".next-local-timeline/types/**/*.ts",
-    ".next-local-timeline/dev/types/**/*.ts"
+    ".next-local-timeline/dev/types/**/*.ts",
+    ".next-local-chord/types/**/*.ts",
+    ".next-local-chord/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
