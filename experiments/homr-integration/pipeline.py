@@ -17,7 +17,7 @@ def main(v):
     from PIL import Image
     from geometry import replay_geometry,traced_xml,write,sha
     from score import observe,public,insert_at_time,add_candidate_notice
-    from linking import build_links,locate_column
+    from linking import build_links
     from native_ocr import NativeOcr
     from supplements import lyrics,meter,slashes
     start=time.monotonic();timing={}
@@ -41,36 +41,10 @@ def main(v):
         return cm.OcrHypothesis(''.join(r['text'] for r in rows),sum(r['confidence'] for r in rows)/len(rows),f'psm-{psm}') if rows else None
     ci.tesseract_hypothesis=hypothesis
     before=time.monotonic()
-    for s in systems:
-        si=s['systemIndex'];staff=cm.StaffGeometry(0,round(s['lines'][0]),tuple(round(x) for x in s['lines']),s['spacing'],round(s['bounds'][0]),round(s['bounds'][2]))
-        for bi,box in enumerate(ci.segment_chord_boxes(frame,staff)):
-            hs=ci.ocr_chord_hypotheses(frame.crop(box),out/'ocr-chords',f's{si}-b{bi}')
-            options=defaultdict(list)
-            for h in hs:
-                resolved=cm.resolve_hypothesis(h,allow_low_confidence=True)
-                if resolved:options[cm.spec_key(resolved[0])].append((h,resolved))
-            # Keep the provider's recognition functions, but do not suppress a bass/quality conflict.
-            supported=[(key,items) for key,items in options.items() if any(h.confidence>=20 for h,_ in items) or len({h.source for h,_ in items})>=2]
-            record={'feature':'chord','systemIndex':si,'sourceBox':box,'hypotheses':[asdict(h) for h in hs],'options':[{'symbol':it[0][1][0].surface,'support':len(it)} for _,it in supported],'status':'unresolved'}
-            if len(supported)!=1:
-                record['reason']='conflicting chord semantics' if supported else 'no supported chord text';candidates.append(record);continue
-            key,items=supported[0];h,(spec,score)=max(items,key=lambda pair:pair[1][1]);record['symbol']=asdict(spec)
-            match=locate_column(box,si,links,regions);record['association']=match
-            if match['status']=='supported-candidate':
-                record.update(status='eligible-candidate',measureIndex=match['measureIndex'],onset=match['onset']);record['_spec']=spec
-            candidates.append(record)
-        print(json.dumps({'stage':'chord-ocr','system':si,'boxes':sum(c['systemIndex']==si for c in candidates)}),flush=True)
-    groups=defaultdict(list)
-    for c in candidates:
-        if c['status']=='eligible-candidate':groups[(c['measureIndex'],c['onset'])].append(c)
-    from fractions import Fraction
-    for key,rows in sorted(groups.items(),key=lambda pair:(pair[0][0],Fraction(pair[0][1]))):
-        if len(rows)!=1:
-            for c in rows:c.update(status='unresolved',reason='multiple source boxes claim same harmony onset')
-            continue
-        c=rows[0];m=measures[key[0]];node=cm.harmony_element(m['element'],c['_spec'],0);node.attrib.pop('default-x',None)
-        insert_at_time(m,node,key[1]);c['status']='applied-candidate'
-        changes.append({'feature':'chord','before':None,'after':ET.tostring(node,encoding='unicode'),'measureId':m['id'],'onset':key[1],'eventIds':c['association']['eventIds'],'sourceBox':c['sourceBox'],'source':'existing chord segmentation / Tesseract / lexicon, new physical correspondence','evidence':c['association']['evidence'],'reviewRequired':True})
+    from chord_recovery import recover,apply_candidates
+    candidates,chord_recovery=recover(frame,systems,measures,links,regions,ocr,out,raw_ocr)
+    print(json.dumps({'stage':'chord-ocr','version':chord_recovery['version'],'boxes':len(candidates)}),flush=True)
+    changes.extend(apply_candidates(measures,candidates))
     for c in candidates:c.pop('_spec',None)
     timing['chordSeconds']=time.monotonic()-before
     add_candidate_notice(root);ET.ElementTree(root).write(out/'B-chords.candidate.musicxml',encoding='utf-8',xml_declaration=True)
@@ -88,6 +62,7 @@ def main(v):
     all_candidates=candidates+text_candidates+meter_candidates+slash_candidates+timeline['decisions']
     evidence={'schemaVersion':1,'runtimeOracleUsed':False,'input':{'path':str(source),'sha256':sha(source.read_bytes()),'size':frame.size},'engine':{'homr':'457e7c6518a10ba755db2e60883419e56c4d7369','rawXmlSha256':sha(raw.read_bytes()),'mode':'reuse immutable inference cache; supplements are new automatic OCR, not a new homr run'},'coordinatePolicy':'exact pixel/XML replay + geometric corroboration; attention is an estimate; no rendered-coordinate or measure-count association','sourceEligibility':{'approved':False,'reason':'Automatic candidates do not establish original fidelity; unresolved mapping, unsupported symbols, source semantics and text must remain in Review.'},'changes':changes,'candidates':all_candidates,'unresolvedEventLinks':[id for id,r in links.items() if r['status']=='unresolved'],'unresolvedMeasureLinks':[r['measure']['id'] for r in regions if r['status']=='unresolved'],'networkAttemptsBlocked':attempts,'timing':{**timing,'totalSupplementSeconds':time.monotonic()-start},'counts':{'changesByFeature':dict(Counter(c['feature'] for c in changes)),'candidatesByStatus':dict(Counter(c['feature']+':'+c['status'] for c in all_candidates))},'limitations':['A/B/C are automatic hypotheses, not Source-approved.','No tempo, repeat, key, curve or lyric semantics are guessed from measure length.','One staff per detected system; multiple voices may be unresolved.','Manual correction burden unmeasured.','Native OCR C API uses existing official legacy-compatible traineddata; not identical to Linux provider LSTM model bundle.']}
     evidence['timeline']=timeline
+    evidence['chordRecovery']=chord_recovery
     write(out/'ocr.raw.json',raw_ocr);write(out/'evidence.json',evidence)
     print(json.dumps(evidence['counts']),flush=True)
 
