@@ -47,6 +47,7 @@ export async function loadLocalImageConfig(env = process.env, repository = proce
   for (const name of ["scripts/local-image-worker.mjs", "scripts/local-image-lock.py", "src/server/local-image/disk-lock.mjs", "src/server/local-image/security.ts", "src/server/local-image/config.ts", "src/server/local-image/service.ts", "src/server/local-image/http.ts", "src/domain/omr/local-image.ts"]) if (!files.includes(name)) files.push(name);
   if (!files.includes("experiments/homr-integration/timeline.py")) files.push("experiments/homr-integration/timeline.py");
   if (!files.includes("experiments/homr-integration/chord_recovery.py")) files.push("experiments/homr-integration/chord_recovery.py");
+  if (!files.includes("experiments/homr-integration/lyric_recovery.py")) files.push("experiments/homr-integration/lyric_recovery.py");
   const runnerFiles = await Promise.all(files.sort().map(async name => ({path:name,sha256:await hashFile(path.join(repo,name))})));
   return {root:path.resolve(env.HM_LOCAL_IMAGE_ROOT),compare,repository:repo,origin,python,node:process.execPath,worker,
     applicationRevision:(await run(["rev-parse","HEAD"],repo)).stdout.trim(),

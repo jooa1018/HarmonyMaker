@@ -8,6 +8,24 @@ const raw = '<score-partwise><part-list><score-part id="P"><part-name>Independen
 const candidate = raw.replace('<measure number="arbitrary">', '<measure number="arbitrary" implicit="yes">');
 const change = {feature:"timeline-extent",ruleVersion:"hm-automatic-timeline-v1",measureId:"p0m0",before:null,after:'<implicit value="yes" />'};
 describe("timeline candidate transition boundary", () => {
+  it("replays exact automatic lyric revisions without widening musical or user-lyric authority", () => {
+    const first='<lyric number="1"><syllabic>single</syllabic><text>가</text></lyric>';
+    const next='<lyric number="1"><syllabic>single</syllabic><text>나</text><extend /></lyric>';
+    const add={feature:"lyric",eventIds:["d0p0m0n0"],before:null,after:first};
+    const revise={feature:"lyric-recovery",ruleVersion:"hm-lyric-recovery-v1",eventIds:["d0p0m0n0"],before:first,after:next};
+    const output=raw.replace('</note>',next+'</note>');
+    expect(()=>validateCandidateTransitions(raw,output,[add,revise])).not.toThrow();
+    expect(()=>validateCandidateTransitions(raw,output,[revise])).toThrow();
+    expect(()=>validateCandidateTransitions(raw,output,[add,{...revise,before:next}])).toThrow();
+    expect(()=>validateCandidateTransitions(raw,output,[add,{...revise,ruleVersion:"unknown"}])).toThrow();
+    expect(()=>validateCandidateTransitions(raw.replace('</note>',first+'</note>'),output,[revise])).toThrow();
+    expect(()=>validateCandidateTransitions(raw,output.replace('<step>E</step>','<step>F</step>'),[add,revise])).toThrow();
+    const wrongVerse=next.replace('number="1"','number="2"');
+    expect(()=>validateCandidateTransitions(raw,raw.replace('</note>',wrongVerse+'</note>'),[add,{...revise,after:wrongVerse}])).toThrow();
+    const verse={feature:"lyric-verse",ruleVersion:"hm-lyric-recovery-v1",eventIds:["d0p0m0n0"],before:null,after:wrongVerse};
+    expect(()=>validateCandidateTransitions(raw,raw.replace('</note>',first+wrongVerse+'</note>'),[add,verse])).not.toThrow();
+    expect(()=>validateCandidateTransitions(raw,raw.replace('</note>',first+first+'</note>'),[add,{...verse,after:first}])).toThrow();
+  });
   it("replays only an explicitly recorded implicit flag", () => {
     expect(() => validateCandidateTransitions(raw,candidate,[change])).not.toThrow();
     expect(() => validateCandidateTransitions(raw,candidate,[{...change,ruleVersion:"hm-automatic-timeline-v1.1"}])).not.toThrow();

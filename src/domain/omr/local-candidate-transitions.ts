@@ -31,6 +31,7 @@ export function validateCandidateTransitions(rawXml: string, candidateXml: strin
   const notes = new Map<string, XmlElement>(), meters = new Map<string, XmlElement[]>();
   const attributes = new Map(oldMeasures.map(({m, id}) => [id, { ...m.attributes }]));
   const harmonies = new Map<string, { node: XmlElement; at: number }[]>();
+  const automaticLyrics = new Set<string>();
   for (const [{ m, id }, inspected] of oldMeasures.map((m, i) => [m, inspectedOld[i]] as const)) {
     xmlChildren(m, "note").forEach((n, i) => notes.set(`d0${id}n${i}`, n));
     meters.set(id, xmlChildren(m, "attributes").flatMap((a) => xmlChildren(a, "time")));
@@ -38,13 +39,26 @@ export function validateCandidateTransitions(rawXml: string, candidateXml: strin
   }
   for (const change of changes) {
     const after = parse(change.after);
-    if (change.feature === "lyric" || change.feature === "rhythm-slash") {
+    if (change.feature === "lyric" || change.feature === "lyric-verse" || change.feature === "lyric-recovery" || change.feature === "rhythm-slash") {
       if (change.eventIds?.length !== 1) fail();
       const id = change.eventIds![0], before = notes.get(id);
       if (!before) fail();
       if (change.feature === "lyric") {
         if (change.before !== null || after.name !== "lyric" || xmlChildren(before!, "lyric").length) fail();
         notes.set(id, { ...before!, children: [...before!.children, after] });
+        automaticLyrics.add(id);
+      } else if (change.feature === "lyric-verse") {
+        if (change.ruleVersion !== "hm-lyric-recovery-v1" || change.before !== null || after.name !== "lyric"
+          || !/^[1-9][0-9]?$/u.test(after.attributes.number ?? "")
+          || xmlChildren(before!, "lyric").some(l => !l.attributes.number || l.attributes.number === after.attributes.number)) fail();
+        notes.set(id, { ...before!, children: [...before!.children, after] });
+      } else if (change.feature === "lyric-recovery") {
+        const existing = xmlChildren(before!, "lyric");
+        if (!automaticLyrics.has(id) || change.ruleVersion !== "hm-lyric-recovery-v1" || after.name !== "lyric"
+          || existing.length !== 1 || key(parse(change.before)) !== key(existing[0])) fail();
+        const fixed = (n: XmlElement) => key({ ...n, children: n.children.filter(c => c.kind !== "element" || !["text", "extend"].includes(c.name)) });
+        if (fixed(after) !== fixed(existing[0]) || xmlChildren(after, "text").length !== 1 || xmlChildren(after, "extend").length > 1) fail();
+        notes.set(id, { ...before!, children: before!.children.map((c) => c === existing[0] ? after : c) });
       } else {
         if (after.name !== "note" || key(parse(change.before)) !== key(before!)) fail();
         notes.set(id, after);
