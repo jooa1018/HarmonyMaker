@@ -63,12 +63,19 @@ def main(v):
     timing['lyricRecoverySeconds']=time.monotonic()-before
     print(json.dumps({'stage':'lyric-recovery','version':lyric_recovery['version'],'candidates':len(lyric_candidates)}),flush=True)
     ocr.close()
+    from ending_structure import recover as recover_structure
+    before=time.monotonic();ending_structure=recover_structure(root,frame,systems,links,regions,changes,candidates,sha(source.read_bytes()))
+    timing['endingStructureSeconds']=time.monotonic()-before
+    changes.extend(ending_structure['changes'])
+    write(out/'ending-structure-decisions.json',ending_structure)
+    print(json.dumps({'stage':'ending-structure','version':ending_structure['version'],'changes':len(ending_structure['changes'])}),flush=True)
     ET.ElementTree(root).write(out/'C-integrated.candidate.musicxml',encoding='utf-8',xml_declaration=True)
-    all_candidates=candidates+text_candidates+meter_candidates+slash_candidates+timeline['decisions']+lyric_candidates
+    all_candidates=candidates+text_candidates+meter_candidates+slash_candidates+timeline['decisions']+lyric_candidates+ending_structure['decisions']
     evidence={'schemaVersion':1,'runtimeOracleUsed':False,'input':{'path':str(source),'sha256':sha(source.read_bytes()),'size':frame.size},'engine':{'homr':'457e7c6518a10ba755db2e60883419e56c4d7369','rawXmlSha256':sha(raw.read_bytes()),'mode':'reuse immutable inference cache; supplements are new automatic OCR, not a new homr run'},'coordinatePolicy':'exact pixel/XML replay + geometric corroboration; attention is an estimate; no rendered-coordinate or measure-count association','sourceEligibility':{'approved':False,'reason':'Automatic candidates do not establish original fidelity; unresolved mapping, unsupported symbols, source semantics and text must remain in Review.'},'changes':changes,'candidates':all_candidates,'unresolvedEventLinks':[id for id,r in links.items() if r['status']=='unresolved'],'unresolvedMeasureLinks':[r['measure']['id'] for r in regions if r['status']=='unresolved'],'networkAttemptsBlocked':attempts,'timing':{**timing,'totalSupplementSeconds':time.monotonic()-start},'counts':{'changesByFeature':dict(Counter(c['feature'] for c in changes)),'candidatesByStatus':dict(Counter(c['feature']+':'+c['status'] for c in all_candidates))},'limitations':['A/B/C are automatic hypotheses, not Source-approved.','No tempo, repeat, key, curve or lyric semantics are guessed from measure length.','One staff per detected system; multiple voices may be unresolved.','Manual correction burden unmeasured.','Native OCR C API uses existing official legacy-compatible traineddata; not identical to Linux provider LSTM model bundle.']}
     evidence['timeline']=timeline
     evidence['chordRecovery']=chord_recovery
     evidence['lyricRecovery']=lyric_recovery
+    evidence['endingStructure']=ending_structure
     write(out/'ocr.raw.json',raw_ocr);write(out/'evidence.json',evidence)
     print(json.dumps(evidence['counts']),flush=True)
 

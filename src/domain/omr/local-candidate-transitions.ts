@@ -1,6 +1,7 @@
 import { inspectRecoveryXml, recoveryXmlRoot } from "../../import/review/recovery";
 import { parseSafeXml, xmlChild, xmlChildren, type XmlChild, type XmlElement } from "../../import/musicxml/xml";
 import { DEFAULT_IMPORT_SECURITY_LIMITS } from "../../import/musicxml/types";
+import { beforeEndingStructure } from "./ending-structure-transitions";
 
 interface Change {
   readonly feature: string; readonly eventIds?: readonly string[]; readonly measureId?: string;
@@ -25,6 +26,11 @@ const lyricVersions = new Set(["hm-lyric-recovery-v1", "hm-lyric-recovery-v1.1"]
 
 /** Verify the sidecar describes the actual A→C changes, not a different XML with matching counts. */
 export function validateCandidateTransitions(rawXml: string, candidateXml: string, changes: readonly Change[]): void {
+  if (changes.some(c => c.feature === "ending-structure")) {
+    const previous = beforeEndingStructure(candidateXml, changes);
+    validateCandidateTransitions(rawXml, previous, changes.filter(c => c.feature !== "ending-structure"));
+    return;
+  }
   const raw = recoveryXmlRoot(rawXml), candidate = recoveryXmlRoot(candidateXml);
   const oldMeasures = xmlChildren(raw, "part").flatMap((p, pi) => xmlChildren(p, "measure").map((m, mi) => ({ m, id: `p${pi}m${mi}` })));
   const newMeasures = xmlChildren(candidate, "part").flatMap((p) => xmlChildren(p, "measure"));

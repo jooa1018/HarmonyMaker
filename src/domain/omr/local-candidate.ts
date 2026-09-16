@@ -1,6 +1,7 @@
 import { binaryDigest, isSha256LowerHex } from "../digest/canonical";
 import { inspectRecoveryXml } from "../../import/review/recovery";
 import { validateCandidateTransitions } from "./local-candidate-transitions";
+import { beforeEndingStructure } from "./ending-structure-transitions";
 
 export const LOCAL_CANDIDATE_ARTIFACTS = ["rawXml", "candidateXml", "evidence", "links", "geometry", "provenance", "ocr", "slashes"] as const;
 type ArtifactName = typeof LOCAL_CANDIDATE_ARTIFACTS[number];
@@ -84,12 +85,12 @@ export async function validateLocalCandidate(bundle: LocalCandidateBundle): Prom
   const geometry = JSON.parse(bundle.artifacts.geometry.text);
   if (!links?.events || !Array.isArray(links.measures) || provenance?.xmlExactReplay !== true
     || !Array.isArray(provenance.events) || !Array.isArray(geometry?.systems) || !geometry.systems.length) fail();
-  const raw = inspectRecoveryXml(bundle.artifacts.rawXml.text), candidate = inspectRecoveryXml(bundle.artifacts.candidateXml.text);
+  const raw = inspectRecoveryXml(bundle.artifacts.rawXml.text), candidate = inspectRecoveryXml(beforeEndingStructure(bundle.artifacts.candidateXml.text, e.changes));
   const ids = new Set<string>(), measures = new Set<string>();
   if (raw.length !== candidate.length) fail();
   for (const [i, m] of raw.entries()) {
     const mid = `p${m.part}m${m.measure}`; measures.add(mid);
-    if (m.notes.length !== candidate[i].notes.length) fail(); // This prototype does not insert/reorder events.
+    if (m.notes.length !== candidate[i].notes.length) fail(); // Only the verified structural suffix can append events.
     for (const n of m.notes) {
       const id = `d0${mid}n${n.event}`; ids.add(id);
       const link = links.events[id], event = link?.event;
@@ -111,6 +112,14 @@ export async function validateLocalCandidate(bundle: LocalCandidateBundle): Prom
   for (const change of e.changes) {
     if (change.reviewRequired !== true || change.measureId && !measures.has(change.measureId)
       || change.eventIds?.some((id: string) => !ids.has(id))) fail();
+    if (change.feature === "ending-structure") {
+      if (change.inputSha256 !== bundle.image.sha256) fail();
+      for (const row of change.lineage) {
+        if (row.sourceBox && (row.sourceBox.length !== 4 || row.sourceBox.some((n: number) => !Number.isFinite(n))
+          || row.sourceBox[0] < 0 || row.sourceBox[1] < 0 || row.sourceBox[2] > size[0] || row.sourceBox[3] > size[1]
+          || row.sourceBox[2] <= row.sourceBox[0] || row.sourceBox[3] <= row.sourceBox[1])) fail();
+      }
+    }
   }
   for (const system of geometry.systems) if (system.page !== 0 || JSON.stringify(system.originalImageSize) !== JSON.stringify(size)) fail();
   validateCandidateTransitions(bundle.artifacts.rawXml.text, bundle.artifacts.candidateXml.text, e.changes);
