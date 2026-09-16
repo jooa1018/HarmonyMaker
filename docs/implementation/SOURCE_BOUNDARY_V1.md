@@ -1,8 +1,8 @@
 # 입력·교정·Source 경계 v1
 
-## 2026-09-16 Lyrics Recovery v1 후속 · 품질 목표 충족, 새 UI 실행 대기
+## 2026-09-16 Lyric Recovery v1.1 · 실제 신규 이미지 UI 검증 완료
 
-**LYRIC_RECOVERY_V1_PARTIAL.** 제품 revision `10ae4a29035ff2f02635a7701bbf3184d4057cda`, 처리 버전 `hm-lyric-recovery-v1.1`. 품질 목표·음악 비회귀·production build는 통과했지만, 이번 build의 fresh 이미지 UI 실행은 아직 하지 않았다. 이전 시험 Chrome PID 17288과 3201 서버 PID 43512의 정상 종료 승인을 요청했고 답변 전에는 유지했다. 동시에 여러 서버를 띄우지 않는 지시에 따라 새 3202 서버를 시작하지 않았다. 이전 v1의 UI PASS를 새 결과로 계산하지 않는다.
+**LYRIC_RECOVERY_V1_VERIFIED.** 제품 revision `10ae4a29035ff2f02635a7701bbf3184d4057cda`, 처리 `hm-lyric-recovery-v1.1`, 실제 실행 HEAD `6881882a5be6a48346ead9345a2eda0a67f4395f`다. 후속 승인 후 기존 build를 3202 production 모드로 실행하고 동일 JPEG의 일반 이미지 UI 신규 homr 1회(cache false)를 완료했다. 새 결과를 먼저 동결한 뒤 별도 평가기로 재계산했다. 가사/근거 표시, 저장/reload, 실제 Chrome 다운로드/재입력, 동일 profile/origin의 브라우저 프로세스 재시작 복구를 통과했다. 이 완료 단계에서 제품/알고리즘은 변경하지 않았으며 이후 문서 commit과 검증 제품을 구분한다. 자동 후보의 품질·보존·UI 경로에 한정한 판정이고 완성 Source나 가사 무오류를 뜻하지 않는다.
 
 실제 raw word/symbol·후보 선출을 재구성하여 잔여 누락 64개를 좁혔다. 문자 후보가 선출됐지만 box/column 부착에서 소실 42개, 선출 confidence/좌표 경쟁 11개, 해당 위치의 원시 문자 판독 실패 5개, 원본 event column 미확정 6개다. 마지막 6개는 원본 글자가 없다는 판정이 아니다. 원본 잉크 간격으로 겹친 symbol box를 다듬고, 실제 음표 column 사이의 온전한 단일 글자 crop을 재판독한다. 새로운 셀 판독과 기존 row symbol 근거를 함께 요구하며 상관된 OCR 합의를 독립된 정확성 인증으로 취급하지 않는다.
 
@@ -12,9 +12,11 @@
 
 가사 제외 XML 전체, 283 event, 코드 51개와 근거, 시간축, APP 122.5/FILE 124 계약을 보존했다. 실제 APP 비가사 parts도 동일하고 재적용 음악·이력 추가 변경은 0이다. 별도 실제 A 0→0, B 15→15의 내용·연결을 보존했다. C는 기존 8개를 보존하며 11개로 늘었고 서로 다른 pitch의 인쇄 지속선 복원을 확인했다. 개발 중 확인한 입력이므로 미관측 holdout 성능으로 해석하지 않는다. r551/A 완성 프로젝트의 import/export·악보·재생 계획·MusicXML 보존을 확인했다. 공통 parser, WAG, 오디오, 믹서, Source 승인 조건은 변경하지 않았다.
 
-최종 제품에서 typecheck·전체 lint, 기본 118파일 1,138개, opt-in private 3파일 5개, Python 가사/코드/시간축 49개가 PASS다. 기본에서 빠진 private 5개는 별도 실행했으며 집중 시험과 재실행을 중복 합산하지 않는다. Production build 종료 코드 0, 디렉터리 `.next-local-lyrics-followup`, build ID `2wpke1eMSWsmnz1xrGssm`. 이후 인계 변경은 문서 및 build 생성 타입 경로다. 파일 기반 실제 제품 importer→workspace 저장/replay→export/parse는 PASS지만 브라우저 저장·다운로드·재시작의 대체 증거로 세지 않는다. 새 homr 0회, 새 build의 HTTP/Chrome E2E는 NOT_RUN(이전 시험 프로세스 종료 승인 대기). PostgreSQL·원격 OMR은 이번 변경과 무관하여 NOT_RUN, 사람 평가는 NOT_RUN이다.
+최종 제품의 기존 typecheck·전체 lint, 기본 118파일 1,138개, opt-in private 3파일 5개, Python 가사/코드/시간축 49개와 build(exit 0)는 PASS다. 제품 무변경이므로 이번에 반복하지 않았다. Build `.next-local-lyrics-followup`, ID `2wpke1eMSWsmnz1xrGssm`의 HTTP와 설치 Chrome 153.0.8010.48 실행을 확인했다. 새 인식은 194.688초, runner exit 0, job manifest 499파일 검증이며 결과의 정확 166/엄격 164/출력 172/CER 36은 보존 raw 결과와 차이 0이다. 기존 131/109 손실 0, 중복 0, 비가사 전체·코드/시간축 근거도 동일하다. 실제 UI의 가사 172개와 원본 근거 4유형을 대조했고 네 실제 다운로드 파일은 바이트까지 같다. 제품 parser/replay로 음악·가사·origin/proof·revision·요청·확인 상태를 비교했다. revision 0, operations 0, attestations 0, 사용자 권리/음역 확인 없음, Source 차단을 유지한다. PostgreSQL·원격 OMR·Source/WAG는 이번 범위 밖으로 NOT_RUN, 사람 평가는 HUMAN_RECHECK_PENDING이다.
 
-비공개 결과: `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1-followup`. `final-audit/` 원장, `final-raw-2/` 동결 결과, `verified-app/` 제품 생성 초안, `verified-code/` 검증 로그, `시작안내.md`와 manifest를 따른다. 실제 원본·전체 가사·proof·평가 정답은 repo에 추가하지 않았다. 기존 모델·교정본·프로젝트·build·프로필을 보존했고 삭제·push·배포·병합은 하지 않았다.
+신규 XML은 보존 raw XML보다 선두 XML 선언/줄바꿈 41 bytes만 길며 이후 바이트는 완전히 동일하다. 음악/근거 차이를 임의 정규화하지 않았다. 누락 31개, 문자 오독 5개(신규 1 포함), 기준 밖 출력 1개와 extend 불일치 2개를 계속 남긴다. 시험 전 기존 두 PID는 이미 없었다. 이번 Chrome 세 실행은 정상 종료(exit 0), 서버는 최종 Ctrl+C 후 PID와 listener 부재를 확인했다. child exit 로그가 없어 Next 내부 graceful cleanup까지 단정하지 않는다. 최종 서버는 꺼져 있고 profile과 파일은 보존했다.
+
+비공개 결과: `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1-followup`. `final-audit/` 오류 원장, `fresh-automatic/` 신규 동결 결과, `fresh-evaluation/` 평가, `ui-fresh-open/` 실제 다운로드, `ui-state-verification.json` UI 왕복 비교, `verified-code/` 기존 검증 로그, `시작안내.md`와 manifest를 따른다. 실제 원본·전체 가사·proof·평가 정답은 repo에 추가하지 않았다. 기존 모델·교정본·프로젝트·build·프로필을 보존했고 삭제·push·배포·병합은 하지 않았다.
 
 ## 2026-09-16 Lyrics Recovery v1
 
