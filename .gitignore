@@ -13,3 +13,4 @@ __pycache__/
 runtime-browser-evidence/
 .env*
 !.env.example
+.next-local-ending/

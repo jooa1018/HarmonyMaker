@@ -45,7 +45,9 @@
     ".next-local-lyrics/types/**/*.ts",
     ".next-local-lyrics/dev/types/**/*.ts",
     ".next-local-lyrics-followup/types/**/*.ts",
-    ".next-local-lyrics-followup/dev/types/**/*.ts"
+    ".next-local-lyrics-followup/dev/types/**/*.ts",
+    ".next-local-ending/types/**/*.ts",
+    ".next-local-ending/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
