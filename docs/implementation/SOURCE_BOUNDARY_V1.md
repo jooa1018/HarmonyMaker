@@ -1,5 +1,25 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-16 Ending Structure Recovery v1
+
+**END_STRUCTURE_RECOVERY_V1_VERIFIED.** 제품 `15f74f59250b637c623db842b6203189a2d4ac09`, build 생성 타입 경로 보존 및 실제 UI HEAD `6e37273936e23248f95c19ba5b63b9df56a5d9b7`다. 이 절을 추가한 이후 문서 commit과 검증 제품을 구분한다. 전체 OMR 무오류나 새 Source/WAG 완료가 아니라 끝부분 역할·성부·시간·연결 복원의 검증이다.
+
+원본 raster의 긴 slash edge, 독립 stem/beam/dot, hollow head, 두 성부의 정렬 column, raw token과 양쪽 곡선 endpoint를 결합했다. 흰 head 옆 다른 성부의 stem과 실제 아래 stem의 점2분음표를 구분한다. 기존 lyric 보완 뒤 `ending_structure.py`를 실행하고 기존 note ordinal/ID를 유지하며 새 glyph는 별도 계보로 append한다. 정확한 measure before/after·ID·삽입 근거를 검증한 후 그 변환을 역으로 벗겨 기존 raw→후보 검증도 실행한다. 코드·가사·박자·관련 없는 기호 변경은 허용하지 않는다. 후보를 사용자 대조 승인으로 바꾸지 않는다. 특정 입력 hash/파일명/마디 번호/목표 개수·길이 또는 교정본은 runtime 판단 입력이 아니다.
+
+raw token 단계의 잘못된 pitch/trill, hollow head와 rhythm 역할 혼동, token→XML 단계의 상부 rest 소실 및 동시 성부 직렬 배치를 확인했다. 기존 이벤트 19개를 제한적으로 수정하고 원본에 있는 slash/rest 각 1개를 삽입했다. 삭제는 0이다. 원본의 점·beam 길이와 성부별 clock으로 overfull 5→0, fake pitched event 10→0, 끝부분 tie edge 5→6/6을 얻었다. 음표를 잘라 맞추지 않았다. 독립 A/B/C 검사에서 드러난 빈 점 탐색 영역의 OpenCV 오류도 보류 처리로 수정했다.
+
+동결 `hm-omr-audit-v1.1`은 수정하지 않았다. 자동 출력 hash 고정 후 별도로 평가했으며, 새 ID의 대응은 기존 삽입 기록과 동일 원본 glyph 위치로 확인했다. 전곡 핵심 event 260→280/285, 끝부분 10→30/31, 전곡 onset 271→285/285, kind/duration/local onset/voice 각각 285/285다. FILE 총길이 124→122.5, APP 122.5 유지. FILE/APP의 구간 길이·시작·extent·박자는 각각 39/39. 기존 정답의 핵심 맞음→틀림 0, 코드값+위치 50/63, 가사 166/202·엄격 164/202와 CER 36/202를 유지했다. 기존 가사 배열/부착과 코드 record는 동일하다. 기준 pitch 차이 5개(끝부분 1개 포함)는 남기고 기준본을 고치지 않았다.
+
+합성 픽셀 검출, 관찰값을 공급한 resolver, 실제 원본 근거 제거/충돌 반례를 구분했다. 실제 별도 A는 비회귀, B는 관련 구조의 안전한 보류, C는 점2분음표와 여섯 slash의 긍정 사례다. C의 누락 slash/동시 clock을 복원하고 나머지 음악·코드·가사를 보존했다. 개발 중 확인한 자료이며 unseen 성능으로 해석하지 않는다. 재적용 추가 변경 0, 표시번호/glyph ID/divisions 변화 불변을 확인했다. 기존 r551/A 프로젝트의 JSON·render·playback plan·MusicXML 해시는 이전 검증과 같다. WAG·재생·믹서·공통 parser·Source 승인 조건은 변경하지 않았다.
+
+타입·전체 lint, 기본 119파일 1,152개, 별도 opt-in private 3파일 5개, Python 구조/가사/코드/시간축 61개, 프로젝트 보존 8검사와 production build(exit 0)가 통과했다. 기본 실행에서 건너뛴 5개는 opt-in 설정 후 별도로 통과했으며 재실행 수를 중복 합산하지 않는다. Build `.next-local-ending`, ID `smqdlSn4cdkyCPO_o4mP8`, Node 22.23.2, Chrome 153.0.8010.48, origin `http://127.0.0.1:3203`을 검증했다. 일반 이미지 UI에서 같은 JPEG의 새 homr 1회(cache false, actor ui-test)를 실행했고 약 193.532초, runner exit 0, job manifest 500파일 해시를 확인했다. offline hook가 socket 생성 1건을 차단했으며 외부 이미지 전송은 0회다.
+
+원본/변경 근거와 끝부분 31개 event의 일반 편집 필드, 저장/reload, 실제 Chrome download/reimport, 같은 profile/origin의 Chrome와 서버 재시작 복구를 확인했다. 네 다운로드 SHA가 동일하고 revision/operations/attestations는 0이다. 505→499 진단을 음악 오류 수로 해석하지 않는다. 연결/후보 근거 대조와 사용자 요청 미설정, 남은 코드·가사·pitch 차이는 유지한다. 새 Source를 승인하거나 WAG를 실행하지 않았다.
+
+시험 브라우저는 Browser.close, 서버는 원래 PTY Ctrl+C로 종료했고 소유 프로세스/3203 listener 부재를 확인했다. 최종 C: 16.25GiB, 가용 RAM 1,794MiB, commit 10.50/15.42GiB. 기존 데이터·모델·build·프로필은 삭제하지 않았다. PostgreSQL/원격 OMR은 미변경 경로로 NOT_RUN, 사람 평가는 HUMAN_RECHECK_PENDING이다. 과거 브라우저 프로필의 다운로드 장애가 해결됐다고 주장하지 않는다. push·배포·병합·원격 CI는 하지 않았다.
+
+비공개 결과와 실행 안내는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-ending-structure-recovery-v1`의 `시작안내.md`, `실행.ps1`, `검증보고서.md`, `이벤트-대조표.md`, `artifact-manifest.json`에 있다. 실제 Chrome 다운로드 `ui-fresh-open/fresh-workspace.json`을 작업 공간 파일 열기로 가져온다. 원본·실제 음악·전체 proof는 저장소에 추가하지 않았다.
+
 ## 2026-09-16 Lyric Recovery v1.1 · 실제 신규 이미지 UI 검증 완료
 
 **LYRIC_RECOVERY_V1_VERIFIED.** 제품 revision `10ae4a29035ff2f02635a7701bbf3184d4057cda`, 처리 `hm-lyric-recovery-v1.1`, 실제 실행 HEAD `6881882a5be6a48346ead9345a2eda0a67f4395f`다. 후속 승인 후 기존 build를 3202 production 모드로 실행하고 동일 JPEG의 일반 이미지 UI 신규 homr 1회(cache false)를 완료했다. 새 결과를 먼저 동결한 뒤 별도 평가기로 재계산했다. 가사/근거 표시, 저장/reload, 실제 Chrome 다운로드/재입력, 동일 profile/origin의 브라우저 프로세스 재시작 복구를 통과했다. 이 완료 단계에서 제품/알고리즘은 변경하지 않았으며 이후 문서 commit과 검증 제품을 구분한다. 자동 후보의 품질·보존·UI 경로에 한정한 판정이고 완성 Source나 가사 무오류를 뜻하지 않는다.
