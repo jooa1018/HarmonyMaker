@@ -101,8 +101,25 @@ describe("bounded exact workspace proof reuse", () => {
     } finally { seed.mockRestore(); }
   });
 
+  it("reuses a verified proof just beyond 8 MB without sharing mutations or accepting changed bytes", async () => {
+    const w = await fixture("proof:review-history"), text = " ".repeat(8_100_000) + await exportScoreWorkspace(w);
+    const seed = vi.spyOn(input, "seedWorkspace");
+    try {
+      const first = await parseScoreWorkspace(text);
+      expect(seed).toHaveBeenCalledOnce();
+      const second = await parseScoreWorkspace(text);
+      expect(seed).toHaveBeenCalledOnce();
+      changeNote(first);
+      await expect(replayScoreWorkspace(first)).rejects.toThrow("WORKSPACE_HISTORY_SEAL_INVALID");
+      expect(second).toEqual(w);
+      const changed = text.replace("Public proof reuse regression", "Changed proof reuse regression");
+      await expect(parseScoreWorkspace(changed)).rejects.toThrow("WORKSPACE_HISTORY_SEAL_INVALID");
+      expect(await parseScoreWorkspace(text)).toEqual(w);
+    } finally { seed.mockRestore(); }
+  });
+
   it("validates larger proofs normally without caching them or changing the existing limits", async () => {
-    const w = await fixture("proof:large"), text = " ".repeat(8_000_001) + await exportScoreWorkspace(w), seed = vi.spyOn(input, "seedWorkspace");
+    const w = await fixture("proof:large"), text = " ".repeat(16_000_001) + await exportScoreWorkspace(w), seed = vi.spyOn(input, "seedWorkspace");
     try {
       expect(await parseScoreWorkspace(text)).toEqual(w); expect(await parseScoreWorkspace(text)).toEqual(w);
       expect(seed).toHaveBeenCalledTimes(2);

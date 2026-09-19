@@ -15,3 +15,4 @@ runtime-browser-evidence/
 !.env.example
 .next-local-ending/
 .next-local-assisted/
+.next-local-assisted-proof/

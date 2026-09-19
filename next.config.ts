@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
   ...(process.env.HM_LOCAL_LYRICS_FOLLOWUP_BUILD === "1" ? { distDir: ".next-local-lyrics-followup" } : {}),
   ...(process.env.HM_LOCAL_ENDING_BUILD === "1" ? { distDir: ".next-local-ending" } : {}),
   ...(process.env.HM_LOCAL_ASSISTED_BUILD === "1" ? { distDir: ".next-local-assisted" } : {}),
+  ...(process.env.HM_LOCAL_ASSISTED_PROOF_BUILD === "1" ? { distDir: ".next-local-assisted-proof" } : {}),
   // Local low-disk validation only. No cache deletion or production change.
   ...(process.env.HM_LOCAL_NO_DISK_CACHE === "1"
     ? { experimental: { turbopackFileSystemCacheForDev: false } }

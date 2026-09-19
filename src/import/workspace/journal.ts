@@ -19,7 +19,10 @@ interface Replay {
   readonly lastOperation?: StepOperation;
 }
 const cache = new WeakMap<ScoreWorkspace,{serialized:string;value:Replay}>();
-const MAX_REUSED_PROOF_CHARS = 8_000_000;
+// One private entry only. Normal review history can take an image proof beyond
+// 8 MB; retain that verified replay across Source/project validation instead of
+// repeatedly replaying it. This is a cache bound, not the 64 MB input limit.
+const MAX_REUSED_PROOF_CHARS = 16_000_000;
 interface ProofReplayEntry {
   readonly text: string; readonly serialized: string;
   readonly bundle: { readonly workspace: ScoreWorkspace; readonly replay: Replay };

@@ -5,5 +5,5 @@ import nextTypeScript from "eslint-config-next/typescript";
 export default defineConfig([
   ...nextVitals,
   ...nextTypeScript,
-  globalIgnores([".next/**", ".next-local-image/**", ".next-local-jpeg/**", ".next-local-timeline/**", ".next-local-chord/**", ".next-local-lyrics/**", ".next-local-lyrics-followup/**", ".next-local-ending/**", ".next-local-assisted/**", "node_modules/**"]),
+  globalIgnores([".next/**", ".next-local-image/**", ".next-local-jpeg/**", ".next-local-timeline/**", ".next-local-chord/**", ".next-local-lyrics/**", ".next-local-lyrics-followup/**", ".next-local-ending/**", ".next-local-assisted/**", ".next-local-assisted-proof/**", "node_modules/**"]),
 ]);
