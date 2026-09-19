@@ -1,5 +1,21 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-20 최신 자동 후보 교정·실사용 경로
+
+**LATEST_CANDIDATE_ASSISTED_E2E_VERIFIED.** 이전 Ending Structure 실제 fresh job의 revision 0에서 시작했고, 이번 신규 OMR은 0회다. r551의 음악·Source·proof·교정/대조 이력을 가져오지 않았다. 실제 원본을 대조한 agent의 일반 UI `actor=ui-test` 결정이며 사용자 본인의 독보·가창 능력 확인이 아니다. 최종 작업 공간은 revision 1019다.
+
+음악 편집은 52명령(코드 추가 12, 가사 이벤트 교정 39, 빠진 slur 시작점 1)이다. 가사 순변화는 토큰 추가 31·제거 1·문자 5·extend 2다. 자동 후보와 기준본의 다섯 pitch 차이는 직접 원본 판독 후 자동값을 유지하고 별도 private 정오표로 남겼다. 285이벤트의 pitch/kind/onset/duration/voice/tie, 39구간의 박자/extent와 기존 51코드는 유지했다. 비선택 원본 성부도 보존했다. 초기 499항목은 음악 오류 수가 아니며 불변 관측과 중복 근거·요청을 포함한다. 원시 status/issue는 수정하지 않고 현재 대조와 연결했다.
+
+실제 누적 대조 명령 957(마디 음악 75, issue 882), attestation 기록 1042, 요청 설정 9·제목 1, 관측된 세부 UI 명령 하한 546이다. slur 수정 뒤 무효화된 36마디와 문서 의존 439항목을 다시 확인했다. 여러 기록을 한 음악 사실로 합치거나 확인 부담을 1클릭으로 축소하지 않았다. 과거 551operations와 감소율을 비교하지 않는다. 사람 시간은 **HUMAN_TIME_NOT_MEASURED**, 청감은 **HUMAN_RECHECK_PENDING**이다.
+
+최소 제품 변경은 두 가지다. `3034ec8`은 과도한 개별 입력을 실제 재현한 후 원본 구역·현재 음악·개별 대상/근거를 함께 보여주는 명시적 묶음 대조를 연결했다. 기존 개별 attest/revision과 원자적 저장을 사용하며 승인·무효화 규칙은 유지한다. `6acd763d7130b47cbfd300d7a7738261d488a30c`는 긴 대조 이력의 proof가 기존 재사용 한도를 넘어 반복 검증되는 실행 지연을 재현한 뒤 단일 private 검증 캐시 상한만 800만→1600만 문자로 조정했다. 정확한 텍스트 일치·변조 격리·64MB 입력/2048이력 한도는 유지했다. 최초 이력 재생과 보수적인 문서 범위 재대조 부담은 남는다. OMR/WAG/renderer/mixer와 Source 승인 조건은 바꾸지 않았다.
+
+최종 제품에서 타입·전체 lint, 기본 120파일/1157시험, 관련 37시험(중복 합산 안 함), production build가 통과했다. 기본 실행의 선행 opt-in private 3파일/5시험은 SKIPPED이며 이번에 재실행하지 않았다. 대신 이번 실제 최신 후보의 원본 대조·production UI·파일 의미·native PCM 증거를 별도로 보존했다. PostgreSQL과 새 OMR은 미변경 경로로 NOT_RUN이다. build `.next-local-assisted-proof`, ID `C70EZEa3Fejj4USJ8Du10`; 생성 타입 HEAD `24c6cbf5d9c0cd566b8ac92c795434ea68074a58`과 이 문서의 후속 commit을 구분한다. 이전 build는 보존했다.
+
+설치 Chrome 153.0.8010.48, `http://127.0.0.1:3203`에서 정상 Source, complete 1/partial 1 생성과 complete 선택, 악보, 실제 Lead/화음/Band 출력 및 제어, 전곡 재생, 저장/reload, 같은 profile/origin의 브라우저·서버 정상 재시작 복구, workspace/project/XML 실제 다운로드·일반 UI 재입력이 통과했다. 프로젝트 새 사본과 기존 프로젝트를 구분하며 파일 음악·요청·proof를 대조했다. XML은 Quick Review로 들어가고 새 권리/Source를 자동 승인하지 않는다. 실제 native PCM과 710개 발음 일정은 별도 프로젝트 유도 계획과 일치했다. 최초 오디오 관측은 favicon 404 때문에 전체 helper FAIL(PCM 항목은 PASS)이었고, 원인을 별도 기록한 동일 조건 재관측은 console/page 오류 없이 PASS였다. 사람 청감·물리 스피커 품질을 대신하지 않는다.
+
+비공개 결과는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-latest-candidate-assisted-trial-v1`의 `시작안내.md`, `실행-최종.ps1`, `검증보고서.md`, `correction-ledger.json`, `burden-summary-final.json`, `Source-요청-provenance.json`, `artifact-manifest.json`에 있다. 음악/원본/private proof는 저장소에 추가하지 않았다. 서버는 재시작 가능한 명령을 제공하며 세션 이후 상시 실행을 약속하지 않는다. 초기 159개 인계 artifact 및 원본/r551 hash를 재확인했다. 소량 교정·짧은 사람 시간·OMR 무오류·모든 악보 지원·출시 판정이 아니다. 기존 데이터 삭제·push·PR·원격 CI·배포·병합은 하지 않았다.
+
 ## 2026-09-16 Ending Structure Recovery v1
 
 **END_STRUCTURE_RECOVERY_V1_VERIFIED.** 제품 `15f74f59250b637c623db842b6203189a2d4ac09`, build 생성 타입 경로 보존 및 실제 UI HEAD `6e37273936e23248f95c19ba5b63b9df56a5d9b7`다. 이 절을 추가한 이후 문서 commit과 검증 제품을 구분한다. 전체 OMR 무오류나 새 Source/WAG 완료가 아니라 끝부분 역할·성부·시간·연결 복원의 검증이다.
