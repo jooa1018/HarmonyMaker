@@ -22,6 +22,8 @@ import { IndexedDbProjectStore } from "../../product/local-project-store";
 import styles from "./score-workspace.module.css";
 import { WorkspaceEventTools, WorkspaceMeasureTools } from "./WorkspaceEventTools";
 import { remainingWorkspaceNotation } from "../../import/workspace/notation";
+import { attestWorkspaceIssues } from "../../import/workspace/review-batch";
+import { WorkspaceIssueReview } from "./WorkspaceIssueReview";
 
 interface Loaded {record:StoredScoreWorkspace;state:WorkspaceState;caps:WorkspaceCapabilities}
 type Commit=(command:WorkspaceCommand,note:string)=>Promise<void>;
@@ -100,6 +102,11 @@ export function ScoreWorkspaceClient() {
     const value=await hydrate(record);ensureCurrent();await store.save(record,previous?.storageRevision);const items=await store.list();ensureCurrent();publish(value);setList(items);return record;
   };
   const commit:Commit=async(command,note)=>run(async ensureCurrent=>{const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");const next=await applyWorkspaceCommand(old.record.workspace,old.record.workspace,command,{id:crypto.randomUUID(),note,actor:navigator.webdriver?"ui-test":"user",at:new Date().toISOString()});await persist(next,ensureCurrent,old.record);setDiagnostics("");setStatus(`저장 완료 · revision ${next.revision} · ${note}`);});
+  const confirmIssues=async(ids:readonly string[],note:string,expected:{revision:number;digest:string})=>run(async ensureCurrent=>{
+    const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");
+    const next=await attestWorkspaceIssues(old.record.workspace,expected,ids,{id:crypto.randomUUID(),note,actor:navigator.webdriver?"ui-test":"user",at:new Date().toISOString()});
+    await persist(next,ensureCurrent,old.record);setDiagnostics("");setStatus(`저장 완료 · revision ${next.revision} · 명시적으로 선택한 원본 사실 ${ids.length}개 대조; 음악·원시 기록 유지`);
+  });
   const openFile=async(file:File)=>run(async ensureCurrent=>{
     if(file.size>64_000_000)throw Error("입력 크기 제한 64 MB를 넘었습니다.");let workspace:ScoreWorkspace;
     if(/\.(json|hm-workspace)$/iu.test(file.name)){const text=await file.text(),value=JSON.parse(text);if(value.version==="hm-score-workspace-v1")workspace=await parseScoreWorkspace(text);else {const origin=value.version==="hm-local-candidate-v1"?await originFromLocalCandidate(value as LocalCandidateBundle,file.name):await originFromLegacyBundle(text,file.name);workspace=await createScoreWorkspace(origin,V,crypto.randomUUID());}}
@@ -129,7 +136,7 @@ export function ScoreWorkspaceClient() {
     <fieldset disabled={busy} className={styles.editor}>{w.origin.localCandidate?<LocalCandidateReviewEvidence bundle={w.origin.localCandidate}/>:workspaceOriginalImages(w.origin).map((src,i)=><a key={i} href={src} target="_blank" rel="noreferrer">보존한 원본 이미지 {i+1} 열기</a>)}
     {s.music&&<RequestPanel key={w.id} state={s} commit={commit}/>}
     <section className="panel"><h2>원본과 현재 후보 대조</h2><p>시간은 4분음표=1인 정확한 분수입니다. 음표 삭제 없이 페르마타만 제거할 수 있습니다. 확인 버튼은 이 마디와 실제 문맥 의존성에 기록됩니다.</p>{s.music?.parts.map(part=><div key={part.partOrdinal}><h3>{part.displayPartName} · 보존한 파트 {part.partOrdinal+1}</h3>{part.measures.map(m=><MeasurePanel key={m.workspaceMeasureId} m={m} state={s} features={notationFeatures} current={c.musicReviews.find(r=>r.measureId===m.workspaceMeasureId)?.current??false} commit={commit}/>)}</div>)}</section>
-    <section className="panel"><h2>별도 미확정 항목</h2><p>영향을 알 수 없는 음악 기호는 자동으로 무시하지 않습니다. 대조로 해결 가능한 항목만 명시적으로 확인할 수 있습니다. 실제 수정은 위 교정 도구로 먼저 저장하세요.</p>{c.pendingIssues.map(issue=><div key={issue.id} className={styles.context}><p>{issue.messageKo} · {issue.scope.kind==="measure"?issue.scope.measureId:issue.scope.kind}</p><small>{issue.kind} · 필요 작업 {issue.requiredAction} · 근거 {issue.evidenceRef}</small>{issue.requiredAction==="compare"&&<IssueReview issueId={issue.id} commit={commit} scope={issue.scope}/>}</div>)}</section></fieldset>
+    <section className="panel"><h2>별도 미확정 항목</h2><p>영향을 알 수 없는 음악 기호는 자동으로 무시하지 않습니다. 대조로 해결 가능한 항목만 명시적으로 확인할 수 있습니다. 실제 수정은 위 교정 도구로 먼저 저장하세요.</p>{w.origin.localCandidate&&<WorkspaceIssueReview bundle={w.origin.localCandidate} state={s} issues={c.pendingIssues} revision={w.revision} digest={w.digest} onConfirm={confirmIssues}/>}<details><summary>기존 개별 대조 · {c.pendingIssues.length}개</summary>{c.pendingIssues.map(issue=><div key={issue.id} className={styles.context}><p>{issue.messageKo} · {issue.scope.kind==="measure"?issue.scope.measureId:issue.scope.kind}</p><small>{issue.kind} · 필요 작업 {issue.requiredAction} · 근거 {issue.evidenceRef}</small>{issue.requiredAction==="compare"&&<IssueReview issueId={issue.id} commit={commit} scope={issue.scope}/>}</div>)}</details></section></fieldset>
     <details className="panel"><summary>자동 기록 · 원본과 변경 이력</summary><p>원본 XML SHA-256 {w.origin.xmlDigest} · {w.operations.length}개 작업. 음악적 정확성을 해시로 인증하지 않습니다.</p><pre className={styles.wrap}>{JSON.stringify(w.operations.map(o=>({id:o.id,command:o.command,affectedIds:o.affectedIds,note:o.note,actor:o.actor,at:o.at})),null,2)}</pre><details><summary>불변 원시 XML</summary><pre className={styles.wrap}>{w.origin.xml}</pre></details></details></>}
   </>;
 }
