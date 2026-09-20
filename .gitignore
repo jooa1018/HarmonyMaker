@@ -24,3 +24,4 @@ runtime-browser-evidence/
 .next-local-review-persistence-render/
 .next-local-review-persistence-combined/
 .next-local-review-persistence-projection/
+.next-local-review-persistence-codec/

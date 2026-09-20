@@ -15,8 +15,16 @@ export class CanonicalCodecError extends TypeError {
   }
 }
 
+// Re-encoding the same immutable proof string dominated repeated project
+// captures. Keep at most one bounded string pair; this is a pure codec cache,
+// never an attestation or a cache of mutable objects/validation results.
+let largeQuotedString: { text: string; quoted: string } | undefined;
 function quote(text: string): string {
-  return JSON.stringify(text.normalize("NFC"));
+  if (largeQuotedString?.text === text) return largeQuotedString.quoted;
+  const quoted = JSON.stringify(text.normalize("NFC"));
+  if (text.length >= 65_536 && text.length <= 16_000_000 && quoted.length <= 16_000_000)
+    largeQuotedString = { text, quoted };
+  return quoted;
 }
 
 function encode(value: unknown, ancestors: ReadonlySet<object>): string {
@@ -89,18 +97,19 @@ export function canonicalUtf8(value: unknown): Uint8Array {
   return new TextEncoder().encode(canonicalJson(value));
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const ownedBytes = Uint8Array.from(bytes);
+async function sha256Owned(ownedBytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", ownedBytes.buffer);
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 export async function semanticDigest(value: unknown): Promise<SemanticDigest> {
-  return (await sha256Hex(canonicalUtf8(value))) as SemanticDigest;
+  // TextEncoder creates an owned ArrayBuffer: no caller can mutate these bytes
+  // while WebCrypto consumes them. Binary input below still needs its copy.
+  return (await sha256Owned(new TextEncoder().encode(canonicalJson(value)))) as SemanticDigest;
 }
 
 export async function binaryDigest(bytes: Uint8Array): Promise<BinaryDigest> {
-  return (await sha256Hex(bytes)) as BinaryDigest;
+  return (await sha256Owned(Uint8Array.from(bytes))) as BinaryDigest;
 }
 
 export function isSha256LowerHex(value: unknown): value is string {

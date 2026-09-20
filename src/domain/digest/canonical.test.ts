@@ -12,6 +12,22 @@ describe("canonical digest codec", () => {
     expect(await semanticDigest({ a: 1 })).toHaveLength(64);
   });
 
+  it("preserves exact canonical output across large immutable strings and later changes", () => {
+    const first = 'e\u0301\\"\n'.repeat(20_000), second = 'different\ud800'.repeat(10_000);
+    for (const value of [first, first, second, first])
+      expect(canonicalJson({ proof: value })).toBe('{"proof":' + JSON.stringify(value.normalize("NFC")) + '}');
+    expect(() => canonicalJson({ proof: first, invalid: undefined })).toThrow();
+    expect(() => canonicalJson({ proof: first, "é": 1, "e\u0301": 2 })).toThrow("collide");
+  });
+
+  it("hashes owned semantic bytes equally and isolates caller-owned binary input", async () => {
+    const value = { proof: 'e\u0301\\"\n'.repeat(20_000) };
+    expect(await semanticDigest(value)).toBe(await binaryDigest(new TextEncoder().encode(canonicalJson(value))));
+    const bytes = new TextEncoder().encode("abc"), digest = binaryDigest(bytes);
+    bytes.fill(0);
+    expect(await digest).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  });
+
   it.each([undefined, Number.NaN, Number.POSITIVE_INFINITY, 1.5, BigInt(1)])("rejects non-canonical value %s", (value) => {
     expect(() => canonicalJson({ value })).toThrow();
   });
