@@ -51,7 +51,9 @@
     ".next-local-assisted/types/**/*.ts",
     ".next-local-assisted/dev/types/**/*.ts",
     ".next-local-assisted-proof/types/**/*.ts",
-    ".next-local-assisted-proof/dev/types/**/*.ts"
+    ".next-local-assisted-proof/dev/types/**/*.ts",
+    ".next-local-review-persistence/types/**/*.ts",
+    ".next-local-review-persistence/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

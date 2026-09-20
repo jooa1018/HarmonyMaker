@@ -1,7 +1,7 @@
 /// <reference types="next" />
 /// <reference types="next/image-types/global" />
-import "./.next-local-assisted-proof/types/routes.d.ts";
-import "./.next-local-assisted-proof/types/root-params.d.ts";
+import "./.next-local-review-persistence/types/routes.d.ts";
+import "./.next-local-review-persistence/types/root-params.d.ts";
 
 // NOTE: This file should not be edited
 // see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
