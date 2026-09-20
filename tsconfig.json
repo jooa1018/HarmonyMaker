@@ -59,7 +59,9 @@
     ".next-local-review-persistence-transfer/types/**/*.ts",
     ".next-local-review-persistence-transfer/dev/types/**/*.ts",
     ".next-local-review-persistence-ui/types/**/*.ts",
-    ".next-local-review-persistence-ui/dev/types/**/*.ts"
+    ".next-local-review-persistence-ui/dev/types/**/*.ts",
+    ".next-local-review-persistence-serialized/types/**/*.ts",
+    ".next-local-review-persistence-serialized/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
