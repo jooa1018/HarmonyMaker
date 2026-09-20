@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../../app/algorithm-version-registry";
 import { originFromMusicXml } from "./input";
-import { applyWorkspaceCommand, applyWorkspaceCommands, createImmutableWorkspace, createScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace, readVerifiedWorkspace, replayScoreWorkspace } from "./journal";
+import { applyWorkspaceCommand, applyWorkspaceCommands, createImmutableWorkspace, createScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace, readVerifiedWorkspace, replayScoreWorkspace, workspaceStateDigest } from "./journal";
 import type { ScoreWorkspace, WorkspaceCommand } from "./model";
 import { ScoreWorkspaceStore } from "./store";
 
@@ -21,6 +21,42 @@ function expectFrozenTree(value:unknown) {
 }
 
 describe("verified immutable workspace ownership",()=>{
+  it("keeps retained state fields isolated across edits, reviews, Undo, Redo and cold replay",async()=>{
+    let current=await createImmutableWorkspace(await fixture("immutable:field-sharing"));
+    const first=current,initial=await replayScoreWorkspace(first),firstBytes=await exportScoreWorkspace(first);
+    const lead=initial.music!.leadCandidates[0].key;
+    const commands:WorkspaceCommand[]=[
+      {kind:"lead",lead,rhythmVoices:[]},
+      {kind:"attest",purpose:"music",scope:{kind:"measure",measureId:"p0m0",voiceKey:lead}},
+      {kind:"issue",scope:{kind:"metadata"},detail:"Independent new evidence must remain unresolved"},
+      {kind:"event-lyrics",eventId:"p0m0n0",lyrics:[{text:"e\u0301 한",verse:1,syllabic:"single",extend:false,musicXmlAccent:false}]},
+      {kind:"tempo",tempo:{beatUnit:4,dotted:false,bpm:91}},
+      {kind:"undo"},{kind:"undo"},{kind:"redo"},{kind:"redo"},
+      {kind:"title",title:"Different display title"},
+    ];
+    const retained:Array<{workspace:ScoreWorkspace;state:typeof initial;encoded:string}>=[];
+    for(const [index,command] of commands.entries()) {
+      const state=await replayScoreWorkspace(current),encoded=await exportScoreWorkspace(current);
+      retained.push({workspace:current,state:structuredClone(state),encoded});
+      // Returned fields must never become private replay or clean-cache keys.
+      Object.assign(state.issues,{length:0});Object.assign(state.attestations,{length:0});
+      Object.assign(state.request.tempo!,{bpm:199});
+      Object.assign(state.music!,{title:"Mutated external view"});
+      current=await act(current,command,`op:field-sharing:${index}`);
+      const next=await replayScoreWorkspace(current);
+      expect(await workspaceStateDigest(next)).toBe(current.digest);
+      // Different text bypasses the one exact proof-string reuse entry.
+      const cold=await parseScoreWorkspace(' '+await exportScoreWorkspace(current));
+      expect(await replayScoreWorkspace(cold)).toEqual(next);
+      expect(await exportScoreWorkspace(first)).toBe(firstBytes);
+    }
+    for(const previous of retained) {
+      expect(await replayScoreWorkspace(previous.workspace)).toEqual(previous.state);
+      expect(await exportScoreWorkspace(previous.workspace)).toBe(previous.encoded);
+    }
+    expect(await replayScoreWorkspace(first)).toEqual(initial);
+    expect((await replayScoreWorkspace(current)).issues.some(i=>i.messageKo.includes("Independent new evidence"))).toBe(true);
+  });
   it("copies and deeply freezes verified JSON without freezing or trusting the caller",async()=>{
     const mutable=await fixture(),text=await exportScoreWorkspace(mutable),owned=await createImmutableWorkspace(mutable);
     expect(owned).toEqual(mutable);expect(owned).not.toBe(mutable);expect(owned.origin).not.toBe(mutable.origin);

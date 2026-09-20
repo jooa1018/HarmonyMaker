@@ -34,3 +34,4 @@ runtime-browser-evidence/
 .next-local-review-persistence-ascii/
 .next-local-review-persistence-immutable/
 .next-local-review-persistence-shared/
+.next-local-review-persistence-fields/

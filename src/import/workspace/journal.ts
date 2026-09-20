@@ -27,6 +27,25 @@ interface VerifiedReplay {
   readonly digestState?:ReturnType<typeof createReplayStateDigester>;
 }
 const cache = new WeakMap<ScoreWorkspace,VerifiedReplay>();
+// Reducer states are private: external inputs are captured before replay and
+// public readers receive clones. Preserve unchanged, already JSON-clean fields
+// so their canonical bytes can also be reused. This is not a validation cache;
+// every intermediate digest and history seal is still checked. Weak keys do
+// not retain discarded states, and caller-owned objects never enter this map.
+const replayCleanFields = new WeakMap<object, object>();
+function cleanReplayState(state: WorkspaceState): WorkspaceState {
+  const entries = Object.entries(state).filter(([, value]) => value !== undefined).map(([key, value]) => {
+    if (value === null || typeof value !== "object") return [key, clean(value)];
+    let owned = replayCleanFields.get(value);
+    if (!owned) {
+      owned = clean(value);
+      replayCleanFields.set(value, owned);
+      replayCleanFields.set(owned, owned);
+    }
+    return [key, owned];
+  });
+  return Object.fromEntries(entries) as unknown as WorkspaceState;
+}
 // Membership is private and granted after full replay to a detached frozen
 // copy, or an internal edit of one. A caller's Object.freeze is not authority.
 const immutableWorkspaces = new WeakSet<ScoreWorkspace>();
@@ -162,9 +181,9 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
     const redo=command.kind==="undo"?[...current.redo,last]:current.redo.slice(0,-1);
     let state={...structuredClone(current.seed),attestations:current.state.attestations,...(current.state.reviewIssueDependencies?{reviewIssueDependencies:current.state.reviewIssueDependencies}:{})};
     for(const edit of active) state=reduceWorkspaceEdit(state,edit.command as WorkspaceEdit,edit.id,current.origin,current.seed,edit.reviewDependencyVersion??1);
-    return finish({...current,state:clean(state),active,redo});
+    return finish({...current,state:cleanReplayState(state),active,redo});
   }
-  const state=clean(reduceWorkspaceEdit(current.state,command,op.id,current.origin,current.seed,op.reviewDependencyVersion??1));
+  const state=cleanReplayState(reduceWorkspaceEdit(current.state,command,op.id,current.origin,current.seed,op.reviewDependencyVersion??1));
   // History metadata is filled by the caller; reducers only need ID and command.
   const history=op as WorkspaceOperation;
   return finish({...current,state,active:[...current.active,history],redo:[]});
