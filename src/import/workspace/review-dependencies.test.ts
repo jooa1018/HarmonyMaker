@@ -99,5 +99,7 @@ describe("v3 dependencies without invented slur reach",()=>{
     expect(workspaceReviewQuestionKey(issue,region,{sourceBox:[1,2,3,4]})).toBe(workspaceReviewQuestionKey({...issue,id:'two'},region,{sourceBox:[1,2,3,4]}));
     expect(workspaceReviewQuestionKey(issue,region,{sourceBox:[1,2,3,4]})).not.toBe(workspaceReviewQuestionKey({...issue,id:'two'},region,{sourceBox:[4,2,6,4]}));
     expect(workspaceReviewQuestionKey(issue,region)).not.toBe(workspaceReviewQuestionKey({...issue,id:'two'},region));
+    expect(workspaceReviewQuestionKey(issue,region,{sourceBox:[1.125,2.5,3.75,4.25]})).toBe(workspaceReviewQuestionKey({...issue,id:'two'},region,{sourceBox:[1.125,2.5,3.75,4.25]}));
+    expect(workspaceReviewQuestionKey(issue,region,{sourceBox:[1.125,2.5,3.75,4.25]})).not.toBe(workspaceReviewQuestionKey(issue,region,{sourceBox:[1.25,2.5,3.75,4.25]}));
   });
 });

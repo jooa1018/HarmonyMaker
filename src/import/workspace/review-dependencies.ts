@@ -145,5 +145,7 @@ export function workspaceReviewQuestionKey(issue: WorkspaceIssue, dependency?: W
   // question; otherwise retain individual unknown-location observations.
   if(!dependency.eventIds.length&&!sourceBox)return `issue:${issue.id}`;
   return canonicalJson({field:dependency.field,measures:dependency.measureIds,events:dependency.eventIds,association:dependency.association,
-    ...(!dependency.eventIds.length?{sourceBox}:{})});
+    // Image coordinates may be fractional. Preserve exact numeric identity as
+    // strings for this presentation key; the musical codec accepts integers only.
+    ...(!dependency.eventIds.length?{sourceBox:sourceBox!.map(String)}:{})});
 }
