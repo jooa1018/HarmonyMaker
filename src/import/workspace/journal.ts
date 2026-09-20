@@ -22,33 +22,29 @@ interface Replay {
   /** Private to this verified state lineage; edits always replace the map. */
   readonly reviewFingerprints: Map<string, string>;
 }
-const cache = new WeakMap<ScoreWorkspace,{serialized:string;value:Replay}>();
+interface VerifiedReplay { readonly serialized:string; readonly value:Replay; readonly encoded?:string }
+const cache = new WeakMap<ScoreWorkspace,VerifiedReplay>();
 // One private entry only. Normal review history can take an image proof beyond
 // 8 MB; retain that verified replay across Source/project validation instead of
 // repeatedly replaying it. This is a cache bound, not the 64 MB input limit.
 const MAX_REUSED_PROOF_CHARS = 16_000_000;
 interface ProofReplayEntry {
-  readonly text: string; readonly serialized: string;
-  readonly bundle: { readonly workspace: ScoreWorkspace; readonly replay: Replay };
+  readonly text: string;
+  readonly verified: VerifiedReplay;
 }
 let proofReplay: ProofReplayEntry | undefined;
-function rememberVerifiedProof(text: string, workspace: ScoreWorkspace, value: Replay): void {
+function rememberVerifiedProof(text: string, verified: VerifiedReplay): void {
   if (text.length > MAX_REUSED_PROOF_CHARS) { proofReplay = undefined; return; }
-  const serialized = JSON.stringify(workspace), verified = cache.get(workspace);
-  // replay can yield. Never register a caller mutation made after its check,
-  // or a serialization that differs from the exact bytes being returned/read.
-  if (verified?.serialized !== serialized || verified.value !== value
-    || exactJson(JSON.parse(text)) !== exactJson(workspace)) return;
-  // Keep origin, active commands, maps and states private too. A readonly type
-  // alone would not prevent one parsed workspace from poisoning another call.
-  const bundle = structuredClone({ workspace, replay: value });
-  cache.set(bundle.workspace, { serialized, value: bundle.replay });
-  proofReplay = { text, serialized, bundle };
+  // Call sites establish the exact text/graph relationship: JSON.parse followed
+  // by full replay, or synchronous encoding after replay's mutation guard.
+  // Replay already owns its origin/commands/state. Keep that private graph and
+  // immutable JSON bytes, never a caller-owned workspace or returned state.
+  proofReplay = { text, verified };
 }
 export const workspaceStateDigest = (state: WorkspaceState) => semanticDigest({schema:SCORE_WORKSPACE_VERSION,state:clean(state)});
-async function historyDigest(value:Pick<ScoreWorkspace,"id"|"origin"|"algorithmVersions"|"operations">) {
+async function historyDigest(value:Pick<ScoreWorkspace,"id"|"origin"|"algorithmVersions"|"operations">, verifiedEvidence?:string) {
   return binaryDigest(new TextEncoder().encode(exactJson({schema:"hm-workspace-history-seal-v1",id:value.id,
-    evidenceDigest:await workspaceEvidenceDigest(value.origin),algorithmVersions:value.algorithmVersions,operations:value.operations})));
+    evidenceDigest:verifiedEvidence??await workspaceEvidenceDigest(value.origin),algorithmVersions:value.algorithmVersions,operations:value.operations})));
 }
 function checkMeta(op: Pick<WorkspaceOperation,"id"|"note"|"actor"|"at">) {
   if(!isCanonicalId(op.id)||op.id.length>128||typeof op.note!=="string"||op.note.trim().length<3||op.note.length>2048
@@ -180,6 +176,8 @@ export async function createScoreWorkspace(origin: WorkspaceOrigin, versions: St
   cache.set(value,{serialized:JSON.stringify(value),value:structuredClone({seed,state:seed,active:[],redo:[],evidenceDigest:await workspaceEvidenceDigest(origin),origin:value.origin,legacyReviewAnchors:new Map(),migratedLegacyReviews:new Set(),reviewFingerprints:new Map()})});return value;
 }
 export async function replayScoreWorkspace(value: ScoreWorkspace): Promise<WorkspaceState> { return structuredClone((await replay(value)).state); }
+/** Still checks the caller's complete graph; never trusts a supplied digest. */
+export async function verifiedWorkspaceEvidenceDigest(value: ScoreWorkspace): Promise<string> { return (await replay(value)).evidenceDigest; }
 export async function applyWorkspaceCommand(value: ScoreWorkspace, expected: {revision:number;digest:string}, command: WorkspaceCommand,
   meta: Pick<WorkspaceOperation,"id"|"note"|"actor"|"at">): Promise<ScoreWorkspace> {
   return applyWorkspaceCommands(value,expected,[{command,meta}]);
@@ -205,7 +203,7 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
     current=next;digest=afterDigest;
   }
   const changed={...owned,operations:[...owned.operations,...recorded],revision:owned.revision+recorded.length,digest};
-  const result={...changed,historyDigest:await historyDigest(changed)};
+  const result={...changed,historyDigest:await historyDigest(changed,current.evidenceDigest)};
   if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
   if(JSON.stringify(result).length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
   cache.set(result,{serialized:JSON.stringify(result),value:structuredClone(current)});return result;
@@ -213,18 +211,22 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
   if(text.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
   const hit = proofReplay;
-  if (hit?.text === text && JSON.stringify(hit.bundle.workspace) === hit.serialized) {
-    await replay(hit.bundle.workspace); // Preserve the ordinary mutation/limit guard.
-    const bundle = structuredClone(hit.bundle);
-    cache.set(bundle.workspace, { serialized: JSON.stringify(bundle.workspace), value: bundle.replay });
-    return bundle.workspace;
+  if (hit?.text === text) {
+    const workspace = JSON.parse(hit.verified.serialized) as ScoreWorkspace;
+    cache.set(workspace, hit.verified);
+    return workspace;
   }
-  const value=JSON.parse(text) as ScoreWorkspace,verified=await replay(value);
-  rememberVerifiedProof(text,value,verified);return value;
+  const value=JSON.parse(text) as ScoreWorkspace;
+  await replay(value);
+  rememberVerifiedProof(text,cache.get(value)!);return value;
 }
 export async function exportScoreWorkspace(value: ScoreWorkspace): Promise<string> {
-  const serialized = JSON.stringify(value), verified=await replay(value);
+  const serialized = JSON.stringify(value);await replay(value);
   if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EXPORT");
-  const text=asciiProofJson(value);
-  rememberVerifiedProof(text,value,verified);return text;
+  const verified=cache.get(value)!;
+  const text=verified.encoded??asciiProofJson(value);
+  // Raw imported JSON may contain whitespace, Unicode or another key order.
+  // Only this encoder establishes a reusable canonical ASCII export.
+  const entry=text.length<=MAX_REUSED_PROOF_CHARS?{...verified,encoded:text}:verified;
+  cache.set(value,entry);rememberVerifiedProof(text,entry);return text;
 }

@@ -3,8 +3,7 @@ import type { SongSourceDocument } from "../../domain/source/model";
 import type { MusicXmlImportDraft } from "../musicxml/types";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { clean } from "./edit";
-import { workspaceEvidenceDigest } from "./input";
-import { exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace } from "./journal";
+import { exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
 import { deriveWorkspaceCapabilities, effectiveWorkspaceKey, selectedWorkspacePart } from "./review";
 import type { ScoreWorkspace } from "./model";
 
@@ -14,7 +13,7 @@ export function projectedDraftIdentity(draft:MusicXmlImportDraft):string {
 }
 /** Selection changes the engine projection, never the preserved workspace parts. */
 export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicXmlImportDraft> {
-  const state=await replayScoreWorkspace(value),evidenceDigest=await workspaceEvidenceDigest(value.origin);
+  const state=await replayScoreWorkspace(value),evidenceDigest=await verifiedWorkspaceEvidenceDigest(value);
   const capabilities=await deriveWorkspaceCapabilities(state,evidenceDigest);
   if(!capabilities.arrange||!state.music) throw new RangeError(`WORKSPACE_NOT_READY:${capabilities.blockers.map(b=>b.id).join(",")}`);
   const part=selectedWorkspacePart(state)!,req=state.request;
@@ -80,7 +79,7 @@ export async function workspaceProjectionMetadata(draft:MusicXmlImportDraft,sour
   const actualEvents=targetMap.filter(t=>t.kind==="event").map(t=>t.workspaceId).sort();
   if(canonicalJson(expectedEvents)!==canonicalJson(actualEvents))throw new RangeError("WORKSPACE_TARGET_MAPPING_INCOMPLETE");
   return {version:"hm-workspace-projection-v1" as const,originKind:workspace.origin.kind,workspaceId:workspace.id,workspaceRevision:workspace.revision,
-    workspaceDigest:workspace.digest,evidenceDigest:await workspaceEvidenceDigest(workspace.origin),requestDigest:await semanticDigest(clean(state.request)),
+    workspaceDigest:workspace.digest,evidenceDigest:await verifiedWorkspaceEvidenceDigest(workspace),requestDigest:await semanticDigest(clean(state.request)),
     initialSourceDigest:source.revisionDigest,selectedVoices:selected,excludedVoices:state.music!.leadCandidates.map(c=>c.key).filter(k=>!selected.includes(k)),
     targetMap,proof:draft.workspaceProof!};
 }

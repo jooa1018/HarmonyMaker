@@ -1,7 +1,6 @@
 "use client";
 import { binaryDigest,canonicalJson } from "../../domain/digest/canonical";
-import { exportScoreWorkspace, parseScoreWorkspace } from "./journal";
-import { workspaceEvidenceDigest } from "./input";
+import { exportScoreWorkspace, parseScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
 import { exactJson } from "./encoding";
 import type { ScoreWorkspace } from "./model";
 
@@ -34,7 +33,7 @@ export class ScoreWorkspaceStore {
   }
   async save(value:StoredScoreWorkspace,expectedStorageRevision?:number):Promise<void> {
     if(!Number.isSafeInteger(value.storageRevision)||value.storageRevision<0||!Number.isFinite(Date.parse(value.updatedAt))||!validGeneration(value.workspace,value.generation)) throw new RangeError("WORKSPACE_STORAGE_INVALID");
-    const encoded=await exportScoreWorkspace(value.workspace),evidenceDigest=await workspaceEvidenceDigest(value.workspace.origin);
+    const encoded=await exportScoreWorkspace(value.workspace),evidenceDigest=await verifiedWorkspaceEvidenceDigest(value.workspace);
     const row:Row={id:value.workspace.id,storageRevision:value.storageRevision,updatedAt:value.updatedAt,encoded,encodedDigest:await binaryDigest(enc.encode(encoded)),evidenceDigest,...(value.generation?{generation:value.generation}:{})};
     const db=await this.database();
     try {
@@ -68,7 +67,7 @@ export class ScoreWorkspaceStore {
       if(!row)return undefined;
       if(await binaryDigest(enc.encode(row.encoded))!==row.encodedDigest)throw new RangeError("WORKSPACE_STORAGE_CORRUPT");
       const workspace=await parseScoreWorkspace(row.encoded);
-      if(workspace.id!==id||await workspaceEvidenceDigest(workspace.origin)!==row.evidenceDigest||!Number.isSafeInteger(row.storageRevision)||row.storageRevision<0||!validGeneration(workspace,row.generation))throw new RangeError("WORKSPACE_STORAGE_CORRUPT");
+      if(workspace.id!==id||await verifiedWorkspaceEvidenceDigest(workspace)!==row.evidenceDigest||!Number.isSafeInteger(row.storageRevision)||row.storageRevision<0||!validGeneration(workspace,row.generation))throw new RangeError("WORKSPACE_STORAGE_CORRUPT");
       return {workspace,storageRevision:row.storageRevision,updatedAt:row.updatedAt,...(row.generation?{generation:row.generation}:{})};
     } finally {db.close();}
   }

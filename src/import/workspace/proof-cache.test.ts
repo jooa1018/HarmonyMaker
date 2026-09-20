@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../../app/algorithm-version-registry";
 import * as input from "./input";
-import { applyWorkspaceCommand, createScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace } from "./journal";
+import { applyWorkspaceCommand, createScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
 import type { ScoreWorkspace } from "./model";
 
 // Small independently authored public input, never private music/proof.
@@ -15,6 +15,32 @@ async function fixture(id: string, bpm = 60) {
 const changeNote = (w: ScoreWorkspace, note = "Tampered operation metadata") => Object.assign(w.operations[0], { note });
 
 describe("bounded exact workspace proof reuse", () => {
+  it("canonicalizes noncanonical imports without normalizing opaque Unicode or reusing raw input bytes",async()=>{
+    const source=xml.replace("Proof reuse fixture","e\u0301 · 독립");
+    const w=await createScoreWorkspace(await input.originFromMusicXml(new TextEncoder().encode(source),"e\u0301.xml"),V,"proof:unicode");
+    const canonical=await exportScoreWorkspace(w);
+    const raw=" \n"+JSON.stringify(Object.fromEntries(Object.entries(w).reverse()),null,2);
+    const first=await parseScoreWorkspace(raw),second=await parseScoreWorkspace(raw);
+    expect(await exportScoreWorkspace(first)).toBe(canonical);
+    expect(await exportScoreWorkspace(second)).toBe(canonical);
+    expect([...canonical].every(c=>c.charCodeAt(0)<128)).toBe(true);
+    expect(JSON.parse(canonical).origin.xml).toBe(source);
+    const exposed=await replayScoreWorkspace(first);
+    Object.assign(exposed.music!,{title:"poisoned returned state"});
+    expect((await replayScoreWorkspace(second)).music!.title).not.toBe("poisoned returned state");
+    expect((await replayScoreWorkspace(await parseScoreWorkspace(canonical))).music).toEqual((await replayScoreWorkspace(w)).music);
+  });
+  it("checks origin and history mutations before returning cached evidence or an already encoded export",async()=>{
+    const w=await fixture("proof:encoded-mutation"),text=await exportScoreWorkspace(w);
+    expect(await verifiedWorkspaceEvidenceDigest(w)).toBe(await input.workspaceEvidenceDigest(w.origin));
+    const pending=exportScoreWorkspace(w);changeNote(w);
+    await expect(pending).rejects.toThrow("WORKSPACE_MUTATED_DURING_EXPORT");
+    await expect(verifiedWorkspaceEvidenceDigest(w)).rejects.toThrow("WORKSPACE_HISTORY_SEAL_INVALID");
+    const restored=await parseScoreWorkspace(text);
+    Object.assign(restored.origin,{fileName:"different-origin.xml"});
+    await expect(verifiedWorkspaceEvidenceDigest(restored)).rejects.toThrow("WORKSPACE_HISTORY_SEAL_INVALID");
+    expect(await exportScoreWorkspace(await parseScoreWorkspace(text))).toBe(text);
+  });
   it("reuses an exported verified replay while every parse owns its workspace and command graph", async () => {
     const w = await fixture("proof:warm"), text = await exportScoreWorkspace(w), seed = vi.spyOn(input, "seedWorkspace");
     try {
