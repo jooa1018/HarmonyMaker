@@ -47,6 +47,18 @@ async function ready(w:ScoreWorkspace) {
 }
 
 describe("persistent score boundary",()=>{
+  it("does not register a projection if the caller replaces its input during an await",async()=>{
+    const w=await ready(await start()),replacement=await act(w,{kind:"title",title:"Another valid workspace revision"});
+    const pending=projectScoreWorkspace(w);
+    Object.assign(w,replacement);
+    await expect(pending).rejects.toThrow("WORKSPACE_MUTATED_DURING_PROJECTION");
+    const draft=await projectScoreWorkspace(w);
+    expect(draft.title).toBe("Another valid workspace revision");
+    const forged=structuredClone(draft);Object.assign(forged,{title:"Unreviewed projection substitution"});
+    await expect(validateProjectedWorkspaceDraft(forged)).rejects.toThrow("WORKSPACE_PROJECTION_SUBSTITUTED");
+    Object.assign(draft,{title:"Same graph was edited after creation"});
+    await expect(validateProjectedWorkspaceDraft(draft)).rejects.toThrow("WORKSPACE_PROJECTION_SUBSTITUTED");
+  });
   it("does not let a returned projection workspace poison the same verified draft",async()=>{
     const w=await ready(await start()),draft=await projectScoreWorkspace(w);
     const first=await validateProjectedWorkspaceDraft(draft);

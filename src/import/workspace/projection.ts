@@ -13,6 +13,10 @@ export function projectedDraftIdentity(draft:MusicXmlImportDraft):string {
 }
 /** Selection changes the engine projection, never the preserved workspace parts. */
 export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicXmlImportDraft> {
+  // Capture caller-owned metadata before the first await. A generated draft may
+  // reuse its checked projection only while the complete input stays identical.
+  const captured=JSON.stringify(value),originKind=value.origin.kind;
+  const performanceVersion=value.algorithmVersions.performanceExpanderVersion;
   const {state,evidenceDigest}=await readVerifiedWorkspace(value);
   const capabilities=await deriveWorkspaceCapabilities(state,evidenceDigest);
   if(!capabilities.arrange||!state.music) throw new RangeError(`WORKSPACE_NOT_READY:${capabilities.blockers.map(b=>b.id).join(",")}`);
@@ -23,12 +27,12 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
     leadEvents:m.leadEvents.filter(e=>p.partOrdinal===part.partOrdinal&&selected.has(e.candidateKey)),
     unresolvedEvents:[],chords:m.chords.map(c=>({...c,confirmation:"confirmed" as const})),
   }))}));
-  const occurrences=buildImportedSectionOccurrenceReviews(parts,state.music.leadCandidates,req.sections,value.algorithmVersions.performanceExpanderVersion)
+  const occurrences=buildImportedSectionOccurrenceReviews(parts,state.music.leadCandidates,req.sections,performanceVersion)
     .map(o=>req.lyricVerses[o.key]===undefined?o:{...o,selectedLyricVerse:req.lyricVerses[o.key]});
   const draft:MusicXmlImportDraft={...clean({...state.music,workspaceInspectionOnly:undefined,
     // Keep the OMR requirement visible; finalization validates the complete new
     // proof rather than relabeling this candidate as a direct XML import.
-    localCandidateReviewRequired:value.origin.kind!=="musicxml"?true:state.music.localCandidateReviewRequired,
+    localCandidateReviewRequired:originKind!=="musicxml"?true:state.music.localCandidateReviewRequired,
     recoveryProof:undefined,parts,selectedLeadStaffKey:req.lead,sections:req.sections,sectionOccurrences:occurrences,
     defaultKey:effectiveWorkspaceKey(state,part.measures[0].workspaceMeasureId!),defaultTempo:req.tempo,
     singerCount:req.singerCount,performerSlots:req.performers,rights:req.rights,
@@ -37,6 +41,8 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
     // uninterpreted diagnostics were gated above, not downgraded to warnings.
     diagnostics:state.music.diagnostics.filter(d=>!["workspace-overfull","invalid-pitch"].includes(String(d.details?.issue))&&d.code!=="UNSUPPORTED_MODULATION"),
   }),workspaceProof:await exportScoreWorkspace(value)};
+  if(JSON.stringify(value)!==captured)throw new RangeError("WORKSPACE_MUTATED_DURING_PROJECTION");
+  verified.set(draft,{identity:projectedDraftIdentity(draft),proof:draft.workspaceProof!});
   return draft;
 }
 // Proof is an immutable string, separate from the musical projection identity.
