@@ -32,9 +32,16 @@ export function resolveWorkspaceIssueDependencies(state: WorkspaceState, origin:
     const candidate = match ? record(evidence.candidates[Number(match[1])]) : {};
     const association = record(candidate.association);
     const linkedId = issue.id.startsWith("link:") ? eventId(issue.id.slice(5)) : undefined;
-    const targets = [...new Set([linkedId, eventId(candidate.eventId), ...(Array.isArray(association.eventIds) ? association.eventIds.map(eventId) : []),
-      ...(Array.isArray(candidate.attachmentOptions) ? candidate.attachmentOptions.map(option=>eventId(record(option).eventId)) : []),
-    ].filter((v): v is string => !!v))].sort();
+    if(association.eventIds!==undefined&&!Array.isArray(association.eventIds)
+      ||candidate.attachmentOptions!==undefined&&!Array.isArray(candidate.attachmentOptions)
+      ||association.alternatives!==undefined&&(!Array.isArray(association.alternatives)||association.alternatives.some(a=>!Array.isArray(a)||!Number.isSafeInteger(a[0])||a[0]<0)))continue;
+    const references = [...(linkedId?[linkedId]:[]),...(candidate.eventId!==undefined?[candidate.eventId]:[]),
+      ...(Array.isArray(association.eventIds)?association.eventIds:[]),
+      ...(Array.isArray(candidate.attachmentOptions)?candidate.attachmentOptions.map(option=>record(option).eventId):[])];
+    // An unknown alternative must not disappear and turn several possible
+    // targets into one apparently certain target.
+    if(references.some(id=>!eventId(id)))continue;
+    const targets = [...new Set(references.map(id=>eventId(id)!))].sort();
     const locations = new Set<string>();
     if (issue.scope.kind === "measure") locations.add(issue.scope.measureId);
     for (const id of targets) locations.add(id.replace(/n\d+$/u, ""));

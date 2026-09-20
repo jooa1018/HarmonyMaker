@@ -20,6 +20,8 @@ describe("v3 dependencies without invented slur reach",()=>{
       {feature:"lyric",systemIndex:0,sourceBox:[12,60,18,70]},
       {feature:"lyric",systemIndex:0,sourceBox:[19,60,22,70]},
       {feature:"lyric",systemIndex:0,sourceBox:[-10,60,-1,70]},
+      {feature:"lyric",association:{eventIds:["d0p0m0n0","unknown-target"]}},
+      {feature:"lyric",association:{eventIds:["d0p0m0n0"],alternatives:[["unknown",0]]}},
     ];
     // Resolver-only metadata fixture; never passed as an approved/importable
     // candidate or used to bypass validateLocalCandidate in journal ingestion.
@@ -31,7 +33,8 @@ describe("v3 dependencies without invented slur reach",()=>{
     expect(deps[2]).toMatchObject({measureIds:["p0m1"],eventIds:[],association:"region"});
     expect(deps[3].measureIds).toEqual(["p0m1","p0m2"]);
     expect(deps[4]).toMatchObject({association:"system",measureIds:["p0m0","p0m1","p0m2","p0m3","p0m4"]});
-    expect(s.attestations).toEqual([]);expect(s.issues).toHaveLength(5);
+    expect(deps).toHaveLength(5);expect(deps.some(d=>['candidate:5','candidate:6'].includes(d.issueId))).toBe(false);
+    expect(s.attestations).toEqual([]);expect(s.issues).toHaveLength(7);
   });
   it("a late repair of a same-measure orphan stop invalidates only that actual measure, including after restart and Undo/Redo",async()=>{
     let w=await review(await start());expect(await current(w)).toEqual([true,true,true,true,true]);
