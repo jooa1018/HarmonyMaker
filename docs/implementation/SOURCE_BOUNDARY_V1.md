@@ -1,5 +1,21 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-21 내부 상태 필드 재사용과 지연 추가 관측
+
+**REVIEW_USABILITY_V1_PARTIAL 유지.** 최종 제품 `43fcf43f1d593974f566f26af264bafc7ea9e0b4`, 생성 타입 후속 `574663e46705ce6fbc962b7af001e53f68e3a9d0`, build `.next-local-review-persistence-fields` / `5QVeOVQqjBWhvMmVsmDKC`다. journal의 private reducer 상태에서 바뀌지 않은 JSON 필드를 재사용해 전체 상태 복사와 동일 필드 재인코딩을 줄였다. 외부 객체/반환 상태는 이 private WeakMap에 들어가지 않으며 폐기된 상태를 강하게 보유하지 않는다. 중간 digest·history seal·원본/proof 결합·검토 의존성·CAS·transaction 완료·파일 형식·음악·WAG·오디오·캐시 한도는 유지한다.
+
+관련9파일103검사 PASS, 최종 타입·전체 lint PASS, 전체 기본124파일1,196 PASS/기존 opt-in3파일5 SKIP, production build exit0/75.968초다. 최초 타입 추론 오류는 수정하고 재검사했으며 실패 로그를 보존했다. 새로운 독립 fixture는 음악/요청/issue/대조/Undo/Redo/cold 재생을 교차해 반환값 변조가 이전 revision과 해시·바이트를 오염시키지 않는지 검증한다. 이번 build·기본 회귀·UI는 순차 실행했다.
+
+최종 Chrome의 r0→r542 일반 UI에서52음악 편집·39마디 대조·441 issue 대조·요청9/제목1, Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장/reload→실제 프로젝트/XML 다운로드·새 사본 재입력이 통과했다. 같은 profile/origin/build의 실제 서버·Chrome 재시작 후 기존 저장본 복구와 workspace/project/XML 재입력도 통과했다. 실제 파일 음악 의미23검사 및 다운로드14검사 PASS, browser plan 별도capture1개 NOT_RUN. Source/WAG/710재생 이벤트·비선택 상부·전곡 음악은 기존 r1019와 동일하다. 기존 판독 fixture의 actor=ui-test이며 새 사람 승인이 아니다.
+
+늦은 slur r543→544는524유효 대조, stale 음악1마디/issue8, 무관한 마디 stale0을 유지했다. 원본·543이력·검토 actor/시각 보존, 실제 Undo545의0/0 및 Redo546의1/8도 통과했다. 8개 중7개는 모호한 raw 부착을 해당 마디에 보수적으로 남긴 것으로 모두 독립적 필수 새 사람 판단이라는 의미가 아니다. Undo/Redo는 기존 driver1.620/1.534초와 추가 passive click→저장frame1.494/1.468초 모두1초를 넘었다.
+
+이번 국소91회 click→저장frame0.795–1.572초 중45회만1초 이내였다. driver17/91,저장DOM70/91이며 전부visible/focused다. 직전91/91 결과를 새 코드에 가져오지 않는다. r1019 native-file3회 초안 가져오기10.226–11.373초/복구11.228–12.391초/저장1.539–1.741초/export0.896–1.144초, 프로젝트 가져오기12.810–13.912초/복구12.418–15.736초/저장0.934–8.928초/export1.243–3.512초로 여러 성능 목표가 미달이다. 같은 현재 시험 프로필에서 직전 shared build를 정상 재시작한 추가1회도 초안 가져오기11.662초/프로젝트13.503초였다. 시간·저장 사본 수 등 모든 조건을 통제한 비교는 아니므로 코드 회귀 또는 환경 원인 하나로 단정하지 않는다.
+
+수정 전 Node cold import5.215/5.064초, 읽기 전용 시제품4.156/4.176초, 초기 제품 진단4.955초였으나 UI 종료 뒤 계측 Node도13.669초였다. clean 호출은3326→3263회로 줄었고1020개 상태 digest는 모두 유지했다. Chrome 별도 CPU 진단에서1287회 SHA/828,492,085bytes, canonical encode와 반복 state segment 조립·exactJson·clean/capture 비용을 관측했다. 계측/파일 자동화 전달 포함20.120초를 일반 UI 시간으로 쓰지 않는다. 단일 page reads/프로세서 표본은 지연의 직접 원인을 입증하지 못하며 사용자 앱·시스템·전원 설정을 바꾸지 않았다. 반복 attestation segment 조립과 canonical/capture 비용 분리가 남아 목표를 완료 처리하지 않는다.
+
+비공개 `outputs/HarmonyMaker-review-persistence-transfer`에 `검증보고서.md`, `시작안내.md`, `summary.json`, `실행.ps1`, 최종 `fields-*` 자료와 느린/실패/직전build 대조 증거를 보존했다. 질문329개/8묶음·교정~Source404 UI조작이며 과거 다른 범위546과 직접 감소율을 만들지 않는다. 이전 manifest231파일+33helper=264개 hash/크기 동일. 시험 Chrome/server 정상 종료,3203 listener 없음. 원본·r550/r551/r1019·모델·프로필·옛build 삭제/새 OMR/push/배포/병합 없음. PostgreSQL·새 전체PCM은 해당 경로가 변하지 않아 NOT_RUN, HUMAN_TIME_NOT_MEASURED / HUMAN_RECHECK_PENDING이다.
+
 ## 2026-09-21 검증된 불변 작업 사본과 이력 공유
 
 **REVIEW_USABILITY_V1_PARTIAL 유지.** 최종 제품 `6578cb8998fe9530dfca6cd9cb755a2d1d8e423f`, 생성 타입 후속 `3faed1d2ef7ab48fbd02fc18a388c00f9a99e83e`, build `.next-local-review-persistence-shared` / `Lt9FYQ3374921p-9ZyMP4`다. 외부 workspace는 기존 검증을 통과한 분리된 deep-frozen 사본으로 준비하고, 내부 private WeakSet으로만 소유권을 판별한다. 이후 revision은 불변 원본/이력 노드를 공유하여 큰 원본을 매 편집마다 다시 파싱하지 않는다. 입력 명령과 metadata는 await 전에 분리·검증한다. 외부 freeze/복사/proof는 내부 권위를 만들지 않는다. mutable 입력 변경 감지, seal/history/proof, CAS·transaction 완료, 실패 후 재계산·문서 격리, 음악·파일 형식·검토 의존성·캐시 한도는 유지한다.
