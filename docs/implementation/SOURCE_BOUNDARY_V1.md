@@ -1,5 +1,18 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-21 접힌 교정 폼과 지연 추가 검증
+
+**REVIEW_USABILITY_V1_PARTIAL 유지.** 제품 208b741b76857708ad1eb5594ad08c1e3157f5df, 타입/lint 후속 3bae922c494c6fd3baca5645daef2d07409bf5b2, build .next-local-review-persistence-deferred / -FTc36Q1i3dLucWg_U2eE. 제품 변경은 닫힌 음표/마디 교정 폼을 처음 펼칠 때 생성하고 이후 닫아도 미저장 입력을 유지하는 최소 UI 변경이다. 검토 의존성·이력·proof·CAS·파일 형식·음악·WAG·오디오·캐시 한도는 바꾸지 않았다.
+
+타입·전체 lint PASS, 기본 1,185 PASS/기존 opt-in5 SKIP, production build exit0/59.891초. 새 r0→r542 일반 Chrome UI에서 기존52교정, Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장/실제 다운로드/새 사본 재입력이 통과했다. 서버·Chrome 재시작 후 같은 프로필/origin 복구와 XML 재입력도 통과했다. 음악 대조23검사, 실제 download14검사 통과; browser plan 별도 capture1개는 NOT_RUN. Source/WAG/재생 계획710개는 기존 r1019와 동일하다. 사람 청감·시간은 미측정이다.
+
+새 build에서 늦은 slur r543→544 및 Undo545/Redo546을 다시 실행했다. 유효 검토524, stale 음악1마디/issue8, 무관한 마디 stale0과 이력·주체·시각 보존을 확인했다. 접힌 폼 두 종류의 미저장 값도 닫기/재열기 후 유지됐다. 8개 issue 중7개는 해당 마디에 보수적으로 남은 모호한 원시 부착이며 모두 독립적인 새 판단이라고 주장하지 않는다.
+
+r1019 세 번의 초안 가져오기9.02–13.20초, cold 복구6.21–10.88초, 저장0.83–1.01초, 내보내기0.65–0.81초. 프로젝트 가져오기14.11–15.41초, cold 복구7.41–8.74초, 저장0.43–1.49초, 내보내기0.70–1.10초. 국소91회 click→저장 프레임0.474–1.741초 중77회만1초 이내이고 늦은 slur는2.539초다. 최초 가져오기와 일부 국소 반영 목표는 미달이다. 선행 측정보다 느린 cold 결과도 그대로 보존한다. 낮은 가용 RAM 관측을 원인으로 단정하지 않고, 폼 변경이 전반적 지연을 해결했다고 주장하지 않는다.
+
+cold 이력 digest queue를 읽기 전용 Node/Chrome 별도 실험으로 비교했지만 일관된 이득이 없어 제품에 반영하지 않았다. 검증 생략/완료 상태 주입/캐시 확대는 없다. 앞선 최신 manifest의975파일+92helper=1,067개 hash/크기가 모두 동일하다. 새 자료는 비공개 outputs/HarmonyMaker-review-persistence-latency의 시작안내.md·검증보고서.md·summary.json·실행.ps1 및 실제 r542 결과물에 보존한다. 새 OMR/PG/전체 PCM은 해당 경로 변경이 없어 NOT_RUN. 시험 프로세스는 정상 종료했으며 서버 상시 실행을 약속하지 않는다.
+
+
 ## 2026-09-21 검토·저장 성능 후속 검증
 
 **REVIEW_USABILITY_V1_PARTIAL.** 제품 09991b35583b20a6dc8fcb7e661b3a25aa928511, 생성 타입 후속 9961a70, production build .next-local-review-persistence-created / 2KA5M5FDOeYR7jchjAqrT. 이후 문서 commit은 검증 제품과 별도다. 아래 선행 보고를 지우지 않고 후속 결과를 추가한다.
