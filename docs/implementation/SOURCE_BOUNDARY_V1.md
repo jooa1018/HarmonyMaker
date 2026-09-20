@@ -13,6 +13,8 @@ r1019 세 번의 초안 가져오기9.02–13.20초, cold 복구6.21–10.88초,
 cold 이력 digest queue를 읽기 전용 Node/Chrome 별도 실험으로 비교했지만 일관된 이득이 없어 제품에 반영하지 않았다. 검증 생략/완료 상태 주입/캐시 확대는 없다. 앞선 최신 manifest의975파일+92helper=1,067개 hash/크기가 모두 동일하다. 새 자료는 비공개 outputs/HarmonyMaker-review-persistence-latency의 시작안내.md·검증보고서.md·summary.json·실행.ps1 및 실제 r542 결과물에 보존한다. 새 OMR/PG/전체 PCM은 해당 경로 변경이 없어 NOT_RUN. 시험 프로세스는 정상 종료했으며 서버 상시 실행을 약속하지 않는다.
 
 
+후속 측정 경계 분리: 기존 자동화 입력 시작→native file change4.252초, 이후Play활성화까지5.666초를 관측했다. 같은 build에서 Chrome의 실제 로컬 파일 경로를 file control에 선택하는 방식(CDP DOM.setFileInputFiles)을 세 번 수행하면 초안 가져오기4.30–4.57초/복구4.54–5.46초, 프로젝트 가져오기5.69–6.48초/복구5.32–6.43초였다. 이 경계에서는 cold10초 및 저장/export3초 목표를 통과했지만 기존 전체 동작 시간은 변경하지 않는다. 자동화 전달 방식 차이를 제품 코드 향상으로 주장하지 않고 measurement-boundaries.json에 두 정의를 구분했다. 국소1초 초과 때문에 전체 PARTIAL은 유지한다. 임시 offscreen CSS는 늦은 수정0.985→1.180초로 개선되지 않아 제품에 넣지 않았다.
+
 ## 2026-09-21 검토·저장 성능 후속 검증
 
 **REVIEW_USABILITY_V1_PARTIAL.** 제품 09991b35583b20a6dc8fcb7e661b3a25aa928511, 생성 타입 후속 9961a70, production build .next-local-review-persistence-created / 2KA5M5FDOeYR7jchjAqrT. 이후 문서 commit은 검증 제품과 별도다. 아래 선행 보고를 지우지 않고 후속 결과를 추가한다.
