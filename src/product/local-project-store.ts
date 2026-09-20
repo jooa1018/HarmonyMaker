@@ -82,9 +82,23 @@ export class IndexedDbProjectStore implements LocalProjectStore {
     const database = await this.database();
     try {
       const transaction = database.transaction(STORE_NAME, "readonly");
-      const rows = await requestResult(transaction.objectStore(STORE_NAME).getAll()) as Array<{ projectId: string; updatedAt: string }>;
-      await transactionDone(transaction);
-      return rows.map(({ projectId, updatedAt }) => ({ projectId, updatedAt })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.projectId.localeCompare(b.projectId));
+      // Keep only list metadata instead of retaining every multi-megabyte
+      // project/proof at once. A cursor still reads each existing v1 record;
+      // this needs no schema upgrade, secondary store, or migration.
+      const completed=transactionDone(transaction);
+      const listing=new Promise<Array<Pick<LocalProjectRecord,"projectId"|"updatedAt">>>((resolve,reject)=>{
+        const rows:Array<Pick<LocalProjectRecord,"projectId"|"updatedAt">>=[];
+        const request=transaction.objectStore(STORE_NAME).openCursor();
+        request.onerror=()=>reject(request.error??new Error("INDEXEDDB_FAILED"));
+        request.onsuccess=()=>{
+          const cursor=request.result;
+          if(!cursor){resolve(rows);return;}
+          const {projectId,updatedAt}=cursor.value as StoredProjectRecord;
+          rows.push({projectId,updatedAt});cursor.continue();
+        };
+      });
+      const [rows]=await Promise.all([listing,completed]);
+      return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.projectId.localeCompare(b.projectId));
     } finally { database.close(); }
   }
   async delete(projectId: string): Promise<void> {

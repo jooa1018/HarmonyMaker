@@ -1,4 +1,4 @@
-import { binaryDigest, canonicalJson } from "../../domain/digest/canonical";
+import { canonicalJson } from "../../domain/digest/canonical";
 import { clean } from "./edit";
 import { SCORE_WORKSPACE_VERSION, type WorkspaceState } from "./model";
 
@@ -20,7 +20,7 @@ export function createReplayStateDigester() {
   const prefix=utf8.encode(`{"schema":${canonicalJson(SCORE_WORKSPACE_VERSION)},"state":{`);
   const end=utf8.encode("}}"),openArray=utf8.encode("["),closeArray=utf8.encode("]"),comma=utf8.encode(",");
   const keys=new Map<string,Uint8Array>();
-  return (state: WorkspaceState): Promise<string> => {
+  return async (state: WorkspaceState): Promise<string> => {
     const fields = Object.entries(state).filter(([, value]) => value !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     // Keep canonical UTF-8 segments as well as their immutable ownership. A
     // long replay must still hash every complete state, but need not flatten
@@ -39,6 +39,10 @@ export function createReplayStateDigester() {
     segments.push(end);
     const bytes=new Uint8Array(segments.reduce((sum,segment)=>sum+segment.byteLength,0));
     let offset=0;for(const segment of segments){bytes.set(segment,offset);offset+=segment.byteLength;}
-    return binaryDigest(bytes);
+    // This freshly assembled buffer never escapes. The general binaryDigest
+    // copies caller-owned input; duplicating this private buffer at every
+    // historical state needlessly doubles its temporary allocation.
+    const digest=await globalThis.crypto.subtle.digest("SHA-256",bytes.buffer);
+    return Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,"0")).join("");
   };
 }
