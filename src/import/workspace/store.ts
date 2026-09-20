@@ -1,6 +1,6 @@
 "use client";
 import { binaryDigest,canonicalJson } from "../../domain/digest/canonical";
-import { exportScoreWorkspace, parseScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
+import { serializeScoreWorkspace, parseScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
 import { exactJson } from "./encoding";
 import type { ScoreWorkspace } from "./model";
 
@@ -33,7 +33,7 @@ export class ScoreWorkspaceStore {
   }
   async save(value:StoredScoreWorkspace,expectedStorageRevision?:number):Promise<void> {
     if(!Number.isSafeInteger(value.storageRevision)||value.storageRevision<0||!Number.isFinite(Date.parse(value.updatedAt))||!validGeneration(value.workspace,value.generation)) throw new RangeError("WORKSPACE_STORAGE_INVALID");
-    const encoded=await exportScoreWorkspace(value.workspace),evidenceDigest=await verifiedWorkspaceEvidenceDigest(value.workspace);
+    const {encoded,evidenceDigest}=await serializeScoreWorkspace(value.workspace);
     const row:Row={id:value.workspace.id,storageRevision:value.storageRevision,updatedAt:value.updatedAt,encoded,encodedDigest:await binaryDigest(enc.encode(encoded)),evidenceDigest,...(value.generation?{generation:value.generation}:{})};
     const db=await this.database();
     try {

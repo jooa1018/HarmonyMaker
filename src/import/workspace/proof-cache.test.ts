@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../../app/algorithm-version-registry";
 import * as input from "./input";
-import { applyWorkspaceCommand, createScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
+import { applyWorkspaceCommand, createScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest, readVerifiedWorkspace, serializeScoreWorkspace } from "./journal";
 import type { ScoreWorkspace } from "./model";
 
 // Small independently authored public input, never private music/proof.
@@ -15,6 +15,18 @@ async function fixture(id: string, bpm = 60) {
 const changeNote = (w: ScoreWorkspace, note = "Tampered operation metadata") => Object.assign(w.operations[0], { note });
 
 describe("bounded exact workspace proof reuse", () => {
+  it("keeps a combined read and serialized origin binding isolated from caller changes",async()=>{
+    const w=await fixture("proof:combined"),view=await readVerifiedWorkspace(w),serialized=await serializeScoreWorkspace(w);
+    expect(serialized.evidenceDigest).toBe(view.evidenceDigest);
+    expect(serialized.encoded).toBe(await exportScoreWorkspace(w));
+    Object.assign(view.state.request.tempo!,{bpm:199});view.evidenceDigest="0".repeat(64);
+    const next=await readVerifiedWorkspace(w);
+    expect(next.state.request.tempo!.bpm).toBe(60);
+    expect(next.evidenceDigest).toBe(serialized.evidenceDigest);
+    const pending=serializeScoreWorkspace(w);changeNote(w);
+    await expect(pending).rejects.toThrow("WORKSPACE_MUTATED_DURING_EXPORT");
+    expect((await readVerifiedWorkspace(await parseScoreWorkspace(serialized.encoded))).state.request.tempo!.bpm).toBe(60);
+  });
   it("canonicalizes noncanonical imports without normalizing opaque Unicode or reusing raw input bytes",async()=>{
     const source=xml.replace("Proof reuse fixture","e\u0301 · 독립");
     const w=await createScoreWorkspace(await input.originFromMusicXml(new TextEncoder().encode(source),"e\u0301.xml"),V,"proof:unicode");

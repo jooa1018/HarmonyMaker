@@ -140,8 +140,7 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
   const history=op as WorkspaceOperation;
   return finish({...current,state,active:[...current.active,history],redo:[]});
 }
-async function replay(value: ScoreWorkspace): Promise<Replay> {
-  const serialized=JSON.stringify(value);
+async function replay(value: ScoreWorkspace, serialized=JSON.stringify(value)): Promise<Replay> {
   if(serialized.length>64_000_000||value.version!==SCORE_WORKSPACE_VERSION||!isCanonicalId(value.id)||value.id.length>128
     ||!Array.isArray(value.operations)||value.operations.length>2048||value.revision!==value.operations.length||!isSemanticDigest(value.digest)||!isSemanticDigest(value.historyDigest)) throw new RangeError("WORKSPACE_HISTORY_INVALID");
   const hit=cache.get(value); if(hit?.serialized===serialized) return hit.value;
@@ -176,6 +175,11 @@ export async function createScoreWorkspace(origin: WorkspaceOrigin, versions: St
   cache.set(value,{serialized:JSON.stringify(value),value:structuredClone({seed,state:seed,active:[],redo:[],evidenceDigest:await workspaceEvidenceDigest(origin),origin:value.origin,legacyReviewAnchors:new Map(),migratedLegacyReviews:new Set(),reviewFingerprints:new Map()})});return value;
 }
 export async function replayScoreWorkspace(value: ScoreWorkspace): Promise<WorkspaceState> { return structuredClone((await replay(value)).state); }
+/** A coherent verified view; callers own the returned state, not the replay. */
+export async function readVerifiedWorkspace(value: ScoreWorkspace): Promise<{state:WorkspaceState;evidenceDigest:string}> {
+  const verified=await replay(value);
+  return {state:structuredClone(verified.state),evidenceDigest:verified.evidenceDigest};
+}
 /** Still checks the caller's complete graph; never trusts a supplied digest. */
 export async function verifiedWorkspaceEvidenceDigest(value: ScoreWorkspace): Promise<string> { return (await replay(value)).evidenceDigest; }
 export async function applyWorkspaceCommand(value: ScoreWorkspace, expected: {revision:number;digest:string}, command: WorkspaceCommand,
@@ -195,7 +199,7 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
     return {...meta,command:clean(command),reviewDependencyVersion:3 as const};
   });
   const serialized = JSON.stringify(value), owned = JSON.parse(serialized) as ScoreWorkspace;
-  let current=await replay(value),digest=value.digest;
+  let current=await replay(value,serialized),digest=value.digest;
   const digestState=createReplayStateDigester(),recorded:WorkspaceOperation[]=[];
   for(const operation of operations) {
     const next=await step(current,operation,true),afterDigest=await digestState(next.state);
@@ -205,8 +209,9 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
   const changed={...owned,operations:[...owned.operations,...recorded],revision:owned.revision+recorded.length,digest};
   const result={...changed,historyDigest:await historyDigest(changed,current.evidenceDigest)};
   if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
-  if(JSON.stringify(result).length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
-  cache.set(result,{serialized:JSON.stringify(result),value:structuredClone(current)});return result;
+  const resultSerialized=JSON.stringify(result);
+  if(resultSerialized.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
+  cache.set(result,{serialized:resultSerialized,value:structuredClone(current)});return result;
 }
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
   if(text.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
@@ -220,13 +225,16 @@ export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace>
   await replay(value);
   rememberVerifiedProof(text,cache.get(value)!);return value;
 }
-export async function exportScoreWorkspace(value: ScoreWorkspace): Promise<string> {
-  const serialized = JSON.stringify(value);await replay(value);
+/** Encoding and its origin binding from the same checked snapshot. */
+export async function serializeScoreWorkspace(value: ScoreWorkspace): Promise<{encoded:string;evidenceDigest:string}> {
+  const serialized = JSON.stringify(value);await replay(value,serialized);
   if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EXPORT");
   const verified=cache.get(value)!;
   const text=verified.encoded??asciiProofJson(value);
   // Raw imported JSON may contain whitespace, Unicode or another key order.
   // Only this encoder establishes a reusable canonical ASCII export.
   const entry=text.length<=MAX_REUSED_PROOF_CHARS?{...verified,encoded:text}:verified;
-  cache.set(value,entry);rememberVerifiedProof(text,entry);return text;
+  cache.set(value,entry);rememberVerifiedProof(text,entry);
+  return {encoded:text,evidenceDigest:verified.value.evidenceDigest};
 }
+export async function exportScoreWorkspace(value: ScoreWorkspace): Promise<string> { return (await serializeScoreWorkspace(value)).encoded; }

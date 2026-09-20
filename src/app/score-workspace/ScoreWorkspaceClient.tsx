@@ -12,7 +12,7 @@ import type { LocalCandidateBundle } from "../../domain/omr/local-candidate";
 import { deriveQuickReview } from "../../import";
 import type { ImportedLeadEventDraft,ImportedMeasureDraft } from "../../import/musicxml/types";
 import { originFromMusicXml,originFromLocalCandidate,originFromLegacyBundle,workspaceOriginalImages } from "../../import/workspace/input";
-import { createScoreWorkspace,parseScoreWorkspace,exportScoreWorkspace,replayScoreWorkspace,applyWorkspaceCommand,verifiedWorkspaceEvidenceDigest } from "../../import/workspace/journal";
+import { createScoreWorkspace,parseScoreWorkspace,exportScoreWorkspace,applyWorkspaceCommand,readVerifiedWorkspace } from "../../import/workspace/journal";
 import { deriveWorkspaceCapabilities,effectiveWorkspaceKey } from "../../import/workspace/review";
 import { projectScoreWorkspace } from "../../import/workspace/projection";
 import { ScoreWorkspaceStore,generatedWorkspaceResultIsCurrent,type StoredScoreWorkspace } from "../../import/workspace/store";
@@ -26,7 +26,7 @@ import { attestWorkspaceIssues } from "../../import/workspace/review-batch";
 import { WorkspaceIssueReview } from "./WorkspaceIssueReview";
 
 interface Loaded {record:StoredScoreWorkspace;state:WorkspaceState;caps:WorkspaceCapabilities}
-const hydrateWorkspace=async(record:StoredScoreWorkspace):Promise<Loaded>=>{const state=await replayScoreWorkspace(record.workspace);return {record,state,caps:await deriveWorkspaceCapabilities(state,await verifiedWorkspaceEvidenceDigest(record.workspace))};};
+const hydrateWorkspace=async(record:StoredScoreWorkspace):Promise<Loaded>=>{const {state,evidenceDigest}=await readVerifiedWorkspace(record.workspace);return {record,state,caps:await deriveWorkspaceCapabilities(state,evidenceDigest)};};
 type Commit=(command:WorkspaceCommand,note:string)=>Promise<void>;
 const f=(v:Fraction)=>v.d===1?String(v.n):`${v.n}/${v.d}`;
 const p=(v:SpelledPitch)=>`${v.step}${v.alter===1?"#":v.alter===-1?"b":""}${v.octave}`;

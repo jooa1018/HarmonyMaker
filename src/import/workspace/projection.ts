@@ -3,7 +3,7 @@ import type { SongSourceDocument } from "../../domain/source/model";
 import type { MusicXmlImportDraft } from "../musicxml/types";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { clean } from "./edit";
-import { exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest } from "./journal";
+import { exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest, readVerifiedWorkspace } from "./journal";
 import { deriveWorkspaceCapabilities, effectiveWorkspaceKey, selectedWorkspacePart } from "./review";
 import type { ScoreWorkspace } from "./model";
 
@@ -13,7 +13,7 @@ export function projectedDraftIdentity(draft:MusicXmlImportDraft):string {
 }
 /** Selection changes the engine projection, never the preserved workspace parts. */
 export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicXmlImportDraft> {
-  const state=await replayScoreWorkspace(value),evidenceDigest=await verifiedWorkspaceEvidenceDigest(value);
+  const {state,evidenceDigest}=await readVerifiedWorkspace(value);
   const capabilities=await deriveWorkspaceCapabilities(state,evidenceDigest);
   if(!capabilities.arrange||!state.music) throw new RangeError(`WORKSPACE_NOT_READY:${capabilities.blockers.map(b=>b.id).join(",")}`);
   const part=selectedWorkspacePart(state)!,req=state.request;
