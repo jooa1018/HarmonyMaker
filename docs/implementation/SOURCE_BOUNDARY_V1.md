@@ -1,5 +1,25 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-21 검토·저장 성능 후속 검증
+
+**REVIEW_USABILITY_V1_PARTIAL.** 제품 09991b35583b20a6dc8fcb7e661b3a25aa928511, 생성 타입 후속 9961a70, production build .next-local-review-persistence-created / 2KA5M5FDOeYR7jchjAqrT. 이후 문서 commit은 검증 제품과 별도다. 아래 선행 보고를 지우지 않고 후속 결과를 추가한다.
+
+private 직렬화/replay 재사용, 동일 작업의 읽기·encoding/evidence 결합, 실제 반복 form 렌더의 memo, metadata만 남기는 IndexedDB cursor, 단일 검증 내 tie/slur 사실 재사용과 최대 8개 digest 확인 묶음으로 중복 비용을 줄였다. 매 intermediate state의 hash·전체 history seal·CAS·transaction 완료 경계는 유지했다. 기존 proof/입력/이력 한도는 늘리지 않았다. 순수 quotation memo는 최대16M 문자 입력/출력 한 쌍만 보유하며 검증 권위와 분리한다.
+
+반환한 mutable projection workspace가 동일 draft의 다음 검증 결과를 오염시키는 결함을 공개 fixture로 재현하고 수정했다. cache에는 불변 identity/proof만 보유하고 반환 그래프는 분리한다. 최종에는 내부에서 생성한 동일 projection을 재계산하는 중복도 줄였으며 입력 전체·metadata를 await 전에 캡처하고 끝에 동일성을 검증한다. 외부 draft/proof 변경과 await 중 다른 유효 revision 교체는 거절한다. 이 재현이 실제 잘못된 Source 승인이나 사용자 데이터 손실까지 증명한 것은 아니다.
+
+새 r0 일반 UI 경로를 최종 created build에서 다시 수행했다. 동일 음악 편집52, 마디 대조39, issue441, 요청9·제목1로 r542다. 329질문/8명시적 묶음, 교정~Source의 기록된 UI 명령404개이며 최초 파일 열기·후속 프로젝트 조작은 별도다. fixture actor=ui-test이며 새 사람 승인이 아니다. 늦은 slur 반례는 facts 제품007dfc9의 실제 r543→544→Undo545/Redo546→r555에서 검증했다. 유효 대조524개, stale음악1마디/issue8개, 무관한 다른 마디 재확인0개다. 이후 projection-only 변경에서는 이 실제 r555를 다시 가져와 Source 이후 경로를 검증했다.
+
+기존 r1019 그대로 세 번 측정한 초안 가져오기7.98–8.52초, cold복구6.16–6.45초, 저장1.69–1.86초; 프로젝트 최초 가져오기10.71–11.31초, cold복구5.69–7.30초, 저장0.35–0.53초, 실제 내보내기0.64–0.96초다. 프로젝트 최초 가져오기는 10초 목표 미달이다. 실제 음악편집·마디확인91회의 driver시간0.602–1.862초, 별도 클릭→저장프레임0.548–1.820초이며 각각77/91회만1초이내다. 1초 목표도 일부미달이고 3회로p95를 만들지 않았다. 최초 이력 digest·큰 JSON/graph 복사·파생 검증의 main-thread 비용이 남는다.
+
+타입/전체lint PASS, 기본123파일1,185PASS 및 opt-in3파일5SKIP, 관련workspace94PASS(중복합산하지않음), production build exit0/49.33초다. 실제 Chrome153.0.8010.48에서 A/B Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장→실제 다운로드/새사본 재입력, 같은프로필/origin의 실제서버·Chrome재시작이 PASS다. A/B음악의미각23검사와 실제download14검사를 통과했고, browserplan별도capture1항목은NOT_RUN이다. Source/WAG/710재생계획은 기존r1019와 동일하다. PostgreSQL·새OMR·새전체PCM은 해당경로/음악/renderer가바뀌지않아NOT_RUN이며, HUMAN_TIME_NOT_MEASURED / HUMAN_RECHECK_PENDING을 유지한다.
+
+선행 인계243파일+22helper는265개모두hash/크기일치. 기존 검토인계282파일+26helper중307개는동일하고, 당시실행중이던Chrome stderr한파일은1943→2088bytes append뿐이며원래prefixhash는같다. 옛rawFAIL/addendum도보존했다. 원본·r550/r551·r1019·모델·profile·과거build삭제, 새OMR/WAG/오디오규칙변경, push/배포/병합은없다. 자동화중간실패와 과거특정profile의native다운로드문제는 최종전용profile통과와분리해기록한다.
+
+비공개 루트: C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-review-persistence-v1. 현재 안내는 시작안내-후속.md, 실행-created.ps1, 검증보고서-후속.md, created-summary.json, artifact-manifest-followup.json이다. 최종 초안created-flow-a-source/workspace-after-reload.json, 프로젝트/XML은project-ui-chrome-created-flow-a에 있다. 시험소유Chrome과서버는정상종료했고3203listener부재를확인했다. 사용자는정확한시작명령으로재개한다. 옛 보고서/manifest는동결보존했다.
+
+성능목표미달이므로 VERIFIED나 전면실사용완료로승격하지않는다. 329질문의실제검토부담도남는다. 자동OMR정확도개선·소량교정실용성·외부배포·출시완료를뜻하지않는다.
+
 ## 2026-09-21 Review Usability & Persistence v1
 
 **REVIEW_USABILITY_V1_PARTIAL.** 검증 제품 `4cda7f30bfd0a1944e913002c5952c6c5bc7dced`, 생성 타입만 후속 commit `67d14b20beb71d7696bab96fec60a9cfe9ad4982`, production build `.next-local-review-persistence-ui` / `mhlanvWsOaPHiccjrPJDP`다. 이 절의 후속 문서 commit은 검증 제품과 구분한다. 기존 r1019와 인계 manifest의 243개 파일을 보존했다. 새 OMR·음악 규칙·오디오/믹서 변경·외부 배포·삭제는 없다.
