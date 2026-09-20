@@ -1,5 +1,19 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-21 짧은 문자열 인코딩과 실제 UI 후속 검증
+
+**REVIEW_USABILITY_V1_PARTIAL 유지.** 제품 `20b7c94ea199b5d25b0efacb4fa8b70d54081577`, 생성 타입 후속 `c677895486965ddc1c120c57700329e82e1489c2`, production build `.next-local-review-persistence-ascii` / `ASx049iUItYA__MFM9P-p`이다. 64자 이하의 escape가 필요 없는 인쇄 ASCII 문자열만 기존과 같은 canonical JSON 바이트로 바로 인코딩한다. Unicode/escape/큰 문자열과 proof·hash 형식, 검토 의존성·CAS·음악·WAG·오디오·캐시 한도는 유지한다. UTF-16 전체 단일 코드 단위와 ASCII 두 글자 조합, 길이·escape 경계의 동등성 회귀를 추가했다. 불변 workspace 소유권이나 ancestor Set prototype은 제품에 반영하지 않았다.
+
+타입·전체 lint PASS, 전체 기본123파일/1,187 PASS 및 기존 opt-in3파일/5 SKIP, production build exit0/55.358초다. 새 전용 Chrome에서 r0→r542의 기존52교정·39마디 대조·441 issue 대조·요청9/제목1을 일반 UI로 수행했다. Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장/reload→실제 프로젝트/XML 다운로드·새 사본 재입력이 통과했다. 서버와 Chrome을 실제 재시작하고 같은 profile/origin/build에서 저장본 복구·파일 재입력/XML Quick Review도 통과했다. 음악 의미23검사와 실제 download14검사 PASS, browser plan 별도 capture1 NOT_RUN이며 Source/WAG/710개 재생 계획은 기존 r1019와 같다.
+
+늦은 slur r543→544도 실제 UI에서 유효 대조524, stale 음악1마디/issue8, 무관한 마디 stale0을 유지했다. 원본/543개 이력/검토 actor·시각 보존, Undo545의0/0과 Redo546의1/8을 실제 다운로드로 확인했다. 8개 중7개는 부착 미확정 raw 기록을 해당 마디에 보수적으로 유지한 것으로 모두 독립적 필수 새 판단이라고 주장하지 않는다. 늦은 수정 click→저장 DOM0.835초/다음 frame0.912초; Undo/Redo driver1.032/1.212초다.
+
+동일한 native file selection 경계의 r1019 세 번에서 workspace 가져오기4.162–6.810초/복구4.877–6.598초/저장0.652–0.842초/export0.503–0.763초, project 가져오기6.858–9.048초/복구5.829–6.476초/저장0.488–2.635초/export0.760–0.891초다. 해당 표본의10초/3초 목표는 통과했지만 이전 동일 경계보다 느린 값도 함께 공개하므로 전반적 속도 향상으로 표현하지 않는다. 과거 setInputFiles 전달 시간을 포함한 다른 경계와 직접 비교하지 않는다.
+
+국소91회의 click→저장 후 다음 frame은0.448–1.429초, 80/91회만1초 이내다. 저장 DOM 자체는86/91회, driver 기준은74/91회다. 전체 표본은 visible/focused였고 DOM 이후frame45.3–312.3ms 및 저장 계산 지연을 구분했다. 11회 초과가 남아 목표를 완료 처리하지 않는다. 반복 큰 JSON capture·graph 복사·capability/렌더 계산을 검증 생략 없이 줄이는 일이 남는다. 실제 질문329개/8묶음, 교정~Source UI 명령404개이며 과거546과 다른 범위라 감소율을 만들지 않는다.
+
+비공개 `outputs/HarmonyMaker-review-persistence-owned`의 `검증보고서.md`, `시작안내.md`, `summary.json`, `실행.ps1`과 r542 결과물에 증거를 보존했다. 폴더명은 구현된 소유권 변경을 뜻하지 않는다. 이전 최신 manifest201파일+31helper=232개 hash/크기 일치. 원본/이력/프로필/모델/옛build 삭제와 외부전송/push/배포/병합은 없다. 시험 Chrome/server는 저장·다운로드 후 정상 종료, 3203 listener 없음. PostgreSQL·새 OMR·새 전체 PCM은 관련 경로 변경이 없어 NOT_RUN. HUMAN_TIME_NOT_MEASURED / HUMAN_RECHECK_PENDING이다.
+
 ## 2026-09-21 접힌 교정 폼과 지연 추가 검증
 
 **REVIEW_USABILITY_V1_PARTIAL 유지.** 제품 208b741b76857708ad1eb5594ad08c1e3157f5df, 타입/lint 후속 3bae922c494c6fd3baca5645daef2d07409bf5b2, build .next-local-review-persistence-deferred / -FTc36Q1i3dLucWg_U2eE. 제품 변경은 닫힌 음표/마디 교정 폼을 처음 펼칠 때 생성하고 이후 닫아도 미저장 입력을 유지하는 최소 UI 변경이다. 검토 의존성·이력·proof·CAS·파일 형식·음악·WAG·오디오·캐시 한도는 바꾸지 않았다.
