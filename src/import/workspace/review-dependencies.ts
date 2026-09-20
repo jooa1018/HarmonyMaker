@@ -91,7 +91,46 @@ export function resolveWorkspaceIssueDependencies(state: WorkspaceState, origin:
 
 /** Current fact projection. Voice/verse ambiguity keeps all competing events at
  * the anchored onset; moving or deleting an anchor changes the projection too. */
-export function workspaceIssueDependencyProjection(state: WorkspaceState, dependency: WorkspaceIssueDependency): unknown {
+type DependencyPart=NonNullable<WorkspaceState["music"]>["parts"][number];
+type DependencyEvent=DependencyPart["measures"][number]["leadEvents"][number];
+function connectionReader() {
+  const slurs=new WeakMap<DependencyPart,Map<number,unknown[]>>();
+  const ties=new WeakMap<DependencyPart,Map<string,DependencyEvent[][]>>();
+  return {
+    slurs(part:DependencyPart,ordinal:number) {
+      let byMeasure=slurs.get(part);if(!byMeasure){byMeasure=new Map();slurs.set(part,byMeasure);}
+      let value=byMeasure.get(ordinal);if(!value){value=workspaceSlurDependencies(part,ordinal,undefined,false,true);byMeasure.set(ordinal,value);}
+      return value;
+    },
+    ties(part:DependencyPart,voice:string) {
+      let byVoice=ties.get(part);if(!byVoice){byVoice=new Map();ties.set(part,byVoice);}
+      let value=byVoice.get(voice);if(value)return value;
+      const ordered=part.measures.flatMap(measure=>[...measure.leadEvents].filter(e=>e.candidateKey===voice).sort((a,b)=>compareFractions(a.onset,b.onset)));
+      value=[];
+      for(let start=0;start<ordered.length;) {
+        let end=start;
+        while(end+1<ordered.length) {
+          const a=ordered[end],b=ordered[end+1];
+          if(!(a.kind!=="rest"&&a.tieStart||b.kind!=="rest"&&b.tieStop))break;
+          end++;
+        }
+        if(end>start)value.push(ordered.slice(start,end+1));
+        start=end+1;
+      }
+      byVoice.set(voice,value);return value;
+    },
+  };
+}
+/** Private immutable evaluation only. The reader lives for one capability or
+ * replay transition; never store it across caller edits or documents. */
+export function createWorkspaceIssueDependencyProjector(state:WorkspaceState) {
+  const connections=connectionReader();
+  return (dependency:WorkspaceIssueDependency)=>dependencyProjection(state,dependency,connections);
+}
+export function workspaceIssueDependencyProjection(state:WorkspaceState,dependency:WorkspaceIssueDependency):unknown {
+  return dependencyProjection(state,dependency,connectionReader());
+}
+function dependencyProjection(state: WorkspaceState, dependency: WorkspaceIssueDependency, connections:ReturnType<typeof connectionReader>): unknown {
   const parts = state.music?.parts ?? [];
   const all = parts.flatMap(p => p.measures);
   const anchors = all.flatMap(m => m.leadEvents.filter(e => dependency.eventIds.includes(e.workspaceEventId!)).map(e => ({measureId:m.workspaceMeasureId,event:e})));
@@ -105,23 +144,14 @@ export function workspaceIssueDependencyProjection(state: WorkspaceState, depend
       const timing = (e: typeof events[number]) => ({id:e.workspaceEventId,voice:e.candidateKey,kind:e.kind,onset:e.onset,duration:e.duration});
       switch (dependency.field) {
         case "lyrics": {
-          const slurDependencies=workspaceSlurDependencies(part,m.ordinal,undefined,false,true).filter(span=>{
+          const slurDependencies=connections.slurs(part,m.ordinal).filter(span=>{
             const entries=record(span).events;
             return Array.isArray(entries)&&entries.some(entry=>events.some(e=>e.workspaceEventId===record(record(entry).event).workspaceEventId));
           });
           const tieDependencies: unknown[]=[];
           for(const voice of new Set(events.map(e=>e.candidateKey))) {
-            const ordered=part.measures.flatMap(measure=>[...measure.leadEvents].filter(e=>e.candidateKey===voice).sort((a,b)=>compareFractions(a.onset,b.onset)));
-            for(let start=0;start<ordered.length;) {
-              let end=start;
-              while(end+1<ordered.length) {
-                const a=ordered[end],b=ordered[end+1];
-                if(!(a.kind!=="rest"&&a.tieStart||b.kind!=="rest"&&b.tieStop))break;
-                end++;
-              }
-              if(end>start&&ordered.slice(start,end+1).some(n=>events.some(e=>e.workspaceEventId===n.workspaceEventId)))tieDependencies.push(ordered.slice(start,end+1));
-              start=end+1;
-            }
+            for(const chain of connections.ties(part,voice))
+              if(chain.some(n=>events.some(e=>e.workspaceEventId===n.workspaceEventId)))tieDependencies.push(chain);
           }
           return {id:m.workspaceMeasureId,events:events.map(e => ({...timing(e),...(e.kind !== "rest" ? {lyrics:e.lyrics,tieStart:e.tieStart,tieStop:e.tieStop,slurs:e.slurs??[]} : {})})),slurDependencies,tieDependencies};
         }

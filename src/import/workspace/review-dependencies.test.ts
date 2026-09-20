@@ -12,6 +12,18 @@ async function start(){let w=await createScoreWorkspace(await originFromMusicXml
 async function review(w:ScoreWorkspace){for(const m of (await replayScoreWorkspace(w)).music!.parts[0].measures)w=await act(w,{kind:"attest",purpose:"music",scope:{kind:"measure",measureId:m.workspaceMeasureId!,voiceKey:voice}});return w;}
 const current=async(w:ScoreWorkspace)=>(await deriveWorkspaceCapabilities(await replayScoreWorkspace(w),await workspaceEvidenceDigest(w.origin))).musicReviews.map(m=>m.current);
 describe("v3 dependencies without invented slur reach",()=>{
+  it("keeps batched capability results ordered and isolated from concurrent caller edits",async()=>{
+    const seed=await replayScoreWorkspace(await start()),evidence="independent-batched-evidence";
+    const issues=Array.from({length:24},(_,i)=>({id:`candidate:${i}`,kind:"lyrics" as const,scope:{kind:"document" as const},targetIds:[],messageKo:"Independent lyric comparison",requiredAction:"compare" as const,evidenceRef:`candidate:${i}`,impacts:["arrange" as const]}));
+    const dependency=(i:number)=>({issueId:issues[i].id,field:"lyrics" as const,measureIds:[`p0m${Math.floor(i/8)===2?4:Math.floor(i/8)}`],eventIds:[`p0m${Math.floor(i/8)===2?4:Math.floor(i/8)}n0`],association:"event" as const});
+    let state:WorkspaceState={...seed,issues,reviewIssueDependencies:issues.map((_,i)=>dependency(i))};
+    state={...state,attestations:await Promise.all(issues.map(async issue=>({id:`review:${issue.id}`,scope:issue.scope,purpose:"issue" as const,issueId:issue.id,dependencyVersion:3 as const,dependencyFingerprint:await workspaceReviewFingerprint(state,issue.scope,evidence,3,issue.id),targetIds:[],evidenceDigest:evidence,note:"Independent fixture",actor:"ui-test" as const,at:"2026-09-21T00:00:00Z"})))};
+    const pending=deriveWorkspaceCapabilities(state,evidence);
+    const event=state.music!.parts[0].measures[1].leadEvents[0];
+    if(event.kind!=="rest")Object.assign(event,{lyrics:[{...event.lyrics[0],text:"changed during an await"}]});
+    expect((await pending).pendingIssues).toEqual([]);
+    expect((await deriveWorkspaceCapabilities(state,evidence)).pendingIssues.map(issue=>issue.id)).toEqual(issues.slice(8,16).map(issue=>issue.id));
+  });
   it("uses all unresolved attachment alternatives and physical intervals without approving or choosing a lyric",async()=>{
     const state=await replayScoreWorkspace(await start());
     const candidates=[

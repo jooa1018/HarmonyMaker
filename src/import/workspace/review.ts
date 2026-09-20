@@ -5,7 +5,7 @@ import { validatePerformer } from "../../domain/performer";
 import { clean, measures, requireMeasure } from "./edit";
 import { __musicXmlParserInternals } from "../musicxml/parser-core";
 import { workspaceSlurDependencies } from "./slur-dependencies";
-import { resolveWorkspaceIssueDependencies, workspaceIssueDependencyProjection } from "./review-dependencies";
+import { createWorkspaceIssueDependencyProjector, resolveWorkspaceIssueDependencies, workspaceIssueDependencyProjection, type WorkspaceIssueDependency } from "./review-dependencies";
 import type { WorkspaceAttestation, WorkspaceCapabilities, WorkspaceIssue, WorkspaceOrigin, WorkspaceScope, WorkspaceState } from "./model";
 
 export function effectiveWorkspaceKey(state: WorkspaceState, measureId: string) {
@@ -29,10 +29,13 @@ export function workspaceScopeRelevant(state: WorkspaceState, scope: WorkspaceSc
 
 /** Carry-in chords, absolute time, inherited key/meter and tie neighbors are real
  * dependencies. A title, performer form or unrelated chord is not one. */
-export async function workspaceReviewFingerprint(state: WorkspaceState, scope: WorkspaceScope, evidenceDigest: string, dependencyVersion: 1 | 2 | 3 = 1, issueId?: string): Promise<string> {
+export function workspaceReviewFingerprint(state: WorkspaceState, scope: WorkspaceScope, evidenceDigest: string, dependencyVersion: 1 | 2 | 3 = 1, issueId?: string): Promise<string> {
+  return fingerprintWithProjection(state,scope,evidenceDigest,dependencyVersion,issueId);
+}
+async function fingerprintWithProjection(state:WorkspaceState,scope:WorkspaceScope,evidenceDigest:string,dependencyVersion:1|2|3,issueId?:string,projectIssue?:(dependency:WorkspaceIssueDependency)=>unknown):Promise<string> {
   let projection: unknown;
   const dependency = dependencyVersion === 3 && issueId ? state.reviewIssueDependencies?.find(d => d.issueId === issueId) : undefined;
-  if (dependency) projection = {issue:state.issues.find(i => i.id === issueId),fact:workspaceIssueDependencyProjection(state,dependency)};
+  if (dependency) projection = {issue:state.issues.find(i => i.id === issueId),fact:projectIssue?projectIssue(dependency):workspaceIssueDependencyProjection(state,dependency)};
   else if (scope.kind === "metadata") projection = { title: state.music?.title ?? "" };
   else if (scope.kind === "document") projection = { parts: state.music?.parts ?? [], keys: state.request.keys, issues: state.issues };
   else {
@@ -70,6 +73,14 @@ export async function workspaceReviewFingerprint(state: WorkspaceState, scope: W
   return semanticDigest({ schema: `hm-workspace-review-dependency-v${dependencyVersion}`, evidenceDigest, scope: clean(scope), projection: clean(projection) });
 }
 type FingerprintReader = (scope: WorkspaceScope, version: 1 | 2 | 3, issueId?: string) => Promise<string>;
+// Independent checks share one immutable evaluation and return in input order.
+// Bound pending digest buffers instead of starting one task for every issue.
+async function reviewBatches<T,R>(values:readonly T[],evaluate:(value:T)=>Promise<R>):Promise<R[]> {
+  const results:R[]=[];
+  for(let offset=0;offset<values.length;offset+=8)
+    results.push(...await Promise.all(values.slice(offset,offset+8).map(evaluate)));
+  return results;
+}
 async function currentWithFingerprint(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string, fingerprint: FingerprintReader): Promise<boolean> {
   if (a.evidenceDigest !== evidenceDigest) return false;
   if(a.dependencyVersion===undefined&&state.invalidatedLegacyReviewIds?.includes(a.id))return false;
@@ -94,6 +105,7 @@ export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue,
 export async function retainWorkspaceReviewsV3(state: WorkspaceState, origin: WorkspaceOrigin, evidenceDigest: string, operationId: string): Promise<WorkspaceState> {
   const dependencies = resolveWorkspaceIssueDependencies(state,origin);
   const next = {...state,...(dependencies.length ? {reviewIssueDependencies:dependencies} : {})};
+  const projectIssue=createWorkspaceIssueDependencyProjector(next);
   const fingerprints = new Map<string,Promise<string>>();
   const oldFingerprint: FingerprintReader = (scope,version,issueId) => {
     const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
@@ -101,37 +113,48 @@ export async function retainWorkspaceReviewsV3(state: WorkspaceState, origin: Wo
     if (!value) { value = workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId); fingerprints.set(key,value); }
     return value;
   };
-  const attestations: WorkspaceAttestation[] = [];
-  for (const a of state.attestations) {
-    if (a.dependencyVersion === 3 || !await currentWithFingerprint(state,a,evidenceDigest,oldFingerprint)) { attestations.push(a); continue; }
-    attestations.push({...a,dependencyVersion:3,dependencyFingerprint:await workspaceReviewFingerprint(next,a.scope,evidenceDigest,3,a.issueId),
-      retainedReview:{previousVersion:a.dependencyVersion??1,previousFingerprint:a.dependencyFingerprint,transitionOperationId:operationId}});
-  }
+  const attestations = await reviewBatches(state.attestations,async(a):Promise<WorkspaceAttestation>=>{
+    if (a.dependencyVersion === 3 || !await currentWithFingerprint(state,a,evidenceDigest,oldFingerprint)) return a;
+    return {...a,dependencyVersion:3,dependencyFingerprint:await fingerprintWithProjection(next,a.scope,evidenceDigest,3,a.issueId,projectIssue),
+      retainedReview:{previousVersion:a.dependencyVersion??1,previousFingerprint:a.dependencyFingerprint,transitionOperationId:operationId}};
+  });
   return {...next,attestations};
 }
 export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenceDigest: string): Promise<WorkspaceCapabilities> {
   // One immutable evaluation, not a cross-document or cross-revision cache.
   // Caller edits during an await cannot mix old and new dependency projections.
   state = structuredClone(state);
+  const projectIssue=createWorkspaceIssueDependencyProjector(state);
   const fingerprints = new Map<string,Promise<string>>();
   const fingerprint: FingerprintReader = (scope,version,issueId) => {
     const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
     let value = fingerprints.get(key);
-    if (!value) { value = workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId); fingerprints.set(key,value); }
+    if (!value) { value = fingerprintWithProjection(state,scope,evidenceDigest,version,issueId,projectIssue); fingerprints.set(key,value); }
     return value;
   };
   const blockers: { id: string; messageKo: string; scope: WorkspaceScope }[] = [];
   const add = (id: string, messageKo: string, scope: WorkspaceScope = { kind: "document" }) => blockers.push({ id,messageKo,scope });
   const part = selectedWorkspacePart(state), musicReviews: { measureId: string; current: boolean }[] = [];
   const pendingIssues: WorkspaceIssue[] = [];
-  for (const issue of state.issues) if (!await issueCurrentWithFingerprint(state,issue,evidenceDigest,fingerprint)) {
+  const issueReviews=await reviewBatches(state.issues,issue=>issueCurrentWithFingerprint(state,issue,evidenceDigest,fingerprint));
+  state.issues.forEach((issue,index)=>{if(!issueReviews[index]){
     pendingIssues.push(issue);
     if (issue.impacts.includes("arrange") && workspaceScopeRelevant(state,issue.scope)) add(issue.id,issue.messageKo,issue.scope);
-  }
+  }});
   if (!state.music) add("uninterpreted","안전하게 보존한 원시 자료가 있으나 현재 편집 모델로 음악을 해석하지 못했습니다.");
   if (!part) add("lead","편곡할 Lead 성부를 명시적으로 선택하세요.");
   const inspected = part?.measures ?? measures(state); // Meter capability is visible even before lead selection.
-  for (const m of inspected) {
+  const musicByScope=new Map<string,WorkspaceAttestation[]>();
+  for(const a of state.attestations)if(a.purpose==="music"){
+    const key=canonicalJson(a.scope),group=musicByScope.get(key)??[];group.push(a);musicByScope.set(key,group);
+  }
+  const reviewedMeasures=part?await reviewBatches(inspected,async m=>{
+    const scope:WorkspaceScope={kind:"measure",measureId:m.workspaceMeasureId!,...(state.request.lead?{voiceKey:state.request.lead}:{})};
+    for(const a of musicByScope.get(canonicalJson(scope))??[])
+      if(await currentWithFingerprint(state,a,evidenceDigest,fingerprint))return true;
+    return false;
+  }):[];
+  for (const [measureIndex,m] of inspected.entries()) {
     const mid=m.workspaceMeasureId!, scope: WorkspaceScope={kind:"measure",measureId:mid,...(state.request.lead?{voiceKey:state.request.lead}:{})};
     const t=m.time;
     if (!((t.denominator===4 && [2,4].includes(t.numerator) && t.beatGroups.length===t.numerator && t.beatGroups.every(g=>g===1))
@@ -151,8 +174,7 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
       const key=effectiveWorkspaceKey(state,mid);
       if(!key) add(`key:${mid}`,`${m.number}마디 조표의 유효 조성을 확인하세요. mode가 없는 조표는 장조 확정이 아닙니다.`,scope);
       else if(deriveFifths(key)!==m.keyObservation?.fifths) add(`fifths:${mid}`,`${m.number}마디: 확인 조성과 관찰 조표가 일치하지 않습니다. 원본 조표를 덮어쓰지 않았습니다.`,scope);
-      let current=false;
-      for(const a of state.attestations) if(a.purpose==="music"&&canonicalJson(a.scope)===canonicalJson(scope)&&await currentWithFingerprint(state,a,evidenceDigest,fingerprint)) current=true;
+      const current=reviewedMeasures[measureIndex];
       musicReviews.push({measureId:mid,current});
       if(!current) add(`review:${mid}`,`${m.number}마디의 선택 성부·코드·기호를 원본과 대조하세요.`,scope);
       if(m.chords.some(c=>c.parseResult.status==="failed")) add(`chord:${mid}`,`${m.number}마디 코드 해석을 교정하세요.`,scope);
