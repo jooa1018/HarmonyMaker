@@ -56,4 +56,16 @@ describe("private replay encoding and boundary integrity",()=>{
     const w=await start(),text=await exportScoreWorkspace(w),bad=structuredClone(w);Object.assign(bad.origin,{xml:"broken"});
     const spy=vi.spyOn(input,"seedWorkspace");try{await expect(parseScoreWorkspace(JSON.stringify(await reseal(bad)))).rejects.toThrow();expect(await parseScoreWorkspace(text)).toEqual(w);}finally{spy.mockRestore();}
   });
+  it("rejects a resealed dependency downgrade and ignores caller-supplied approval snapshots",async()=>{
+    let w=await act(await start(),{kind:'lead',lead:'lead:p:0:s:1:v:1:1',rhythmVoices:[]});
+    w=await act(w,{kind:'attest',purpose:'music',scope:{kind:'measure',measureId:'p0m0',voiceKey:'lead:p:0:s:1:v:1:1'}});
+    const downgraded=structuredClone(w);Object.assign(downgraded.operations[1],{reviewDependencyVersion:2});
+    await expect(parseScoreWorkspace(JSON.stringify(await reseal(downgraded)))).rejects.toThrow('WORKSPACE_REVIEW_VERSION_DOWNGRADE');
+    const original=await replayScoreWorkspace(w),poisoned=structuredClone(original);
+    Object.assign(poisoned,{reviewIssueDependencies:[{issueId:'forged',field:'lyrics',measureIds:[],eventIds:[],association:'event'}]});
+    Object.assign(poisoned.attestations[0],{actor:'user',at:'2026-01-01T00:00:00Z',retainedReview:{previousVersion:2,previousFingerprint:'0'.repeat(64),transitionOperationId:'forged'}});
+    const parsed=await parseScoreWorkspace(JSON.stringify({...w,snapshot:poisoned,sourceEligibility:{approved:true}}));
+    expect(await replayScoreWorkspace(parsed)).toEqual(original);
+    expect(await replayScoreWorkspace(w)).toEqual(original);
+  });
 });
