@@ -68,12 +68,10 @@ describe("bounded exact workspace proof reuse", () => {
     expect((await replayScoreWorkspace(redo)).music).toEqual((await replayScoreWorkspace(w)).music);
   });
 
-  it("does not register an unverified mutation made after export's awaited replay", async () => {
+  it("rejects a caller mutation after export's awaited replay instead of emitting unverified bytes", async () => {
     const w = await fixture("proof:export-await"), pending = exportScoreWorkspace(w);
     changeNote(w);
-    const unverifiedText = await pending;
-    expect(JSON.parse(unverifiedText).operations[0].note).toBe("Tampered operation metadata");
-    await expect(parseScoreWorkspace(unverifiedText)).rejects.toThrow("WORKSPACE_HISTORY_SEAL_INVALID");
+    await expect(pending).rejects.toThrow("WORKSPACE_MUTATED_DURING_EXPORT");
   });
 
   it("requires exact text and retains a healthy cached proof after malformed or tampered input", async () => {

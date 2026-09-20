@@ -247,10 +247,13 @@ function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opI
 }
 export function changedWorkspaceTargets(before: WorkspaceState, after: WorkspaceState): readonly string[] {
   const ids = [...new Set([...measures(before), ...measures(after)].map(m => m.workspaceMeasureId!))];
-  const changed = ids.filter(id => canonicalJson(clean(measures(before).find(m => m.workspaceMeasureId === id) ?? null)) !== canonicalJson(clean(measures(after).find(m => m.workspaceMeasureId === id) ?? null)));
-  if (canonicalJson(before.request) !== canonicalJson(after.request)) changed.push("arrangement-request");
+  const same = (a: unknown, b: unknown) => a === b || canonicalJson(clean(a)) === canonicalJson(clean(b));
+  const beforeMeasures = new Map(measures(before).map(m => [m.workspaceMeasureId, m]));
+  const afterMeasures = new Map(measures(after).map(m => [m.workspaceMeasureId, m]));
+  const changed = before.music?.parts === after.music?.parts ? [] : ids.filter(id => !same(beforeMeasures.get(id) ?? null, afterMeasures.get(id) ?? null));
+  if (!same(before.request, after.request)) changed.push("arrangement-request");
   if (before.music?.title !== after.music?.title) changed.push("title");
-  if (canonicalJson(before.issues) !== canonicalJson(after.issues)) changed.push("issues");
+  if (!same(before.issues, after.issues)) changed.push("issues");
   if (canonicalJson(before.notationRemovals ?? null) !== canonicalJson(after.notationRemovals ?? null)) {
     changed.push(...new Set([...(before.notationRemovals ?? []), ...(after.notationRemovals ?? [])].map(item => item.eventId)));
   }

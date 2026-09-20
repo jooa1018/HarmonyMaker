@@ -5,6 +5,7 @@ import type { Step3ImportVersions } from "../musicxml/types";
 import { seedWorkspace, workspaceEvidenceDigest } from "./input";
 import { changedWorkspaceTargets, clean, reduceWorkspaceEdit, requireMeasure } from "./edit";
 import { workspaceReviewFingerprint } from "./review";
+import { createReplayStateDigester } from "./replay-digest";
 import { SCORE_WORKSPACE_VERSION, type ScoreWorkspace, type WorkspaceState, type WorkspaceCommand, type WorkspaceOperation, type WorkspaceAttestation, type WorkspaceOrigin, type WorkspaceEdit } from "./model";
 
 type StepOperation = Omit<WorkspaceOperation,"beforeDigest"|"afterDigest"|"affectedIds">;
@@ -17,6 +18,8 @@ interface Replay {
   readonly migratedLegacyReviews: ReadonlySet<string>;
   readonly dependencyV2Started?: true;
   readonly lastOperation?: StepOperation;
+  /** Private to this verified state lineage; edits always replace the map. */
+  readonly reviewFingerprints: Map<string, string>;
 }
 const cache = new WeakMap<ScoreWorkspace,{serialized:string;value:Replay}>();
 // One private entry only. Normal review history can take an image proof beyond
@@ -81,6 +84,15 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
     ||op.reviewDependencyVersion===undefined&&op.invalidatedLegacyReviewIds!==undefined)throw new RangeError("WORKSPACE_REVIEW_VERSION_INVALID");
   if(current.dependencyV2Started&&op.reviewDependencyVersion!==2)throw new RangeError("WORKSPACE_REVIEW_VERSION_DOWNGRADE");
   const isEdit = !["attest","undo","redo"].includes(command.kind);
+  const fingerprint = async (scope: WorkspaceAttestation["scope"], version: 1 | 2) => {
+    const key = `${version}:${canonicalJson(scope)}`;
+    let value = current.reviewFingerprints.get(key);
+    if (!value) {
+      value = await workspaceReviewFingerprint(current.state, scope, current.evidenceDigest, version);
+      current.reviewFingerprints.set(key, value);
+    }
+    return value;
+  };
   const finish = async (next:Replay):Promise<Replay> => {
     let recorded = op;
     if(op.reviewDependencyVersion===2) {
@@ -89,7 +101,7 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
       if(!record&&(!Array.isArray(op.invalidatedLegacyReviewIds)||canonicalJson(op.invalidatedLegacyReviewIds)!==canonicalJson(ids)))throw new RangeError("WORKSPACE_REVIEW_MIGRATION_SUBSTITUTED");
       recorded={...op,invalidatedLegacyReviewIds:ids};
     }
-    return {...next,lastOperation:recorded,...(isEdit?{active:[...next.active.slice(0,-1),recorded as WorkspaceOperation]}:{})};
+    return {...next,lastOperation:recorded,reviewFingerprints:command.kind === "attest" ? current.reviewFingerprints : new Map(),...(isEdit?{active:[...next.active.slice(0,-1),recorded as WorkspaceOperation]}:{})};
   };
   if(command.kind==="attest") {
     if(!["music","issue"].includes(command.purpose)||!["measure","document","metadata"].includes(command.scope.kind)) throw new RangeError("WORKSPACE_REVIEW_INVALID");
@@ -99,7 +111,7 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
     if(command.purpose==="issue"&&(!issue||issue.requiredAction!=="compare"||canonicalJson(issue.scope)!==canonicalJson(command.scope))) throw new RangeError("WORKSPACE_ISSUE_NOT_RESOLVABLE_BY_ATTESTATION");
     const targets=command.scope.kind==="measure"?[command.scope.measureId]:[];
     const records: WorkspaceAttestation[]=[{id:`review:${op.id}`,scope:clean(command.scope),purpose:command.purpose,...(issue?{issueId:issue.id}:{}),
-      dependencyFingerprint:await workspaceReviewFingerprint(current.state,command.scope,current.evidenceDigest,op.reviewDependencyVersion??1),
+      dependencyFingerprint:await fingerprint(command.scope,op.reviewDependencyVersion??1),
       ...(op.reviewDependencyVersion===2?{dependencyVersion:2 as const}:{}),targetIds:targets,evidenceDigest:current.evidenceDigest,note:op.note,actor:op.actor,at:op.at}];
     // This explicitly labeled UI action covers this measure's correspondence
     // items too. Unknown curves and document-wide uncertainties are never swept in.
@@ -107,10 +119,10 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
       if(local.kind!=="correspondence"||local.requiredAction!=="compare"||local.scope.kind!=="measure"||local.scope.measureId!==command.scope.measureId
         ||local.scope.voiceKey&&local.scope.voiceKey!==command.scope.voiceKey) continue;
       records.push({...records[0],id:`review:${op.id}:${local.id}`,purpose:"issue",issueId:local.id,scope:local.scope,
-        dependencyFingerprint:await workspaceReviewFingerprint(current.state,local.scope,current.evidenceDigest,op.reviewDependencyVersion??1)});
+        dependencyFingerprint:await fingerprint(local.scope,op.reviewDependencyVersion??1)});
     }
     const legacyReviewAnchors=new Map(current.legacyReviewAnchors);
-    if(op.reviewDependencyVersion===undefined)for(const record of records)legacyReviewAnchors.set(record.id,await workspaceReviewFingerprint(current.state,record.scope,current.evidenceDigest,2));
+    if(op.reviewDependencyVersion===undefined)for(const record of records)legacyReviewAnchors.set(record.id,await fingerprint(record.scope,2));
     return finish({...current,legacyReviewAnchors,state:{...current.state,attestations:[...current.state.attestations,...records]}});
   }
   if(command.kind==="undo"||command.kind==="redo") {
@@ -132,25 +144,35 @@ async function replay(value: ScoreWorkspace): Promise<Replay> {
   if(serialized.length>64_000_000||value.version!==SCORE_WORKSPACE_VERSION||!isCanonicalId(value.id)||value.id.length>128
     ||!Array.isArray(value.operations)||value.operations.length>2048||value.revision!==value.operations.length||!isSemanticDigest(value.digest)||!isSemanticDigest(value.historyDigest)) throw new RangeError("WORKSPACE_HISTORY_INVALID");
   const hit=cache.get(value); if(hit?.serialized===serialized) return hit.value;
+  // Snapshot before the first await: external mutation cannot poison the private
+  // reducer graph or its identity-based, single-replay encoding reuse.
+  const caller = value;
+  value = JSON.parse(serialized) as ScoreWorkspace;
   if(value.historyDigest!==await historyDigest(value))throw new RangeError("WORKSPACE_HISTORY_SEAL_INVALID");
   const seed=await seedWorkspace(value.origin,value.algorithmVersions,value.id);
-  let current:Replay={seed,state:seed,active:[],redo:[],evidenceDigest:await workspaceEvidenceDigest(value.origin),origin:value.origin,legacyReviewAnchors:new Map(),migratedLegacyReviews:new Set()};
+  let current:Replay={seed,state:seed,active:[],redo:[],evidenceDigest:await workspaceEvidenceDigest(value.origin),origin:value.origin,legacyReviewAnchors:new Map(),migratedLegacyReviews:new Set(),reviewFingerprints:new Map()};
+  const digestState = createReplayStateDigester();
+  let currentDigest = await digestState(current.state);
   const ids=new Set<string>();
   for(const op of value.operations) {
     checkMeta(op);
-    if(ids.has(op.id)||op.beforeDigest!==await workspaceStateDigest(current.state)) throw new RangeError("WORKSPACE_HISTORY_INVALID");
+    if(ids.has(op.id)||op.beforeDigest!==currentDigest) throw new RangeError("WORKSPACE_HISTORY_INVALID");
     ids.add(op.id);const next=await step(current,op);
-    if(op.afterDigest!==await workspaceStateDigest(next.state)||canonicalJson(op.affectedIds)!==canonicalJson(changedWorkspaceTargets(current.state,next.state))) throw new RangeError("WORKSPACE_HISTORY_INVALID");
+    const nextDigest = await digestState(next.state);
+    if(op.afterDigest!==nextDigest||canonicalJson(op.affectedIds)!==canonicalJson(changedWorkspaceTargets(current.state,next.state))) throw new RangeError("WORKSPACE_HISTORY_INVALID");
+    currentDigest = nextDigest;
     current=next;
   }
-  if(value.digest!==await workspaceStateDigest(current.state)) throw new RangeError("WORKSPACE_SNAPSHOT_SUBSTITUTED");
-  cache.set(value,{serialized,value:current});return current;
+  if(value.digest!==currentDigest) throw new RangeError("WORKSPACE_SNAPSHOT_SUBSTITUTED");
+  if(JSON.stringify(caller)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_VALIDATION");
+  cache.set(caller,{serialized,value:current});return current;
 }
 export async function createScoreWorkspace(origin: WorkspaceOrigin, versions: Step3ImportVersions, id: string): Promise<ScoreWorkspace> {
   if(!isCanonicalId(id)||id.length>128) throw new RangeError("WORKSPACE_ID_INVALID");
+  origin = structuredClone(origin); versions = structuredClone(versions);
   const seed=await seedWorkspace(origin,versions,id);
   const value:ScoreWorkspace={version:SCORE_WORKSPACE_VERSION,id,origin:structuredClone(origin),algorithmVersions:structuredClone(versions),operations:[],revision:0,digest:await workspaceStateDigest(seed),historyDigest:await historyDigest({id,origin,algorithmVersions:versions,operations:[]})};
-  cache.set(value,{serialized:JSON.stringify(value),value:{seed,state:seed,active:[],redo:[],evidenceDigest:await workspaceEvidenceDigest(origin),origin:value.origin,legacyReviewAnchors:new Map(),migratedLegacyReviews:new Set()}});return value;
+  cache.set(value,{serialized:JSON.stringify(value),value:structuredClone({seed,state:seed,active:[],redo:[],evidenceDigest:await workspaceEvidenceDigest(origin),origin:value.origin,legacyReviewAnchors:new Map(),migratedLegacyReviews:new Set(),reviewFingerprints:new Map()})});return value;
 }
 export async function replayScoreWorkspace(value: ScoreWorkspace): Promise<WorkspaceState> { return structuredClone((await replay(value)).state); }
 export async function applyWorkspaceCommand(value: ScoreWorkspace, expected: {revision:number;digest:string}, command: WorkspaceCommand,
@@ -158,13 +180,16 @@ export async function applyWorkspaceCommand(value: ScoreWorkspace, expected: {re
   if(expected.revision!==value.revision||expected.digest!==value.digest) throw new RangeError("WORKSPACE_STALE_REVISION");
   checkMeta(meta);
   if(value.operations.length>=2048||value.operations.some(o=>o.id===meta.id)) throw new RangeError("WORKSPACE_OPERATION_INVALID");
-  const current=await replay(value), next=await step(current,{...meta,command:clean(command),reviewDependencyVersion:2},true);
+  const serialized = JSON.stringify(value), owned = JSON.parse(serialized) as ScoreWorkspace;
+  const operation = {...meta,command:clean(command),reviewDependencyVersion:2 as const};
+  const current=await replay(value), next=await step(current,operation,true);
   const afterDigest=await workspaceStateDigest(next.state);
   const op:WorkspaceOperation={...next.lastOperation!,beforeDigest:value.digest,afterDigest,affectedIds:changedWorkspaceTargets(current.state,next.state)};
-  const changed={...value,operations:[...value.operations,op],revision:value.revision+1,digest:afterDigest};
+  const changed={...owned,operations:[...owned.operations,op],revision:owned.revision+1,digest:afterDigest};
   const result={...changed,historyDigest:await historyDigest(changed)};
+  if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
   if(JSON.stringify(result).length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
-  cache.set(result,{serialized:JSON.stringify(result),value:next});return result;
+  cache.set(result,{serialized:JSON.stringify(result),value:structuredClone(next)});return result;
 }
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
   if(text.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
@@ -179,6 +204,8 @@ export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace>
   rememberVerifiedProof(text,value,verified);return value;
 }
 export async function exportScoreWorkspace(value: ScoreWorkspace): Promise<string> {
-  const verified=await replay(value),text=asciiProofJson(value);
+  const serialized = JSON.stringify(value), verified=await replay(value);
+  if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EXPORT");
+  const text=asciiProofJson(value);
   rememberVerifiedProof(text,value,verified);return text;
 }

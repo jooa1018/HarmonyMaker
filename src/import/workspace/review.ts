@@ -66,23 +66,40 @@ export async function workspaceReviewFingerprint(state: WorkspaceState, scope: W
   }
   return semanticDigest({ schema: dependencyVersion===2?"hm-workspace-review-dependency-v2":"hm-workspace-review-dependency-v1", evidenceDigest, scope: clean(scope), projection: clean(projection) });
 }
-export async function attestationCurrent(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string): Promise<boolean> {
+type FingerprintReader = (scope: WorkspaceScope, version: 1 | 2) => Promise<string>;
+async function currentWithFingerprint(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string, fingerprint: FingerprintReader): Promise<boolean> {
   if (a.evidenceDigest !== evidenceDigest) return false;
   if(a.dependencyVersion===undefined&&state.invalidatedLegacyReviewIds?.includes(a.id))return false;
-  try { return a.dependencyFingerprint === await workspaceReviewFingerprint(state,a.scope,evidenceDigest,a.dependencyVersion??1); } catch { return false; }
+  try { return a.dependencyFingerprint === await fingerprint(a.scope,a.dependencyVersion??1); } catch { return false; }
 }
-export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string): Promise<boolean> {
+export async function attestationCurrent(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string): Promise<boolean> {
+  return currentWithFingerprint(state,a,evidenceDigest,(scope,version)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version));
+}
+async function issueCurrentWithFingerprint(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string, fingerprint: FingerprintReader): Promise<boolean> {
   if (issue.requiredAction !== "compare") return false;
   for (const a of state.attestations) if (a.purpose === "issue" && a.issueId === issue.id && canonicalJson(a.scope) === canonicalJson(issue.scope)
-    && await attestationCurrent(state,a,evidenceDigest)) return true;
+    && await currentWithFingerprint(state,a,evidenceDigest,fingerprint)) return true;
   return false;
 }
+export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string): Promise<boolean> {
+  return issueCurrentWithFingerprint(state,issue,evidenceDigest,(scope,version)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version));
+}
 export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenceDigest: string): Promise<WorkspaceCapabilities> {
+  // One immutable evaluation, not a cross-document or cross-revision cache.
+  // Caller edits during an await cannot mix old and new dependency projections.
+  state = structuredClone(state);
+  const fingerprints = new Map<string,Promise<string>>();
+  const fingerprint: FingerprintReader = (scope,version) => {
+    const key = `${version}:${canonicalJson(scope)}`;
+    let value = fingerprints.get(key);
+    if (!value) { value = workspaceReviewFingerprint(state,scope,evidenceDigest,version); fingerprints.set(key,value); }
+    return value;
+  };
   const blockers: { id: string; messageKo: string; scope: WorkspaceScope }[] = [];
   const add = (id: string, messageKo: string, scope: WorkspaceScope = { kind: "document" }) => blockers.push({ id,messageKo,scope });
   const part = selectedWorkspacePart(state), musicReviews: { measureId: string; current: boolean }[] = [];
   const pendingIssues: WorkspaceIssue[] = [];
-  for (const issue of state.issues) if (!await issueCurrent(state,issue,evidenceDigest)) {
+  for (const issue of state.issues) if (!await issueCurrentWithFingerprint(state,issue,evidenceDigest,fingerprint)) {
     pendingIssues.push(issue);
     if (issue.impacts.includes("arrange") && workspaceScopeRelevant(state,issue.scope)) add(issue.id,issue.messageKo,issue.scope);
   }
@@ -110,7 +127,7 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
       if(!key) add(`key:${mid}`,`${m.number}마디 조표의 유효 조성을 확인하세요. mode가 없는 조표는 장조 확정이 아닙니다.`,scope);
       else if(deriveFifths(key)!==m.keyObservation?.fifths) add(`fifths:${mid}`,`${m.number}마디: 확인 조성과 관찰 조표가 일치하지 않습니다. 원본 조표를 덮어쓰지 않았습니다.`,scope);
       let current=false;
-      for(const a of state.attestations) if(a.purpose==="music"&&canonicalJson(a.scope)===canonicalJson(scope)&&await attestationCurrent(state,a,evidenceDigest)) current=true;
+      for(const a of state.attestations) if(a.purpose==="music"&&canonicalJson(a.scope)===canonicalJson(scope)&&await currentWithFingerprint(state,a,evidenceDigest,fingerprint)) current=true;
       musicReviews.push({measureId:mid,current});
       if(!current) add(`review:${mid}`,`${m.number}마디의 선택 성부·코드·기호를 원본과 대조하세요.`,scope);
       if(m.chords.some(c=>c.parseResult.status==="failed")) add(`chord:${mid}`,`${m.number}마디 코드 해석을 교정하세요.`,scope);
