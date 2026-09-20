@@ -75,7 +75,9 @@
     ".next-local-review-persistence-facts/types/**/*.ts",
     ".next-local-review-persistence-facts/dev/types/**/*.ts",
     ".next-local-review-persistence-created/types/**/*.ts",
-    ".next-local-review-persistence-created/dev/types/**/*.ts"
+    ".next-local-review-persistence-created/dev/types/**/*.ts",
+    ".next-local-review-persistence-deferred/types/**/*.ts",
+    ".next-local-review-persistence-deferred/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
