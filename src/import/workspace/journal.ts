@@ -27,19 +27,20 @@ interface VerifiedReplay {
   readonly digestState?:ReturnType<typeof createReplayStateDigester>;
 }
 const cache = new WeakMap<ScoreWorkspace,VerifiedReplay>();
-// Membership is private and only granted to a newly parsed, deeply frozen
-// copy after full replay. Object.freeze supplied by a caller is not authority.
+// Membership is private and granted after full replay to a detached frozen
+// copy, or an internal edit of one. A caller's Object.freeze is not authority.
 const immutableWorkspaces = new WeakSet<ScoreWorkspace>();
+const immutableJsonNodes = new WeakSet<object>();
 function captureWorkspace(value:ScoreWorkspace):string {
   return immutableWorkspaces.has(value)?cache.get(value)!.serialized:JSON.stringify(value);
 }
-function immutableVerifiedWorkspace(verified:VerifiedReplay):ScoreWorkspace {
-  const snapshot=JSON.parse(verified.serialized) as ScoreWorkspace;
+function immutableVerifiedWorkspace(snapshot:ScoreWorkspace,verified:VerifiedReplay):ScoreWorkspace {
   const pending:object[]=[snapshot];
   while(pending.length) {
     const node=pending.pop()!;
+    if(immutableJsonNodes.has(node))continue;
     for(const child of Object.values(node))if(child!==null&&typeof child==="object")pending.push(child);
-    Object.freeze(node);
+    Object.freeze(node);immutableJsonNodes.add(node);
   }
   cache.set(snapshot,verified);immutableWorkspaces.add(snapshot);return snapshot;
 }
@@ -50,7 +51,7 @@ export async function createImmutableWorkspace(value:ScoreWorkspace):Promise<Sco
   const serialized=JSON.stringify(value),verified=await replay(value,serialized);
   if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_PREPARATION");
   const hit=cache.get(value)!;
-  return immutableVerifiedWorkspace(hit.serialized===serialized&&hit.value===verified?hit:{serialized,value:verified});
+  return immutableVerifiedWorkspace(JSON.parse(serialized) as ScoreWorkspace,hit.serialized===serialized&&hit.value===verified?hit:{serialized,value:verified});
 }
 // One private entry only. Normal review history can take an image proof beyond
 // 8 MB; retain that verified replay across Source/project validation instead of
@@ -242,10 +243,11 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
   if(captureWorkspace(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
   const resultSerialized=JSON.stringify(result);
   if(resultSerialized.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
-  // The returned immutable workspace is separately parsed. Reducer inputs were
-  // captured above, so its private replay and weak encoding segments can remain
-  // owned by this lineage. Mutable callers retain the original detached cache.
-  if(immutableWorkspaces.has(value))return immutableVerifiedWorkspace({serialized:resultSerialized,value:current,digestState});
+  // This result contains only already-frozen input and captured operations.
+  // Share those immutable nodes instead of parsing the whole original again.
+  // The private replay has no caller aliases; mutable callers retain the
+  // original detached cache. Weak entries never pin discarded revisions.
+  if(immutableWorkspaces.has(value))return immutableVerifiedWorkspace(result,{serialized:resultSerialized,value:current,digestState});
   cache.set(result,{serialized:resultSerialized,value:structuredClone(current)});return result;
 }
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
