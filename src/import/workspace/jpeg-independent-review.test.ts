@@ -112,14 +112,17 @@ describe("independent JPEG editor boundary review (synthetic)", () => {
     let w = await parseScoreWorkspace(oldProof());
     const n = await event(w, 2, 0);
     w = await act(w, { kind: "note", eventId: n.workspaceEventId!, value: { kind: "note", pitch: { step: "E", alter: 0, octave: 4 }, onset: n.onset, duration: n.duration, tieStart: false, tieStop: false } });
-    expect(w.operations.at(-1)!.invalidatedLegacyReviewIds).toEqual(["review:independent:1"]);
+    // The existing judgment now has a replay-derived v3 anchor. Its old
+    // fingerprint and actor/time remain on retainedReview, not a new approval.
+    expect(w.operations.at(-1)!.invalidatedLegacyReviewIds).toEqual([]);
+    expect((await replayScoreWorkspace(w)).attestations[0].retainedReview?.previousVersion).toBe(1);
     const operations = w.operations.map(op => ({ ...op }));
-    operations.at(-1)!.invalidatedLegacyReviewIds = [];
+    operations.at(-1)!.invalidatedLegacyReviewIds = ["review:independent:1"];
     const historyDigest = await binaryDigest(new TextEncoder().encode(exactJson({ schema: "hm-workspace-history-seal-v1", id: w.id, evidenceDigest: await workspaceEvidenceDigest(w.origin), algorithmVersions: w.algorithmVersions, operations })));
     await expect(parseScoreWorkspace(JSON.stringify({ ...w, operations, historyDigest }))).rejects.toThrow("WORKSPACE_REVIEW_MIGRATION_SUBSTITUTED");
   });
 
-  it("keeps legacy and later v2 attestation anchors distinct through Undo, Redo and replay", async () => {
+  it("keeps retained legacy and new v3 attestation anchors distinct through Undo, Redo and replay", async () => {
     let w = await parseScoreWorkspace(oldProof());
     const n = await event(w, 2, 0);
     w = await act(w, { kind: "note", eventId: n.workspaceEventId!, value: { kind: "note", pitch: { step: "E", alter: 0, octave: 4 }, onset: n.onset, duration: n.duration, tieStart: false, tieStop: false } });
@@ -127,7 +130,9 @@ describe("independent JPEG editor boundary review (synthetic)", () => {
     w = await act(w, { kind: "attest", purpose: "music", scope });
     const check = async (workspace: ScoreWorkspace, expected: boolean[]) => {
       const state = await replayScoreWorkspace(workspace), evidence = await workspaceEvidenceDigest(workspace.origin);
-      expect(state.attestations.map(a => a.dependencyVersion)).toEqual([undefined, 2]);
+      expect(state.attestations.map(a => a.dependencyVersion)).toEqual([3, 3]);
+      expect(state.attestations[0].retainedReview?.previousVersion).toBe(1);
+      expect(state.attestations[1]).not.toHaveProperty("retainedReview");
       expect(await Promise.all(state.attestations.map(a => attestationCurrent(state, a, evidence)))).toEqual(expected);
     };
     await check(w, [false, true]);

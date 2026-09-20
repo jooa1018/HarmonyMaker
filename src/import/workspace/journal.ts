@@ -4,7 +4,7 @@ import { isCanonicalId, isSemanticDigest } from "../../domain/validation";
 import type { Step3ImportVersions } from "../musicxml/types";
 import { seedWorkspace, workspaceEvidenceDigest } from "./input";
 import { changedWorkspaceTargets, clean, reduceWorkspaceEdit, requireMeasure } from "./edit";
-import { workspaceReviewFingerprint } from "./review";
+import { retainWorkspaceReviewsV3, workspaceReviewFingerprint } from "./review";
 import { createReplayStateDigester } from "./replay-digest";
 import { SCORE_WORKSPACE_VERSION, type ScoreWorkspace, type WorkspaceState, type WorkspaceCommand, type WorkspaceOperation, type WorkspaceAttestation, type WorkspaceOrigin, type WorkspaceEdit } from "./model";
 
@@ -17,6 +17,7 @@ interface Replay {
   readonly legacyReviewAnchors: ReadonlyMap<string,string>;
   readonly migratedLegacyReviews: ReadonlySet<string>;
   readonly dependencyV2Started?: true;
+  readonly dependencyV3Started?: true;
   readonly lastOperation?: StepOperation;
   /** Private to this verified state lineage; edits always replace the map. */
   readonly reviewFingerprints: Map<string, string>;
@@ -80,23 +81,27 @@ async function migrateLegacyReviews(current: Replay, state: WorkspaceState): Pro
 async function step(current: Replay, op: StepOperation, record = false): Promise<Replay> {
   const command=op.command;
   if(!command||typeof command!=="object") throw new RangeError("WORKSPACE_COMMAND_INVALID");
-  if(op.reviewDependencyVersion!==undefined&&op.reviewDependencyVersion!==2
+  if(op.reviewDependencyVersion!==undefined&&op.reviewDependencyVersion!==2&&op.reviewDependencyVersion!==3
     ||op.reviewDependencyVersion===undefined&&op.invalidatedLegacyReviewIds!==undefined)throw new RangeError("WORKSPACE_REVIEW_VERSION_INVALID");
-  if(current.dependencyV2Started&&op.reviewDependencyVersion!==2)throw new RangeError("WORKSPACE_REVIEW_VERSION_DOWNGRADE");
+  if(current.dependencyV2Started&&op.reviewDependencyVersion===undefined
+    ||current.dependencyV3Started&&op.reviewDependencyVersion!==3)throw new RangeError("WORKSPACE_REVIEW_VERSION_DOWNGRADE");
+  if(op.reviewDependencyVersion===3&&!current.dependencyV3Started) {
+    current={...current,state:await retainWorkspaceReviewsV3(current.state,current.origin,current.evidenceDigest,op.id),reviewFingerprints:new Map()};
+  }
   const isEdit = !["attest","undo","redo"].includes(command.kind);
-  const fingerprint = async (scope: WorkspaceAttestation["scope"], version: 1 | 2) => {
-    const key = `${version}:${canonicalJson(scope)}`;
+  const fingerprint = async (scope: WorkspaceAttestation["scope"], version: 1 | 2 | 3, issueId?: string) => {
+    const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
     let value = current.reviewFingerprints.get(key);
     if (!value) {
-      value = await workspaceReviewFingerprint(current.state, scope, current.evidenceDigest, version);
+      value = await workspaceReviewFingerprint(current.state, scope, current.evidenceDigest, version,issueId);
       current.reviewFingerprints.set(key, value);
     }
     return value;
   };
   const finish = async (next:Replay):Promise<Replay> => {
     let recorded = op;
-    if(op.reviewDependencyVersion===2) {
-      next={...next,...await migrateLegacyReviews(current,next.state),dependencyV2Started:true};
+    if(op.reviewDependencyVersion!==undefined) {
+      next={...next,...await migrateLegacyReviews(current,next.state),dependencyV2Started:true,...(op.reviewDependencyVersion===3?{dependencyV3Started:true as const}:{})};
       const ids=next.state.invalidatedLegacyReviewIds??[];
       if(!record&&(!Array.isArray(op.invalidatedLegacyReviewIds)||canonicalJson(op.invalidatedLegacyReviewIds)!==canonicalJson(ids)))throw new RangeError("WORKSPACE_REVIEW_MIGRATION_SUBSTITUTED");
       recorded={...op,invalidatedLegacyReviewIds:ids};
@@ -111,15 +116,15 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
     if(command.purpose==="issue"&&(!issue||issue.requiredAction!=="compare"||canonicalJson(issue.scope)!==canonicalJson(command.scope))) throw new RangeError("WORKSPACE_ISSUE_NOT_RESOLVABLE_BY_ATTESTATION");
     const targets=command.scope.kind==="measure"?[command.scope.measureId]:[];
     const records: WorkspaceAttestation[]=[{id:`review:${op.id}`,scope:clean(command.scope),purpose:command.purpose,...(issue?{issueId:issue.id}:{}),
-      dependencyFingerprint:await fingerprint(command.scope,op.reviewDependencyVersion??1),
-      ...(op.reviewDependencyVersion===2?{dependencyVersion:2 as const}:{}),targetIds:targets,evidenceDigest:current.evidenceDigest,note:op.note,actor:op.actor,at:op.at}];
+      dependencyFingerprint:await fingerprint(command.scope,op.reviewDependencyVersion??1,issue?.id),
+      ...(op.reviewDependencyVersion!==undefined?{dependencyVersion:op.reviewDependencyVersion}:{}),targetIds:targets,evidenceDigest:current.evidenceDigest,note:op.note,actor:op.actor,at:op.at}];
     // This explicitly labeled UI action covers this measure's correspondence
     // items too. Unknown curves and document-wide uncertainties are never swept in.
     if(command.purpose==="music"&&command.scope.kind==="measure") for(const local of current.state.issues) {
       if(local.kind!=="correspondence"||local.requiredAction!=="compare"||local.scope.kind!=="measure"||local.scope.measureId!==command.scope.measureId
         ||local.scope.voiceKey&&local.scope.voiceKey!==command.scope.voiceKey) continue;
       records.push({...records[0],id:`review:${op.id}:${local.id}`,purpose:"issue",issueId:local.id,scope:local.scope,
-        dependencyFingerprint:await fingerprint(local.scope,op.reviewDependencyVersion??1)});
+        dependencyFingerprint:await fingerprint(local.scope,op.reviewDependencyVersion??1,local.id)});
     }
     const legacyReviewAnchors=new Map(current.legacyReviewAnchors);
     if(op.reviewDependencyVersion===undefined)for(const record of records)legacyReviewAnchors.set(record.id,await fingerprint(record.scope,2));
@@ -130,7 +135,7 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
     if(!last) throw new RangeError("WORKSPACE_NOTHING_TO_UNDO_OR_REDO");
     const active=command.kind==="undo"?current.active.slice(0,-1):[...current.active,last];
     const redo=command.kind==="undo"?[...current.redo,last]:current.redo.slice(0,-1);
-    let state={...structuredClone(current.seed),attestations:current.state.attestations};
+    let state={...structuredClone(current.seed),attestations:current.state.attestations,...(current.state.reviewIssueDependencies?{reviewIssueDependencies:current.state.reviewIssueDependencies}:{})};
     for(const edit of active) state=reduceWorkspaceEdit(state,edit.command as WorkspaceEdit,edit.id,current.origin,current.seed,edit.reviewDependencyVersion??1);
     return finish({...current,state:clean(state),active,redo});
   }
@@ -177,19 +182,33 @@ export async function createScoreWorkspace(origin: WorkspaceOrigin, versions: St
 export async function replayScoreWorkspace(value: ScoreWorkspace): Promise<WorkspaceState> { return structuredClone((await replay(value)).state); }
 export async function applyWorkspaceCommand(value: ScoreWorkspace, expected: {revision:number;digest:string}, command: WorkspaceCommand,
   meta: Pick<WorkspaceOperation,"id"|"note"|"actor"|"at">): Promise<ScoreWorkspace> {
+  return applyWorkspaceCommands(value,expected,[{command,meta}]);
+}
+/** One explicit UI transaction, preserving every individual operation and its
+ * before/after seal. No intermediate workspace is exposed or persisted. */
+export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {revision:number;digest:string}, entries: readonly {
+  readonly command: WorkspaceCommand; readonly meta: Pick<WorkspaceOperation,"id"|"note"|"actor"|"at">;
+}[]): Promise<ScoreWorkspace> {
   if(expected.revision!==value.revision||expected.digest!==value.digest) throw new RangeError("WORKSPACE_STALE_REVISION");
-  checkMeta(meta);
-  if(value.operations.length>=2048||value.operations.some(o=>o.id===meta.id)) throw new RangeError("WORKSPACE_OPERATION_INVALID");
+  if(!Array.isArray(entries)||!entries.length||entries.length>128||value.operations.length+entries.length>2048)throw new RangeError("WORKSPACE_OPERATION_INVALID");
+  const ids=new Set(value.operations.map(o=>o.id));
+  const operations=entries.map(({command,meta})=>{
+    checkMeta(meta);if(ids.has(meta.id))throw new RangeError("WORKSPACE_OPERATION_INVALID");ids.add(meta.id);
+    return {...meta,command:clean(command),reviewDependencyVersion:3 as const};
+  });
   const serialized = JSON.stringify(value), owned = JSON.parse(serialized) as ScoreWorkspace;
-  const operation = {...meta,command:clean(command),reviewDependencyVersion:2 as const};
-  const current=await replay(value), next=await step(current,operation,true);
-  const afterDigest=await workspaceStateDigest(next.state);
-  const op:WorkspaceOperation={...next.lastOperation!,beforeDigest:value.digest,afterDigest,affectedIds:changedWorkspaceTargets(current.state,next.state)};
-  const changed={...owned,operations:[...owned.operations,op],revision:owned.revision+1,digest:afterDigest};
+  let current=await replay(value),digest=value.digest;
+  const digestState=createReplayStateDigester(),recorded:WorkspaceOperation[]=[];
+  for(const operation of operations) {
+    const next=await step(current,operation,true),afterDigest=await digestState(next.state);
+    recorded.push({...next.lastOperation!,beforeDigest:digest,afterDigest,affectedIds:changedWorkspaceTargets(current.state,next.state)});
+    current=next;digest=afterDigest;
+  }
+  const changed={...owned,operations:[...owned.operations,...recorded],revision:owned.revision+recorded.length,digest};
   const result={...changed,historyDigest:await historyDigest(changed)};
   if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
   if(JSON.stringify(result).length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
-  cache.set(result,{serialized:JSON.stringify(result),value:structuredClone(next)});return result;
+  cache.set(result,{serialized:JSON.stringify(result),value:structuredClone(current)});return result;
 }
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
   if(text.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");

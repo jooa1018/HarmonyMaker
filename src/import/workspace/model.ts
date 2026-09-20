@@ -5,6 +5,7 @@ import type { RightsMetadata, TempoSpec } from "../../domain/source/model";
 import type { SourceSlurMark } from "../../domain/source/notation";
 import type { LocalCandidateBundle } from "../../domain/omr/local-candidate";
 import type { MusicXmlImportDraft, PerformerReviewSlot, ImportedSectionDraft, ImportedLyricDraft, Step3ImportVersions } from "../musicxml/types";
+import type { WorkspaceIssueDependency } from "./review-dependencies";
 
 export const SCORE_WORKSPACE_VERSION = "hm-score-workspace-v1" as const;
 export interface WorkspaceOrigin {
@@ -54,7 +55,9 @@ export interface WorkspaceAttestation {
   readonly purpose: "music" | "issue";
   readonly issueId?: string;
   readonly dependencyFingerprint: string;
-  readonly dependencyVersion?: 2;
+  readonly dependencyVersion?: 2 | 3;
+  /** Retained existing judgment, not a new actor/time or fresh approval. */
+  readonly retainedReview?: { readonly previousVersion: 1 | 2; readonly previousFingerprint: string; readonly transitionOperationId: string };
   readonly targetIds: readonly string[];
   readonly evidenceDigest: string;
   readonly note: string;
@@ -76,6 +79,8 @@ export interface WorkspaceState {
   readonly slurReviewTracking?: true;
   /** Explicit migration invalidations, never replacement user approvals. */
   readonly invalidatedLegacyReviewIds?: readonly string[];
+  /** Derived from immutable provenance only at the replay-verified v3 transition. */
+  readonly reviewIssueDependencies?: readonly WorkspaceIssueDependency[];
 }
 export type WorkspaceEdit =
   | { readonly kind: "pickup-policy"; readonly value: "none" | "anticipate-first-chord" }
@@ -112,7 +117,7 @@ export interface WorkspaceOperation {
   readonly affectedIds: readonly string[];
   readonly note: string; readonly actor: "user" | "ui-test"; readonly at: string;
   /** Absence replays the original dependency contract byte-for-byte. */
-  readonly reviewDependencyVersion?: 2;
+  readonly reviewDependencyVersion?: 2 | 3;
   /** Verified against chronological before/after v2 dependencies on replay. */
   readonly invalidatedLegacyReviewIds?: readonly string[];
 }

@@ -47,7 +47,7 @@ function refreshEditorOccurrences(state: WorkspaceState): WorkspaceState {
 
 /** Optional immutable context is supplied by journal replay, never by a command.
  * New tracking fields are absent from old seeds and old operation outputs. */
-export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, seed?: WorkspaceState, reviewDependencyVersion: 1 | 2 = 1): WorkspaceState {
+export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, seed?: WorkspaceState, reviewDependencyVersion: 1 | 2 | 3 = 1): WorkspaceState {
   let next = reduceWorkspaceEditCore(state, edit, opId, origin, reviewDependencyVersion);
   if (["remove-notation", "event-voice", "remove-event", "move-event"].includes(edit.kind) && origin?.kind !== "legacy-recovery") next = { ...next, notationTracking: true };
   if (next.notationTracking) {
@@ -59,7 +59,7 @@ export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, 
 
 /** Normal edits operate on Fraction values and imported nodes' stable identities.
  * No MusicXML serializer/parser round trip occurs in this reducer. */
-function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, reviewDependencyVersion: 1 | 2 = 1): WorkspaceState {
+function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, reviewDependencyVersion: 1 | 2 | 3 = 1): WorkspaceState {
   const music = state.music;
   if (!music && edit.kind !== "issue") return invalid();
   const request = state.request;
@@ -247,7 +247,9 @@ function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opI
 }
 export function changedWorkspaceTargets(before: WorkspaceState, after: WorkspaceState): readonly string[] {
   const ids = [...new Set([...measures(before), ...measures(after)].map(m => m.workspaceMeasureId!))];
-  const same = (a: unknown, b: unknown) => a === b || canonicalJson(clean(a)) === canonicalJson(clean(b));
+  // Reducer cleanup can copy an unchanged measure. Exact JSON equality is a
+  // sufficient fast path; NFC/key-order equivalence still uses the old codec.
+  const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b) || canonicalJson(clean(a)) === canonicalJson(clean(b));
   const beforeMeasures = new Map(measures(before).map(m => [m.workspaceMeasureId, m]));
   const afterMeasures = new Map(measures(after).map(m => [m.workspaceMeasureId, m]));
   const changed = before.music?.parts === after.music?.parts ? [] : ids.filter(id => !same(beforeMeasures.get(id) ?? null, afterMeasures.get(id) ?? null));
@@ -261,5 +263,6 @@ export function changedWorkspaceTargets(before: WorkspaceState, after: Workspace
   if (before.slurReviewTracking !== after.slurReviewTracking) changed.push("slur-review-tracking");
   if (canonicalJson(before.removedEventIds ?? null) !== canonicalJson(after.removedEventIds ?? null)) changed.push(...new Set([...(before.removedEventIds ?? []), ...(after.removedEventIds ?? [])]));
   if (canonicalJson(before.invalidatedLegacyReviewIds ?? null) !== canonicalJson(after.invalidatedLegacyReviewIds ?? null)) changed.push("legacy-review-invalidations");
+  if (!same(before.reviewIssueDependencies ?? null, after.reviewIssueDependencies ?? null)) changed.push("review-dependencies");
   return changed;
 }

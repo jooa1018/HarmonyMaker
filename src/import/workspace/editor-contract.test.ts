@@ -169,7 +169,7 @@ describe("explicit workspace editor contracts", () => {
     workspace = await act(workspace, { kind: "event-slurs", eventId: "p0m0n0", slurs: [{ number: 2, type: "start" }] });
     expect((await events(workspace))[0]).toMatchObject({ tieStart: true, slurs: [{ number: 2, type: "start" }], lyrics: [{ verse: 2, syllabic: "begin", extend: true }, { text: "", verse: 3 }] });
     expect(await state(workspace)).not.toHaveProperty("slurReviewTracking");
-    expect(workspace.operations.at(-1)!.reviewDependencyVersion).toBe(2);
+    expect(workspace.operations.at(-1)!.reviewDependencyVersion).toBe(3);
     expect(workspace.operations.at(-1)!.invalidatedLegacyReviewIds).toEqual([]);
     workspace = await act(workspace, { kind: "event-slurs", eventId: "p0m0n0", slurs: [] });
     expect((await events(workspace))[0]).not.toHaveProperty("slurs");
@@ -208,7 +208,7 @@ describe("explicit workspace editor contracts", () => {
       const { reviewDependencyVersion: omittedVersion, invalidatedLegacyReviewIds: omittedInvalidations, ...old } = operation;
       void omittedVersion; void omittedInvalidations; return old;
     }) };
-    // New apply calls use v2 metadata. The fixed old seal must still validate
+    // New apply calls use versioned metadata. The fixed old seal must still validate
     // the original unmarked operations, rather than being silently resealed.
     expect(await parseScoreWorkspace(JSON.stringify(frozen))).toEqual(frozen);
     expect(await parseScoreWorkspace(await exportScoreWorkspace(workspace))).toEqual(workspace);

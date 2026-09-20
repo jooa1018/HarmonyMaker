@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../../app/algorithm-version-registry";
 import { originFromMusicXml, workspaceEvidenceDigest } from "./input";
-import { createScoreWorkspace, applyWorkspaceCommand, replayScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace } from "./journal";
+import { createScoreWorkspace, applyWorkspaceCommand, applyWorkspaceCommands, replayScoreWorkspace, exportScoreWorkspace, parseScoreWorkspace } from "./journal";
 import { attestWorkspaceIssues } from "./review-batch";
 import { deriveWorkspaceCapabilities } from "./review";
 import type { ScoreWorkspace, WorkspaceCommand } from "./model";
@@ -11,6 +11,20 @@ const act=(w:ScoreWorkspace,c:WorkspaceCommand,id:string)=>applyWorkspaceCommand
 async function seed(){let w=await createScoreWorkspace(await originFromMusicXml(new TextEncoder().encode(xml),"independent.xml"),V,"batch-fixture");for(const id of ["one","two","other"])w=await act(w,{kind:"issue",scope:{kind:"document"},detail:`Uncertain printed ${id} symbol`},id);return w;}
 const caps=async(w:ScoreWorkspace)=>deriveWorkspaceCapabilities(await replayScoreWorkspace(w),await workspaceEvidenceDigest(w.origin));
 describe("explicit grouped source comparison using existing journal commands",()=>{
+  it("a single transaction has exactly the same individual history and proof as sequential explicit commands",async()=>{
+    const w=await seed(),issues=(await replayScoreWorkspace(w)).issues.slice(0,2);
+    const entries=issues.map((issue,i)=>({command:{kind:"attest" as const,purpose:"issue" as const,issueId:issue.id,scope:issue.scope},meta:meta(`equal:${i}`)}));
+    let sequential=w;for(const e of entries)sequential=await applyWorkspaceCommand(sequential,sequential,e.command,e.meta);
+    const batch=await applyWorkspaceCommands(w,w,entries);
+    expect(await exportScoreWorkspace(batch)).toBe(await exportScoreWorkspace(sequential));
+    expect(await parseScoreWorkspace(' '+await exportScoreWorkspace(batch))).toEqual(batch);
+  });
+  it("failure after a valid first item exposes no intermediate result and preserves the original proof",async()=>{
+    const w=await seed(),before=await exportScoreWorkspace(w);
+    await expect(applyWorkspaceCommands(w,w,[{command:{kind:"title",title:"Must not escape"},meta:meta("first")},{command:{kind:"remove-event",eventId:"not-present"},meta:meta("second")}])).rejects.toThrow();
+    expect(await exportScoreWorkspace(w)).toBe(before);
+    await expect(applyWorkspaceCommands(w,w,[{command:{kind:"title",title:"one"},meta:meta("duplicate")},{command:{kind:"title",title:"two"},meta:meta("duplicate")}])).rejects.toThrow("WORKSPACE_OPERATION_INVALID");
+  });
   it("records each selected fact, keeps unselected issues and music reviews blocking, round trips exact history",async()=>{
     const w=await seed(),before=await replayScoreWorkspace(w),ids=before.issues.slice(0,2).map(i=>i.id);
     const next=await attestWorkspaceIssues(w,w,ids,meta("batch")),after=await replayScoreWorkspace(next);

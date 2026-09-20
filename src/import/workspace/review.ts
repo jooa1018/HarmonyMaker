@@ -5,7 +5,8 @@ import { validatePerformer } from "../../domain/performer";
 import { clean, measures, requireMeasure } from "./edit";
 import { __musicXmlParserInternals } from "../musicxml/parser-core";
 import { workspaceSlurDependencies } from "./slur-dependencies";
-import type { WorkspaceAttestation, WorkspaceCapabilities, WorkspaceIssue, WorkspaceScope, WorkspaceState } from "./model";
+import { resolveWorkspaceIssueDependencies, workspaceIssueDependencyProjection } from "./review-dependencies";
+import type { WorkspaceAttestation, WorkspaceCapabilities, WorkspaceIssue, WorkspaceOrigin, WorkspaceScope, WorkspaceState } from "./model";
 
 export function effectiveWorkspaceKey(state: WorkspaceState, measureId: string) {
   const m = requireMeasure(state, measureId), o = m.keyObservation;
@@ -28,9 +29,11 @@ export function workspaceScopeRelevant(state: WorkspaceState, scope: WorkspaceSc
 
 /** Carry-in chords, absolute time, inherited key/meter and tie neighbors are real
  * dependencies. A title, performer form or unrelated chord is not one. */
-export async function workspaceReviewFingerprint(state: WorkspaceState, scope: WorkspaceScope, evidenceDigest: string, dependencyVersion: 1 | 2 = 1): Promise<string> {
+export async function workspaceReviewFingerprint(state: WorkspaceState, scope: WorkspaceScope, evidenceDigest: string, dependencyVersion: 1 | 2 | 3 = 1, issueId?: string): Promise<string> {
   let projection: unknown;
-  if (scope.kind === "metadata") projection = { title: state.music?.title ?? "" };
+  const dependency = dependencyVersion === 3 && issueId ? state.reviewIssueDependencies?.find(d => d.issueId === issueId) : undefined;
+  if (dependency) projection = {issue:state.issues.find(i => i.id === issueId),fact:workspaceIssueDependencyProjection(state,dependency)};
+  else if (scope.kind === "metadata") projection = { title: state.music?.title ?? "" };
   else if (scope.kind === "document") projection = { parts: state.music?.parts ?? [], keys: state.request.keys, issues: state.issues };
   else {
     const m = requireMeasure(state, scope.measureId);
@@ -57,23 +60,23 @@ export async function workspaceReviewFingerprint(state: WorkspaceState, scope: W
     const chordMeaning = (c: typeof ownChords[number]) => ({ id:c.key, onset:c.onset, text:c.sourceText, parseResult:c.parseResult });
     const previous = priorChords.at(-1);
     const incoming = ownChords.some(c => c.onset.n === 0) || !previous ? null : chordMeaning(previous);
-    const slurDependencies=dependencyVersion===2||state.slurReviewTracking?workspaceSlurDependencies(part,m.ordinal,selected):[];
+    const slurDependencies=dependencyVersion>=2||state.slurReviewTracking?workspaceSlurDependencies(part,m.ordinal,selected,dependencyVersion!==3):[];
     const notationRemovals=state.notationRemovals?.filter(r=>notes.some(e=>e.workspaceEventId===r.eventId))??[];
     projection = { measureId: m.workspaceMeasureId, duration: m.duration, time: m.time, key: effectiveWorkspaceKey(state,scope.measureId) ?? null,
       observation: m.keyObservation ?? null, absoluteStart: start, notes, unknown: m.unresolvedEvents ?? [], chords: ownChords.map(chordMeaning), incoming,
       repeat: m.repeat, text: m.textEvents, previousTie: tieBoundary(part.measures[m.ordinal-1],"last"), nextTie: tieBoundary(part.measures[m.ordinal+1],"first"),
       ...(slurDependencies.length?{slurDependencies}:{}),...(notationRemovals.length?{notationRemovals}:{}) };
   }
-  return semanticDigest({ schema: dependencyVersion===2?"hm-workspace-review-dependency-v2":"hm-workspace-review-dependency-v1", evidenceDigest, scope: clean(scope), projection: clean(projection) });
+  return semanticDigest({ schema: `hm-workspace-review-dependency-v${dependencyVersion}`, evidenceDigest, scope: clean(scope), projection: clean(projection) });
 }
-type FingerprintReader = (scope: WorkspaceScope, version: 1 | 2) => Promise<string>;
+type FingerprintReader = (scope: WorkspaceScope, version: 1 | 2 | 3, issueId?: string) => Promise<string>;
 async function currentWithFingerprint(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string, fingerprint: FingerprintReader): Promise<boolean> {
   if (a.evidenceDigest !== evidenceDigest) return false;
   if(a.dependencyVersion===undefined&&state.invalidatedLegacyReviewIds?.includes(a.id))return false;
-  try { return a.dependencyFingerprint === await fingerprint(a.scope,a.dependencyVersion??1); } catch { return false; }
+  try { return a.dependencyFingerprint === await fingerprint(a.scope,a.dependencyVersion??1,a.issueId); } catch { return false; }
 }
 export async function attestationCurrent(state: WorkspaceState, a: WorkspaceAttestation, evidenceDigest: string): Promise<boolean> {
-  return currentWithFingerprint(state,a,evidenceDigest,(scope,version)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version));
+  return currentWithFingerprint(state,a,evidenceDigest,(scope,version,issueId)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId));
 }
 async function issueCurrentWithFingerprint(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string, fingerprint: FingerprintReader): Promise<boolean> {
   if (issue.requiredAction !== "compare") return false;
@@ -82,17 +85,39 @@ async function issueCurrentWithFingerprint(state: WorkspaceState, issue: Workspa
   return false;
 }
 export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string): Promise<boolean> {
-  return issueCurrentWithFingerprint(state,issue,evidenceDigest,(scope,version)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version));
+  return issueCurrentWithFingerprint(state,issue,evidenceDigest,(scope,version,issueId)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId));
+}
+/** Replay performs this once before the first v3 command. Only still-current
+ * judgments may be retained under a narrower dependency rule. Original actor,
+ * time, scope, targets and old fingerprint remain attributable; stale reviews
+ * are not resurrected. The original journal is never rewritten. */
+export async function retainWorkspaceReviewsV3(state: WorkspaceState, origin: WorkspaceOrigin, evidenceDigest: string, operationId: string): Promise<WorkspaceState> {
+  const dependencies = resolveWorkspaceIssueDependencies(state,origin);
+  const next = {...state,...(dependencies.length ? {reviewIssueDependencies:dependencies} : {})};
+  const fingerprints = new Map<string,Promise<string>>();
+  const oldFingerprint: FingerprintReader = (scope,version,issueId) => {
+    const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
+    let value = fingerprints.get(key);
+    if (!value) { value = workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId); fingerprints.set(key,value); }
+    return value;
+  };
+  const attestations: WorkspaceAttestation[] = [];
+  for (const a of state.attestations) {
+    if (a.dependencyVersion === 3 || !await currentWithFingerprint(state,a,evidenceDigest,oldFingerprint)) { attestations.push(a); continue; }
+    attestations.push({...a,dependencyVersion:3,dependencyFingerprint:await workspaceReviewFingerprint(next,a.scope,evidenceDigest,3,a.issueId),
+      retainedReview:{previousVersion:a.dependencyVersion??1,previousFingerprint:a.dependencyFingerprint,transitionOperationId:operationId}});
+  }
+  return {...next,attestations};
 }
 export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenceDigest: string): Promise<WorkspaceCapabilities> {
   // One immutable evaluation, not a cross-document or cross-revision cache.
   // Caller edits during an await cannot mix old and new dependency projections.
   state = structuredClone(state);
   const fingerprints = new Map<string,Promise<string>>();
-  const fingerprint: FingerprintReader = (scope,version) => {
-    const key = `${version}:${canonicalJson(scope)}`;
+  const fingerprint: FingerprintReader = (scope,version,issueId) => {
+    const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
     let value = fingerprints.get(key);
-    if (!value) { value = workspaceReviewFingerprint(state,scope,evidenceDigest,version); fingerprints.set(key,value); }
+    if (!value) { value = workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId); fingerprints.set(key,value); }
     return value;
   };
   const blockers: { id: string; messageKo: string; scope: WorkspaceScope }[] = [];
