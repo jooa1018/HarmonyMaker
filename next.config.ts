@@ -18,6 +18,7 @@ const nextConfig: NextConfig = {
   ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "serialized" ? { distDir: ".next-local-review-persistence-serialized" } : {}),
   ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "render" ? { distDir: ".next-local-review-persistence-render" } : {}),
   ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "combined" ? { distDir: ".next-local-review-persistence-combined" } : {}),
+  ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "projection" ? { distDir: ".next-local-review-persistence-projection" } : {}),
   // Local low-disk validation only. No cache deletion or production change.
   ...(process.env.HM_LOCAL_NO_DISK_CACHE === "1"
     ? { experimental: { turbopackFileSystemCacheForDev: false } }

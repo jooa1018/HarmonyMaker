@@ -38,7 +38,10 @@ export async function validateWorkspaceSourceIntegrity(source:SongSourceDocument
     for(const field of ["performanceSequence","sectionDefinitions","sectionOccurrences","phraseRegions"] as const)
       if(canonicalJson(normalized.normalization[field])!==canonicalJson(source[field]))return false;
     const expected=await workspaceProjectionMetadata(draft,source);
-    const valid=canonicalJson(expected)===canonicalJson(metadata)&&canonicalJson(source.title)===canonicalJson(draft.title)
+    // The complete proof was parsed/replayed above. Compare its exact immutable
+    // bytes, without re-escaping the large string twice inside the binding.
+    const {proof:expectedProof,...expectedBinding}=expected,{proof:actualProof,...actualBinding}=metadata;
+    const valid=expectedProof===actualProof&&canonicalJson(expectedBinding)===canonicalJson(actualBinding)&&canonicalJson(source.title)===canonicalJson(draft.title)
       && canonicalJson(source.composer??null)===canonicalJson(draft.composer??null) && source.importInfo.importerVersion==="hm-workspace-projection-v1"
       && canonicalJson(source.importInfo.originalFileName??null)===canonicalJson(draft.originalFileName??null)
       && canonicalJson(source.rights)===canonicalJson({...draft.rights!,allowedUses:[...draft.rights!.allowedUses].sort()});

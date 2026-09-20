@@ -25,7 +25,7 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
   }))}));
   const occurrences=buildImportedSectionOccurrenceReviews(parts,state.music.leadCandidates,req.sections,value.algorithmVersions.performanceExpanderVersion)
     .map(o=>req.lyricVerses[o.key]===undefined?o:{...o,selectedLyricVerse:req.lyricVerses[o.key]});
-  const draft:MusicXmlImportDraft=clean({...state.music,workspaceInspectionOnly:undefined,
+  const draft:MusicXmlImportDraft={...clean({...state.music,workspaceInspectionOnly:undefined,
     // Keep the OMR requirement visible; finalization validates the complete new
     // proof rather than relabeling this candidate as a direct XML import.
     localCandidateReviewRequired:value.origin.kind!=="musicxml"?true:state.music.localCandidateReviewRequired,
@@ -36,17 +36,24 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
     // These imported diagnostics have become derived conditions; all static,
     // uninterpreted diagnostics were gated above, not downgraded to warnings.
     diagnostics:state.music.diagnostics.filter(d=>!["workspace-overfull","invalid-pitch"].includes(String(d.details?.issue))&&d.code!=="UNSUPPORTED_MODULATION"),
-    workspaceProof:await exportScoreWorkspace(value),
-  });
+  }),workspaceProof:await exportScoreWorkspace(value)};
   return draft;
 }
-const verified=new WeakMap<MusicXmlImportDraft,{serialized:string;workspace:ScoreWorkspace}>();
+// Proof is an immutable string, separate from the musical projection identity.
+// Do not clone/escape its megabytes merely to compare the small draft again,
+// and never retain a mutable workspace returned to another caller.
+const verified=new WeakMap<MusicXmlImportDraft,{identity:string;proof:string}>();
 export async function validateProjectedWorkspaceDraft(draft:MusicXmlImportDraft):Promise<ScoreWorkspace> {
-  if(!draft.workspaceProof||draft.workspaceProof.length>64_000_000)throw new RangeError("WORKSPACE_PROJECTION_PROOF_REQUIRED");
-  const serialized=canonicalJson(clean(draft));const hit=verified.get(draft);if(hit?.serialized===serialized)return hit.workspace;
-  const workspace=await parseScoreWorkspace(draft.workspaceProof),expected=await projectScoreWorkspace(workspace);
-  if(projectedDraftIdentity(draft)!==projectedDraftIdentity(expected))throw new RangeError("WORKSPACE_PROJECTION_SUBSTITUTED");
-  verified.set(draft,{serialized,workspace});return workspace;
+  const proof=draft.workspaceProof;
+  if(typeof proof!=="string"||!proof||proof.length>64_000_000)throw new RangeError("WORKSPACE_PROJECTION_PROOF_REQUIRED");
+  const identity=projectedDraftIdentity(draft),hit=verified.get(draft);
+  const workspace=await parseScoreWorkspace(proof);
+  if(hit?.proof!==proof||hit.identity!==identity) {
+    const expected=await projectScoreWorkspace(workspace);
+    if(identity!==projectedDraftIdentity(expected))throw new RangeError("WORKSPACE_PROJECTION_SUBSTITUTED");
+  }
+  if(draft.workspaceProof!==proof||projectedDraftIdentity(draft)!==identity)throw new RangeError("WORKSPACE_PROJECTION_MUTATED_DURING_VALIDATION");
+  verified.set(draft,{identity,proof});return workspace;
 }
 
 export async function workspaceProjectionMetadata(draft:MusicXmlImportDraft,source:SongSourceDocument) {

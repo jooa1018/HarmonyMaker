@@ -47,6 +47,23 @@ async function ready(w:ScoreWorkspace) {
 }
 
 describe("persistent score boundary",()=>{
+  it("does not let a returned projection workspace poison the same verified draft",async()=>{
+    const w=await ready(await start()),draft=await projectScoreWorkspace(w);
+    const first=await validateProjectedWorkspaceDraft(draft);
+    Object.assign(first.origin,{xml:"caller-mutated cached workspace"});
+    const second=await validateProjectedWorkspaceDraft(draft);
+    expect(second.origin).toEqual(w.origin);
+    expect(second).not.toBe(first);
+  });
+  it("rejects proof or projected music changed while a projection validation is pending",async()=>{
+    const w=await ready(await start()),draft=await projectScoreWorkspace(w);
+    const pending=validateProjectedWorkspaceDraft(draft);
+    Object.assign(draft,{workspaceProof:" "+draft.workspaceProof});
+    await expect(pending).rejects.toThrow("WORKSPACE_PROJECTION_MUTATED_DURING_VALIDATION");
+    const restored=await projectScoreWorkspace(w);await validateProjectedWorkspaceDraft(restored);
+    const warm=validateProjectedWorkspaceDraft(restored);Object.assign(restored,{title:"changed while warm validation awaits"});
+    await expect(warm).rejects.toThrow("WORKSPACE_PROJECTION_MUTATED_DURING_VALIDATION");
+  });
   it("invalidates the endpoints and interior of an edited slur, keeping the unrelated measure",async()=>{
     let w=await ready(await start()),s=await state(w);
     const event=(i:number)=>s.music!.parts[0].measures[i].leadEvents[0].workspaceEventId!;
