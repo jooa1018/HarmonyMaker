@@ -12,6 +12,30 @@ describe("canonical digest codec", () => {
     expect(await semanticDigest({ a: 1 })).toHaveLength(64);
   });
 
+  it("preserves JSON/NFC bytes for every UTF-16 code unit and ASCII escape pair", () => {
+    for (let code = 0; code <= 0xffff; code++) {
+      const text = String.fromCharCode(code);
+      expect(canonicalJson(text)).toBe(JSON.stringify(text.normalize("NFC")));
+    }
+    for (let a = 0; a < 128; a++) for (let b = 0; b < 128; b++) {
+      const text = String.fromCharCode(a, b);
+      expect(canonicalJson({ [text]: text })).toBe(
+        `{${JSON.stringify(text)}:${JSON.stringify(text)}}`,
+      );
+    }
+  });
+
+  it("keeps short-string boundaries, escaped text and Unicode digests unchanged", async () => {
+    for (const length of [0, 1, 63, 64, 65, 128]) {
+      for (const suffix of ["", '"', "\\", "\n", "\u007f", "e\u0301", "\ud800", "🎵"]) {
+        const text = "A".repeat(length) + suffix;
+        const expected = JSON.stringify(text.normalize("NFC"));
+        expect(canonicalJson(text)).toBe(expected);
+        expect(await semanticDigest(text)).toBe(await binaryDigest(new TextEncoder().encode(expected)));
+      }
+    }
+  });
+
   it("preserves exact canonical output across large immutable strings and later changes", () => {
     const first = 'e\u0301\\"\n'.repeat(20_000), second = 'different\ud800'.repeat(10_000);
     for (const value of [first, first, second, first])

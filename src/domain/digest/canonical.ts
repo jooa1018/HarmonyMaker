@@ -19,8 +19,12 @@ export class CanonicalCodecError extends TypeError {
 // captures. Keep at most one bounded string pair; this is a pure codec cache,
 // never an attestation or a cache of mutable objects/validation results.
 let largeQuotedString: { text: string; quoted: string } | undefined;
+const SHORT_PLAIN_ASCII = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/u;
 function quote(text: string): string {
   if (largeQuotedString?.text === text) return largeQuotedString.quoted;
+  // Printable ASCII excluding quote/backslash needs neither NFC conversion nor
+  // JSON escaping. Bound the scan so large evidence strings keep their path.
+  if (text.length <= 64 && SHORT_PLAIN_ASCII.test(text)) return '"' + text + '"';
   const quoted = JSON.stringify(text.normalize("NFC"));
   if (text.length >= 65_536 && text.length <= 16_000_000 && quoted.length <= 16_000_000)
     largeQuotedString = { text, quoted };
