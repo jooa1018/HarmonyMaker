@@ -12,7 +12,7 @@ import type { LocalCandidateBundle } from "../../domain/omr/local-candidate";
 import { deriveQuickReview } from "../../import";
 import type { ImportedLeadEventDraft,ImportedMeasureDraft } from "../../import/musicxml/types";
 import { originFromMusicXml,originFromLocalCandidate,originFromLegacyBundle,workspaceOriginalImages } from "../../import/workspace/input";
-import { createScoreWorkspace,parseScoreWorkspace,exportScoreWorkspace,applyWorkspaceCommand,readVerifiedWorkspace } from "../../import/workspace/journal";
+import { createScoreWorkspace,parseScoreWorkspace,exportScoreWorkspace,applyWorkspaceCommand,readVerifiedWorkspace,createImmutableWorkspace } from "../../import/workspace/journal";
 import { deriveWorkspaceCapabilities,effectiveWorkspaceKey } from "../../import/workspace/review";
 import { projectScoreWorkspace } from "../../import/workspace/projection";
 import { ScoreWorkspaceStore,generatedWorkspaceResultIsCurrent,type StoredScoreWorkspace } from "../../import/workspace/store";
@@ -26,7 +26,11 @@ import { attestWorkspaceIssues } from "../../import/workspace/review-batch";
 import { WorkspaceIssueReview } from "./WorkspaceIssueReview";
 
 interface Loaded {record:StoredScoreWorkspace;state:WorkspaceState;caps:WorkspaceCapabilities}
-const hydrateWorkspace=async(record:StoredScoreWorkspace):Promise<Loaded>=>{const {state,evidenceDigest}=await readVerifiedWorkspace(record.workspace);return {record,state,caps:await deriveWorkspaceCapabilities(state,evidenceDigest)};};
+const hydrateWorkspace=async(record:StoredScoreWorkspace):Promise<Loaded>=>{
+  const owned={...record,workspace:await createImmutableWorkspace(record.workspace)};
+  const {state,evidenceDigest}=await readVerifiedWorkspace(owned.workspace);
+  return {record:owned,state,caps:await deriveWorkspaceCapabilities(state,evidenceDigest)};
+};
 type Commit=(command:WorkspaceCommand,note:string)=>Promise<void>;
 const f=(v:Fraction)=>v.d===1?String(v.n):`${v.n}/${v.d}`;
 const p=(v:SpelledPitch)=>`${v.step}${v.alter===1?"#":v.alter===-1?"b":""}${v.octave}`;
@@ -104,7 +108,7 @@ export function ScoreWorkspaceClient() {
   const run=useCallback(async(action:(ensureCurrent:()=>void)=>Promise<void>)=>{if(gate.current)return;gate.current=true;setBusy(true);const token=loadToken.current;const ensureCurrent=()=>{if(loadToken.current!==token)throw Error("WORKSPACE_VIEW_CHANGED");};try{await action(ensureCurrent);}catch(err){if(loadToken.current===token)setStatus(`저장/검증 실패: ${err instanceof Error?err.message:String(err)} · 성공으로 처리하지 않았습니다.`);}finally{gate.current=false;setBusy(false);}},[]);
   const persist=useCallback(async(workspace:ScoreWorkspace,ensureCurrent:()=>void,previous?:StoredScoreWorkspace,generation?:StoredScoreWorkspace["generation"])=>{
     const record:StoredScoreWorkspace={workspace,storageRevision:previous?previous.storageRevision+1:0,updatedAt:new Date().toISOString(),...(generation??previous?.generation?{generation:generation??previous?.generation}:{})};
-    const value=await hydrateWorkspace(record);ensureCurrent();await store.save(record,previous?.storageRevision);const items=await store.list();ensureCurrent();publish(value);setList(items);return record;
+    const value=await hydrateWorkspace(record);ensureCurrent();await store.save(value.record,previous?.storageRevision);const items=await store.list();ensureCurrent();publish(value);setList(items);return value.record;
   },[store,publish]);
   const commit=useCallback<Commit>(async(command,note)=>run(async ensureCurrent=>{const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");const next=await applyWorkspaceCommand(old.record.workspace,old.record.workspace,command,{id:crypto.randomUUID(),note,actor:navigator.webdriver?"ui-test":"user",at:new Date().toISOString()});await persist(next,ensureCurrent,old.record);setDiagnostics("");setStatus(`저장 완료 · revision ${next.revision} · ${note}`);}),[run,persist]);
   const confirmIssues=async(ids:readonly string[],note:string,expected:{revision:number;digest:string})=>run(async ensureCurrent=>{

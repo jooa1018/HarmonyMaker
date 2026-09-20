@@ -22,8 +22,36 @@ interface Replay {
   /** Private to this verified state lineage; edits always replace the map. */
   readonly reviewFingerprints: Map<string, string>;
 }
-interface VerifiedReplay { readonly serialized:string; readonly value:Replay; readonly encoded?:string }
+interface VerifiedReplay {
+  readonly serialized:string; readonly value:Replay; readonly encoded?:string;
+  readonly digestState?:ReturnType<typeof createReplayStateDigester>;
+}
 const cache = new WeakMap<ScoreWorkspace,VerifiedReplay>();
+// Membership is private and only granted to a newly parsed, deeply frozen
+// copy after full replay. Object.freeze supplied by a caller is not authority.
+const immutableWorkspaces = new WeakSet<ScoreWorkspace>();
+function captureWorkspace(value:ScoreWorkspace):string {
+  return immutableWorkspaces.has(value)?cache.get(value)!.serialized:JSON.stringify(value);
+}
+function immutableVerifiedWorkspace(verified:VerifiedReplay):ScoreWorkspace {
+  const snapshot=JSON.parse(verified.serialized) as ScoreWorkspace;
+  const pending:object[]=[snapshot];
+  while(pending.length) {
+    const node=pending.pop()!;
+    for(const child of Object.values(node))if(child!==null&&typeof child==="object")pending.push(child);
+    Object.freeze(node);
+  }
+  cache.set(snapshot,verified);immutableWorkspaces.add(snapshot);return snapshot;
+}
+/** A detached immutable working copy, not an assertion supplied by a reader.
+ * Existing mutable APIs still check the caller's bytes on every use. */
+export async function createImmutableWorkspace(value:ScoreWorkspace):Promise<ScoreWorkspace> {
+  if(immutableWorkspaces.has(value))return value;
+  const serialized=JSON.stringify(value),verified=await replay(value,serialized);
+  if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_PREPARATION");
+  const hit=cache.get(value)!;
+  return immutableVerifiedWorkspace(hit.serialized===serialized&&hit.value===verified?hit:{serialized,value:verified});
+}
 // One private entry only. Normal review history can take an image proof beyond
 // 8 MB; retain that verified replay across Source/project validation instead of
 // repeatedly replaying it. This is a cache bound, not the 64 MB input limit.
@@ -140,7 +168,7 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
   const history=op as WorkspaceOperation;
   return finish({...current,state,active:[...current.active,history],redo:[]});
 }
-async function replay(value: ScoreWorkspace, serialized=JSON.stringify(value)): Promise<Replay> {
+async function replay(value: ScoreWorkspace, serialized=captureWorkspace(value)): Promise<Replay> {
   if(serialized.length>64_000_000||value.version!==SCORE_WORKSPACE_VERSION||!isCanonicalId(value.id)||value.id.length>128
     ||!Array.isArray(value.operations)||value.operations.length>2048||value.revision!==value.operations.length||!isSemanticDigest(value.digest)||!isSemanticDigest(value.historyDigest)) throw new RangeError("WORKSPACE_HISTORY_INVALID");
   const hit=cache.get(value); if(hit?.serialized===serialized) return hit.value;
@@ -164,7 +192,7 @@ async function replay(value: ScoreWorkspace, serialized=JSON.stringify(value)): 
     current=next;
   }
   if(value.digest!==currentDigest) throw new RangeError("WORKSPACE_SNAPSHOT_SUBSTITUTED");
-  if(JSON.stringify(caller)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_VALIDATION");
+  if(captureWorkspace(caller)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_VALIDATION");
   cache.set(caller,{serialized,value:current});return current;
 }
 export async function createScoreWorkspace(origin: WorkspaceOrigin, versions: Step3ImportVersions, id: string): Promise<ScoreWorkspace> {
@@ -195,12 +223,15 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
   if(!Array.isArray(entries)||!entries.length||entries.length>128||value.operations.length+entries.length>2048)throw new RangeError("WORKSPACE_OPERATION_INVALID");
   const ids=new Set(value.operations.map(o=>o.id));
   const operations=entries.map(({command,meta})=>{
-    checkMeta(meta);if(ids.has(meta.id))throw new RangeError("WORKSPACE_OPERATION_INVALID");ids.add(meta.id);
-    return {...meta,command:clean(command),reviewDependencyVersion:3 as const};
+    // Own metadata as well as the command before any await. Unknown nested
+    // metadata must not retain a caller alias into a private replay lineage.
+    const operation=clean({...meta,command,reviewDependencyVersion:3 as const});
+    checkMeta(operation);if(ids.has(operation.id))throw new RangeError("WORKSPACE_OPERATION_INVALID");ids.add(operation.id);
+    return operation;
   });
-  const serialized = JSON.stringify(value), owned = JSON.parse(serialized) as ScoreWorkspace;
+  const serialized = captureWorkspace(value), owned = immutableWorkspaces.has(value)?value:JSON.parse(serialized) as ScoreWorkspace;
   let current=await replay(value,serialized),digest=value.digest;
-  const digestState=createReplayStateDigester(),recorded:WorkspaceOperation[]=[];
+  const digestState=(immutableWorkspaces.has(value)?cache.get(value)?.digestState:undefined)??createReplayStateDigester(),recorded:WorkspaceOperation[]=[];
   for(const operation of operations) {
     const next=await step(current,operation,true),afterDigest=await digestState(next.state);
     recorded.push({...next.lastOperation!,beforeDigest:digest,afterDigest,affectedIds:changedWorkspaceTargets(current.state,next.state)});
@@ -208,9 +239,13 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
   }
   const changed={...owned,operations:[...owned.operations,...recorded],revision:owned.revision+recorded.length,digest};
   const result={...changed,historyDigest:await historyDigest(changed,current.evidenceDigest)};
-  if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
+  if(captureWorkspace(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EDIT");
   const resultSerialized=JSON.stringify(result);
   if(resultSerialized.length>64_000_000) throw new RangeError("WORKSPACE_LIMIT");
+  // The returned immutable workspace is separately parsed. Reducer inputs were
+  // captured above, so its private replay and weak encoding segments can remain
+  // owned by this lineage. Mutable callers retain the original detached cache.
+  if(immutableWorkspaces.has(value))return immutableVerifiedWorkspace({serialized:resultSerialized,value:current,digestState});
   cache.set(result,{serialized:resultSerialized,value:structuredClone(current)});return result;
 }
 export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace> {
@@ -227,8 +262,8 @@ export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace>
 }
 /** Encoding and its origin binding from the same checked snapshot. */
 export async function serializeScoreWorkspace(value: ScoreWorkspace): Promise<{encoded:string;evidenceDigest:string}> {
-  const serialized = JSON.stringify(value);await replay(value,serialized);
-  if(JSON.stringify(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EXPORT");
+  const serialized = captureWorkspace(value);await replay(value,serialized);
+  if(captureWorkspace(value)!==serialized)throw new RangeError("WORKSPACE_MUTATED_DURING_EXPORT");
   const verified=cache.get(value)!;
   const text=verified.encoded??asciiProofJson(value);
   // Raw imported JSON may contain whitespace, Unicode or another key order.

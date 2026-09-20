@@ -32,3 +32,4 @@ runtime-browser-evidence/
 .next-local-review-persistence-deferred/
 
 .next-local-review-persistence-ascii/
+.next-local-review-persistence-immutable/

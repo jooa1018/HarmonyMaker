@@ -2,10 +2,10 @@ import { canonicalJson } from "../../domain/digest/canonical";
 import { clean } from "./edit";
 import { SCORE_WORKSPACE_VERSION, type WorkspaceState } from "./model";
 
-/** Only for privately owned, immutable reducer states in one full replay.
+/** Only for privately owned, immutable reducer states in one verified lineage.
  * Keeps the exact v1 canonical bytes; no snapshot or external cached digest is
- * trusted. Weak keys release replaced states and the whole encoder dies after
- * replay. It must never be used with a caller-owned mutable state. */
+ * trusted. Weak keys release replaced states; immutable workspace ownership may
+ * retain the encoder across edits. Never use caller-owned mutable states. */
 export function createReplayStateDigester() {
   const utf8 = new TextEncoder();
   const encoded = new WeakMap<object, Uint8Array>();
