@@ -1,5 +1,21 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-21 검증된 불변 작업 사본과 이력 공유
+
+**REVIEW_USABILITY_V1_PARTIAL 유지.** 최종 제품 `6578cb8998fe9530dfca6cd9cb755a2d1d8e423f`, 생성 타입 후속 `3faed1d2ef7ab48fbd02fc18a388c00f9a99e83e`, build `.next-local-review-persistence-shared` / `Lt9FYQ3374921p-9ZyMP4`다. 외부 workspace는 기존 검증을 통과한 분리된 deep-frozen 사본으로 준비하고, 내부 private WeakSet으로만 소유권을 판별한다. 이후 revision은 불변 원본/이력 노드를 공유하여 큰 원본을 매 편집마다 다시 파싱하지 않는다. 입력 명령과 metadata는 await 전에 분리·검증한다. 외부 freeze/복사/proof는 내부 권위를 만들지 않는다. mutable 입력 변경 감지, seal/history/proof, CAS·transaction 완료, 실패 후 재계산·문서 격리, 음악·파일 형식·검토 의존성·캐시 한도는 유지한다.
+
+타입·전체 lint PASS, 전체 기본124파일/1,195 PASS 및 기존 opt-in3파일/5 SKIP, production build exit0/58.884초. 8개 소유권 회귀는 alias/변경 getter/await 중 변경/분기·문서 격리/Undo·Redo 바이트 동등성/CAS·quota 실패를 검증한다. 최종 test 종료 직전 build가 시작한 짧은 겹침이 있었으나 두 검사는 종료PASS였고 최종 브라우저 성능 시험은 모두 종료한 뒤 실행했다.
+
+최종 Chrome에서 r0→r542의52개 음악 교정·39마디 대조·441 issue 대조·요청9/제목1, Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장/reload→실제 프로젝트/XML 다운로드와 새 사본 재입력이 통과했다. 같은 profile/origin/build에서 실제 서버·Chrome 재시작 후 저장본 복구·파일 재입력/XML Quick Review도 통과했다. 실제 파일 음악 의미23검사, 다운로드14검사 PASS, browser plan 별도capture1개 NOT_RUN. Source/WAG/710개 재생 계획은 기존 r1019와 동일하며 새 OMR·음악·WAG·오디오·믹서 변경은 없다. fixture actor=ui-test이며 사람 승인으로 기록하지 않았다.
+
+늦은 slur r543→544는 유효 대조524, stale 음악1마디/issue8, 무관한 마디 stale0이다. 원본/543개 이력/검토 actor·시각·범위를 보존했고 Undo545의0/0 및 Redo546의1/8을 실제 다운로드로 확인했다. 8개 중7개는 부착 미확정 raw 기록의 보수적 해당 마디 범위이며 모두 독립적인 필수 새 판단이라는 뜻이 아니다. 늦은 수정 click→저장DOM0.921초/다음frame0.980초, Undo/Redo driver1.204/1.651초다.
+
+국소91회는 click→저장후frame0.268–0.833초로 **91/91회1초 이내**였다. driver0.290–0.942초와 저장DOM0.246–0.756초도 모두1초 이내이며 전부visible/focused였다. 직전 같은 경계80/91회보다 개선됐지만 사람 시간이 아니다. 질문329개/8묶음, 교정~Source UI명령404개이며 최초 열기·후속 프로젝트 동작은 별도다.
+
+r1019 native file selection 동일 경계3회에서 초안 가져오기5.154–7.033초/복구5.933–9.598초/저장0.717–1.086초/export0.564–0.815초, 프로젝트 가져오기8.209–10.505초/복구8.011–9.173초/저장0.440–0.585초/export0.714–0.920초였다. 프로젝트 가져오기 한 표본이10초를 초과했고 Undo/Redo 지연도 남아 완료 처리하지 않는다. cold 결과는 직전보다 느린 표본도 있어 전체 성능 향상으로 표현하지 않는다. 미달 표본의 정확한 지연 원인을 RAM 하나로 단정하지 않고 cold proof/파생 계산·canonical capture·렌더/GC의 분리가 남는다.
+
+비공개 `outputs/HarmonyMaker-review-persistence-immutable`에 최종 `shared-*` 증거와 `검증보고서.md`, `시작안내.md`, `summary.json`, `실행-최종.ps1` 및 새 r542 결과를 보존했다. 중간 immutable build의 별도 결과도 유지한다. 이전 manifest134파일+24helper=158개 hash/크기 동일. 시험 Chrome/server는 저장·다운로드 후 정상 종료,3203 listener 없음. 원본·r550/r551/r1019·프로필·모델·기존build 삭제나 push/배포/병합은 없다. PostgreSQL·새 OMR·새 전체PCM은 해당 경로 변경이 없어 NOT_RUN. HUMAN_TIME_NOT_MEASURED / HUMAN_RECHECK_PENDING이다.
+
 ## 2026-09-21 짧은 문자열 인코딩과 실제 UI 후속 검증
 
 **REVIEW_USABILITY_V1_PARTIAL 유지.** 제품 `20b7c94ea199b5d25b0efacb4fa8b70d54081577`, 생성 타입 후속 `c677895486965ddc1c120c57700329e82e1489c2`, production build `.next-local-review-persistence-ascii` / `ASx049iUItYA__MFM9P-p`이다. 64자 이하의 escape가 필요 없는 인쇄 ASCII 문자열만 기존과 같은 canonical JSON 바이트로 바로 인코딩한다. Unicode/escape/큰 문자열과 proof·hash 형식, 검토 의존성·CAS·음악·WAG·오디오·캐시 한도는 유지한다. UTF-16 전체 단일 코드 단위와 ASCII 두 글자 조합, 길이·escape 경계의 동등성 회귀를 추가했다. 불변 workspace 소유권이나 ancestor Set prototype은 제품에 반영하지 않았다.
