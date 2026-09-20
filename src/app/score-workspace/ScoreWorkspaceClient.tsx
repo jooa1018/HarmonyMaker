@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useRouter,useSearchParams } from "next/navigation";
-import { useEffect,useMemo,useRef,useState } from "react";
+import { memo,useCallback,useEffect,useMemo,useRef,useState } from "react";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY as V } from "../algorithm-version-registry";
 import { PerformerEditor,RightsEditor } from "../import/ImportReviewClient";
 import { LocalCandidateReviewEvidence } from "../import/LocalCandidateReviewEvidence";
@@ -26,6 +26,7 @@ import { attestWorkspaceIssues } from "../../import/workspace/review-batch";
 import { WorkspaceIssueReview } from "./WorkspaceIssueReview";
 
 interface Loaded {record:StoredScoreWorkspace;state:WorkspaceState;caps:WorkspaceCapabilities}
+const hydrateWorkspace=async(record:StoredScoreWorkspace):Promise<Loaded>=>{const state=await replayScoreWorkspace(record.workspace);return {record,state,caps:await deriveWorkspaceCapabilities(state,await verifiedWorkspaceEvidenceDigest(record.workspace))};};
 type Commit=(command:WorkspaceCommand,note:string)=>Promise<void>;
 const f=(v:Fraction)=>v.d===1?String(v.n):`${v.n}/${v.d}`;
 const p=(v:SpelledPitch)=>`${v.step}${v.alter===1?"#":v.alter===-1?"b":""}${v.octave}`;
@@ -36,23 +37,26 @@ function parseFraction(text:string):Fraction {if(!/^\d+(\/\d+)?$/u.test(text))th
 function parsePitch(text:string):SpelledPitch {const m=/^([A-G])([#b]?)(-?\d+)$/u.exec(text);if(!m)throw Error("음높이는 C4, F#4처럼 입력하세요.");return {step:m[1] as SpelledPitch["step"],alter:m[2]==="#"?1:m[2]==="b"?-1:0,octave:Number(m[3])};}
 function download(name:string,text:string) {const u=URL.createObjectURL(new Blob([text],{type:"application/json"}));const a=document.createElement("a");a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
 
-function ChordForm({m,chord,commit}:{m:ImportedMeasureDraft;chord?:ImportedMeasureDraft["chords"][number];commit:Commit}) {
+// Replay returns detached data. Compare all form data, not reference identity,
+// so unrelated saves do not update hundreds of unchanged controlled inputs.
+// This is presentation reuse only; the command still validates the current ref.
+const ChordForm=memo(function ChordForm({m,chord,commit}:{m:ImportedMeasureDraft;chord?:ImportedMeasureDraft["chords"][number];commit:Commit}) {
   const [text,setText]=useState(chord?.sourceText??""),[onset,setOnset]=useState(f(chord?.onset??fraction(0))),[error,setError]=useState(""),[evidence,setEvidence]=useState("");
   return <form className={styles.row} onSubmit={e=>{e.preventDefault();try{void commit({kind:"chord",measureId:m.workspaceMeasureId!,...(chord?{chordId:chord.key}:{}),text,onset:parseFraction(onset)},`${m.number}마디 코드 ${chord?.sourceText??"없음"} → ${text}; ${evidence||"원본 대조에 따른 교정"}`);}catch(err){setError(String(err));}}}>
     <label>코드<input aria-label={chord?`코드 ${chord.key}`:`${m.number}마디 새 코드`} value={text} onChange={e=>setText(e.target.value)}/></label>
     <label>시작(4분음표 단위)<input aria-label={`${m.number}마디 코드 시작 ${chord?.key??"new"}`} value={onset} onChange={e=>setOnset(e.target.value)}/></label>
     <label>코드 원본 위치·근거<input aria-label="코드 원본 위치·근거" value={evidence} onChange={e=>setEvidence(e.target.value)}/></label><button type="submit">{chord?"코드 수정 저장":"코드 추가 저장"}</button>{chord&&<button type="button" disabled={evidence.trim().length<8} onClick={()=>void commit({kind:"remove-chord",chordId:chord.key},`${chord.key}: ${evidence}`)}>이 코드 제거 저장</button>}{error&&<span role="alert">{error}</span>}
   </form>;
-}
+},(a,b)=>a.commit===b.commit&&JSON.stringify(a.m)===JSON.stringify(b.m)&&JSON.stringify(a.chord)===JSON.stringify(b.chord));
 type EditableEvent=ImportedLeadEventDraft|{kind:"unknown";workspaceEventId:string;candidateKey:string;onset:Fraction;duration:Fraction};
-function NoteForm({event,commit}:{event:EditableEvent;commit:Commit}) {
+const NoteForm=memo(function NoteForm({event,commit}:{event:EditableEvent;commit:Commit}) {
   const [kind,setKind]=useState<"note"|"rest"|"rhythm">(event.kind==="unknown"?"note":event.kind),[pitch,setPitch]=useState(event.kind==="note"?p(event.pitch):""),[onset,setOnset]=useState(f(event.onset)),[duration,setDuration]=useState(f(event.duration)),[start,setStart]=useState((event.kind==="note"||event.kind==="rhythm")&&event.tieStart),[stop,setStop]=useState((event.kind==="note"||event.kind==="rhythm")&&event.tieStop),[error,setError]=useState(""),[evidence,setEvidence]=useState("");
   return <details><summary>음·시간·tie 교정</summary><form className={styles.row} onSubmit={e=>{e.preventDefault();try{void commit({kind:"note",eventId:event.workspaceEventId!,value:{kind,...(kind==="note"?{pitch:parsePitch(pitch)}:{}),onset:parseFraction(onset),duration:parseFraction(duration),tieStart:start,tieStop:stop}},`${event.workspaceEventId}: ${evidence||"원본 대조 후 음·시간·tie 교정"}`);}catch(err){setError(String(err));}}}>
     <label>종류<select aria-label="이벤트 종류" value={kind} onChange={e=>setKind(e.target.value as typeof kind)}><option value="note">note · 음높이 있음</option><option value="rest">rest · 쉼표</option><option value="rhythm">rhythm · 리듬 슬래시</option></select></label>
     {kind==="note"&&<label>음높이<input value={pitch} onChange={e=>setPitch(e.target.value)}/></label>}<label>시작<input value={onset} onChange={e=>setOnset(e.target.value)}/></label><label>길이<input value={duration} onChange={e=>setDuration(e.target.value)}/></label>
     <label><input type="checkbox" checked={start} onChange={e=>setStart(e.target.checked)}/>tie 시작</label><label><input type="checkbox" checked={stop} onChange={e=>setStop(e.target.checked)}/>tie 끝</label><label>음·시간 원본 위치·근거<input aria-label="음·시간 원본 위치·근거" value={evidence} onChange={e=>setEvidence(e.target.value)}/></label><button>이벤트 교정 저장</button>{error&&<span role="alert">{error}</span>}
   </form></details>;
-}
+},(a,b)=>a.commit===b.commit&&JSON.stringify(a.event)===JSON.stringify(b.event));
 function MeasurePanel({m,state,current,features,commit}:{m:ImportedMeasureDraft;state:WorkspaceState;current:boolean;features:Readonly<Record<string,readonly string[]>>;commit:Commit}) {
   const [split,setSplit]=useState(""),[meter,setMeter]=useState(`${m.time.numerator}/${m.time.denominator}`),[error,setError]=useState(""),[contextEvidence,setContextEvidence]=useState("");
   const selected=[state.request.lead,...state.request.rhythmVoices];
@@ -93,15 +97,14 @@ export function ScoreWorkspaceClient() {
   const search=useSearchParams(),router=useRouter(),id=search.get("id")??"";
   const store=useMemo(()=>new ScoreWorkspaceStore(),[]),[loaded,setLoaded]=useState<Loaded>(),[list,setList]=useState<readonly {id:string;updatedAt:string}[]>([]),[status,setStatus]=useState("파일을 열거나 저장한 초안을 선택하세요."),[busy,setBusy]=useState(false),[diagnostics,setDiagnostics]=useState("");
   const current=useRef<Loaded|undefined>(undefined),gate=useRef(false),loadToken=useRef(0);
-  const hydrate=async(record:StoredScoreWorkspace):Promise<Loaded>=>{const state=await replayScoreWorkspace(record.workspace);return {record,state,caps:await deriveWorkspaceCapabilities(state,await verifiedWorkspaceEvidenceDigest(record.workspace))};};
-  const publish=(value:Loaded)=>{current.current=value;setLoaded(value);};
-  useEffect(()=>{let active=true;const token=++loadToken.current;current.current=undefined;void(async()=>{try{const items=await store.list();if(active)setList(items);if(!id){if(active)setLoaded(undefined);return;}const record=await store.load(id);if(!record)throw Error("이 브라우저에 해당 초안이 없습니다.");const value=await hydrate(record);if(active&&loadToken.current===token){current.current=value;setLoaded(value);setDiagnostics("");setStatus(`저장본 복구 · revision ${record.workspace.revision}`);}}catch(err){if(active){setLoaded(undefined);setStatus(String(err));}}})();return()=>{active=false;loadToken.current=token+1;};},[id,store]);
-  const run=async(action:(ensureCurrent:()=>void)=>Promise<void>)=>{if(gate.current)return;gate.current=true;setBusy(true);const token=loadToken.current;const ensureCurrent=()=>{if(loadToken.current!==token)throw Error("WORKSPACE_VIEW_CHANGED");};try{await action(ensureCurrent);}catch(err){if(loadToken.current===token)setStatus(`저장/검증 실패: ${err instanceof Error?err.message:String(err)} · 성공으로 처리하지 않았습니다.`);}finally{gate.current=false;setBusy(false);}};
-  const persist=async(workspace:ScoreWorkspace,ensureCurrent:()=>void,previous?:StoredScoreWorkspace,generation?:StoredScoreWorkspace["generation"])=>{
+  const publish=useCallback((value:Loaded)=>{current.current=value;setLoaded(value);},[]);
+  useEffect(()=>{let active=true;const token=++loadToken.current;current.current=undefined;void(async()=>{try{const items=await store.list();if(active)setList(items);if(!id){if(active)setLoaded(undefined);return;}const record=await store.load(id);if(!record)throw Error("이 브라우저에 해당 초안이 없습니다.");const value=await hydrateWorkspace(record);if(active&&loadToken.current===token){current.current=value;setLoaded(value);setDiagnostics("");setStatus(`저장본 복구 · revision ${record.workspace.revision}`);}}catch(err){if(active){setLoaded(undefined);setStatus(String(err));}}})();return()=>{active=false;loadToken.current=token+1;};},[id,store]);
+  const run=useCallback(async(action:(ensureCurrent:()=>void)=>Promise<void>)=>{if(gate.current)return;gate.current=true;setBusy(true);const token=loadToken.current;const ensureCurrent=()=>{if(loadToken.current!==token)throw Error("WORKSPACE_VIEW_CHANGED");};try{await action(ensureCurrent);}catch(err){if(loadToken.current===token)setStatus(`저장/검증 실패: ${err instanceof Error?err.message:String(err)} · 성공으로 처리하지 않았습니다.`);}finally{gate.current=false;setBusy(false);}},[]);
+  const persist=useCallback(async(workspace:ScoreWorkspace,ensureCurrent:()=>void,previous?:StoredScoreWorkspace,generation?:StoredScoreWorkspace["generation"])=>{
     const record:StoredScoreWorkspace={workspace,storageRevision:previous?previous.storageRevision+1:0,updatedAt:new Date().toISOString(),...(generation??previous?.generation?{generation:generation??previous?.generation}:{})};
-    const value=await hydrate(record);ensureCurrent();await store.save(record,previous?.storageRevision);const items=await store.list();ensureCurrent();publish(value);setList(items);return record;
-  };
-  const commit:Commit=async(command,note)=>run(async ensureCurrent=>{const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");const next=await applyWorkspaceCommand(old.record.workspace,old.record.workspace,command,{id:crypto.randomUUID(),note,actor:navigator.webdriver?"ui-test":"user",at:new Date().toISOString()});await persist(next,ensureCurrent,old.record);setDiagnostics("");setStatus(`저장 완료 · revision ${next.revision} · ${note}`);});
+    const value=await hydrateWorkspace(record);ensureCurrent();await store.save(record,previous?.storageRevision);const items=await store.list();ensureCurrent();publish(value);setList(items);return record;
+  },[store,publish]);
+  const commit=useCallback<Commit>(async(command,note)=>run(async ensureCurrent=>{const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");const next=await applyWorkspaceCommand(old.record.workspace,old.record.workspace,command,{id:crypto.randomUUID(),note,actor:navigator.webdriver?"ui-test":"user",at:new Date().toISOString()});await persist(next,ensureCurrent,old.record);setDiagnostics("");setStatus(`저장 완료 · revision ${next.revision} · ${note}`);}),[run,persist]);
   const confirmIssues=async(ids:readonly string[],note:string,expected:{revision:number;digest:string})=>run(async ensureCurrent=>{
     const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");
     const next=await attestWorkspaceIssues(old.record.workspace,expected,ids,{id:crypto.randomUUID(),note,actor:navigator.webdriver?"ui-test":"user",at:new Date().toISOString()});
@@ -111,7 +114,7 @@ export function ScoreWorkspaceClient() {
     if(file.size>64_000_000)throw Error("입력 크기 제한 64 MB를 넘었습니다.");let workspace:ScoreWorkspace;
     if(/\.(json|hm-workspace)$/iu.test(file.name)){const text=await file.text(),value=JSON.parse(text);if(value.version==="hm-score-workspace-v1")workspace=await parseScoreWorkspace(text);else {const origin=value.version==="hm-local-candidate-v1"?await originFromLocalCandidate(value as LocalCandidateBundle,file.name):await originFromLegacyBundle(text,file.name);workspace=await createScoreWorkspace(origin,V,crypto.randomUUID());}}
     else workspace=await createScoreWorkspace(await originFromMusicXml(new Uint8Array(await file.arrayBuffer()),file.name),V,crypto.randomUUID());
-    ensureCurrent();const existing=await store.load(workspace.id);if(existing){if(existing.workspace.digest!==workspace.digest||existing.workspace.historyDigest!==workspace.historyDigest)throw Error("같은 ID의 다른 저장 revision이 있습니다. 저장 초안에서 재개하세요.");const value=await hydrate(existing);ensureCurrent();publish(value);}else await persist(workspace,ensureCurrent);
+    ensureCurrent();const existing=await store.load(workspace.id);if(existing){if(existing.workspace.digest!==workspace.digest||existing.workspace.historyDigest!==workspace.historyDigest)throw Error("같은 ID의 다른 저장 revision이 있습니다. 저장 초안에서 재개하세요.");const value=await hydrateWorkspace(existing);ensureCurrent();publish(value);}else await persist(workspace,ensureCurrent);
     router.replace(`/score-workspace?id=${encodeURIComponent(workspace.id)}`);setStatus(`원본·후보·근거 저장 완료 · ${workspace.origin.fileName} · revision ${workspace.revision}`);
   });
   const generateSource=()=>run(async ensureCurrent=>{const old=current.current;if(!old)throw Error("초안을 먼저 여세요.");const draft=await projectScoreWorkspace(old.record.workspace),analysis=await deriveQuickReview(draft,V);ensureCurrent();setDiagnostics(analysis.diagnostics.map(d=>`${d.code}: ${d.messageKo}`).join("\n"));if(!analysis.state.readyForPlanning)throw Error("기존 최종 Validator가 편곡 입력을 차단했습니다. 아래 진단을 확인하세요.");const project=await createProjectFromQuickReview(draft,analysis,old.state.request.preset);
@@ -140,6 +143,6 @@ export function ScoreWorkspaceClient() {
     <details className="panel"><summary>자동 기록 · 원본과 변경 이력</summary><p>원본 XML SHA-256 {w.origin.xmlDigest} · {w.operations.length}개 작업. 음악적 정확성을 해시로 인증하지 않습니다.</p><pre className={styles.wrap}>{JSON.stringify(w.operations.map(o=>({id:o.id,command:o.command,affectedIds:o.affectedIds,note:o.note,actor:o.actor,at:o.at})),null,2)}</pre><details><summary>불변 원시 XML</summary><pre className={styles.wrap}>{w.origin.xml}</pre></details></details></>}
   </>;
 }
-function IssueReview({issueId,scope,commit}:{issueId:string;scope:import("../../import/workspace/model").WorkspaceScope;commit:Commit}) {
+const IssueReview=memo(function IssueReview({issueId,scope,commit}:{issueId:string;scope:import("../../import/workspace/model").WorkspaceScope;commit:Commit}) {
   const [note,setNote]=useState("");return <div className={styles.row}><label>대조 결과<input aria-label={`미확정 대조 ${issueId}`} value={note} onChange={e=>setNote(e.target.value)} placeholder="원본에서 확인한 내용과 적용한 교정"/></label><button disabled={note.trim().length<3} onClick={()=>void commit({kind:"attest",purpose:"issue",issueId,scope},note)}>이 항목 대조 확인</button></div>;
-}
+},(a,b)=>a.commit===b.commit&&a.issueId===b.issueId&&JSON.stringify(a.scope)===JSON.stringify(b.scope));

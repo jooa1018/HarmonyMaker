@@ -21,3 +21,4 @@ runtime-browser-evidence/
 .next-local-review-persistence-transfer/
 .next-local-review-persistence-ui/
 .next-local-review-persistence-serialized/
+.next-local-review-persistence-render/
