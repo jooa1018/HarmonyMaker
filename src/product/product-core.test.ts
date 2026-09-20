@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as projectAuthority from "../domain/project";
+import * as productRegistry from "./registry";
 
 import { generateDeterministicAccompaniment } from "../accompaniment/deterministic";
 import { parseChord } from "../domain/chord/parser";
@@ -563,6 +565,10 @@ describe("candidate-bound edits and EditedArrangementSnapshot", () => {
     const rawClone = JSON.parse(JSON.stringify(fixture.project)) as HarmonyProject;
     expect(() => materializeActiveArrangement(rawClone, "standard")).toThrow("EDIT_SNAPSHOT_UNVERIFIED");
     const imported = await importHarmonyProject(JSON.stringify(rawClone));
+    const editedEncoded = await exportHarmonyProject(imported);
+    const importedAgain = await importHarmonyProject(editedEncoded);
+    expect(projectRenderDocument(importedAgain, "standard", "full").artifactKind).toBe("edited-snapshot");
+    expect(importedAgain).not.toBe(imported);
     const materialized = materializeActiveArrangement(imported, "standard");
     expect(projectRenderDocument(imported, "standard", "full").artifactKind).toBe("edited-snapshot");
     expect(buildPlaybackPlan(materialized.document, materialized.trackRoles).events.length).toBeGreaterThan(0);
@@ -902,6 +908,51 @@ describe("deterministic export, local save, project transfer, and PracticeShare"
     await store.delete("local-project");
     expect(await store.load("local-project")).toBeUndefined();
     await expect(importHarmonyProject(encoded.replace(project.source.revisionDigest, "0".repeat(64)))).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
+  });
+
+  it("reuses only verified exact transfer content while each import owns its graph",async()=>{
+    const {project}=await generatedProject(),encoded=await exportHarmonyProject(project);
+    const validation=vi.spyOn(projectAuthority,'validateHarmonyProject');
+    try {
+      const first=await importHarmonyProject(encoded),second=await importHarmonyProject(encoded);
+      expect(first).toEqual(project);expect(second).not.toBe(first);expect(second.source).not.toBe(first.source);
+      expect(await exportHarmonyProject(second)).toBe(encoded);expect(validation).not.toHaveBeenCalled();
+      Object.assign(first.source,{revisionDigest:'0'.repeat(64)});
+      await expect(exportHarmonyProject(first)).rejects.toThrow('PROJECT_INTEGRITY_INVALID');
+      expect(validation).toHaveBeenCalledOnce();
+      expect(await importHarmonyProject(encoded)).toEqual(project);
+      expect(await exportHarmonyProject(second)).toBe(encoded);
+      expect(validation).toHaveBeenCalledOnce();
+    }finally{validation.mockRestore();}
+  });
+
+  it("rejects a caller mutation during export and fields hidden by ordinary JSON serialization",async()=>{
+    const {project}=await generatedProject(),encoded=await exportHarmonyProject(project);
+    const pending=exportHarmonyProject(project);Object.assign(project.source,{title:'Changed during asynchronous export'});
+    await expect(pending).rejects.toThrow('PROJECT_MUTATED_DURING_EXPORT');
+    const restored=await importHarmonyProject(encoded);
+    Object.assign(restored,{unexpectedApproval:undefined});
+    await expect(exportHarmonyProject(restored)).rejects.toThrow('PROJECT_INTEGRITY_INVALID');
+    expect(await exportHarmonyProject(await importHarmonyProject(encoded))).toBe(encoded);
+  });
+
+  it("does not mix execution registries, different document content or failed files",async()=>{
+    const {project}=await generatedProject(),encoded=await exportHarmonyProject(project),registry=await loadProductExecutionRegistry();
+    const validation=vi.spyOn(projectAuthority,'validateHarmonyProject');
+    const registryLoader=vi.spyOn(productRegistry,'loadProductExecutionRegistry');
+    try {
+      registryLoader.mockResolvedValueOnce({...registry,versions:{...registry.versions,sourceLeadAtomizerVersion:'independent-changed-version'}});
+      await expect(importHarmonyProject(encoded)).rejects.toThrow('PROJECT_INTEGRITY_INVALID');
+      expect(validation).toHaveBeenCalledOnce();
+      const different=structuredClone(project);Object.assign(different.source,{documentId:'different-document'});
+      // Document identity can legitimately differ without changing music. It
+      // must be separately validated and must retain its own identity.
+      expect((await importHarmonyProject(JSON.stringify(different))).source.documentId).toBe('different-document');
+      expect(validation).toHaveBeenCalledTimes(2);
+      await expect(importHarmonyProject('{')).rejects.toThrow('PROJECT_FILE_MALFORMED');
+      expect(await exportHarmonyProject(await importHarmonyProject(encoded))).toBe(encoded);
+      expect(validation).toHaveBeenCalledTimes(3);
+    }finally{validation.mockRestore();registryLoader.mockRestore();}
   });
 
   it("migrates a schema-v9 project without candidate roles to explicit generation staleness", async () => {
