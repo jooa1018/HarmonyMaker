@@ -38,9 +38,10 @@ function cleanReplayState(state: WorkspaceState): WorkspaceState {
     if (value === null || typeof value !== "object") return [key, clean(value)];
     let owned = replayCleanFields.get(value);
     if (!owned) {
-      owned = clean(value);
-      replayCleanFields.set(value, owned);
-      replayCleanFields.set(owned, owned);
+      const cleaned: object = clean(value);
+      replayCleanFields.set(value, cleaned);
+      replayCleanFields.set(cleaned, cleaned);
+      owned = cleaned;
     }
     return [key, owned];
   });
