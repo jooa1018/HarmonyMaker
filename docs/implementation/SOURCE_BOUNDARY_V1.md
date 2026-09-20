@@ -1,5 +1,25 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-21 Review Usability & Persistence v1
+
+**REVIEW_USABILITY_V1_PARTIAL.** 검증 제품 `4cda7f30bfd0a1944e913002c5952c6c5bc7dced`, 생성 타입만 후속 commit `67d14b20beb71d7696bab96fec60a9cfe9ad4982`, production build `.next-local-review-persistence-ui` / `mhlanvWsOaPHiccjrPJDP`다. 이 절의 후속 문서 commit은 검증 제품과 구분한다. 기존 r1019와 인계 manifest의 243개 파일을 보존했다. 새 OMR·음악 규칙·오디오/믹서 변경·외부 배포·삭제는 없다.
+
+시작점 없는 slur stop을 앞 구간까지 확장한 의존 계산과, 원시 후보의 연결 근거 대신 document 음악 전체에 의존한 대조 fingerprint가 이전 36마디·439 전역 issue 재확인의 원인이었다. v3는 원본 provenance에서 필드·이벤트·대안 부착·구간 의존성을 재생성하고 실제 연결 범위만 무효화한다. 모호하거나 알 수 없는 대안은 보수적 범위를 유지한다. 유지한 검토의 actor·시점·원래 범위를 새 승인으로 바꾸지 않는다.
+
+별도 일반 UI 늦은 slur 반례 r543→r544에서 stale 음악은 p0m35 한 마디, pending 원시 issue는 8개로 줄었다. 기존 대조 레코드 524개가 유효하게 유지됐고 관계없는 다른 마디의 대조 무효화는 0이었다. 8개 중 7개는 부착 위치가 모호해 같은 마디에 보수적으로 남긴 항목이므로 모두 반드시 필요한 새 판단이라고 주장하지 않는다. 실제 UI Undo/Redo에서 0/0과 1/8이 복구됐다. 한 마디와 8개 issue만 재확인한 r555를 저장·재시작 복구하고 Source로 확정했다.
+
+새 A 경로는 보존된 r0부터 같은 52개 음악 편집과 원본 대조 fixture를 `ui-test`로 일반 UI에 적용했다. 마디 대조 39명령, issue 대조 441명령, 요청 9·제목 1로 r542가 됐다. 441개 원시 기록은 329개 음악 질문으로 표시됐고 8개 원본 구역에서 명시적으로 선택·저장했다. 이력/원시 기록 삭제나 자동 승인이 아니다. A에서 slur를 대조 전에 넣은 효과와 B의 실제 dependency 개선을 구분하며 사람 시간은 측정하지 않았다.
+
+매 중간 상태의 전체 seal 검증을 유지하면서 불변 canonical/UTF-8 segment와 대조 projection을 재사용했다. 명시적 batch는 개별 operation과 revision을 남기고 저장을 원자적으로 수행한다. project transfer는 정확한 파일 내용과 execution registry가 같은 검증 결과만 제한적으로 재사용한다. caller graph는 공유하지 않고 변경을 다시 검증한다. 객체별 attestation이 필요한 edited snapshot은 이 cache에서 제외했다. 기존 proof cache/입력/이력 한도는 늘리지 않았다.
+
+실제 UI에서 소수 sourceBox를 정수 전용 codec에 넘겨 질문 표시가 실패하는 결함을 발견했다. r544 저장을 보존한 채 식별키에서 원래 좌표를 문자열로 표현하도록 고쳤고, 같은 프로필의 실제 복구·다운로드·Undo/Redo·Source 경로로 재검증했다. 음악·proof 조건을 완화하지 않았다.
+
+타입·전체 lint, 기본 122파일/1,175시험, 관련 workspace 87시험(중복 합산 안 함), production build 종료0을 확인했다. 기존 opt-in 3파일/5시험은 SKIPPED이고 이번 실제 private r1019/늦은 수정/다운로드 검증과 별도다. PostgreSQL·새 OMR·전체 PCM 재실험은 해당 경로 변경이 없어 NOT_RUN. 설치 Chrome의 정상 Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장→실제 다운로드/재입력, 동일 profile/origin 서버·브라우저 재시작이 통과했다. 음악·가사·Source 음악 digest·선택 WAG 후보·710개 재생 계획이 기존 r1019와 같았다. 사람 청감은 `HUMAN_RECHECK_PENDING`이다.
+
+동일 PC 최종 3회에서 r1019 cold 복구 7.11–9.57초, 초안 저장 2.50–2.70초, 프로젝트 복구 7.59–9.10초, 프로젝트 저장 0.68–2.06초, 프로젝트 내보내기 0.66–0.96초였다. r1019 파일 가져오기 9.81–10.85초와 프로젝트 가져오기 12.46–15.04초, 국소 변경의 1초 목표는 미달이다. 최초 proof 검증·정규화·직렬화와 main-thread 점유가 남았다. 측정 3회로 p95를 계산하거나 기준을 낮추지 않았다.
+
+비공개 결과 루트는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-review-persistence-v1`다. `시작안내.md`, `실행-ui.ps1`, `검증보고서.md`, `summary.json`, `artifact-manifest.json`과 새 r542 초안/프로젝트/XML을 분리해 보존했다. 음악·원본·private proof는 저장소에 추가하지 않았다. 서버 주소는 검증한 `http://127.0.0.1:3203`이며 세션 이후 상시 실행을 보장하지 않는다. UI 전면 개편·OMR 정확도 개선·소량 교정 실용성·출시 완료 판정이 아니다.
+
 ## 2026-09-20 최신 자동 후보 교정·실사용 경로
 
 **LATEST_CANDIDATE_ASSISTED_E2E_VERIFIED.** 이전 Ending Structure 실제 fresh job의 revision 0에서 시작했고, 이번 신규 OMR은 0회다. r551의 음악·Source·proof·교정/대조 이력을 가져오지 않았다. 실제 원본을 대조한 agent의 일반 UI `actor=ui-test` 결정이며 사용자 본인의 독보·가창 능력 확인이 아니다. 최종 작업 공간은 revision 1019다.
