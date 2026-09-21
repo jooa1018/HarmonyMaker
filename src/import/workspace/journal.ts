@@ -136,7 +136,10 @@ async function step(current: Replay, op: StepOperation, record = false): Promise
   if(current.dependencyV2Started&&op.reviewDependencyVersion===undefined
     ||current.dependencyV3Started&&op.reviewDependencyVersion!==3)throw new RangeError("WORKSPACE_REVIEW_VERSION_DOWNGRADE");
   if(op.reviewDependencyVersion===3&&!current.dependencyV3Started) {
-    current={...current,state:await retainWorkspaceReviewsV3(current.state,current.origin,current.evidenceDigest,op.id),reviewFingerprints:new Map()};
+    // This map belongs to this exact replay/evidence lineage. It survives only
+    // attestations; every edit/Undo/Redo clears it below. The transition must
+    // still derive every new v3 dependency, but need not hash old facts twice.
+    current={...current,state:await retainWorkspaceReviewsV3(current.state,current.origin,current.evidenceDigest,op.id,current.reviewFingerprints),reviewFingerprints:new Map()};
   }
   const isEdit = !["attest","undo","redo"].includes(command.kind);
   const fingerprint = async (scope: WorkspaceAttestation["scope"], version: 1 | 2 | 3, issueId?: string) => {

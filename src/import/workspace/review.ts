@@ -102,11 +102,16 @@ export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue,
  * judgments may be retained under a narrower dependency rule. Original actor,
  * time, scope, targets and old fingerprint remain attributable; stale reviews
  * are not resurrected. The original journal is never rewritten. */
-export async function retainWorkspaceReviewsV3(state: WorkspaceState, origin: WorkspaceOrigin, evidenceDigest: string, operationId: string): Promise<WorkspaceState> {
+export async function retainWorkspaceReviewsV3(state: WorkspaceState, origin: WorkspaceOrigin, evidenceDigest: string, operationId: string, previousFingerprints?: ReadonlyMap<string,string>): Promise<WorkspaceState> {
   const dependencies = resolveWorkspaceIssueDependencies(state,origin);
   const next = {...state,...(dependencies.length ? {reviewIssueDependencies:dependencies} : {})};
   const projectIssue=createWorkspaceIssueDependencyProjector(next);
-  const fingerprints = new Map<string,Promise<string>>();
+  // The journal may supply its private map for the exact pre-transition state.
+  // Never populate this from imported proof fields or caller approval flags.
+  // Snapshot the entries; new v3 fingerprints below are always recomputed.
+  const fingerprints = new Map<string,Promise<string>>(
+    [...previousFingerprints??[]].map(([key,value])=>[key,Promise.resolve(value)]),
+  );
   const oldFingerprint: FingerprintReader = (scope,version,issueId) => {
     const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
     let value = fingerprints.get(key);
