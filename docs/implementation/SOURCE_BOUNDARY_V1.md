@@ -1,5 +1,19 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-22 검토 전환 중복 제거와 일반 UI 성능 목표 확인
+
+**REVIEW_USABILITY_V1_VERIFIED — 이번 PC의 일반 production Chrome 시험 범위.** 검증 제품 `8c25fcca5f43887c9e85e98250ed51b052b9c92e`, 생성 타입 `06f8ccdb050db4eacf8c814b6efe4f5030c11d05`, build `.next-local-review-persistence-transition` / `mX3m6VByCFmFzh7MxIc5W`다. 구형 검토의 최초 v3 전환에서 같은 private replay에 이미 있는 옛 지문 65개를 다시 계산하던 중복을 제거했다. 새 v3 지문은 계속 계산하고, edit/Undo/Redo는 기존 Map을 비운다. 외부 승인·snapshot·digest는 캐시 권위가 아니며 원본·이력·모든 중간 해시·proof·CAS·transaction·음악·WAG·오디오·한도는 불변이다. 별도 원본 인코딩 캐시 실험은 채택하지 않았다.
+
+관련10파일108 PASS, 타입·전체 lint PASS, 전체 기본125파일1201 PASS/기존3파일5 SKIP, production build exit0/50.340초. 새 synthetic 회귀는 구형 고정 proof의 옛 지문 재해시 제거/새 v3 해시 계산, actor/시점 보존, cold replay, 영향받은 가사 변경 및 Undo/Redo를 확인한다. Node의 첫 전환은 실제 제품187ms와 인접 기존630ms로 관측했고 후속7개 내보내기 해시는 같았다. 변동이 있으므로 전체 UI 개선 배수를 주장하지 않는다.
+
+최종 일반 r1019 3회: 작업 공간 가져오기4.228–5.351초/복구4.620–5.737초/저장.616–.991초/내보내기.347–.719초, 프로젝트 가져오기5.227–7.168초/복구4.497–6.701초/저장.347–.465초/내보내기.462–.918초. A의 국소 음악 교정·마디 대조91회+요청·묶음 대조16회, 총107회 모두 click→저장frame .302–.765초였다. 구형 r543의 늦은 slur 수정은 profiler 없는 일반 UI 3회 .632/.645/.718초, 같은 기준의 이전 build 1회 .666초. 지연 목표를 낮추지 않았고 세 표본으로 p95나 성능 보장을 만들지 않았다.
+
+별도 CPU/API 계측 실행에서는 새 제품 B slur가 **1.713초**로 초과했다. 이 결과와 이전 build .845초도 보존한다. profiler·GC·환경 기여를 인과적으로 분리하지 못했으며, 일반 UI 성적과 진단 수치를 섞어 모든 실행이 빨라졌다고 주장하지 않는다. 초기 `summary.json`의 PARTIAL은 일반 B 검증 전 중간 집계이고, 이후 미리 정한 기존1회/새3회의 일반 UI 검증을 완료한 `summary-final.json`이 최종 판정이다. 과거 다른 프로필의 느린 표본이나 다운로드 종료 문제도 해결됐다고 일반화하지 않는다.
+
+r0→r542 일반 UI 52음악교정/39마디대조/441issue대조/요청9·제목1,329질문8묶음/교정~Source404조작, Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장/reload/실제다운로드4/새사본 PASS. 모두 이전 원본 판독 fixture 재사용 actor=ui-test다. 늦은 수정은524유효/1마디+8issue/무관0,Undo0/0 Redo1/8,일반 B3회 실제파일도 같은 무효화 의미를 유지했다. 8중7개는 모호한 raw 부착을 마디에 보수적으로 남긴 것이며 새 필수 사람판단8개라고 주장하지 않는다.
+
+서버12384→18540,Chrome30308→24840 실제같은origin/profile/build재시작6단계6다운로드 PASS. 실제음악23검사,다운로드14검사 PASS/별도 browser plan capture1 NOT_RUN. Source 음악·WAG·710재생이벤트 의미는 r1019와 같다. 이전 segments manifest200파일+33helper=233개 hash/크기를 확인했다. 비공개 `outputs/HarmonyMaker-review-persistence-commit-trace`에 `summary-final.json`, `검증보고서.md`, `시작안내.md`, `실행.ps1`, 실제 작업 공간/프로젝트/MusicXML과 진단·실험·초과 로그를 보존한다. 후속 문서 commit은 검증 제품과 구분한다. 최종 시험 프로세스는 정상 종료하고 원본/profile/model/build 삭제·신규OMR·push·CI·배포·병합은 하지 않았다. PostgreSQL/전체PCM은 경로 불변으로 미실행, 사람 시간/청감은 HUMAN_TIME_NOT_MEASURED / HUMAN_RECHECK_PENDING이다.
+
 ## 2026-09-22 내부 proof 사본 재사용과 최종 사용자 경로 검증
 
 **REVIEW_USABILITY_V1_PARTIAL 유지.** 검증 제품 `a6d07dd1847d50659b755cf5a8dd261cc0f2fe8d`, 생성 타입 후속 `6c7f4b14f7f58c873f8d859f97eed9f9f95723bd`, build `.next-local-review-persistence-proof` / `txPweGeOMMnzOwgE-Zomh`다. journal의 기존 단일 proof 캐시 안에서 검증된 동결 사본을 내부 읽기 전용 Source/투영/정규화 경로에 재사용한다. 외부 mutable parser/투영 반환 계약은 유지한다. 첫 구현이 외부 반환값을 동결한 회귀를 기존 테스트가 검출했고, 내부 assert 경로와 분리해 수정했다. 기존 테스트나 validation/CAS/transaction/전체 중간 hash/이력/proof/입력·캐시 한도를 완화하지 않았다. 음악·OMR·WAG·재생·믹서·UI 디자인은 바꾸지 않았다.
