@@ -3,7 +3,7 @@ import type { SongSourceDocument } from "../../domain/source/model";
 import type { MusicXmlImportDraft } from "../musicxml/types";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { clean } from "./edit";
-import { exportScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest, readVerifiedWorkspace } from "./journal";
+import { captureWorkspace, exportScoreWorkspace, parseImmutableScoreWorkspace, parseScoreWorkspace, replayScoreWorkspace, verifiedWorkspaceEvidenceDigest, readVerifiedWorkspace } from "./journal";
 import { deriveWorkspaceCapabilities, effectiveWorkspaceKey, selectedWorkspacePart } from "./review";
 import type { ScoreWorkspace } from "./model";
 
@@ -15,7 +15,7 @@ export function projectedDraftIdentity(draft:MusicXmlImportDraft):string {
 export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicXmlImportDraft> {
   // Capture caller-owned metadata before the first await. A generated draft may
   // reuse its checked projection only while the complete input stays identical.
-  const captured=JSON.stringify(value),originKind=value.origin.kind;
+  const captured=captureWorkspace(value),originKind=value.origin.kind;
   const performanceVersion=value.algorithmVersions.performanceExpanderVersion;
   const {state,evidenceDigest}=await readVerifiedWorkspace(value);
   const capabilities=await deriveWorkspaceCapabilities(state,evidenceDigest);
@@ -41,7 +41,7 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
     // uninterpreted diagnostics were gated above, not downgraded to warnings.
     diagnostics:state.music.diagnostics.filter(d=>!["workspace-overfull","invalid-pitch"].includes(String(d.details?.issue))&&d.code!=="UNSUPPORTED_MODULATION"),
   }),workspaceProof:await exportScoreWorkspace(value)};
-  if(JSON.stringify(value)!==captured)throw new RangeError("WORKSPACE_MUTATED_DURING_PROJECTION");
+  if(captureWorkspace(value)!==captured)throw new RangeError("WORKSPACE_MUTATED_DURING_PROJECTION");
   verified.set(draft,{identity:projectedDraftIdentity(draft),proof:draft.workspaceProof!});
   return draft;
 }
@@ -49,11 +49,11 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
 // Do not clone/escape its megabytes merely to compare the small draft again,
 // and never retain a mutable workspace returned to another caller.
 const verified=new WeakMap<MusicXmlImportDraft,{identity:string;proof:string}>();
-export async function validateProjectedWorkspaceDraft(draft:MusicXmlImportDraft):Promise<ScoreWorkspace> {
+async function validateProjection(draft:MusicXmlImportDraft,immutable:boolean):Promise<ScoreWorkspace> {
   const proof=draft.workspaceProof;
   if(typeof proof!=="string"||!proof||proof.length>64_000_000)throw new RangeError("WORKSPACE_PROJECTION_PROOF_REQUIRED");
   const identity=projectedDraftIdentity(draft),hit=verified.get(draft);
-  const workspace=await parseScoreWorkspace(proof);
+  const workspace=await (immutable?parseImmutableScoreWorkspace:parseScoreWorkspace)(proof);
   if(hit?.proof!==proof||hit.identity!==identity) {
     const expected=await projectScoreWorkspace(workspace);
     if(identity!==projectedDraftIdentity(expected))throw new RangeError("WORKSPACE_PROJECTION_SUBSTITUTED");
@@ -61,9 +61,17 @@ export async function validateProjectedWorkspaceDraft(draft:MusicXmlImportDraft)
   if(draft.workspaceProof!==proof||projectedDraftIdentity(draft)!==identity)throw new RangeError("WORKSPACE_PROJECTION_MUTATED_DURING_VALIDATION");
   verified.set(draft,{identity,proof});return workspace;
 }
+/** Preserve the detached mutable result expected by existing callers. */
+export function validateProjectedWorkspaceDraft(draft:MusicXmlImportDraft):Promise<ScoreWorkspace> {
+  return validateProjection(draft,false);
+}
+/** Finalization only needs validation; it does not edit a returned workspace. */
+export async function assertProjectedWorkspaceDraft(draft:MusicXmlImportDraft):Promise<void> {
+  await validateProjection(draft,true);
+}
 
 export async function workspaceProjectionMetadata(draft:MusicXmlImportDraft,source:SongSourceDocument) {
-  const workspace=await validateProjectedWorkspaceDraft(draft),state=await replayScoreWorkspace(workspace),part=selectedWorkspacePart(state)!;
+  const workspace=await validateProjection(draft,true),state=await replayScoreWorkspace(workspace),part=selectedWorkspacePart(state)!;
   const selected=[state.request.lead!,...state.request.rhythmVoices];
   const targetMap:{workspaceId:string;sourceId:string;kind:"measure"|"event"|"chord"}[]=[];
   // Match exact musical identity, not XML serialization position. Generated

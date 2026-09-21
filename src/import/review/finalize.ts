@@ -1,6 +1,6 @@
 import { chordSemanticProjection } from "../../domain/chord/parser";
 import { verifiedStructuralCandidate, type StructuralRecovery } from "./structural-recovery";
-import { validateProjectedWorkspaceDraft, workspaceProjectionMetadata } from "../workspace/projection";
+import { assertProjectedWorkspaceDraft, workspaceProjectionMetadata } from "../workspace/projection";
 import { semanticDigest, compareCanonicalValues } from "../../domain/digest/canonical";
 import { digestMusicalSource, digestMusicalSourceComponents } from "../../domain/digest/source";
 import { buildMusicXmlSourceTargetMap } from "../../domain/omr/import-identity";
@@ -534,7 +534,7 @@ export async function normalizeImportedSource(
   if (draft.workspaceInspectionOnly) prerequisiteErrors.push(blockedInput("workspace-projection-required",
     "보존용 악보 초안은 작업 공간의 요청별 검증과 투영을 거쳐야 합니다.", "IMPORT_UNSUPPORTED_ELEMENT"));
   if (draft.workspaceProof) {
-    try { await validateProjectedWorkspaceDraft(draft); }
+    try { await assertProjectedWorkspaceDraft(draft); }
     catch { prerequisiteErrors.push(blockedInput("workspace-proof-invalid", "작업 공간의 원본·이력·요청·투영이 일치하지 않습니다.", "IMPORT_UNSUPPORTED_ELEMENT")); }
   }
   if (draft.localCandidateReviewRequired && !draft.workspaceProof) {

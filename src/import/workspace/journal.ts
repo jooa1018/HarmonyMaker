@@ -51,7 +51,9 @@ function cleanReplayState(state: WorkspaceState): WorkspaceState {
 // copy, or an internal edit of one. A caller's Object.freeze is not authority.
 const immutableWorkspaces = new WeakSet<ScoreWorkspace>();
 const immutableJsonNodes = new WeakSet<object>();
-function captureWorkspace(value:ScoreWorkspace):string {
+/** Exact mutation guard. Only internally verified, deeply frozen identities
+ * reuse their bytes; external objects still serialize on every capture. */
+export function captureWorkspace(value:ScoreWorkspace):string {
   return immutableWorkspaces.has(value)?cache.get(value)!.serialized:JSON.stringify(value);
 }
 function immutableVerifiedWorkspace(snapshot:ScoreWorkspace,verified:VerifiedReplay):ScoreWorkspace {
@@ -80,6 +82,7 @@ const MAX_REUSED_PROOF_CHARS = 16_000_000;
 interface ProofReplayEntry {
   readonly text: string;
   readonly verified: VerifiedReplay;
+  readonly immutable?: ScoreWorkspace;
 }
 let proofReplay: ProofReplayEntry | undefined;
 function rememberVerifiedProof(text: string, verified: VerifiedReplay): void {
@@ -88,7 +91,9 @@ function rememberVerifiedProof(text: string, verified: VerifiedReplay): void {
   // by full replay, or synchronous encoding after replay's mutation guard.
   // Replay already owns its origin/commands/state. Keep that private graph and
   // immutable JSON bytes, never a caller-owned workspace or returned state.
-  proofReplay = { text, verified };
+  const immutable = proofReplay?.text === text && proofReplay.verified.value === verified.value
+    ? proofReplay.immutable : undefined;
+  proofReplay = { text, verified, immutable };
 }
 export const workspaceStateDigest = (state: WorkspaceState) => semanticDigest({schema:SCORE_WORKSPACE_VERSION,state:clean(state)});
 async function historyDigest(value:Pick<ScoreWorkspace,"id"|"origin"|"algorithmVersions"|"operations">, verifiedEvidence?:string) {
@@ -281,6 +286,23 @@ export async function parseScoreWorkspace(text: string): Promise<ScoreWorkspace>
   const value=JSON.parse(text) as ScoreWorkspace;
   await replay(value);
   rememberVerifiedProof(text,cache.get(value)!);return value;
+}
+/** Read-only proof consumers can share one verified frozen graph. The public
+ * mutable parser remains detached. This uses the existing single-entry proof
+ * bound, never an imported approval flag or a caller-frozen object. */
+export async function parseImmutableScoreWorkspace(text:string):Promise<ScoreWorkspace> {
+  if(text.length>64_000_000)throw new RangeError("WORKSPACE_LIMIT");
+  const hit=proofReplay;
+  if(hit?.text===text && hit.immutable)return hit.immutable;
+  const value=hit?.text===text
+    ? JSON.parse(hit.verified.serialized) as ScoreWorkspace
+    : await parseScoreWorkspace(text);
+  const verified=hit?.text===text ? hit.verified : cache.get(value)!;
+  const immutable=immutableVerifiedWorkspace(value,verified);
+  // Another async reader may have replaced the one-entry cache meanwhile.
+  if(proofReplay?.text===text && proofReplay.verified.value===verified.value)
+    proofReplay={...proofReplay,immutable};
+  return immutable;
 }
 /** Encoding and its origin binding from the same checked snapshot. */
 export async function serializeScoreWorkspace(value: ScoreWorkspace): Promise<{encoded:string;evidenceDigest:string}> {

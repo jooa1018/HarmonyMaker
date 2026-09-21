@@ -1,7 +1,7 @@
 import { canonicalJson } from "../../domain/digest/canonical";
 import type { SongSourceDocument } from "../../domain/source/model";
 import { normalizeImportedSource } from "../review/finalize";
-import { parseScoreWorkspace, replayScoreWorkspace } from "./journal";
+import { parseImmutableScoreWorkspace, replayScoreWorkspace } from "./journal";
 import type { ChordResolutionPolicy } from "../../domain/harmony/chord-timeline";
 import { projectScoreWorkspace, workspaceProjectionMetadata } from "./projection";
 const verifiedPolicies = new WeakMap<SongSourceDocument, { proof: string; initialPickup?: string }>();
@@ -27,7 +27,7 @@ export async function validateWorkspaceSourceIntegrity(source:SongSourceDocument
     // remain available; source revisions must return to the persistent workspace.
     if(source.revisionOrdinal!==0)return false;
     const metadata=source.importInfo.workspaceMetadata;
-    const workspace=await parseScoreWorkspace(metadata.proof),draft=await projectScoreWorkspace(workspace);
+    const workspace=await parseImmutableScoreWorkspace(metadata.proof),draft=await projectScoreWorkspace(workspace);
     if(source.documentId!==workspace.id||source.importInfo.rawDigest!==workspace.origin.xmlDigest)return false;
     const normalized=await normalizeImportedSource(draft,workspace.algorithmVersions);
     if(normalized.status!=="complete"||normalized.normalization.musicalSourceDigest!==source.revisionDigest)return false;
