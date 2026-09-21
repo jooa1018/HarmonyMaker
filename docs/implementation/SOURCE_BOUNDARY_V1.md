@@ -1,5 +1,19 @@
 # 입력·교정·Source 경계 v1
 
+## 2026-09-22 내부 proof 사본 재사용과 최종 사용자 경로 검증
+
+**REVIEW_USABILITY_V1_PARTIAL 유지.** 검증 제품 `a6d07dd1847d50659b755cf5a8dd261cc0f2fe8d`, 생성 타입 후속 `6c7f4b14f7f58c873f8d859f97eed9f9f95723bd`, build `.next-local-review-persistence-proof` / `txPweGeOMMnzOwgE-Zomh`다. journal의 기존 단일 proof 캐시 안에서 검증된 동결 사본을 내부 읽기 전용 Source/투영/정규화 경로에 재사용한다. 외부 mutable parser/투영 반환 계약은 유지한다. 첫 구현이 외부 반환값을 동결한 회귀를 기존 테스트가 검출했고, 내부 assert 경로와 분리해 수정했다. 기존 테스트나 validation/CAS/transaction/전체 중간 hash/이력/proof/입력·캐시 한도를 완화하지 않았다. 음악·OMR·WAG·재생·믹서·UI 디자인은 바꾸지 않았다.
+
+최종 관련10파일107검사·타입·전체 lint PASS, 전체 기본125파일1,200 PASS/기존3파일5 SKIP, production build exit0/101.959초다. 새4검사는 동결/외부 mutable 및 reader 격리, 동시 문서·캐시 교체, 외부 freeze 위장, 중간 이력 재봉인 변조, 실패 복구, 큰 proof의 캐시 제외를 검증한다. 배열 바이트 조립/키 모양 cache 실험은 일관된 이득이 부족해 미채택했으며 실패/실험 로그를 보존했다.
+
+실제 Chrome153.0.8010.48에서 r0→r542 일반 UI 교정52(가사39/코드12/slur1),마디대조39,issue대조441,요청9/제목1,Source→WAG complete→악보→mixer/Play/Pause/Resume/Reset→저장/reload→다운로드4/새사본을 통과했다. 시험 actor=ui-test이며 기존 원본 판독 fixture 재사용이다. 질문329개/8묶음·교정~Source404UI조작, 관측 범위가 다른 과거546과 직접 감소율을 만들지 않았다. 서버39928→30608/Chrome2924→11480 실제 재시작 뒤 같은origin/profile/build에서6단계6다운로드 재입력도 통과했다. 음악 의미23검사,실제파일14검사 PASS/별도browser plan capture1 NOT_RUN;Source/WAG/710재생계획 의미는 r1019와 동일하다.
+
+늦은 slur r543→544는524유효 대조,stale음악1마디/issue8,무관0을 유지했다. 8중7개는 모호한 raw 부착을 해당 마디에 보수적으로 남긴 범위이며 독립적인 필수 새 사람 판단8개라고 주장하지 않는다. 실제 Undo5450/0,Redo5461/8 파일 의미도 통과했다.
+
+동일 native 파일 선택 경계3회: 초안 가져오기4.300–7.558초/복구5.175–12.022초/저장.765–1.223초/export.549–1.604초,프로젝트 가져오기8.630–11.566초/복구8.347–10.312초/저장.634–.761초/export.991–1.073초. 국소91회click→저장frame.675–1.951초 중69회만1초 이내(driver57/91,저장DOM79/91). 별도B slur2.397초/Undo1.446/Redo1.403초도 미달. 느린 표본을 제외하거나 목표를 낮추지 않았다. 수정 전 이번 세션 fields build와의 비교, Node 순서 반전 비교에서도 변동이 커 전체 지연 개선을 확정하지 않는다. 원인을 환경 하나로 단정하지 않았다.
+
+비공개 `outputs/HarmonyMaker-review-persistence-segments`의 `summary-proof.json`, `검증보고서.md`, `시작안내.md`, `실행.ps1`과 실제 파일을 보존한다. `summary.json`은 제품 변경 전 진단 요약이므로 구분한다. 이전 transfer manifest152파일+24helper=176개 hash/크기 동일. 자동화 중 같은ID r1019가 있는 profile에 r543을 열어 CAS가 정상 거절한 실패와 driver 중첩도 보존하고, 격리 profile의 순차 성공과 분리했다. 최종 owned서버/Chrome 정상종료,3203listener와기록PID없음. 원본/교정본/모델/profile/build 삭제·새OMR·push·CI·배포·병합 없음. PostgreSQL/전체PCM은 관련 경로 불변으로 미실행, HUMAN_TIME_NOT_MEASURED / HUMAN_RECHECK_PENDING이다. 지연 목표와 남은 비용 분리가 필요해 목표를 완료 처리하지 않았다.
+
 ## 2026-09-21 내부 상태 필드 재사용과 지연 추가 관측
 
 **REVIEW_USABILITY_V1_PARTIAL 유지.** 최종 제품 `43fcf43f1d593974f566f26af264bafc7ea9e0b4`, 생성 타입 후속 `574663e46705ce6fbc962b7af001e53f68e3a9d0`, build `.next-local-review-persistence-fields` / `5QVeOVQqjBWhvMmVsmDKC`다. journal의 private reducer 상태에서 바뀌지 않은 JSON 필드를 재사용해 전체 상태 복사와 동일 필드 재인코딩을 줄였다. 외부 객체/반환 상태는 이 private WeakMap에 들어가지 않으며 폐기된 상태를 강하게 보유하지 않는다. 중간 digest·history seal·원본/proof 결합·검토 의존성·CAS·transaction 완료·파일 형식·음악·WAG·오디오·캐시 한도는 유지한다.
