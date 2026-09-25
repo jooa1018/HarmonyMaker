@@ -76,7 +76,7 @@ export class LocalImageService {
     if(!["image/png","image/jpeg"].includes(options.mimeType)||!bytes.length||bytes.length>LOCAL_IMAGE_MAX_BYTES)throw new Error("LOCAL_IMAGE_FILE_INVALID");
     const fileName=options.fileName.split(/[\\/]/u).at(-1)?.trim()??"";
     if(!fileName||fileName.length>240||/[\u0000-\u001f]/u.test(fileName)||! /\.(png|jpe?g)$/iu.test(fileName))throw new Error("LOCAL_IMAGE_FILE_INVALID");
-    const inputSha256=hash(bytes),requestSha256=hash(JSON.stringify({inputSha256,fileName,mimeType:options.mimeType,language:options.language,actor:options.actor,rights:true,pipeline:LOCAL_IMAGE_PIPELINE_VERSION,timeline:"hm-automatic-timeline-v1.1",chordRecovery:"hm-chord-recovery-v1",lyricRecovery:"hm-lyric-recovery-v1.1",endingStructure:"hm-ending-structure-recovery-v1"}));
+    const inputSha256=hash(bytes),requestSha256=hash(JSON.stringify({inputSha256,fileName,mimeType:options.mimeType,language:options.language,actor:options.actor,rights:true,pipeline:LOCAL_IMAGE_PIPELINE_VERSION,timeline:"hm-automatic-timeline-v1.2",chordRecovery:"hm-chord-recovery-v1",lyricRecovery:"hm-lyric-recovery-v1.1",endingStructure:"hm-ending-structure-recovery-v1.1"}));
     try {const {record}=await this.request(owner,options.id);if(record.execution.requestSha256!==requestSha256)throw new Error("LOCAL_IMAGE_IDEMPOTENCY_CONFLICT");return this.getLocked(owner,options.id);}
     catch(error){if((error as Error).message!=="LOCAL_IMAGE_NOT_FOUND")throw error;}
     const disk=await statfs(this.config.root);if(disk.bavail*disk.bsize<512*1024*1024)throw new Error("LOCAL_IMAGE_DISK_LOW");

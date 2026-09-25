@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from statistics import median
 import copy
 
-VERSION = 'hm-automatic-timeline-v1.1'
+VERSION = 'hm-automatic-timeline-v1.2'
 
 
 def extent(m):
@@ -75,7 +75,52 @@ def pickup_beam_pixels(frame, m, s, links, physical):
             'sourceBox':[x0,y0,x1,y1],'componentArea':int(stats[components[0],cv2.CC_STAT_AREA]),'beamPixels':int(band.sum())}
 
 
-def physical_intervals(measures, systems, links):
+def edge_ink(frame, s, left, right, xs, prefix_xs, first_interval):
+    """Source-pixel check that a fragment's blank head/tail really is blank.
+
+    Engraved width is not proportional to duration: a sparse complete bar whose
+    rest (and rest token) the model missed can be as narrow as a genuine split
+    bar. The difference is the missed glyph's ink. Only compact, filled blobs
+    inside the staff band count (rest-like); thin curves (ties/slurs continuing
+    to the next system) do not. Unknown geometry is reported as unverified.
+    """
+    import numpy as np
+    import cv2
+    sp = s['spacing']; lines = s['lines']
+    gray = np.asarray(frame.convert('L'))
+    y0 = max(0, int(lines[0] - .25*sp)); y1 = min(gray.shape[0], int(lines[-1] + .25*sp) + 1)
+    ink = (gray[y0:y1] < 160).astype('uint8')
+    ink = ink - cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((1, max(5, int(sp*5))), np.uint8))
+    regions = {'tail': (max(xs) + 1.8*sp, right - .7*sp)}
+    if prefix_xs:
+        # A clef/key/time prefix (system start, or a mid-system meter change)
+        # occupies the head. Its end comes from replayed prefix tokens.
+        regions['head'] = (max(prefix_xs) + 1.5*sp, min(xs) - 2.2*sp)
+    elif first_interval:
+        return {'blank': False, 'verified': False, 'reason': 'system prefix end unknown; head blank space not checkable'}
+    else:
+        regions['head'] = (left + .7*sp, min(xs) - 2.2*sp)
+    out = {'verified': True, 'method': 'staff-band ink after staff-line removal; compact filled components only', 'regions': {}}
+    blank = True
+    for name, (a, b) in regions.items():
+        a = int(max(0, a)); b = int(min(gray.shape[1], b))
+        row = {'x': [a, b], 'blobs': []}
+        if b - a >= 2:
+            count, _, stats, _ = cv2.connectedComponentsWithStats(np.ascontiguousarray(ink[:, a:b]), 8)
+            for c in range(1, count):
+                x, y, w, h, area = (int(v) for v in stats[c])
+                fill = area / float(w*h)
+                if area >= .45*sp*sp and fill >= .3 and h >= .4*sp and w >= .3*sp:
+                    row['blobs'].append({'box': [a+x, y0+y, a+x+w, y0+y+h], 'area': area, 'fill': round(fill, 3)})
+        if row['blobs']:
+            blank = False
+        out['regions'][name] = row
+    out['blank'] = blank
+    out['reason'] = 'no unexplained rest-like ink in blank head/tail' if blank else 'unexplained rest-like ink in blank head/tail; possible missed rest or note'
+    return out
+
+
+def physical_intervals(measures, systems, links, frame=None):
     """A separate strict timing correspondence; never rewrite original links."""
     result = {}
     for m in measures:
@@ -138,6 +183,11 @@ def physical_intervals(measures, systems, links):
                    rhythmTokenCoverage='exact', rhythmTokens=source_rhythms, layoutPrefixTokens=prefix_tokens,
                    rightBoundaryTokens=[t['fields']['rhythm'] for t in right_tokens],
                    reason='all pitched glyphs bijective; model rhythm tokens bijective; rests have exact replay tokens; physical boundary corroborated')
+        if frame is not None:
+            prefix_xs=[t['attentionOriginal'][0] for t in s['tokens'] if t.get('attentionOriginal')
+                       and left < t['attentionOriginal'][0] < min(xs)
+                       and t['fields'].get('rhythm', '').startswith(('clef_', 'keySignature_', 'timeSignature/'))]
+            row['edgeInk']=edge_ink(frame, s, left, right, xs, prefix_xs, bi == 0)
     groups = defaultdict(list)
     for m in measures:
         r = result[m['id']]
@@ -325,8 +375,17 @@ def resolve(root, meter_candidates, physical):
         # A missed note/rest typically leaves a nominal-width interval or a
         # large blank edge. Both are rejected even when the recognized durations
         # happen to complement a neighbour.
-        result['supported']=bool(width>0 and head<=12 and tail<=5.5 and ratio<=fraction+0.18)
-        result['reason']='physically abbreviated interval with exact model-token/glyph coverage' if result['supported'] else 'source interval is not independently abbreviated for its recognized extent'
+        # v1.2: a narrow interval alone cannot distinguish a genuine split bar
+        # from a sparse complete bar whose rest (and token) was missed. Require
+        # source-pixel confirmation that the fragment's blank head/tail has no
+        # rest-like ink; unverified or inked edges keep the pair unresolved.
+        edge=proof.get('edgeInk') or {}
+        result['edgeInk']=edge
+        compact=bool(width>0 and head<=12 and tail<=5.5 and ratio<=fraction+0.18)
+        result['supported']=compact and edge.get('verified') is True and edge.get('blank') is True
+        result['reason']=('physically abbreviated interval with exact model-token/glyph coverage and pixel-verified blank edges' if result['supported']
+                          else 'source interval is not independently abbreviated for its recognized extent' if not compact
+                          else 'abbreviated interval but blank edges not verified free of missed rest/note ink')
         return result
 
     def mark(m, reason, evidence):
@@ -401,7 +460,7 @@ def resolve(root, meter_candidates, physical):
 def reconstruct(root, frame, systems, links, ocr):
     from score import observe
     measures, _ = observe(root)
-    physical = physical_intervals(measures, systems, links)
+    physical = physical_intervals(measures, systems, links, frame)
     for m in measures:
         if m['measureIndex']==0:
             s=next((s for s in systems if s['systemIndex']==m['systemIndex']),None)

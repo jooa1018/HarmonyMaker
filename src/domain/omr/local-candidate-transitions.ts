@@ -21,7 +21,7 @@ function parse(text: unknown): XmlElement {
   return result.status === "complete" ? result.root : fail();
 }
 const fractionValue = (s: string) => { const [n, d = "1"] = s.split("/"); return Number(n) / Number(d); };
-const timelineVersions = new Set(["hm-automatic-timeline-v1", "hm-automatic-timeline-v1.1"]);
+const timelineVersions = new Set(["hm-automatic-timeline-v1", "hm-automatic-timeline-v1.1", "hm-automatic-timeline-v1.2"]);
 const lyricVersions = new Set(["hm-lyric-recovery-v1", "hm-lyric-recovery-v1.1"]);
 
 /** Verify the sidecar describes the actual A→C changes, not a different XML with matching counts. */

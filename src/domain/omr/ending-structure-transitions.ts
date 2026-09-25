@@ -47,7 +47,7 @@ export function beforeEndingStructure(xml: string, changes: readonly StructureCh
   const measures = new Map<string, XmlElement>(xmlChildren(tree, "part").flatMap((p, pi) => xmlChildren(p, "measure").map((m, mi) => [`p${pi}m${mi}`, m] as const)));
   for (const patch of patches) {
     const id = patch.measureId ?? "", current = measures.get(id);
-    if (!current || seen.has(id) || patch.ruleVersion !== "hm-ending-structure-recovery-v1"
+    if (!current || seen.has(id) || !["hm-ending-structure-recovery-v1", "hm-ending-structure-recovery-v1.1"].includes(String(patch.ruleVersion))
       || !Array.isArray(patch.deletedEventIds) || patch.deletedEventIds.length) fail();
     seen.add(id);
     const before = measure(patch.before), after = measure(patch.after);

@@ -31,6 +31,9 @@ def proof(root):
             'rightBoundaryTokens':['barline'],'reason':'synthetic independent complete source coverage'}for m in ms}
 
 
+BLANK={'verified':True,'blank':True,'reason':'synthetic verified blank edges'}
+
+
 def meter(i, beats, den=4):
     return {'feature':'meter','ruleVersion':VERSION,'measureId':f'p0m{i}','status':'supported-candidate','value':[beats,den]}
 
@@ -82,8 +85,8 @@ class TimelineFixtures(unittest.TestCase):
 
     def test_tie_free_system_partials_need_independent_compact_layout(self):
         r=score([[4],[3],[1],[4],[4],[4]],systems=(2,));p=proof(r);before=music(r)
-        p['p0m1'].update(intervalWidthSpaces=23,headSpaces=2,tailSpaces=2)
-        p['p0m2'].update(intervalWidthSpaces=12,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2','keySignature_0'])
+        p['p0m1'].update(intervalWidthSpaces=23,headSpaces=2,tailSpaces=2,edgeInk=BLANK)
+        p['p0m2'].update(intervalWidthSpaces=12,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2','keySignature_0'],edgeInk=BLANK)
         out=resolve(r,[],p);ms=r.findall('part/measure')
         self.assertEqual([ms[1].get('implicit'),ms[2].get('implicit')],['yes','yes'])
         self.assertEqual(len(out['changes']),2);self.assertEqual(before,music(r))
@@ -98,6 +101,43 @@ class TimelineFixtures(unittest.TestCase):
                 p['p0m1']['intervalWidthSpaces']=30;p['p0m2']['intervalWidthSpaces']=38
             else:p['p0m1']['rhythmTokenCoverage']='incomplete'
             self.assertEqual(resolve(r,[],p)['changes'],[]);self.assertEqual(before,music(r))
+
+    def test_sparse_complete_bars_with_missed_rests_are_not_joined(self):
+        # Audit counterexample (independent audit F-05): two complete 4/4 bars,
+        # each a half note plus a half rest whose glyph and token the model
+        # missed. Sparse bars are engraved narrow, so width alone matched.
+        for label,edge in (('unverified',None),('rest ink in tail',{'verified':True,'blank':False}),('prefix unknown',{'verified':False,'blank':False})):
+            r=score([[4],[2],[2],[4],[4],[4]],systems=(2,));p=proof(r);before=music(r)
+            p['p0m1'].update(intervalWidthSpaces=18,headSpaces=2,tailSpaces=4)
+            p['p0m2'].update(intervalWidthSpaces=16.5,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2'],edgeInk=BLANK)
+            if edge is not None:p['p0m1']['edgeInk']=edge
+            out=resolve(r,[],p)
+            self.assertEqual(out['changes'],[],label);self.assertEqual(before,music(r))
+            self.assertIsNone(r.findall('part/measure')[1].get('implicit'))
+        # Same layout with pixel-verified blank edges is a genuine split bar.
+        r=score([[4],[2],[2],[4],[4],[4]],systems=(2,));p=proof(r)
+        p['p0m1'].update(intervalWidthSpaces=18,headSpaces=2,tailSpaces=4,edgeInk=BLANK)
+        p['p0m2'].update(intervalWidthSpaces=16.5,headSpaces=10,tailSpaces=2,layoutPrefixTokens=['clef_G2'],edgeInk=BLANK)
+        self.assertEqual(len(resolve(r,[],p)['changes']),2)
+
+    def test_edge_ink_separates_rest_blob_from_continuing_curve(self):
+        from PIL import Image,ImageDraw
+        from timeline import edge_ink
+        sp=10;lines=[40,50,60,70,80]
+        def page(extra):
+            im=Image.new('L',(300,120),255);d=ImageDraw.Draw(im)
+            for y in lines:d.line((0,y,299,y),fill=0,width=1)
+            d.ellipse((40,54,52,62),fill=0)  # the only recognized head, x=46
+            extra(d);return im
+        s={'spacing':sp,'lines':lines}
+        blank=edge_ink(page(lambda d:None),s,10,290,[46],[],False)
+        self.assertTrue(blank['verified'] and blank['blank'])
+        curve=edge_ink(page(lambda d:d.arc((50,30,300,70),200,340,fill=0,width=2)),s,10,290,[46],[],False)
+        self.assertTrue(curve['blank'],curve)
+        rest=edge_ink(page(lambda d:d.rectangle((150,50,162,56),fill=0)),s,10,290,[46],[],False)
+        self.assertFalse(rest['blank']);self.assertEqual(len(rest['regions']['tail']['blobs']),1)
+        prefix=edge_ink(page(lambda d:d.rectangle((150,50,162,56),fill=0)),s,10,290,[200],[],True)
+        self.assertFalse(prefix['verified'])
 
     def test_compact_but_noncomplementary_system_bars_stay_separate(self):
         r=score([[4],[2],[1],[4],[4],[4]],systems=(2,));p=proof(r);before=music(r)

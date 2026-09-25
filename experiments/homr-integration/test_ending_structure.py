@@ -8,6 +8,38 @@ import ending_structure as s
 from score import observe
 
 class EndingContracts(unittest.TestCase):
+
+    def _accidental_bar(self,first_accidental):
+        xml=("<score-partwise><part id='P1'><measure number='1'><attributes><divisions>1</divisions><key><fifths>-2</fifths></key>"
+             "<time><beats>2</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>"
+             "<note><pitch><step>E</step>"+("" if first_accidental else "<alter>-1</alter>")+"<octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type>"
+             +("<accidental>natural</accidental>" if first_accidental else "")+"</note>"
+             "<note><pitch><step>E</step>"+("" if first_accidental else "<alter>-1</alter>")+"<octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type>"
+             "<notations><ornaments><trill-mark/></ornaments></notations></note></measure></part></score-partwise>")
+        root=E.fromstring(xml)
+        im=Image.new('L',(400,180),255);d=ImageDraw.Draw(im)
+        for y in (90,100,110,120,130):d.line((10,y,390,y),fill=110,width=1)
+        for x in (120,200):d.ellipse((x-6,126,x+6,134),fill=30)
+        sy={'systemIndex':0,'spacing':10,'lines':[90,100,110,120,130],'bounds':[10,90,390,130],'tokens':[],
+            'symbols':[{'type':'Note','id':'h1','center':[120,130],'staffPosition':1},{'type':'Note','id':'h2','center':[200,130],'staffPosition':1}]}
+        links={'d0p0m0n0':{'attentionEstimate':[120,130]},'d0p0m0n1':{'attentionEstimate':[200,130]}}
+        cands=[{'feature':'chord','systemIndex':0,'sourceBox':[192,62,212,74],'hypotheses':[{'text':'Eb','confidence':90}]*3}]
+        out=s.recover(root,im,[sy],links,[],[],cands,'synthetic')
+        return root.findall('part/measure/note')[1],out
+
+    def test_trill_collision_pitch_respects_in_measure_accidental(self):
+        # Independent audit F-06: an earlier E-natural in the bar carries to the
+        # next E4 head; the key-signature-only pitch would have made it Eb4.
+        note,out=self._accidental_bar(True)
+        self.assertEqual((note.findtext('pitch/step'),note.findtext('pitch/alter','0')),('E','0'))
+        self.assertIsNotNone(note.find('notations/ornaments/trill-mark'))
+        self.assertEqual([d['status'] for d in out['decisions']],['withheld-candidate'])
+        self.assertIn('accidental',out['decisions'][0]['reason'])
+        # Without accidental context the existing correction still applies.
+        note,out=self._accidental_bar(False)
+        self.assertEqual((note.findtext('pitch/step'),note.findtext('pitch/alter')),('E','-1'))
+        self.assertIsNone(note.find('notations/ornaments/trill-mark'))
+        self.assertEqual([d['status'] for d in out['decisions']],['applied-candidate'])
     def printed(self,kind='slash'):
         im=Image.new('L',(400,180),255);d=ImageDraw.Draw(im)
         for y in (90,100,110,120,130):d.line((10,y,390,y),fill=110,width=1)

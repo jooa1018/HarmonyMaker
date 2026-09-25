@@ -9,7 +9,7 @@ import copy, math, itertools, re
 import cv2
 import numpy as np
 
-VERSION = 'hm-ending-structure-recovery-v1'
+VERSION = 'hm-ending-structure-recovery-v1.1'
 
 
 def runs(values):
@@ -236,6 +236,37 @@ def pitch_at(position,clef,fifths):
     return {'step':step,'octave':value//7,'alter':alter}
 
 
+def accidental_context(measure,event,pitch,fifths):
+    """In-measure accidental state that a key-signature-only pitch cannot see.
+
+    Returns a reason when replacing this event's pitch from staff position alone
+    could ignore an accidental: an earlier note in the same measure on the same
+    step carries an explicit accidental or a non-key alteration (it applies to
+    later heads on that line/space), or the model's own pitch already differs
+    from the key signature without a printed accidental. Callers then withhold.
+    """
+    if pitch is None:return 'pitch position unavailable'
+    key_alter=pitch_at_alter(pitch['step'],fifths)
+    onset=F(event['onset'])
+    for other in measure['events']:
+        if other is event or other['kind']!='note' or F(other['onset'])>=onset:continue
+        el=other['element'];step=el.findtext('pitch/step')
+        if step!=pitch['step']:continue
+        alter=int(el.findtext('pitch/alter','0'))
+        if el.find('accidental') is not None or alter!=key_alter:
+            return f'earlier {step}{el.findtext("pitch/octave")} in the measure carries an accidental/alteration'
+    own=event['element']
+    if own.findtext('pitch/step') and int(own.findtext('pitch/alter','0'))!=pitch_at_alter(own.findtext('pitch/step'),fifths):
+        return 'model pitch differs from the key signature without a printed accidental'
+    return None
+
+
+def pitch_at_alter(step,fifths):
+    if fifths<0 and step in 'BEADGCF'[:min(7,-fifths)]:return -1
+    if fifths>0 and step in 'FCGDAEB'[:min(7,fifths)]:return 1
+    return 0
+
+
 def set_child(node,tag,value):
     child=node.find(tag)
     if child is None:child=E.SubElement(node,tag)
@@ -400,6 +431,9 @@ def recover(root,frame,systems,links,regions,history,candidates,input_sha256):
                 tail=rests[1:]+[e for e in measure['events']if e['id']in physical]
                 if not tail or abs(links.get(tail[0]['id'],{}).get('attentionEstimate',[1e9])[0]-hollow['center'][0])>1.5*sp:decision['reason']='second independent voice alignment column missing';decisions.append(decision);continue
             elif rests or physical:decision['reason']='sustained whole-note lane has other unassigned events';decisions.append(decision);continue
+            y=hollow['center'][1];long_position=round(9-2*(y-grid['lines'][0])/sp)if whole else int(hollow['head']['staffPosition'])
+            blocked=accidental_context(measure,long,pitch_at(long_position,long['clef'],fifths[measure['id']]),fifths[measure['id']])
+            if blocked:decision['reason']='in-measure accidental context: '+blocked;decisions.append(decision);continue
             rows=edit_rows(measure);mid=measure['id'];onset=F(upper_rest['duration'])if upper_rest else F(0);glyph_onsets=[]
             for g in glyphs:glyph_onsets.append(onset);onset+=F(g['duration'])
             rhythm_voice='2';lead_voice='1';by_glyph={gi:e for e,gi in zip(rhythm_events,alignment['indices'])}
@@ -409,7 +443,7 @@ def recover(root,frame,systems,links,regions,history,candidates,input_sha256):
                 if event:ni=event['noteIndex'];rows[ni]=row
                 else:ni=len(rows);rows.append(row);lineage[mid].append({'afterEventId':f'd0{mid}n{ni}','beforeEventIds':[],'operation':'inserted','sourceGlyphIds':[]})
                 lineage[mid][ni].update(operation='modified'if event else 'inserted',sourceGlyphIds=[g['id']],sourceBox=g['sourceBox'],reason='independently detected slash/stem/beam/dot; voice clock follows lane',sourceOnset=str(glyph_onsets[gi]))
-            y=hollow['center'][1];position=round(9-2*(y-grid['lines'][0])/sp)if whole else int(hollow['head']['staffPosition']);pitch=pitch_at(position,long['clef'],fifths[mid]);duration='4'if whole else '3'if down_half and head_dot['count']else '2'
+            position=long_position;pitch=pitch_at(position,long['clef'],fifths[mid]);duration='4'if whole else '3'if down_half and head_dot['count']else '2'
             rows[long['noteIndex']]={'node':make_note(long['element'],'note',duration,lead_voice if whole or down_half else rhythm_voice,measure['divisions'],pitch=pitch),'onset':'0'if whole or down_half else str(onset),'duration':duration}
             lineage[mid][long['noteIndex']].update(operation='modified',sourceGlyphIds=[hollow['id']],sourceBox=hollow['sourceBox'],reason='hollow head shape, independent stem ownership and raster staff grid',headRole='whole'if whole else 'half')
             if half:
@@ -422,7 +456,7 @@ def recover(root,frame,systems,links,regions,history,candidates,input_sha256):
                         # needs independent geometry and raster-grid agreement.
                         oldp={'step':old.findtext('pitch/step'),'octave':int(old.findtext('pitch/octave')),'alter':int(old.findtext('pitch/alter','0'))};p=oldp
                         inferred=pitch_at(pos,event['clef'],fifths[mid])
-                        if abs(grid_pos-pos)<=.7 and old.find('accidental')is None and (oldp['step'],oldp['octave'])!=(inferred['step'],inferred['octave']):p=inferred
+                        if abs(grid_pos-pos)<=.7 and old.find('accidental')is None and (oldp['step'],oldp['octave'])!=(inferred['step'],inferred['octave']) and not accidental_context(measure,event,inferred,fifths[mid]):p=inferred
                     tieflags=[t.attrib['type']for t in old.findall('tie')]
                     node=make_note(old,kind,event['duration'],lead_voice,measure['divisions'],pitch=p,ties=tieflags);rows[event['noteIndex']]={'node':node,'onset':str(lower),'duration':event['duration']};lower+=F(event['duration'])
                     lineage[mid][event['noteIndex']].update(operation='modified',sourceGlyphIds=[physical[event['id']]['id']]if event['id']in physical else [],reason='separate lower stem/rest stream with two physical alignment columns')
@@ -482,6 +516,10 @@ def recover(root,frame,systems,links,regions,history,candidates,input_sha256):
             if len(heads)!=1:continue
             head=heads[0];position=int(head['staffPosition']);pixel=9-2*(head['center'][1]-grid['lines'][0])/sp
             if abs(pixel-position)>.7:continue
+            blocked=accidental_context(measure,event,pitch_at(position,event['clef'],fifths[measure['id']]),fifths[measure['id']])
+            if blocked:
+                decisions.append({'feature':'ending-structure','status':'withheld-candidate','ruleVersion':VERSION,'measureId':measure['id'],'eventId':event['id'],'inputSha256':input_sha256,'sourceBox':text['sourceBox'],'reason':'chord-text collision, but pitch replacement withheld: '+blocked,'reviewRequired':True})
+                continue
             rows=edit_rows(measure);node=rows[event['noteIndex']]['node'];ornaments=node.find('notations/ornaments');ornaments.remove(ornaments.find('trill-mark'))
             if len(ornaments)==0:node.find('notations').remove(ornaments)
             pitch=pitch_at(position,event['clef'],fifths[measure['id']]);p=node.find('pitch')
