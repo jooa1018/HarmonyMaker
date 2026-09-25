@@ -23,6 +23,21 @@ def candidate(at='0',symbol='Bb',box=(100,10,120,30)):
 
 
 class ChordRecoveryContracts(unittest.TestCase):
+    def test_close_staff_letter_survives_but_entering_stem_does_not(self):
+        for scale in (1,2):
+            image=Image.new('L',(400*scale,220*scale),255);d=ImageDraw.Draw(image)
+            def line(points):d.line(tuple(round(v*scale) for v in points),fill=0,width=scale)
+            for y in (80,90,100,110,120):line((10,y,390,y))
+            # C-shaped printed ink, ending 0.4 spaces above the staff. Its
+            # bottom crosses the old band; no OCR/expected chord is injected.
+            line((150,64,150,76));line((150,64,158,64));line((150,76,158,76))
+            # A stem and beam entering the same band must still be excluded.
+            line((210,60,210,90));line((210,60,225,60))
+            s={'spacing':10*scale,'lines':[y*scale for y in (80,90,100,110,120)],'bounds':[10*scale,80*scale,390*scale,120*scale]}
+            boxes=cr.boxes(image,s)
+            self.assertTrue(any(b[0]<=150*scale and b[2]>=158*scale and b[1]<=64*scale and b[3]>=76*scale for b in boxes))
+            self.assertFalse(any(b[0]<=210*scale<=b[2] for b in boxes))
+
     def test_exact_quality_and_bass_are_distinct(self):
         symbols=['C','Cm','C7','CM7','C#','Cb','C/F','C/F#','C/Bb','Csus2','Csus4','Cadd9']
         keys=[cr.cm.spec_key(cr.exact(s)) for s in symbols]

@@ -31,6 +31,28 @@ const rights = { rights: { basis: "self-authored", allowedUses: ["generation"] }
 const midi = (p: { step: string; alter: number; octave: number }) => (p.octave + 1) * 12 + ({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 } as Record<string, number>)[p.step] + p.alter;
 
 describe("automatic practice draft contract", () => {
+  it("isolates reused assessments from caller mutation, options, history and other documents", async () => {
+    const w = await start();
+    const first = await assessAutoDraft(w, rights);
+    (first.findings as unknown[]).push({ code: "FORGED" });
+    expect((await assessAutoDraft(w, rights)).findings.some(f => f.code === "FORGED")).toBe(false);
+    expect((await assessAutoDraft(w)).status).toBe("needs-decision");
+    const alto = await assessAutoDraft(w, { ...rights, harmonyPart: "alto" });
+    const tenor = await assessAutoDraft(w, { ...rights, harmonyPart: "tenor" });
+    expect(alto.request!.performers).not.toEqual(tenor.request!.performers);
+    const other = await start(leadSheet({ overfull: true }), "workspace:other");
+    expect((await assessAutoDraft(other, rights)).status).toBe("needs-decision");
+    const edited = await act(w, { kind: "title", title: "Changed" });
+    expect((await assessAutoDraft(edited, rights)).workspaceDigest).not.toBe(first.workspaceDigest);
+    const undo = await act(edited, { kind: "undo" });
+    expect((await assessAutoDraft(undo, rights)).workspaceRevision).toBe(undo.revision);
+    const redo = await act(undo, { kind: "redo" });
+    expect((await assessAutoDraft(redo, rights)).workspaceRevision).toBe(redo.revision);
+    // Same object and advertised digest cannot hide modified provenance.
+    Object.assign(w.origin, { fileName: "tampered.musicxml" });
+    await expect(assessAutoDraft(w, rights)).rejects.toThrow();
+  });
+
   it("asks only for rights on an untouched MusicXML lead sheet and records every default's origin", async () => {
     const w = await start();
     const a = await assessAutoDraft(w);

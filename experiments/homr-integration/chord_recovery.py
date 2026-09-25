@@ -14,17 +14,22 @@ import chord_ocr_image as ci
 import chord_ocr_model as cm
 from linking import locate_column
 
-VERSION = 'hm-chord-recovery-v1'
+VERSION = 'hm-chord-recovery-v1.1'
 
 
 def boxes(frame, system):
-    """Two staff-relative bands; retain clipped detections as alternatives.
+    """Staff-relative bands, including lettering close to the top staff line.
 
     Raising the search band handles text above stems/beams without expanding
     the lower edge into the staff. Shared lyric/meter preprocessing is untouched.
     """
     sp=system['spacing'];found=[]
-    for shift in (0, 1.5):
+    # The original lower edge (1.05 spaces above the staff) can cut through
+    # ordinary chord letters. Boundary-connected ink is then correctly erased
+    # as ambiguous, but the entire chord disappears. A second lower edge at
+    # 0.25 spaces retains detached letters while still removing entering stems.
+    # This is only region detection: OCR agreement and attachment remain gates.
+    for shift in (0, 1.5, -0.8):
         staff=cm.StaffGeometry(0,round(system['lines'][0]-shift*sp),
             tuple(round(x-shift*sp) for x in system['lines']),sp,
             round(system['bounds'][0]),round(system['bounds'][2]))
@@ -32,12 +37,19 @@ def boxes(frame, system):
             overlap=[i for i,b in enumerate(found) if min(box[2],b[2])>max(box[0],b[0])
                      and min(box[3],b[3])>max(box[1],b[1])]
             if not overlap:found.append(box)
-            elif shift:
+            elif shift > 0:
                 # A raised text box replaces a clipped/lower composite only
                 # when its top was outside the old search band. Other overlap
                 # remains one glyph, never a second printed chord.
                 for i in overlap:
                     if box[1]<found[i][1]-sp*.5 and box[3]-box[1]<=3*sp:found[i]=box;break
+            elif shift < 0:
+                # Replace a clipped suffix only when the lower-band box fully
+                # contains it. Never join merely overlapping distinct glyphs.
+                contained=[i for i in overlap if box[0]<=found[i][0] and box[1]<=found[i][1]
+                           and box[2]>=found[i][2] and box[3]>=found[i][3]]
+                if len(contained)==len(overlap) and box[3]-box[1]<=4.7*sp:
+                    found=[b for i,b in enumerate(found) if i not in contained];found.append(box)
     return sorted(set(found))
 
 

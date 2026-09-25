@@ -9,7 +9,7 @@ import { performerId } from "../../domain/ids";
 import { __musicXmlParserInternals } from "../musicxml/parser-core";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { clean } from "./edit";
-import { readVerifiedWorkspace } from "./journal";
+import { captureWorkspace, readVerifiedWorkspace } from "./journal";
 import { currentlyReviewedIssueIds, deriveStructuralArrangementBlockers, workspaceScopeRelevant } from "./review";
 import type { ArrangementRequest, ScoreWorkspace, WorkspaceIssue, WorkspaceScope, WorkspaceState } from "./model";
 
@@ -270,8 +270,30 @@ function classifyBlocker(b: { id: string; messageKo: string; scope: WorkspaceSco
 
 /** One verdict for API and UI: same workspace revision, options and versions
  * always produce the same status, reasons and effective request. */
+const assessments = new WeakMap<ScoreWorkspace, { captured: string; options: string; result: Promise<AutoDraftAssessment> }>();
 export async function assessAutoDraft(workspace: ScoreWorkspace, rawOptions: AutoDraftOptions = {}): Promise<AutoDraftAssessment> {
   const options = normalizeAutoDraftOptions(rawOptions);
+  // Exact state includes identity, history, algorithms and original evidence.
+  // Only journal-owned immutable inputs can reuse captured bytes; mutable API
+  // inputs are serialized on every call. Keep one option per weak identity.
+  const captured = captureWorkspace(workspace), key = serializeAutoDraftOptions(options);
+  let entry = assessments.get(workspace);
+  if (!entry || entry.captured !== captured || entry.options !== key) {
+    const result = computeAutoDraft(workspace, options).then(value => {
+      if (captureWorkspace(workspace) !== captured) throw new RangeError("WORKSPACE_MUTATED_DURING_ASSESSMENT");
+      return value;
+    });
+    entry = { captured, options: key, result };
+    assessments.set(workspace, entry);
+    const owned = entry;
+    void result.catch(() => { if (assessments.get(workspace) === owned) assessments.delete(workspace); });
+  }
+  // A caller may edit its returned assessment; never expose the cached graph.
+  const result = await entry.result;
+  if (captureWorkspace(workspace) !== captured) throw new RangeError("WORKSPACE_MUTATED_DURING_ASSESSMENT");
+  return structuredClone(result);
+}
+async function computeAutoDraft(workspace: ScoreWorkspace, options: AutoDraftOptions): Promise<AutoDraftAssessment> {
   const { state, evidenceDigest } = await readVerifiedWorkspace(workspace);
   const provenance: AutoDraftProvenance[] = [], findings: AutoDraftFinding[] = [];
   const categories: Record<AutoDraftCategory, number> = { auto: 0, "reviewed-record": 0, warning: 0, question: 0, unsupported: 0, "not-applicable": 0 };
