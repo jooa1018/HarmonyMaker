@@ -89,7 +89,9 @@
     ".next-local-review-persistence-proof/types/**/*.ts",
     ".next-local-review-persistence-proof/dev/types/**/*.ts",
     ".next-local-review-persistence-transition/types/**/*.ts",
-    ".next-local-review-persistence-transition/dev/types/**/*.ts"
+    ".next-local-review-persistence-transition/dev/types/**/*.ts",
+    ".next-local-current/types/**/*.ts",
+    ".next-local-current/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
