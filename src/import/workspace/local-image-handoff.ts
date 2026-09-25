@@ -1,7 +1,7 @@
 import { validateLocalImageResult, type LocalImageJob } from "../../domain/omr/local-image";
 import type { Step3ImportVersions } from "../musicxml/types";
 import { originFromLocalCandidate } from "./input";
-import { applyWorkspaceCommand, createScoreWorkspace } from "./journal";
+import { createScoreWorkspace } from "./journal";
 import { ScoreWorkspaceStore, type StoredScoreWorkspace } from "./store";
 
 /** Stable per-job identity: reopening a completed job preserves manual revisions. */
@@ -13,13 +13,9 @@ export async function acceptLocalImageWorkspace(job:LocalImageJob,text:string,ve
     return record;
   };
   const previous=await store.load(id);if(previous)return verify(previous);
-  const created=await createScoreWorkspace(await originFromLocalCandidate(bundle,job.fileName),versions,id);
-  // The upload endpoint refuses jobs without the user's rights confirmation
-  // (generation use). Record that same confirmation once, attributed to the
-  // upload actor and time, so the draft path does not ask for it again.
-  const workspace=await applyWorkspaceCommand(created,created,{kind:"rights",rights:{basis:"user-confirmed-rights",allowedUses:["generation"],confirmedAt:job.createdAt,
-    sourceReference:`로컬 이미지 업로드 시 권리 확인 · job ${job.id}`}},
-    {id:`upload-rights-${job.id}`,note:"업로드 단계에서 사용자가 확인한 생성 용도 권리를 기록(새 확인 아님)",actor:job.execution.actor,at:job.createdAt});
+  // The upload consent covers local recognition only ("편곡·공유 권리는 별도로
+  //확인"). It is not re-used as generation rights; the draft asks for that once.
+  const workspace=await createScoreWorkspace(await originFromLocalCandidate(bundle,job.fileName),versions,id);
   const record:StoredScoreWorkspace={workspace,storageRevision:0,updatedAt:new Date().toISOString()};
   try{await store.save(record);return record;}
   catch(error){

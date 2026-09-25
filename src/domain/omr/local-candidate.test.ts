@@ -49,10 +49,8 @@ describe("fresh image job to persistent workspace",()=>{
   it("binds original bytes, exact evidence and execution without approving unresolved music",async()=>{
     const {job,text,bundle}=await imageJobFixture(),record=await acceptLocalImageWorkspace(job,text,V);
     expect(record.workspace.origin.localCandidate).toEqual(bundle);
-    // Only the upload-time rights confirmation is carried over, attributed to the
-    // upload actor/time. No music review or approval record is created.
-    expect(record.workspace.operations.map(o=>[o.command.kind,o.actor,o.at])).toEqual([["rights",job.execution.actor,job.createdAt]]);
-    expect(record.workspace.operations[0].command).toMatchObject({kind:"rights",rights:{basis:"user-confirmed-rights",allowedUses:["generation"],confirmedAt:job.createdAt}});
+    // Upload consent is recognition-scoped; no request or review record is created.
+    expect(record.workspace.operations).toEqual([]);
     expect(JSON.parse(record.workspace.origin.localCandidate!.artifacts.evidence.text).sourceEligibility.approved).toBe(false);
     expect((await new ScoreWorkspaceStore().load(record.workspace.id))!.workspace.digest).toBe(record.workspace.digest);
   });
@@ -61,7 +59,7 @@ describe("fresh image job to persistent workspace",()=>{
     expect(a.workspace.digest).toBe(b.workspace.digest);const store=new ScoreWorkspaceStore();
     const corrected=await applyWorkspaceCommand(a.workspace,a.workspace,{kind:"title",title:"User correction retained"},{id:"op:fixture",note:"independent test correction",actor:"ui-test",at:"2026-09-13T00:01:00.000Z"});
     await store.save({workspace:corrected,storageRevision:1,updatedAt:"2026-09-13T00:01:00.000Z"},0);
-    const reopened=await acceptLocalImageWorkspace(job,text,V);expect(reopened.workspace.revision).toBe(2);expect(reopened.workspace.historyDigest).toBe(corrected.historyDigest);
+    const reopened=await acceptLocalImageWorkspace(job,text,V);expect(reopened.workspace.revision).toBe(1);expect(reopened.workspace.historyDigest).toBe(corrected.historyDigest);
   });
   it("rejects swapped job/image/revision/cache metadata even when bundle hashes are resealed",async()=>{
     const {job,text,bundle}=await imageJobFixture();
