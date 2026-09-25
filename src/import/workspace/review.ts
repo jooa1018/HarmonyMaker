@@ -1,6 +1,6 @@
 import { semanticDigest, canonicalJson } from "../../domain/digest/canonical";
 import { addFractions, compareFractions, fraction } from "../../domain/fraction";
-import { deriveFifths } from "../../domain/pitch";
+import { comparePitches, deriveFifths } from "../../domain/pitch";
 import { validatePerformer } from "../../domain/performer";
 import { clean, measures, requireMeasure } from "./edit";
 import { __musicXmlParserInternals } from "../musicxml/parser-core";
@@ -98,6 +98,23 @@ async function issueCurrentWithFingerprint(state: WorkspaceState, issue: Workspa
 export async function issueCurrent(state: WorkspaceState, issue: WorkspaceIssue, evidenceDigest: string): Promise<boolean> {
   return issueCurrentWithFingerprint(state,issue,evidenceDigest,(scope,version,issueId)=>workspaceReviewFingerprint(state,scope,evidenceDigest,version,issueId));
 }
+/** Issues whose existing review record is still current for this exact state.
+ * Used by the automatic draft to honour prior work records without requiring
+ * them; the record's actor label is reported as-is, never upgraded. */
+export async function currentlyReviewedIssueIds(state: WorkspaceState, evidenceDigest: string): Promise<ReadonlySet<string>> {
+  const attested = new Set(state.attestations.filter(a => a.purpose === "issue" && a.issueId).map(a => a.issueId!));
+  const candidates = state.issues.filter(i => attested.has(i.id));
+  if (!candidates.length) return new Set();
+  const projectIssue = createWorkspaceIssueDependencyProjector(state), fingerprints = new Map<string, Promise<string>>();
+  const fingerprint: FingerprintReader = (scope, version, issueId) => {
+    const key = `${version}:${canonicalJson(scope)}:${version === 3 ? issueId ?? "" : ""}`;
+    let value = fingerprints.get(key);
+    if (!value) { value = fingerprintWithProjection(state, scope, evidenceDigest, version, issueId, projectIssue); fingerprints.set(key, value); }
+    return value;
+  };
+  const current = await reviewBatches(candidates, issue => issueCurrentWithFingerprint(state, issue, evidenceDigest, fingerprint));
+  return new Set(candidates.filter((_, i) => current[i]).map(i => i.id));
+}
 /** Replay performs this once before the first v3 command. Only still-current
  * judgments may be retained under a narrower dependency rule. Original actor,
  * time, scope, targets and old fingerprint remain attributable; stale reviews
@@ -125,10 +142,27 @@ export async function retainWorkspaceReviewsV3(state: WorkspaceState, origin: Wo
   });
   return {...next,attestations};
 }
+/** Reviewed-Source gate: structural arrangement conditions plus every raw
+ * issue and measure comparison. Unchanged contract for reviewed workspaces. */
 export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenceDigest: string): Promise<WorkspaceCapabilities> {
+  const { policyNotes, ...capabilities } = await evaluateArrangement(state, evidenceDigest, "reviewed");
+  void policyNotes;
+  return capabilities;
+}
+/** Structural conditions only (meter, time, pitch, key, voices, request).
+ * Shared by the reviewed gate above and the automatic-draft assessment, so a
+ * workspace "ready" verdict and the Source validator use the same rules. Raw
+ * OMR issues and source comparisons are classified by the caller instead. */
+export async function deriveStructuralArrangementBlockers(state: WorkspaceState): Promise<{ blockers: WorkspaceCapabilities["blockers"]; policyNotes: readonly { id: string; messageKo: string; scope: WorkspaceScope }[] }> {
+  const c = await evaluateArrangement(state, "", "structural");
+  return { blockers: c.blockers, policyNotes: c.policyNotes };
+}
+async function evaluateArrangement(state: WorkspaceState, evidenceDigest: string, mode: "reviewed" | "structural"): Promise<WorkspaceCapabilities & { policyNotes: { id: string; messageKo: string; scope: WorkspaceScope }[] }> {
   // One immutable evaluation, not a cross-document or cross-revision cache.
   // Caller edits during an await cannot mix old and new dependency projections.
   state = structuredClone(state);
+  const reviewed = mode === "reviewed";
+  const policyNotes: { id: string; messageKo: string; scope: WorkspaceScope }[] = [];
   const projectIssue=createWorkspaceIssueDependencyProjector(state);
   const fingerprints = new Map<string,Promise<string>>();
   const fingerprint: FingerprintReader = (scope,version,issueId) => {
@@ -141,7 +175,7 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
   const add = (id: string, messageKo: string, scope: WorkspaceScope = { kind: "document" }) => blockers.push({ id,messageKo,scope });
   const part = selectedWorkspacePart(state), musicReviews: { measureId: string; current: boolean }[] = [];
   const pendingIssues: WorkspaceIssue[] = [];
-  const issueReviews=await reviewBatches(state.issues,issue=>issueCurrentWithFingerprint(state,issue,evidenceDigest,fingerprint));
+  const issueReviews=reviewed?await reviewBatches(state.issues,issue=>issueCurrentWithFingerprint(state,issue,evidenceDigest,fingerprint)):state.issues.map(()=>true);
   state.issues.forEach((issue,index)=>{if(!issueReviews[index]){
     pendingIssues.push(issue);
     if (issue.impacts.includes("arrange") && workspaceScopeRelevant(state,issue.scope)) add(issue.id,issue.messageKo,issue.scope);
@@ -153,12 +187,12 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
   for(const a of state.attestations)if(a.purpose==="music"){
     const key=canonicalJson(a.scope),group=musicByScope.get(key)??[];group.push(a);musicByScope.set(key,group);
   }
-  const reviewedMeasures=part?await reviewBatches(inspected,async m=>{
+  const reviewedMeasures=part&&reviewed?await reviewBatches(inspected,async m=>{
     const scope:WorkspaceScope={kind:"measure",measureId:m.workspaceMeasureId!,...(state.request.lead?{voiceKey:state.request.lead}:{})};
     for(const a of musicByScope.get(canonicalJson(scope))??[])
       if(await currentWithFingerprint(state,a,evidenceDigest,fingerprint))return true;
     return false;
-  }):[];
+  }):inspected.map(()=>true);
   for (const [measureIndex,m] of inspected.entries()) {
     const mid=m.workspaceMeasureId!, scope: WorkspaceScope={kind:"measure",measureId:mid,...(state.request.lead?{voiceKey:state.request.lead}:{})};
     const t=m.time;
@@ -168,7 +202,11 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
     const events = m.leadEvents.filter(e=>!selected||selected.has(e.candidateKey));
     for (const e of events) {
       if (compareFractions(addFractions(e.onset,e.duration),m.duration)>0) add(`overfull:${e.workspaceEventId}`,`${m.number}마디: 이벤트가 마디 끝을 넘습니다.`,scope);
-      if (e.fermata) add(`fermata:${e.workspaceEventId}`,`${m.number}마디의 페르마타를 대조하세요. 현재 엔진은 페르마타의 재생시간을 해석하지 않습니다.`,scope);
+      if (e.fermata) {
+        if (reviewed) add(`fermata:${e.workspaceEventId}`,`${m.number}마디의 페르마타를 대조하세요. 현재 엔진은 페르마타의 재생시간을 해석하지 않습니다.`,scope);
+        // Source has no fermata field; the engine plays the written value.
+        else policyNotes.push({id:`fermata:${e.workspaceEventId}`,messageKo:`${m.number}마디 페르마타: 늘임 길이를 해석하지 않고 표기 길이로 생성·재생합니다(연습용 정책).`,scope});
+      }
     }
     for (const v of new Set(events.map(e=>e.candidateKey))) {
       const ordered=events.filter(e=>e.candidateKey===v).sort((a,b)=>compareFractions(a.onset,b.onset));
@@ -180,8 +218,8 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
       if(!key) add(`key:${mid}`,`${m.number}마디 조표의 유효 조성을 확인하세요. mode가 없는 조표는 장조 확정이 아닙니다.`,scope);
       else if(deriveFifths(key)!==m.keyObservation?.fifths) add(`fifths:${mid}`,`${m.number}마디: 확인 조성과 관찰 조표가 일치하지 않습니다. 원본 조표를 덮어쓰지 않았습니다.`,scope);
       const current=reviewedMeasures[measureIndex];
-      musicReviews.push({measureId:mid,current});
-      if(!current) add(`review:${mid}`,`${m.number}마디의 선택 성부·코드·기호를 원본과 대조하세요.`,scope);
+      if(reviewed){musicReviews.push({measureId:mid,current});
+        if(!current) add(`review:${mid}`,`${m.number}마디의 선택 성부·코드·기호를 원본과 대조하세요.`,scope);}
       if(m.chords.some(c=>c.parseResult.status==="failed")) add(`chord:${mid}`,`${m.number}마디 코드 해석을 교정하세요.`,scope);
     }
   }
@@ -202,7 +240,15 @@ export async function deriveWorkspaceCapabilities(state: WorkspaceState, evidenc
   if(!state.request.tempo) add("tempo","원본 템포를 확인하고 명시적으로 저장하세요.");
   if(!state.request.rights?.allowedUses.includes("generation")) add("rights","편곡 권리 확인이 필요합니다.");
   if(state.request.performers.length!==state.request.singerCount||state.request.performers.some(s=>!s.profile||!validatePerformer(s.profile))) add("performers","가수별 실제 음역을 설정하세요.");
+  else if(part) {
+    // Same condition the Source validator applies (quick-review performer
+    // issues): a specified Lead singer range must contain the source Lead.
+    const leadRange=state.request.performers[0]?.profile?.hardRange;
+    const outside=leadRange?part.measures.flatMap(m=>m.leadEvents).filter(e=>e.candidateKey===state.request.lead&&e.kind==="note"
+      &&(comparePitches(e.pitch,leadRange.low)<0||comparePitches(e.pitch,leadRange.high)>0)).length:0;
+    if(outside) add("performers:lead-range",`선택한 원본 Lead의 ${outside}개 음이 지정한 Lead 가수 hard 음역 밖입니다. 원본을 바꾸지 않으며, Lead 가수 제약을 조정하거나 해제해야 합니다.`);
+  }
   if(!state.request.sections.length||state.request.sections.some(s=>s.confirmation!=="confirmed")) add("sections","편곡 구간을 확인하세요.");
   if(state.request.policy!=="existing-wag-v1"||state.request.range!=="whole-score") add("policy","이 편곡 정책/범위는 1차 작업 공간의 지원 밖입니다.");
-  return {view:true,edit:!!state.music,saveDraft:true,exportWorkspace:true,arrange:blockers.length===0,playSource:false,exportSource:false,blockers,pendingIssues,musicReviews};
+  return {view:true,edit:!!state.music,saveDraft:true,exportWorkspace:true,arrange:blockers.length===0,playSource:false,exportSource:false,blockers,pendingIssues,musicReviews,policyNotes};
 }

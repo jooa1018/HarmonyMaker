@@ -218,6 +218,9 @@ export interface MusicXmlImportDraft {
   /** A preservation-only inspection must pass the workspace compiler before Source. */
   readonly workspaceInspectionOnly?: true;
   readonly workspaceProof?: string;
+  /** Canonical automatic-draft marker (policy/preset versions + options). Present
+   * only for the automatic practice-draft projection, never for reviewed Source. */
+  readonly workspaceAutoDraft?: string;
   readonly importerVersion: typeof MUSICXML_IMPORTER_VERSION;
   readonly documentId: string;
   readonly rawDigest: BinaryDigest;

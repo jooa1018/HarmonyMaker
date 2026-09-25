@@ -163,8 +163,13 @@ function isImportInfo(value: unknown): boolean {
     const m=value.workspaceMetadata;
     return hasExactKeys(value,["sourceKind","importerVersion","rawDigest","workspaceMetadata"],["originalFileName","importedAt"])
       &&isSemanticDigest(value.rawDigest)&&isPlainRecord(m)
-      &&hasExactKeys(m,["version","originKind","workspaceId","workspaceRevision","workspaceDigest","evidenceDigest","requestDigest","initialSourceDigest","selectedVoices","excludedVoices","targetMap","proof"])
-      &&m.version==="hm-workspace-projection-v1"&&["musicxml","local-omr","legacy-recovery"].includes(String(m.originKind))
+      &&(m.version==="hm-workspace-projection-v1"
+        ?value.importerVersion==="hm-workspace-projection-v1"
+          &&hasExactKeys(m,["version","originKind","workspaceId","workspaceRevision","workspaceDigest","evidenceDigest","requestDigest","initialSourceDigest","selectedVoices","excludedVoices","targetMap","proof"])
+        :m.version==="hm-workspace-auto-draft-v1"&&value.importerVersion==="hm-workspace-auto-draft-v1"
+          &&hasExactKeys(m,["version","originKind","workspaceId","workspaceRevision","workspaceDigest","evidenceDigest","requestDigest","initialSourceDigest","selectedVoices","excludedVoices","targetMap","proof","autoDraft"])
+          &&isPlainRecord(m.autoDraft)&&typeof m.autoDraft.marker==="string"&&m.autoDraft.humanSourceReview==="not-performed-by-this-contract")
+      &&["musicxml","local-omr","legacy-recovery"].includes(String(m.originKind))
       &&isCanonicalId(m.workspaceId)&&Number.isSafeInteger(m.workspaceRevision)&&(m.workspaceRevision as number)>=0
       &&[m.workspaceDigest,m.evidenceDigest,m.requestDigest,m.initialSourceDigest].every(isSemanticDigest)
       &&typeof m.proof==="string"&&m.proof.length<=64_000_000

@@ -753,7 +753,7 @@ async function finalizeNormalization(
       ...source,
       importInfo: draft.workspaceProof ? {
         sourceKind: "score-workspace",
-        importerVersion: "hm-workspace-projection-v1",
+        importerVersion: draft.workspaceAutoDraft !== undefined ? "hm-workspace-auto-draft-v1" : "hm-workspace-projection-v1",
         ...(draft.originalFileName ? { originalFileName: draft.originalFileName } : {}),
         rawDigest: draft.rawDigest,
         workspaceMetadata: await workspaceProjectionMetadata(draft, source),

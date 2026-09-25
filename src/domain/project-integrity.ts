@@ -40,7 +40,7 @@ import type {
   NonChordTonePlan,
 } from "./plans";
 import type { HarmonyProject, ArrangementVariant } from "./project";
-import { workspaceSourceChordPolicyMatches } from "../import/workspace/source-integrity";
+import { workspaceSourceChordPolicyMatches, workspaceSourcePerformersMatch } from "../import/workspace/source-integrity";
 import type { AlgorithmExecutionRegistry } from "./registries";
 import {
   atomizeSourceLead, type SourceLeadAtomization,
@@ -1245,6 +1245,8 @@ export async function validateHarmonyProjectIntegrity(
       project.source.performanceSequence,
       project.source.sourceMeasures,
     );
+    requireIntegrity(await workspaceSourcePerformersMatch(project.source, project.performers),
+      "project performers differ from the sealed automatic-draft request", "PERFORMER_RANGE_INVALID");
     const timeline = resolvedTimeline(project);
     if (timeline) {
       requireIntegrity(await workspaceSourceChordPolicyMatches(project.source, timeline.resolutionPolicy),

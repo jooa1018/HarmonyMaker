@@ -197,7 +197,9 @@ export interface OmrImportInfo extends ImportInfoBase {
   readonly omrRuntimeWarningAcknowledgements?: readonly OmrRuntimeWarningAcknowledgement[];
 }
 export interface WorkspaceProjectionMetadata {
-  readonly version: "hm-workspace-projection-v1";
+  /** v1: reviewed workspace Source. auto-draft-v1: automatic practice draft
+   * (no human source comparison implied); `autoDraft` is then required. */
+  readonly version: "hm-workspace-projection-v1" | "hm-workspace-auto-draft-v1";
   readonly originKind: "musicxml" | "local-omr" | "legacy-recovery";
   readonly workspaceId: string;
   readonly workspaceRevision: number;
@@ -209,6 +211,13 @@ export interface WorkspaceProjectionMetadata {
   readonly excludedVoices: readonly string[];
   readonly targetMap: readonly { readonly workspaceId: string; readonly sourceId: string; readonly kind: "measure" | "event" | "chord" }[];
   readonly proof: string;
+  readonly autoDraft?: {
+    readonly marker: string; readonly policyVersion: string; readonly presetVersion: string;
+    readonly status: string; readonly humanSourceReview: "not-performed-by-this-contract";
+    readonly rawIssueCount: number; readonly issueCategories: Readonly<Record<string, number>>;
+    readonly findingGroups: readonly { readonly code: string; readonly category: string; readonly count: number; readonly sampleIds: readonly string[]; readonly effectKo: string }[];
+    readonly provenance: readonly { readonly field: string; readonly origin: string; readonly noteKo: string }[];
+  };
 }
 export interface WorkspaceImportInfo extends ImportInfoBase {
   readonly sourceKind: "score-workspace";
