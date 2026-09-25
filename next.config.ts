@@ -30,6 +30,9 @@ const nextConfig: NextConfig = {
   ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "fields" ? { distDir: ".next-local-review-persistence-fields" } : {}),
   ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "proof" ? { distDir: ".next-local-review-persistence-proof" } : {}),
   ...(process.env.HM_LOCAL_REVIEW_PERSISTENCE_BUILD === "transition" ? { distDir: ".next-local-review-persistence-transition" } : {}),
+  // One reusable local verification build folder (".next-local-<name>"), so
+  // verification runs no longer add a distDir branch per run.
+  ...(/^\.next-local-[a-z0-9-]+$/u.test(process.env.HM_LOCAL_DIST_DIR ?? "") ? { distDir: process.env.HM_LOCAL_DIST_DIR } : {}),
   // Local low-disk validation only. No cache deletion or production change.
   ...(process.env.HM_LOCAL_NO_DISK_CACHE === "1"
     ? { experimental: { turbopackFileSystemCacheForDev: false } }

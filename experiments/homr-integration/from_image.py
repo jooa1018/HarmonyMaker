@@ -17,7 +17,7 @@ def main(v):
     if cache is None:
         stage('recognizing')
         cache=v.out/'raw-homr';cache.mkdir();image=cache/('input'+v.image.suffix.lower());shutil.copyfile(v.image,image)
-        subprocess.run([str(py),str(v.compare/'homr_observe.py'),str(image),'--debug','--write-staff-positions'],check=True,cwd=v.compare/'homr-source')
+        subprocess.run([str(py),str(Path(__file__).with_name('homr_observe.py')),str(image),'--debug','--write-staff-positions'],check=True,cwd=v.compare/'homr-source')
     stage('supplementing')
     subprocess.run([str(py),str(Path(__file__).with_name('pipeline.py')),'--compare',str(v.compare),'--image',str(v.image),'--cache',str(cache),'--out',str(v.out/'candidate'),'--language',v.language],check=True)
     # The replay stage consumes the just-finished inference as a file, but that

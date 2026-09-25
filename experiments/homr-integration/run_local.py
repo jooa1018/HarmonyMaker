@@ -3,7 +3,7 @@ import argparse,sys,subprocess,time,os,json,ctypes,shutil
 from pathlib import Path
 
 def run(v):
-    sys.path.insert(0,str(v.compare));import run_windows as w
+    sys.path.insert(0,str(Path(__file__).resolve().parent));import run_windows as w
     v.out.mkdir(parents=True,exist_ok=False)
     command=v.command[1:] if v.command and v.command[0]=='--' else v.command
     job=w.K.CreateJobObjectW(None,None);assert job

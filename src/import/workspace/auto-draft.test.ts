@@ -53,14 +53,14 @@ describe("automatic practice draft contract", () => {
       if (result.status !== "generated") continue;
       expect(result.generation.status).toBe("complete");
       expect(projectSourceStatus(result.project)).toBe("auto-draft");
-      const meta = result.project.source.importInfo!.sourceKind === "score-workspace" ? result.project.source.importInfo.workspaceMetadata : undefined;
+      const info = result.project.source.importInfo, meta = info?.sourceKind === "score-workspace" ? info.workspaceMetadata : undefined;
       expect(meta?.version).toBe("hm-workspace-auto-draft-v1");
       expect(meta?.autoDraft?.humanSourceReview).toBe("not-performed-by-this-contract");
       // Lead track spans exactly the printed melody; the harmony uses the preset.
       expect(result.project.performers[0].hardRange).toEqual({ low: { step: "G", alter: 0, octave: 4 }, high: { step: "A", alter: 0, octave: 5 } });
       expect(result.project.performers[1].hardRange).toEqual(HARMONY_PART_PRESETS[part].hardRange);
       const variant = result.project.variants.standard;
-      const events = variant.lifecycle === "generation-attempted" ? variant.generationResult!.candidates.find(c => c.candidateStatus === "complete")!.generatedEventsByTrack["track:h1"] : [];
+      const events = variant?.lifecycle === "generation-attempted" ? variant.generationResult.candidates.find(c => c.candidateStatus === "complete")!.generatedEventsByTrack["track:h1"] ?? [] : [];
       const notes = events.flatMap(e => e.kind === "note" ? [e.pitch] : []);
       expect(notes.length).toBeGreaterThan(0);
       expect(notes.every(p => containsPitch(HARMONY_PART_PRESETS[part].hardRange, p))).toBe(true);

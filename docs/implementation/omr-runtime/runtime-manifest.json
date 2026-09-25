@@ -1,0 +1,49 @@
+{
+  "schema": "hm-omr-runtime-manifest-v1",
+  "homrRevision": "457e7c6518a10ba755db2e60883419e56c4d7369",
+  "homrSource": "https://github.com/liebharc/homr (git checkout at homrRevision)",
+  "audiveris": "5.10.2 / 1b7cf44088c68f4168801822a613751d1bb1b584",
+  "python": "3.12.14",
+  "models": [
+    {
+      "path": "homr-source/homr/segmentation/segnet_308-3296ccd40960f90ca6ab9c035cca945675d30a0f.onnx",
+      "bytes": 57311361,
+      "sha256": "6ed36640db4ef5d223098b6d5efe4eda97c66b24a2c72faab8a018c749003a8d"
+    },
+    {
+      "path": "homr-source/homr/transformer/decoder_pytorch_model_426-b6fd20809a8dcaf10dfd39a4ca4f64c6f056e644.onnx",
+      "bytes": 47307771,
+      "sha256": "8652b5c2e3129775ca9109eb180c16c3615413ce38005adc8ce5966c3c76737c"
+    },
+    {
+      "path": "homr-source/homr/transformer/encoder_pytorch_model_426-b6fd20809a8dcaf10dfd39a4ca4f64c6f056e644.onnx",
+      "bytes": 52861122,
+      "sha256": "1513e83ae281ef06cdb8f08451b59f06c56536f13bd3418b4fd13227543dc4ff"
+    },
+    {
+      "path": "homr-windows-env/Lib/site-packages/rapidocr/models/ch_PP-OCRv4_det_infer.onnx",
+      "bytes": 4745517,
+      "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+    },
+    {
+      "path": "homr-windows-env/Lib/site-packages/rapidocr/models/ch_PP-OCRv4_rec_infer.onnx",
+      "bytes": 10857958,
+      "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+    },
+    {
+      "path": "homr-windows-env/Lib/site-packages/rapidocr/models/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+      "bytes": 585532,
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"
+    },
+    {
+      "path": "audiveris-portable/tessdata/eng.traineddata",
+      "bytes": 23466654,
+      "sha256": "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047"
+    },
+    {
+      "path": "audiveris-portable/tessdata/kor.traineddata",
+      "bytes": 15317715,
+      "sha256": "9520bfe9e3cfc38d4a808e036b0287c88a1d37fb80b9a0a23928ddccdd20595b"
+    }
+  ]
+}
