@@ -37,8 +37,8 @@ describe("automatic practice draft contract", () => {
     (first.findings as unknown[]).push({ code: "FORGED" });
     expect((await assessAutoDraft(w, rights)).findings.some(f => f.code === "FORGED")).toBe(false);
     expect((await assessAutoDraft(w)).status).toBe("needs-decision");
-    const alto = await assessAutoDraft(w, { ...rights, harmonyPart: "alto" });
-    const tenor = await assessAutoDraft(w, { ...rights, harmonyPart: "tenor" });
+    const alto = await assessAutoDraft(w, { ...rights, harmonyParts: ["alto"] });
+    const tenor = await assessAutoDraft(w, { ...rights, harmonyParts: ["tenor"] });
     expect(alto.request!.performers).not.toEqual(tenor.request!.performers);
     const other = await start(leadSheet({ overfull: true }), "workspace:other");
     expect((await assessAutoDraft(other, rights)).status).toBe("needs-decision");
@@ -70,7 +70,7 @@ describe("automatic practice draft contract", () => {
   it("generates from score + optional part only, without writing any review record", async () => {
     const w = await start();
     for (const part of ["alto", "tenor"] as const) {
-      const result = await generateAutoDraftProject(w, { ...rights, harmonyPart: part });
+      const result = await generateAutoDraftProject(w, { ...rights, harmonyParts: [part] });
       expect(result.status).toBe("generated");
       if (result.status !== "generated") continue;
       expect(result.generation.status).toBe("complete");
@@ -113,9 +113,9 @@ describe("automatic practice draft contract", () => {
     expect(caps.blockers.some(b => b.id === "performers:lead-range")).toBe(true);
     // Choosing a part preset replaces only the generated voice; the explicit
     // Lead constraint still applies and still blocks.
-    const b = await assessAutoDraft(w, { ...rights, harmonyPart: "tenor" });
+    const b = await assessAutoDraft(w, { ...rights, harmonyParts: ["tenor"] });
     expect(b.findings.some(f => f.id === "performers:lead-range")).toBe(true);
-    await expect(projectAutoDraftWorkspace(w, { ...rights, harmonyPart: "tenor" })).rejects.toThrow("AUTO_DRAFT_NOT_READY");
+    await expect(projectAutoDraftWorkspace(w, { ...rights, harmonyParts: ["tenor"] })).rejects.toThrow("AUTO_DRAFT_NOT_READY");
   });
 
   it("reports unsupported meter and structural conflicts instead of passing them with warnings", async () => {
@@ -128,7 +128,7 @@ describe("automatic practice draft contract", () => {
   });
 
   it("rejects altered automatic-draft projects and relabeling as reviewed", async () => {
-    const result = await generateAutoDraftProject(await start(), { ...rights, harmonyPart: "alto" });
+    const result = await generateAutoDraftProject(await start(), { ...rights, harmonyParts: ["alto"] });
     if (result.status !== "generated") throw new Error(result.status);
     const text = await exportHarmonyProject(result.project);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberate raw-JSON tampering
@@ -137,7 +137,7 @@ describe("automatic practice draft contract", () => {
     await expect(mutate(p => { const m = p.source.importInfo.workspaceMetadata; m.autoDraft.marker = m.autoDraft.marker.replace("alto", "tenor"); })).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
     await expect(mutate(p => { const m = p.source.importInfo.workspaceMetadata; m.version = "hm-workspace-projection-v1"; delete m.autoDraft; p.source.importInfo.importerVersion = "hm-workspace-projection-v1"; })).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
     await expect(mutate(p => { p.source.importInfo.workspaceMetadata.autoDraft.humanSourceReview = "performed"; })).rejects.toThrow("PROJECT_INTEGRITY_INVALID");
-    expect(() => normalizeAutoDraftOptions({ harmonyPart: "soprano" })).toThrow("AUTO_DRAFT_OPTIONS_INVALID");
+    expect(() => normalizeAutoDraftOptions({ harmonyParts: ["soprano"] })).toThrow("AUTO_DRAFT_OPTIONS_INVALID");
     expect(() => normalizeAutoDraftOptions({ approved: true })).toThrow("AUTO_DRAFT_OPTIONS_INVALID");
     expect(() => normalizeAutoDraftOptions({ rights: { basis: "user-confirmed-rights", allowedUses: ["generation"] } })).toThrow("AUTO_DRAFT_RIGHTS_INVALID");
     // A different workspace revision is a different verdict; nothing is cached across it.

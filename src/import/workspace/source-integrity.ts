@@ -3,8 +3,7 @@ import type { SongSourceDocument } from "../../domain/source/model";
 import { normalizeImportedSource } from "../review/finalize";
 import { parseImmutableScoreWorkspace, replayScoreWorkspace } from "./journal";
 import type { ChordResolutionPolicy } from "../../domain/harmony/chord-timeline";
-import { projectAutoDraftWorkspace, projectScoreWorkspace, workspaceProjectionMetadata } from "./projection";
-import { parseAutoDraftMarker } from "./auto-draft";
+import { replayAutoDraftWorkspace, projectScoreWorkspace, workspaceProjectionMetadata } from "./projection";
 import type { PerformerProfile } from "../../domain/performer";
 const verifiedPolicies = new WeakMap<SongSourceDocument, { proof: string; initialPickup?: string; performers: string }>();
 
@@ -32,7 +31,7 @@ export async function validateWorkspaceSourceIntegrity(source:SongSourceDocument
     const auto=metadata.version==="hm-workspace-auto-draft-v1";
     if(auto!==(source.importInfo.importerVersion==="hm-workspace-auto-draft-v1"))return false;
     const workspace=await parseImmutableScoreWorkspace(metadata.proof);
-    const draft=auto?await projectAutoDraftWorkspace(workspace,parseAutoDraftMarker(metadata.autoDraft!.marker)):await projectScoreWorkspace(workspace);
+    const draft=auto?await replayAutoDraftWorkspace(workspace,metadata.autoDraft!.marker):await projectScoreWorkspace(workspace);
     if(source.documentId!==workspace.id||source.importInfo.rawDigest!==workspace.origin.xmlDigest)return false;
     const normalized=await normalizeImportedSource(draft,workspace.algorithmVersions);
     if(normalized.status!=="complete"||normalized.normalization.musicalSourceDigest!==source.revisionDigest)return false;

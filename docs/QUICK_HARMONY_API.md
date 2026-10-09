@@ -1,12 +1,20 @@
-# Quick Harmony API — H1 1-1 초안
+# Quick Harmony API — H1 1-2 작업 중
 
-상태: A등급 검토 대기. H3 구현 기준으로 확정하기 전 Orchestrator 판정이 필요하다.
+상태: 1-1·1-4는 PR #14로 승인·병합됐다. 1-2의 입력 형태는 승인됐으나, 실제 3성부 생성과 기존 WAG의 optional H2 계약 충돌로 구현을 중단하고 Orchestrator 판정을 기다린다. 아래 다중 파트 경로는 아직 완료된 API가 아니다.
 
 ## 이번 PR 범위
 
 `src/product/quick-harmony.ts`는 기존 자동 초안 엔진을 브라우저에서 호출하는 진입점이다. 서버 요청, 자동 저장, 화면 변경은 없다. 엔진 규칙과 저장 형식도 그대로 사용한다.
 
-1-1 API 초안과 1-4 권리 확인을 포함한다. 현재 성부 선택은 `auto`, `["alto"]`, `["tenor"]`다. 1-2에서 `["alto", "tenor"]`와 정규화·정책 버전 호환을 추가한다. 아직 두 파트를 전달하면 입력 오류다. 현재 지원 박자는 2/4·4/4·6/8이며 3/4·12/8은 1-3에서 추가한다. 전체 안내 코드 대응표와 위치 표현 통일은 1-5의 후속 작업이다.
+1-2 작업 브랜치는 `auto`, `["alto"]`, `["tenor"]`, `["alto", "tenor"]`를 받는다. 두 파트는 역순도 받으며 알토→테너로 정규화한다. 빈 배열·중복·알 수 없는 파트는 거부한다. 현재 지원 박자는 2/4·4/4·6/8이며 3/4·12/8은 1-3에서 추가한다. 전체 안내 코드 대응표와 위치 표현 통일은 1-5의 후속 작업이다.
+
+### 1-2 중단 사유와 재현
+
+`src/product/auto-draft-compatibility.test.ts`의 3성부 시험은 현재 실패한다. 자작 4/4 C장조 선율(C5–B5)에 두 파트를 요청하면 가수는 3명으로 설정되지만, 실제 기본 candidate는 알토 한 파트이고 결과는 `complete`다. 테너는 Lead 위로 배치되어 음역을 만족하지 못한다. 내부 rejection은 `OPTIONAL_MARGINAL_NOT_PERCEPTIBLE`, `OPTIONAL_PAIR_DEGRADED_TO_SINGLE`이며 일반 diagnostics는 비어 있다.
+
+`src/grammar/lifecycle.ts`의 `roleHypotheses`는 두 화음에 upper/lower 조합만 탐색한다. WAG 문서 18.5·23.2절은 H2를 선택 사항으로 두고 한 화음으로 줄어도 complete를 허용한다. 따라서 "둘 다 선택 → 실제 알토·테너 생성"을 이 API의 파트 수 설정만으로 보장할 수 없다. 두 화음을 Lead 아래에 배치하는 규칙 확장과, 요청한 두 파트를 만들지 못했을 때의 반환 계약에 대한 설계 판정이 필요하다. 엔진 규칙은 수정하지 않았다.
+
+새 표식은 `hm-auto-draft-policy-v2`와 `harmonyParts`를 기록한다. 기존 v1 표식은 `harmonyPart`를 읽되 원래 버전·표식·요약을 유지하여 무결성을 재검증한다. 변경 전 커밋에서 만든 자동·알토·테너 v1 파일의 import/export 바이트 및 기존 2성부 생성 결과 회귀 시험은 통과했다.
 
 ## 함수와 입력
 
@@ -21,7 +29,8 @@ prepareQuickHarmonyWorkspace(workspace: ScoreWorkspace): Promise<QuickHarmonyPre
 generateQuickHarmony(
   preparation: QuickHarmonyPreparation,
   choice: {
-    parts?: "auto" | readonly ["alto" | "tenor"];
+    parts?: "auto" | readonly ["alto" | "tenor"]
+      | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
     rightsConfirmed: true;
     confirmedAt: string;
     answers?: {

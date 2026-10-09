@@ -25,10 +25,10 @@ export const HARMONY_PART_PRESETS: Readonly<Record<HarmonyPartPreset, { readonly
 export function isHarmonyPartPreset(value: unknown): value is HarmonyPartPreset {
   return value === "alto" || value === "tenor";
 }
-/** Generated-track performer for a preset (track h1 ↔ performer pf:1). */
-export function presetPerformer(preset: HarmonyPartPreset): PerformerProfile {
+/** Generated-track performer, assigned in canonical alto → tenor order. */
+export function presetPerformer(preset: HarmonyPartPreset, id: "pf:1" | "pf:2" = "pf:1"): PerformerProfile {
   const p = HARMONY_PART_PRESETS[preset];
-  return { id: "pf:1", displayName: `${p.labelKo} 프리셋 (${HARMONY_PART_PRESET_VERSION}, 제품 기본값·가수 능력 확인 아님)`, hardRange: p.hardRange, comfortableRange: p.comfortableRange };
+  return { id, displayName: `${p.labelKo} 프리셋 (${HARMONY_PART_PRESET_VERSION}, 제품 기본값·가수 능력 확인 아님)`, hardRange: p.hardRange, comfortableRange: p.comfortableRange };
 }
 /**
  * The source Lead is the printed melody, not a singer. For the automatic draft

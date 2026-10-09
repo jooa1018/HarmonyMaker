@@ -104,7 +104,7 @@ describe("quick harmony API draft", () => {
   it("requires explicit rights and rejects invalid choices and tampered workspace history", async () => {
     const prep = await prepareQuickHarmony(file());
     await expect(generateQuickHarmony(prep, { ...choice, rightsConfirmed: false } as unknown as QuickHarmonyChoice)).rejects.toMatchObject({ code: "QUICK_HARMONY_RIGHTS_REQUIRED" });
-    for (const override of [{ confirmedAt: "" }, { parts: [] }, { parts: ["alto", "tenor"] }, { parts: ["soprano"] }, { answers: null }, { answers: { lead: 5 } }]) {
+    for (const override of [{ confirmedAt: "" }, { parts: [] }, { parts: ["alto", "alto"] }, { parts: ["soprano"] }, { answers: null }, { answers: { lead: 5 } }]) {
       await expect(generateQuickHarmony(prep, { ...choice, ...override } as unknown as QuickHarmonyChoice)).rejects.toMatchObject({ code: "QUICK_HARMONY_CHOICE_INVALID" });
     }
     const tampered = structuredClone(prep);

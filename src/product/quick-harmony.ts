@@ -29,9 +29,8 @@ export interface QuickHarmonyPreparation {
   readonly details: { readonly assessment?: AutoDraftAssessment; readonly importError?: string };
 }
 
-/** API draft: H1 1-2 will extend the tuple to two distinct parts. */
 export interface QuickHarmonyChoice {
-  readonly parts?: "auto" | readonly [HarmonyPartPreset];
+  readonly parts?: "auto" | readonly [HarmonyPartPreset] | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
   readonly rightsConfirmed: true;
   /** Canonical ISO UTC time of the whole choice; reused for rights and Lead journal entries. */
   readonly confirmedAt: string;
@@ -133,7 +132,8 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
   if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers"].includes(k))
     || typeof c.confirmedAt !== "string" || !Number.isFinite(Date.parse(c.confirmedAt))
     || new Date(c.confirmedAt).toISOString() !== c.confirmedAt
-    || (c.parts !== undefined && c.parts !== "auto" && (!Array.isArray(c.parts) || c.parts.length !== 1 || !["alto", "tenor"].includes(c.parts[0])))
+    || (c.parts !== undefined && c.parts !== "auto" && (!Array.isArray(c.parts) || c.parts.length < 1 || c.parts.length > 2
+      || !Array.from(c.parts).every(part => part === "alto" || part === "tenor") || new Set(c.parts).size !== c.parts.length))
     || (answers !== undefined && (!answers || typeof answers !== "object" || Array.isArray(answers)
       || Object.keys(answers).some(k => !["lead", "unreadPrintedChords"].includes(k))
       || (answers.lead !== undefined && typeof answers.lead !== "string")
@@ -152,7 +152,7 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
       { id: `quick-lead:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 멜로디 성부를 선택함", actor: "user", at: c.confirmedAt });
   }
   const options = normalizeAutoDraftOptions({
-    ...(Array.isArray(c.parts) ? { harmonyPart: c.parts[0] } : {}),
+    ...(Array.isArray(c.parts) ? { harmonyParts: c.parts } : {}),
     ...(answers?.unreadPrintedChords ? { decisions: { unreadPrintedChords: answers.unreadPrintedChords } } : {}),
     rights: { basis: "user-confirmed-rights", allowedUses: ["generation"], confirmedAt: c.confirmedAt },
   });

@@ -21,11 +21,12 @@ import type { ArrangementRequest, ScoreWorkspace, WorkspaceIssue, WorkspaceScope
  * path uses; only raw OMR comparison records are classified by their effect on
  * generation instead of being mandatory approvals.
  */
-export const AUTO_DRAFT_POLICY_VERSION = "hm-auto-draft-policy-v1" as const;
+export const AUTO_DRAFT_POLICY_VERSION = "hm-auto-draft-policy-v2" as const;
+export type AutoDraftPolicyVersion = "hm-auto-draft-policy-v1" | typeof AUTO_DRAFT_POLICY_VERSION;
 
 export interface AutoDraftOptions {
-  /** User's optional choice of generated harmony voice. */
-  readonly harmonyPart?: HarmonyPartPreset;
+  /** One or two distinct parts; normalized to alto → tenor. */
+  readonly harmonyParts?: readonly HarmonyPartPreset[];
   /** Explicit user answers to questions this assessment returned. */
   readonly decisions?: { readonly unreadPrintedChords?: "carry-previous" };
   /** Rights confirmation the user gave at attach time (API callers). */
@@ -41,7 +42,7 @@ export interface AutoDraftFinding {
   readonly answers?: readonly { readonly option: string; readonly meaningKo: string }[];
 }
 export interface AutoDraftAssessment {
-  readonly version: typeof AUTO_DRAFT_POLICY_VERSION;
+  readonly version: AutoDraftPolicyVersion;
   readonly presetVersion: typeof HARMONY_PART_PRESET_VERSION;
   readonly workspaceId: string; readonly workspaceRevision: number; readonly workspaceDigest: string;
   readonly optionsDigest: string;
@@ -58,26 +59,46 @@ export interface AutoDraftAssessment {
 
 export function normalizeAutoDraftOptions(value: unknown): AutoDraftOptions {
   const v = (value ?? {}) as Record<string, unknown>;
-  if (typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(k => !["harmonyPart", "decisions", "rights"].includes(k))) throw new RangeError("AUTO_DRAFT_OPTIONS_INVALID");
-  if (v.harmonyPart !== undefined && !isHarmonyPartPreset(v.harmonyPart)) throw new RangeError("AUTO_DRAFT_OPTIONS_INVALID");
+  if (typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(k => !["harmonyParts", "decisions", "rights"].includes(k))) throw new RangeError("AUTO_DRAFT_OPTIONS_INVALID");
+  const parts = v.harmonyParts;
+  if (parts !== undefined && (!Array.isArray(parts) || parts.length < 1 || parts.length > 2
+    || !Array.from(parts).every(isHarmonyPartPreset) || new Set(parts).size !== parts.length)) throw new RangeError("AUTO_DRAFT_OPTIONS_INVALID");
   const d = v.decisions as Record<string, unknown> | undefined;
-  if (d !== undefined && (typeof d !== "object" || Array.isArray(d) || Object.keys(d).some(k => k !== "unreadPrintedChords")
+  if (d !== undefined && (!d || typeof d !== "object" || Array.isArray(d) || Object.keys(d).some(k => k !== "unreadPrintedChords")
     || (d.unreadPrintedChords !== undefined && d.unreadPrintedChords !== "carry-previous"))) throw new RangeError("AUTO_DRAFT_OPTIONS_INVALID");
   const r = v.rights as RightsMetadata | undefined;
-  if (r !== undefined && (typeof r !== "object" || !Array.isArray(r.allowedUses) || !r.allowedUses.includes("generation") || !validateRights(r))) throw new RangeError("AUTO_DRAFT_RIGHTS_INVALID");
+  if (r !== undefined && (!r || typeof r !== "object" || !Array.isArray(r.allowedUses) || !r.allowedUses.includes("generation") || !validateRights(r))) throw new RangeError("AUTO_DRAFT_RIGHTS_INVALID");
   return clean({
-    ...(v.harmonyPart ? { harmonyPart: v.harmonyPart as HarmonyPartPreset } : {}),
+    ...(parts ? { harmonyParts: [...parts].sort() } : {}),
     ...(d?.unreadPrintedChords ? { decisions: { unreadPrintedChords: "carry-previous" as const } } : {}),
     ...(r ? { rights: { ...r, allowedUses: [...r.allowedUses].sort() } } : {}),
   });
 }
-export const serializeAutoDraftOptions = (options: AutoDraftOptions) => canonicalJson({ version: AUTO_DRAFT_POLICY_VERSION, presetVersion: HARMONY_PART_PRESET_VERSION, options: normalizeAutoDraftOptions(options) });
-export function parseAutoDraftMarker(text: string): AutoDraftOptions {
+/** Preserve the original v1 option bytes when replaying saved sources. */
+function optionsForPolicy(options: AutoDraftOptions, version: AutoDraftPolicyVersion) {
+  if (version === AUTO_DRAFT_POLICY_VERSION) return options;
+  if (version !== "hm-auto-draft-policy-v1" || (options.harmonyParts?.length ?? 0) > 1) throw new RangeError("AUTO_DRAFT_VERSION_UNSUPPORTED");
+  const { harmonyParts, ...rest } = options;
+  return { ...rest, ...(harmonyParts ? { harmonyPart: harmonyParts[0] } : {}) };
+}
+export const serializeAutoDraftOptions = (options: AutoDraftOptions, version: AutoDraftPolicyVersion = AUTO_DRAFT_POLICY_VERSION) => canonicalJson({
+  version, presetVersion: HARMONY_PART_PRESET_VERSION, options: optionsForPolicy(normalizeAutoDraftOptions(options), version),
+});
+export function parseAutoDraftMarker(text: string): { readonly version: AutoDraftPolicyVersion; readonly options: AutoDraftOptions } {
   const value = JSON.parse(text) as { version?: string; presetVersion?: string; options?: unknown };
-  if (value.version !== AUTO_DRAFT_POLICY_VERSION || value.presetVersion !== HARMONY_PART_PRESET_VERSION) throw new RangeError("AUTO_DRAFT_VERSION_UNSUPPORTED");
-  const options = normalizeAutoDraftOptions(value.options);
-  if (serializeAutoDraftOptions(options) !== text) throw new RangeError("AUTO_DRAFT_MARKER_NONCANONICAL");
-  return options;
+  if (!value || !["hm-auto-draft-policy-v1", AUTO_DRAFT_POLICY_VERSION].includes(value.version ?? "") || value.presetVersion !== HARMONY_PART_PRESET_VERSION) throw new RangeError("AUTO_DRAFT_VERSION_UNSUPPORTED");
+  const version = value.version as AutoDraftPolicyVersion;
+  let rawOptions = value.options;
+  if (version === "hm-auto-draft-policy-v1") {
+    const v = (rawOptions ?? {}) as Record<string, unknown>;
+    if (typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(k => !["harmonyPart", "decisions", "rights"].includes(k))
+      || (v.harmonyPart !== undefined && !isHarmonyPartPreset(v.harmonyPart))) throw new RangeError("AUTO_DRAFT_OPTIONS_INVALID");
+    const { harmonyPart, ...rest } = v;
+    rawOptions = { ...rest, ...(harmonyPart ? { harmonyParts: [harmonyPart] } : {}) };
+  }
+  const options = normalizeAutoDraftOptions(rawOptions);
+  if (serializeAutoDraftOptions(options, version) !== text) throw new RangeError("AUTO_DRAFT_MARKER_NONCANONICAL");
+  return { version, options };
 }
 
 type Music = NonNullable<WorkspaceState["music"]>;
@@ -155,19 +176,23 @@ function effectiveRequest(state: WorkspaceState, options: AutoDraftOptions, perf
   }
   let singerCount: 1 | 2 | 3 = 2, performers = seed.performers;
   const leadSlot = seed.performers[0]?.profile && validatePerformer(seed.performers[0].profile) ? seed.performers[0] : undefined;
-  if (userComplete && !options.harmonyPart) {
+  if (userComplete && !options.harmonyParts) {
     singerCount = seed.singerCount; performers = seed.performers;
     provenance.push({ field: "performers", origin: "user-edit", value: seed.performers.map(p => p.profile), noteKo: "작업 공간에서 사용자가 지정한 가수 음역(고급 설정)을 그대로 사용" });
   } else {
     const median = [...leadPitches].map(midiNumber).sort((a, b) => a - b)[Math.floor(leadPitches.length / 2)];
-    const part = options.harmonyPart ?? defaultHarmonyPart(median);
+    const parts = options.harmonyParts ?? [defaultHarmonyPart(median)];
+    singerCount = parts.length === 2 ? 3 : 2;
     const leadProfile = leadSlot?.profile ?? sourceLeadSpanPerformer(leadPitches);
     performers = [{ id: performerId(0), displayName: leadProfile.displayName, profile: { ...leadProfile, id: performerId(0) } },
-      { id: performerId(1), displayName: presetPerformer(part).displayName, profile: presetPerformer(part) }];
+      ...parts.map((part, index) => {
+        const profile = presetPerformer(part, index === 0 ? "pf:1" : "pf:2");
+        return { id: profile.id, displayName: profile.displayName, profile };
+      })];
     provenance.push({ field: "performers[0]", origin: leadSlot ? "user-edit" : "policy-default", value: leadProfile,
       noteKo: leadSlot ? "사용자가 지정한 Lead 가수 제약(고급 설정)을 적용" : "Lead는 원본 멜로디 그대로: 악보의 실제 Lead 음역을 기록(가수 음역 아님, 이조·삭제 없음)" });
-    provenance.push({ field: "performers[1]", origin: options.harmonyPart ? "user-choice" : "policy-default", value: { preset: part, version: HARMONY_PART_PRESET_VERSION },
-      noteKo: options.harmonyPart ? `사용자가 선택한 생성 화음 프리셋: ${part}` : `선택이 없어 Lead 중앙 음높이(MIDI ${median}) 기준 기본 프리셋 ${part}` });
+    parts.forEach((part, index) => provenance.push({ field: `performers[${index + 1}]`, origin: options.harmonyParts ? "user-choice" : "policy-default", value: { preset: part, version: HARMONY_PART_PRESET_VERSION },
+      noteKo: options.harmonyParts ? `사용자가 선택한 생성 화음 프리셋: ${part}` : `선택이 없어 Lead 중앙 음높이(MIDI ${median}) 기준 기본 프리셋 ${part}` }));
   }
   let rights = seed.rights;
   if (rights) provenance.push({ field: "rights", origin: "user-edit", value: rights, noteKo: "작업 공간에 기록된 사용자 권리 확인을 재사용" });
@@ -271,15 +296,15 @@ function classifyBlocker(b: { id: string; messageKo: string; scope: WorkspaceSco
 /** One verdict for API and UI: same workspace revision, options and versions
  * always produce the same status, reasons and effective request. */
 const assessments = new WeakMap<ScoreWorkspace, { captured: string; options: string; result: Promise<AutoDraftAssessment> }>();
-export async function assessAutoDraft(workspace: ScoreWorkspace, rawOptions: AutoDraftOptions = {}): Promise<AutoDraftAssessment> {
+export async function assessAutoDraft(workspace: ScoreWorkspace, rawOptions: AutoDraftOptions = {}, policyVersion: AutoDraftPolicyVersion = AUTO_DRAFT_POLICY_VERSION): Promise<AutoDraftAssessment> {
   const options = normalizeAutoDraftOptions(rawOptions);
   // Exact state includes identity, history, algorithms and original evidence.
   // Only journal-owned immutable inputs can reuse captured bytes; mutable API
   // inputs are serialized on every call. Keep one option per weak identity.
-  const captured = captureWorkspace(workspace), key = serializeAutoDraftOptions(options);
+  const captured = captureWorkspace(workspace), key = serializeAutoDraftOptions(options, policyVersion);
   let entry = assessments.get(workspace);
   if (!entry || entry.captured !== captured || entry.options !== key) {
-    const result = computeAutoDraft(workspace, options).then(value => {
+    const result = computeAutoDraft(workspace, options, policyVersion).then(value => {
       if (captureWorkspace(workspace) !== captured) throw new RangeError("WORKSPACE_MUTATED_DURING_ASSESSMENT");
       return value;
     });
@@ -293,7 +318,7 @@ export async function assessAutoDraft(workspace: ScoreWorkspace, rawOptions: Aut
   if (captureWorkspace(workspace) !== captured) throw new RangeError("WORKSPACE_MUTATED_DURING_ASSESSMENT");
   return structuredClone(result);
 }
-async function computeAutoDraft(workspace: ScoreWorkspace, options: AutoDraftOptions): Promise<AutoDraftAssessment> {
+async function computeAutoDraft(workspace: ScoreWorkspace, options: AutoDraftOptions, policyVersion: AutoDraftPolicyVersion): Promise<AutoDraftAssessment> {
   const { state, evidenceDigest } = await readVerifiedWorkspace(workspace);
   const provenance: AutoDraftProvenance[] = [], findings: AutoDraftFinding[] = [];
   const categories: Record<AutoDraftCategory, number> = { auto: 0, "reviewed-record": 0, warning: 0, question: 0, unsupported: 0, "not-applicable": 0 };
@@ -318,9 +343,9 @@ async function computeAutoDraft(workspace: ScoreWorkspace, options: AutoDraftOpt
   const status = findings.some(f => f.category === "unsupported") ? "unsupported" : findings.some(f => f.category === "question") ? "needs-decision"
     : findings.length || provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred") ? "ready-with-warnings" : "ready";
   return {
-    version: AUTO_DRAFT_POLICY_VERSION, presetVersion: HARMONY_PART_PRESET_VERSION,
+    version: policyVersion, presetVersion: HARMONY_PART_PRESET_VERSION,
     workspaceId: workspace.id, workspaceRevision: workspace.revision, workspaceDigest: workspace.digest,
-    optionsDigest: await semanticDigest(options), status, ...(request ? { request } : {}), provenance, findings,
+    optionsDigest: await semanticDigest(optionsForPolicy(options, policyVersion)), status, ...(request ? { request } : {}), provenance, findings,
     rawIssueCount: state.issues.length, issueCategories: categories,
     humanSourceReview: "not-performed-by-this-contract", existingReviewRecords: state.attestations.length,
   };
