@@ -112,6 +112,18 @@ describe("quick harmony API draft", () => {
     await expect(generateQuickHarmony(tampered, choice)).rejects.toThrow();
   });
 
+  it("accepts only canonical ISO UTC timestamps for the whole choice", async () => {
+    const prep = await prepareQuickHarmony(file(score({ voices: true })));
+    for (const confirmedAt of ["2026-10-09", "2026-10-09T19:00:00.000+09:00", "2026-10-09T10:00:00Z", "2026-10-09T10:00:00.0000Z", "2026-10-09T10:00:00.000+00:00", "invalid"]) {
+      await expect(generateQuickHarmony(prep, { ...choice, confirmedAt })).rejects.toMatchObject({ code: "QUICK_HARMONY_CHOICE_INVALID" });
+    }
+    const lead = prep.questions.find(q => q.id === "lead-selection")!.choices[0].value;
+    const result = await generateQuickHarmony(prep, { ...choice, answers: { lead } });
+    if (result.status !== "complete") throw new Error(result.status);
+    expect(result.project.source.rights.confirmedAt).toBe(choice.confirmedAt);
+    expect(result.preparation.workspace!.operations.at(-1)?.at).toBe(choice.confirmedAt);
+  }, 180_000);
+
   it("does not turn source-blocked or engine-blocked attempts into success", async () => {
     const prep = await prepareQuickHarmony(file());
     const spy = vi.spyOn(autoDraft, "generateAutoDraftProject");

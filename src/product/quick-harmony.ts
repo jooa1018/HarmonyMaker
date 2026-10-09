@@ -33,7 +33,7 @@ export interface QuickHarmonyPreparation {
 export interface QuickHarmonyChoice {
   readonly parts?: "auto" | readonly [HarmonyPartPreset];
   readonly rightsConfirmed: true;
-  /** Capture once when the user checks the box; reuse on retry. */
+  /** Canonical ISO UTC time of the whole choice; reused for rights and Lead journal entries. */
   readonly confirmedAt: string;
   readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous" };
 }
@@ -132,6 +132,7 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
   const answers = c.answers;
   if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers"].includes(k))
     || typeof c.confirmedAt !== "string" || !Number.isFinite(Date.parse(c.confirmedAt))
+    || new Date(c.confirmedAt).toISOString() !== c.confirmedAt
     || (c.parts !== undefined && c.parts !== "auto" && (!Array.isArray(c.parts) || c.parts.length !== 1 || !["alto", "tenor"].includes(c.parts[0])))
     || (answers !== undefined && (!answers || typeof answers !== "object" || Array.isArray(answers)
       || Object.keys(answers).some(k => !["lead", "unreadPrintedChords"].includes(k))
