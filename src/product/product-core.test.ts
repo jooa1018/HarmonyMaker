@@ -252,11 +252,19 @@ describe("Product Core workspace, render, playback, and state", () => {
     expect(abc).toContain('V:h1 name="Lower / H1"');
     const plan = buildPlaybackPlan(materialized.document, materialized.trackRoles);
     expect(plan.trackLabels).toMatchObject({ "track:h1": "Upper / H2", "track:h2": "Lower / H1" });
+    expect(plan.trackRoles).toEqual({"track:source-lead":"lead","track:h1":"upper","track:h2":"lower"});
+    const mixed = {...materialized.trackRoles.byTrackPlanId["track:h1"], label:"알토",
+      placements:[{phraseId:"one",placementRole:"upper" as const},{phraseId:"two",placementRole:"lower" as const}]};
+    const mixedRoles = {...materialized.trackRoles,byTrackPlanId:{...materialized.trackRoles.byTrackPlanId,"track:h1":mixed}};
+    expect(buildPlaybackPlan(materialized.document,mixedRoles).trackRoles?.["track:h1"]).toBe("other");
+    expect(buildPlaybackPlan(materialized.document,{...mixedRoles,byTrackPlanId:{...mixedRoles.byTrackPlanId,"track:h1":{...mixed,placements:[]}}}).trackRoles?.["track:h1"]).toBe("other");
     const payload = materializePracticeShare({ project: confirmShareRights(project), presetId: "standard", materialized });
     expect(payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => track.label)).toEqual(["Upper / H2", "Lower / H1"]);
     const shared = (await import("./shared-practice")).materializeSharedPractice(payload);
     expect(shared.trackRoles.byTrackPlanId["share:track:h1"]).toMatchObject({ harmonyRole: "H1", label: "Lower / H1" });
     expect(buildPlaybackPlan(shared.document, shared.trackRoles).trackLabels["share:track:h1"]).toBe("Lower / H1");
+    expect(buildPlaybackPlan(shared.document,shared.trackRoles).trackRoles?.["share:track:h1"]).toBe("lower");
+    expect(JSON.stringify(payload)).not.toContain('"trackRoles"');
     const musicXml = exportArrangementMusicXml(materialized.document, materialized.trackRoles, { title: project.source.title, key: project.source.defaultKey, tempo: project.source.defaultTempo });
     expect(musicXml).toContain('<score-part id="P-H1"><part-name>Lower / H1</part-name>');
     expect(musicXml).toContain('<score-part id="P-H2"><part-name>Upper / H2</part-name>');
