@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createApiRequest, logUnexpectedApiError, type ApiRequestContext } from "../http/request-context";
 import { timingSafeHashEquals } from "../security/crypto-core";
 import type { CleanupService } from "./cleanup-service";
 
@@ -28,11 +29,12 @@ export function authorizeScheduledCleanup(request: Request, environment: Readonl
 }
 
 function errorCode(reason: unknown): string {
-  return reason instanceof Error && /^[A-Z][A-Z0-9_:-]{1,127}$/u.test(reason.message) ? reason.message : "CLEANUP_DOMAIN_FAILED";
+  return reason instanceof Error && reason.message === "CLEANUP_GENERIC_TIMEOUT" ? reason.message : "CLEANUP_DOMAIN_FAILED";
 }
 
 export async function runScheduledCleanup(input: {
   readonly generic: Pick<CleanupService, "run">;
+  readonly requestContext?: ApiRequestContext;
   readonly now?: () => Date;
   readonly batchSize?: number;
   /** Tests may shorten the deadline; production callers use the frozen 25s budget. */
@@ -59,8 +61,9 @@ export async function runScheduledCleanup(input: {
     }
   };
   const [generic] = await Promise.allSettled([
-    bounded("GENERIC", () => input.generic.run({ now: startedAt, batchSize })),
+    bounded("GENERIC", () => input.generic.run({ now: startedAt, batchSize, ...(input.requestContext ? { requestContext: input.requestContext } : {}) })),
   ]);
+  if (generic.status === "rejected") logUnexpectedApiError(generic.reason, input.requestContext ?? createApiRequest("/api/internal/cleanup"));
   const genericResult: ScheduledCleanupResult["generic"] = generic.status === "fulfilled"
     ? {
       status: "fulfilled",

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Pool } from "pg";
+import { APPLICATION_POOL_OPTIONS } from "./pool-options";
 
 import { CleanupService } from "../cleanup/cleanup-service";
 import { verifyMigrations } from "../persistence/migrations";
@@ -35,7 +36,7 @@ export function getProductionServices(): Promise<ProductionServices> {
       };
     }
     const config = loadProductionSubstrateConfig();
-    const pool = new Pool({ connectionString: config.database.connectionString, max: 10 });
+    const pool = new Pool({ ...APPLICATION_POOL_OPTIONS, connectionString: config.database.connectionString });
     try { await verifyMigrations(pool); }
     catch (error) { await pool.end().catch(() => undefined); throw error; }
     const store = new PostgresGovernanceStore(pool);

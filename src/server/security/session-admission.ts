@@ -2,6 +2,7 @@ import "server-only";
 
 import type { QuotaAndIdempotencyService } from "./quota-core";
 import { SESSION_CREATE_PER_HOUR } from "./quota-core";
+import { SessionSecurityError } from "./session-core";
 import type { AnonymousSessionService, IssuedSession } from "./session-core";
 
 export type SessionAdmissionResult =
@@ -26,7 +27,10 @@ export async function admitAnonymousSession(input: {
         sessionAuthority: input.sessions.authorityFor(record),
         expiresAt: record.expiresAt,
       };
-    } catch { /* Invalid and expired cookies receive bounded replacement admission below. */ }
+    } catch (error) {
+      if (!(error instanceof SessionSecurityError)) throw error;
+      // Invalid and expired cookies receive bounded replacement admission.
+    }
   }
   const admitted = await input.quota.consumeHourly({
     ownerKind: "ip-hmac",

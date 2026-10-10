@@ -45,7 +45,7 @@ describe("production scheduled cleanup entrypoint", () => {
     const generic = { run: vi.fn(async () => { throw new RangeError("GENERIC_ITEM_FAILURE"); }) };
     const results = await Promise.all([runScheduledCleanup({ generic }), runScheduledCleanup({ generic })]);
     expect(results).toHaveLength(2);
-    expect(results.every(result => !result.ok && result.generic.status === "rejected" && result.generic.code === "GENERIC_ITEM_FAILURE")).toBe(true);
+    expect(results.every(result => !result.ok && result.generic.status === "rejected" && result.generic.code === "CLEANUP_DOMAIN_FAILED")).toBe(true);
     expect(generic.run).toHaveBeenCalledTimes(2);
   });
 
