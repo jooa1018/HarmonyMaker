@@ -96,12 +96,25 @@ function orderedChild(value: unknown, depth: number, maxDepth: number): XmlChild
 }
 
 function forbiddenMarkup(text: string): string | undefined {
-  if (/<!\s*DOCTYPE\b/iu.test(text)) return "DOCTYPE";
   if (/<!\s*ENTITY\b/iu.test(text)) return "ENTITY";
   if (/<\s*(?:[A-Za-z_][\w.-]*:)?include\b/iu.test(text)
     || /http:\/\/www\.w3\.org\/2001\/XInclude/iu.test(text)) return "XInclude";
   if (/\u0000/u.test(text)) return "NUL";
   return undefined;
+}
+
+/** Only an inert declaration in the XML prolog is accepted. Never load a DTD. */
+function stripScoreDoctype(text: string): { text: string; rootName?: string } | undefined {
+  const declarations = [...text.matchAll(/<!\s*DOCTYPE\b/giu)];
+  if (!declarations.length) return { text };
+  if (declarations.length !== 1) return undefined;
+  const index = declarations[0].index!;
+  const prolog = text.slice(0, index);
+  if (!/^(?:\s|<!--[\s\S]*?-->|<\?[\s\S]*?\?>)*$/u.test(prolog)) return undefined;
+  const literal = String.raw`(?:"[^"<>\[\]]*"|'[^'<>\[\]]*')`;
+  const declaration = new RegExp(`^<!DOCTYPE\\s+(score-partwise|score-timewise)(?:\\s+(?:PUBLIC\\s+${literal}\\s+${literal}|SYSTEM\\s+${literal}))?\\s*>`, "u").exec(text.slice(index));
+  if (!declaration) return undefined;
+  return { text: prolog + text.slice(index + declaration[0].length), rootName: declaration[1] };
 }
 
 export function parseSafeXml(
@@ -118,7 +131,8 @@ export function parseSafeXml(
   } catch {
     return blocked("XML 파일은 올바른 UTF-8이어야 합니다.", "invalid-utf8");
   }
-  const forbidden = forbiddenMarkup(text);
+  const stripped = stripScoreDoctype(text);
+  const forbidden = forbiddenMarkup(text) ?? (!stripped ? "DOCTYPE" : undefined);
   if (forbidden) {
     return {
       status: "blocked",
@@ -129,7 +143,8 @@ export function parseSafeXml(
       }],
     };
   }
-  const validation = XMLValidator.validate(text, { allowBooleanAttributes: false });
+  const parseText = stripped!.text;
+  const validation = XMLValidator.validate(parseText, { allowBooleanAttributes: false });
   if (validation !== true) return blocked("XML 구조가 손상되었거나 닫히지 않은 태그가 있습니다.", "malformed-xml");
   try {
     const parser = new XMLParser({
@@ -145,12 +160,13 @@ export function parseSafeXml(
       ignorePiTags: true,
       maxNestedTags: limits.maxXmlDepth,
     });
-    const parsed: unknown = parser.parse(text, false);
+    const parsed: unknown = parser.parse(parseText, false);
     if (!Array.isArray(parsed)) return blocked("XML 최상위 구조를 읽을 수 없습니다.", "invalid-root");
     const roots = parsed
       .map((entry) => orderedChild(entry, 1, limits.maxXmlDepth))
       .filter((entry): entry is XmlElement => entry?.kind === "element");
     if (roots.length !== 1) return blocked("XML에는 하나의 score root가 필요합니다.", "ambiguous-root");
+    if (stripped!.rootName && roots[0].name !== stripped!.rootName) return blocked("DOCTYPE과 악보 루트 이름이 다릅니다.", "doctype-root-mismatch");
     return { status: "complete", root: roots[0], text };
   } catch (error) {
     return blocked(

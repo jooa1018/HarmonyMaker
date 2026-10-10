@@ -6,7 +6,7 @@ import { inspectMusicXmlWorkspace } from "../musicxml/parser-core";
 import { DEFAULT_IMPORT_SECURITY_LIMITS, type Step3ImportVersions } from "../musicxml/types";
 import { xmlChild, xmlText } from "../musicxml/xml";
 import { extractMusicXmlFromMxl } from "../mxl/archive";
-import { recoveryXmlRoot } from "../review/recovery";
+import { recoveryXmlRoot, RecoveryXmlError } from "../review/recovery";
 import { replayStructuralRecovery, structuralCandidateXml, type StructuralRecovery } from "../review/structural-recovery";
 import { compareFractions } from "../../domain/fraction";
 import type { WorkspaceIssue, WorkspaceOrigin, WorkspaceScope, WorkspaceState } from "./model";
@@ -27,7 +27,9 @@ export async function originFromMusicXml(bytes: Uint8Array, fileName: string): P
     if (r.status !== "complete") throw new RangeError("WORKSPACE_MXL_SECURITY_REJECTED");
     xmlBytes = r.musicXmlBytes;
   }
-  const xml = new TextDecoder("utf-8", { fatal: true }).decode(xmlBytes);
+  let xml: string;
+  try { xml = new TextDecoder("utf-8", { fatal: true }).decode(xmlBytes); }
+  catch { throw new RecoveryXmlError([{ code: "IMPORT_CORRUPT_XML", messageKo: "XML 파일은 올바른 UTF-8이어야 합니다.", details: { reason: "invalid-utf8" } }]); }
   recoveryXmlRoot(xml);
   return { kind: "musicxml", fileName, xml, xmlDigest: await binaryDigest(enc.encode(xml)), originalFile: { base64: encodeBase64(bytes), sha256: await binaryDigest(bytes) } };
 }

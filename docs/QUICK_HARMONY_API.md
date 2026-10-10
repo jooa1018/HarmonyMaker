@@ -273,4 +273,11 @@ if (result.status === "complete" || result.status === "partial") {
 
 같은 파일·파일명, 같은 알고리즘 버전, 같은 선택·확인 시각·workspace 이력은 같은 export 바이트를 만든다. 파일명이나 권리 확인 시각을 바꾸면 보존 메타데이터는 달라질 수 있지만 이를 음악적 선택의 근거로 쓰지 않는다.
 
+
+## 파일 파싱 상세 진단 (1-13)
+
+표준 MusicXML DOCTYPE은 루트 앞에 하나만 있을 때 제거한 뒤 파싱한다. 외부 DTD는 읽지 않는다. 내부 서브셋·ENTITY·중복/루트 뒤 선언·다른 선언 루트·XInclude·NUL은 계속 차단한다. 원본 파일과 출처 digest는 선언을 포함한 원본을 보존한다.
+
+파일 오류의 `details.importError`와 함께 선택 필드 `details.importDiagnostics`가 구체 사유를 제공한다. 각 항목은 기존 가져오기 진단의 code·messageKo·details를 보존하며, details.reason으로 forbidden-doctype·malformed-xml·invalid-utf8·xml-size-limit·unsupported-score-root 등을 구분한다. 사용자용 기본 문구는 유지한다. score-timewise 선언 자체는 안전 파서를 통과하지만 기존 엔진의 score-partwise 입력 지원 범위는 확장하지 않는다.
+
 H3 참고: 화면에서 같은 생성을 재시도해도 라이브러리에 중복 항목이 생기지 않도록 저장 id를 정하는 방법은 H3에서 정한다.
