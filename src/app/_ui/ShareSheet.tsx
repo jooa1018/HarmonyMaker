@@ -3,13 +3,21 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { CreateLinkOutcome, CreatedLink } from "../_result/create-share";
 import { Icon } from "./Icon";
 
+function failureMessage(code: string, fresh: boolean): string {
+  if (code === "SHARE_RIGHTS_REQUIRED") return "공유 권리 확인에 다시 체크한 뒤 공유 링크를 만들어 주세요.";
+  if (/^SHARE_[A-Z0-9_]+_UNSUPPORTED$/u.test(code)) return "이 악보는 아직 공유할 수 없어요. 곧 지원할 예정이에요.";
+  if (fresh) return "이전 공유가 끝났어요. 새 링크를 만들 수 있어요.";
+  return "공유 링크를 만들지 못했어요. 잠시 뒤 다시 시도해 주세요.";
+}
+
 export function ShareSheet({ initialCreated = false, standalone = false, onClose, createLink }: { createLink?: (fresh: boolean) => Promise<CreateLinkOutcome>; initialCreated?: boolean; standalone?: boolean; onClose: () => void }) {
   const [rights, setRights] = useState(initialCreated);
   const [created, setCreated] = useState(initialCreated);
   const [link, setLink] = useState<CreatedLink>();
   const [busy, setBusy] = useState(false);
   const [fresh, setFresh] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ code: string; fresh: boolean }>();
+  const [attempt, setAttempt] = useState(0);
   const pending = useRef(false);
   const live = useRef(true);
   const [copyLabel, setCopyLabel] = useState("링크 복사");
@@ -33,13 +41,17 @@ export function ShareSheet({ initialCreated = false, standalone = false, onClose
   async function create() {
     if (!rights || pending.current) return;
     if (!createLink) { setCreated(true); return; }
-    pending.current = true; setBusy(true); setError("");
+    pending.current = true; setBusy(true); setError(undefined); setAttempt(value => value + 1);
+    const showFailure = (code: string, fresh = false) => {
+      setError({ code, fresh });
+      if (code === "SHARE_RIGHTS_REQUIRED") setRights(false);
+    };
     try {
       const outcome = await createLink(fresh);
       if (!live.current) return;
       if (outcome.status === "created") { setLink(outcome); setCreated(true); setFresh(false); }
-      else { setFresh(outcome.status === "fresh"); setError(outcome.code); }
-    } catch (reason) { if (live.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+      else { setFresh(outcome.status === "fresh"); showFailure(outcome.code, outcome.status === "fresh"); }
+    } catch (reason) { if (live.current) showFailure(reason instanceof Error ? reason.message : String(reason)); }
     finally { pending.current = false; if (live.current) setBusy(false); }
   }
   async function send() {
@@ -50,7 +62,8 @@ export function ShareSheet({ initialCreated = false, standalone = false, onClose
   const content = <div ref={sheet} className="hm-sheet" role="dialog" aria-modal="true" aria-labelledby={id} style={standalone ? { borderRadius: "16px", boxShadow: "none", paddingBottom: "16px" } : undefined} onKeyDown={e => {
     if (e.key === "Escape") { e.preventDefault(); onClose(); }
     if (e.key !== "Tab") return;
-    const elements = [...(sheet.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), a[href]') ?? [])];
+    const elements = [...(sheet.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), a[href], summary, [tabindex="0"]') ?? [])]
+      .filter(el => !el.closest("details:not([open])") || el.matches("summary"));
     const first = elements[0], last = elements.at(-1);
     if (e.shiftKey && (document.activeElement === first || document.activeElement === title.current)) { e.preventDefault(); last?.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
@@ -61,7 +74,7 @@ export function ShareSheet({ initialCreated = false, standalone = false, onClose
     <label className={`hm-check${rights ? " is-checked" : ""}`}><input type="checkbox" checked={rights} disabled={busy || created} onChange={e => setRights(e.target.checked)} /><span className="hm-check-text">이 편곡을 팀원과 공유할 권리가 있음을 확인합니다</span></label>
     {created ? <><p className="hm-ok" role="status"><Icon name="check" />공유 링크를 만들었어요</p><div className="hm-linkbox"><span className="hm-linkbox-text">{link?.url ?? "…/share?token=k3Jd9xQ2mVw7rT1pLa8sZ0"}</span><button className="hm-btn hm-btn-secondary hm-btn-sm" type="button" onClick={copy}><Icon name="copy" /><span aria-live="polite">{copyLabel}</span></button></div><button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={() => void send()}><Icon name="chat" />카카오톡 등으로 보내기</button>{!createLink ? <p className="hm-small">이 링크는 2027년 4월 8일까지 열려요.</p> : link?.stored && <p className="hm-small">{link.expiresAt ? `이 링크는 ${new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(new Date(link.expiresAt))}까지 열려요.` : "이 링크의 만료일을 확인할 수 없어요."}</p>}</> : <button className="hm-btn hm-btn-primary hm-btn-block" type="button" disabled={!rights || busy} onClick={() => void create()}>{busy ? "공유 링크 만드는 중…" : fresh ? "새 공유 링크 만들기" : "공유 링크 만들기"}</button>}
     {busy && <p className="hm-small" role="status">잠시만 기다려 주세요.</p>}
-    {error && <div className="hm-notice is-warn" role="alert"><p>{fresh ? "이전 공유가 끝났어요. 새 링크를 만들 수 있어요." : "공유 링크를 만들지 못했어요. 다시 시도해 주세요."}</p><details><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{error}</pre></div></details></div>}
+    {error && <div className="hm-notice is-warn" role="alert"><p>{failureMessage(error.code, error.fresh)}</p><details key={attempt}><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{error.code}</pre></div></details></div>}
   </div>;
   if (standalone) return content;
   return <div className="hm-sheet-layer"><div className="hm-sheet-scrim" onClick={onClose} />{content}</div>;
