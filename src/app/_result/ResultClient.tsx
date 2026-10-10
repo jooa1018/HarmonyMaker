@@ -8,6 +8,8 @@ import { materializeActiveArrangement } from "../../product/render";
 import { scoreVoiceRoles } from "../_ui/score-colors";
 import { generatedParts } from "../_quick/generate";
 import { QuickFlow } from "../_quick/QuickFlow";
+import { ShareSheet } from "../_ui/ShareSheet";
+import { createResultShare } from "./create-share";
 import { AppBar } from "../_ui/controls";
 import { Icon } from "../_ui/Icon";
 import { partialTitle } from "../_ui/format";
@@ -21,6 +23,7 @@ export function ResultClient() {
   return <SavedResult key={projectId} projectId={projectId} />;
 }
 function SavedResult({ projectId }: { projectId: string }) {
+  const [sharing, setSharing] = useState(false);
   const [record, setRecord] = useState<LocalProjectRecord>();
   const [view, setView] = useState<ProjectPracticeView>();
   const [loading, setLoading] = useState(true);
@@ -66,11 +69,11 @@ function SavedResult({ projectId }: { projectId: string }) {
   const parts = description?.parts ?? [];
   const details = error || (view?.status === "unavailable" ? view.code : "");
   const actions = <div className="hm-actions">
-    <Link className="hm-btn hm-btn-primary hm-btn-block" href={`/workspace?project=${encodeURIComponent(projectId)}`}><Icon name="share" />팀원과 공유</Link>
+    <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={() => setSharing(true)}><Icon name="share" />팀원과 공유</button>
     <div className="hm-btn-row"><button className="hm-btn hm-btn-secondary" type="button" onClick={() => { try { if (record) downloadMusicXml(record.project); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }}><Icon name="download" />MusicXML 받기</button>
       <button className="hm-btn hm-btn-secondary" type="button" aria-label="다른 파트로 다시 만들기" disabled={preparing} onClick={() => void otherParts()}><Icon name="refresh" />{preparing ? "악보 읽는 중…" : "다른 파트로"}</button></div>
   </div>;
-  return <div className="hm"><div className="hm-page is-wide"><AppBar />
+  return <div className="hm"><div className="hm-page is-wide" inert={sharing} aria-hidden={sharing || undefined}><AppBar />
     {!record ? <div className="hm-empty"><b>{error ? "악보를 열지 못했어요" : "이 기기에 저장된 악보가 없어요"}</b><Link className="hm-btn hm-btn-primary" href="/library">내 악보</Link></div> : <div className="hm-result">
       <section className="hm-result-head"><h1 className="hm-result-title">{title}</h1><p className="hm-result-meta">{[description?.keyLabelKo, ...description?.meters ?? [], `${description?.measureCount}마디`].join(" · ")}</p>
         <div className="hm-chips"><span className="hm-chip"><span className="hm-dot is-melody" />멜로디</span>{parts.map((part, index) => <span className="hm-chip" key={index}><span className={`hm-dot ${part.role === "lower" ? "is-alto" : part.role === "upper" ? "is-tenor" : ""}`} />{part.label}</span>)}</div>
@@ -83,5 +86,5 @@ function SavedResult({ projectId }: { projectId: string }) {
       <details className="hm-fold"><summary>고급 편집</summary><ul><li><Link href={`/workspace?project=${encodeURIComponent(projectId)}`}>음 하나씩 고치기, 후보 비교<small>프로젝트 워크스페이스에서 열려요</small></Link></li></ul></details>
     </div>}
     {details && <div className="hm-notice is-stop" role="alert"><p>예상하지 못한 문제가 생겼어요. 다시 시도해 주세요.</p><details><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{details}</pre></div></details></div>}
-  </div></div>;
+  </div>{sharing && record && <ShareSheet onClose={() => setSharing(false)} createLink={fresh => createResultShare(record, fresh, { origin: location.origin })} />}</div>;
 }

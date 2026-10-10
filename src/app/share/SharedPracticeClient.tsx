@@ -5,7 +5,10 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import type { PracticeSharePayload } from "../../domain/share";
-import { ProductPracticePlayer } from "../../product/ProductPracticePlayer";
+import { LivePractice } from "../_result/LivePractice";
+import { AppBar } from "../_ui/controls";
+import { scoreVoiceRoles } from "../_ui/score-colors";
+import { Icon } from "../_ui/Icon";
 import { buildPlaybackPlanSafely } from "../../product/playback-plan";
 import { arrangementRenderDocumentToAbcSafely } from "../../product/score-adapter";
 import { decodeProductUrlShare } from "../../product/share-url";
@@ -86,7 +89,7 @@ export function SharedPracticeClient() {
     if (!document) return;
     let active = true;
     const digest = document.effectiveChordTimeline.digest;
-    void generateDeterministicAccompaniment(document.effectiveChordTimeline).then((value) => { if (active) setAccompanimentState({ digest, value }); });
+    void generateDeterministicAccompaniment(document.effectiveChordTimeline).then((value) => { if (active) setAccompanimentState({ digest, value }); }).catch(() => { if (active) setMessage("반주를 만들지 못했어요."); });
     return () => { active = false; };
   }, [document]);
   const accompaniment = document && accompanimentState?.digest === document.effectiveChordTimeline.digest ? accompanimentState.value : undefined;
@@ -121,9 +124,21 @@ export function SharedPracticeClient() {
     } else if (outcome === "failed") setMessage("신고를 접수하지 못했습니다.");
   };
 
-  return <>
-    <header><p className="eyebrow">PRACTICE SHARE · READ ONLY</p><h1>{payload?.title ?? "공유 연습 악보"}</h1><p>후보, 잠금, 진단, 원본 파일 없이 선택된 연습 artifact만 표시합니다.</p><p><Link href="/">HarmonyMaker 시작으로</Link></p></header>
-    <p className={`status${payload ? "" : " error"}`} aria-live="polite">{presentedMessage}</p>
-    {payload && abc && plan && displayedLoadState ? <><section className="panel"><dl><div><dt>Preset</dt><dd>{payload.presetId}</dd></div><div><dt>Rights</dt><dd>{payload.rightsShareConfirmed ? "공유 확인됨" : "차단"}</dd></div><div><dt>Artifact</dt><dd><code>{payload.arrangementArtifactDigest}</code></dd></div></dl></section><ProductPracticePlayer key={displayedLoadState.key} abc={abc} plan={plan} tempo={payload.tempo} identity={displayedLoadState.key} initialSettings={payload.playbackDefaults} readOnly />{displayedLoadState.locator.kind === "stored" ? <section className="panel"><h2>공유 신고</h2><button type="button" disabled={displayedLoadState.reported} onClick={() => void report()}>{displayedLoadState.reported ? "접수됨" : "권리 또는 악용 신고"}</button></section> : null}</> : null}
-  </>;
+  const ready = payload && abc && plan && accompaniment && displayedLoadState;
+  const waiting = !locatorResult || locatorLoading || Boolean(payload && materialized && abc && !accompaniment && message !== "반주를 만들지 못했어요.");
+  const failed = !waiting && !ready;
+  return <div className="hm"><div className="hm-page">
+    <AppBar shared />
+    <section className="hm-result-head"><h1 className="hm-result-title">{payload?.title ?? "공유 연습 악보"}</h1>
+      {ready && <><p className="hm-lede">팀원이 공유한 연습 악보예요. 내 파트를 &quot;솔로&quot;로 들으며 연습해 보세요.</p><div className="hm-chips">{plan.trackIds.filter(id => id !== "track:band").map(id => <span className="hm-chip" key={id}><span className={`hm-dot ${plan.trackRoles?.[id] === "lead" ? "is-melody" : plan.trackRoles?.[id] === "lower" ? "is-alto" : plan.trackRoles?.[id] === "upper" ? "is-tenor" : ""}`} />{plan.trackLabels[id]}</span>)}</div></>}
+    </section>
+    {waiting && <p role="status">악보를 그리는 중…</p>}
+    {failed && <div className="hm-notice is-stop" role="alert"><p>공유 악보를 열 수 없어요. 보낸 분에게 링크를 다시 확인해 주세요.</p></div>}
+    {ready && <LivePractice voiceRoles={materialized ? scoreVoiceRoles(materialized.trackRoles) : undefined} key={displayedLoadState.key} view={{ status: "available", abc, plan, tempo: payload.tempo, identity: displayedLoadState.key }} title={payload.title} initialSettings={payload.playbackDefaults} />}
+    <Link className="hm-linkcard" href="/"><span className="hm-linkcard-icon"><Icon name="music" /></span><span className="hm-linkcard-text"><b>내 악보로도 화음을 만들어 보세요</b><span>MusicXML만 있으면 바로 만들어요</span></span><Icon name="right" /></Link>
+    <div className="hm-footer"><span>HarmonyMaker로 만든 연습 악보</span>{ready && displayedLoadState.locator.kind === "stored" && <button className="hm-btn hm-btn-text hm-btn-sm" type="button" disabled={displayedLoadState.reported} onClick={() => void report()}><Icon name="flag" />{displayedLoadState.reported ? "접수됨" : "문제 신고"}</button>}</div>
+    {displayedLoadState?.reported && <p role="status">신고를 접수했어요.</p>}
+    {message === "신고를 접수하지 못했습니다." && <p role="alert">신고를 접수하지 못했어요. 다시 시도해 주세요.</p>}
+    {failed && <details className="hm-fold"><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{presentedMessage}</pre></div></details>}
+  </div></div>;
 }
