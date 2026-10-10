@@ -30,6 +30,7 @@ export interface PracticeAudioGraph {
   readonly tracks: ReadonlyMap<string, GainNode>;
   readonly master: GainNode;
   readonly limiter: DynamicsCompressorNode;
+  readonly output: GainNode;
   readonly filters: ReadonlyMap<string, BiquadFilterNode>;
   readonly startedAt: number;
   readonly endsAt: number;
@@ -94,7 +95,11 @@ export function schedulePracticeAudio(
   limiter.ratio.value = 20;
   limiter.attack.value = 0.003;
   limiter.release.value = 0.12;
-  master.connect(limiter).connect(context.destination);
+  // Web Audio's compressor includes makeup gain. Leave measured output
+  // headroom after it instead of assuming threshold is a hard peak ceiling.
+  const output = context.createGain();
+  output.gain.value = 0.6;
+  master.connect(limiter).connect(output).connect(context.destination);
   let scheduledCount = 0;
   try {
     for (const id of plan.trackIds) {
@@ -139,9 +144,10 @@ export function schedulePracticeAudio(
     for (const filter of filters.values()) filter.disconnect();
     master.disconnect();
     limiter.disconnect();
+    output.disconnect();
     throw error;
   }
-  return { context, nodes, tracks, master, limiter, filters, startedAt,
+  return { context, nodes, tracks, master, limiter, output, filters, startedAt,
     endsAt: startedAt + (plan.totalQuarter - fromQuarter) * secondsPerQuarter, scheduledCount, released: false };
 }
 
@@ -160,6 +166,7 @@ export function releasePracticeAudio(graph: PracticeAudioGraph, context: AudioCo
     for (const filter of graph.filters.values()) filter.disconnect();
     graph.master.disconnect();
     graph.limiter.disconnect();
+    graph.output.disconnect();
     void context.close().catch(() => undefined);
   };
   // This timer only frees an already-silent graph. It never schedules music.

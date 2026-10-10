@@ -74,7 +74,7 @@ describe("practice audio signal and scheduling contract", () => {
     const f = fakeContext();
     const short = { ...plan, events: [{ ...plan.events[0], durationQuarter: 0.002 }] };
     schedulePracticeAudio(f.audio, short, options);
-    const envelope = f.gains[4].gain.events;
+    const envelope = f.gains[5].gain.events;
     expect(envelope.map(e => e.value)).toEqual([0, 1, 1, 1, 0]);
     expect(envelope[0].time).toBe(10.05);
     expect(envelope.at(-1)!.time).toBeCloseTo(10.051, 10);
@@ -97,13 +97,13 @@ describe("practice audio signal and scheduling contract", () => {
     expect([...graph.tracks.values()].map(g => g.gain.value)).toEqual([PRACTICE_AUDIO_GAINS.lead, PRACTICE_AUDIO_GAINS.harmony, PRACTICE_AUDIO_GAINS.band]);
     expect(graph.master.gain.value).toBe(1);
     updatePracticeAudioMix(graph, { audible: new Set(["track:h1"]), levels: { "track:h1": 1.5 }, masterLevel: 0.5 });
-    expect(f.gains[1].gain.events.at(-1)?.value).toBe(0);
-    expect(f.gains[2].gain.events.at(-1)?.value).toBe(PRACTICE_AUDIO_GAINS.harmony * 1.5);
-    expect(f.gains[3].gain.events.at(-1)?.value).toBe(0);
+    expect(f.gains[2].gain.events.at(-1)?.value).toBe(0);
+    expect(f.gains[3].gain.events.at(-1)?.value).toBe(PRACTICE_AUDIO_GAINS.harmony * 1.5);
+    expect(f.gains[4].gain.events.at(-1)?.value).toBe(0);
     expect(f.gains[0].gain.events.at(-1)?.value).toBe(0.5);
     for (const node of f.oscillators) expect(node.start).toHaveBeenCalledOnce();
     expect(graph.scheduledCount).toBe(4);
-    expect(f.gains[2].gain.events[0].kind).toBe("hold");
+    expect(f.gains[3].gain.events[0].kind).toBe("hold");
   });
 
   it("silences invalid volume and rejects malformed timing before allocating nodes", () => {
@@ -142,7 +142,9 @@ describe("practice audio signal and scheduling contract", () => {
     const f = fakeContext(), graph = schedulePracticeAudio(f.audio, {...plan, trackRoles:{"track:h1":"lower"}}, options);
     expect(graph.master.connect).toBeDefined();
     expect(f.gains[0].outputs).toEqual([f.limiter]);
-    expect(f.limiter.outputs).toEqual([f.context.destination]);
+    expect(f.limiter.outputs).toEqual([graph.output]);
+    expect(f.gains[1].outputs).toEqual([f.context.destination]);
+    expect(graph.output.gain.value).toBe(0.6);
     expect(f.limiter.threshold.value).toBe(-9);
     expect(f.limiter.ratio.value).toBe(20);
     expect(f.filters.map(filter => filter.frequency.value)).toEqual([2600,1800,900]);
