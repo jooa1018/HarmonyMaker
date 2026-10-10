@@ -14,7 +14,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
     const { token } = await context.params;
     const services = await getProductionServices();
     const outcome = await services.shares.reconcileOwnerAuthority(token, body.ownerDeleteSecret, new Date());
-    if (outcome.status === "active") return api.json({ ok: true, state: "active" });
+    if (outcome.status === "active") return api.json({ ok: true, state: "active", expiresAt: outcome.expiresAt });
     return api.json({ ok: false, error: {
       code: "SHARE_CREATE_REPLAY_RETIRED",
       reason: outcome.reason,

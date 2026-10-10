@@ -16,7 +16,7 @@ import { admitAnonymousSession } from "../security/session-admission";
 import { AnonymousSessionService } from "../security/session-core";
 import { createShareIdempotently, recoverShareCreateIdempotently } from "./idempotent-create";
 import { readShareWithIpQuota } from "./quota-read";
-import { ShareStoreService } from "./share-store-core";
+import { ShareStoreService, SHARE_DEFAULT_TTL_DAYS } from "./share-store-core";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("TEST_DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION");
@@ -299,7 +299,7 @@ describe("actual PostgreSQL browser share-create recovery", () => {
 
       if (!recovered) throw new Error("browser recovery envelope missing");
       expect(completedShareRecoveryTransport(recovered, replacementAdmission.sessionAuthority)).toBe("owner-reconcile");
-      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt)).resolves.toEqual({ status: "active" });
+      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt)).resolves.toEqual({ status: "active", expiresAt: new Date(now.getTime() + SHARE_DEFAULT_TTL_DAYS * 86_400_000).toISOString() });
       await shares.ownerDelete(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt);
       await expect(shares.read(outcome.response.token, recoveryAt)).rejects.toThrow("SHARE_UNAVAILABLE");
       expect(await harness.activeShareCount()).toBe(0);

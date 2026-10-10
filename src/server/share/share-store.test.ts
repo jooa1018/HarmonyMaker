@@ -170,7 +170,7 @@ describe("ShareStore and URL share", () => {
     expect(sessions.authorityFor(rotatedSession.record)).not.toBe(sessions.authorityFor(initialSession.record));
     const active = await service.create({ ownerSessionId: initialSession.record.id, payload: payload(), rightsBasis: "self-authored", now, forceStore: true });
     if (active.kind !== "store") return;
-    await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000))).resolves.toEqual({ status: "active" });
+    await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 31 * 86_400_000))).resolves.toEqual({ status: "active", expiresAt: active.expiresAt });
     await expect(service.reconcileOwnerAuthority(active.token, active.ownerDeleteSecret, new Date(now.getTime() + 181 * 86_400_000))).resolves.toEqual({ status: "retired", reason: "expired" });
     await expect(service.reconcileOwnerAuthority(active.token, "wrong-owner-secret-000000", now)).rejects.toThrow("SHARE_UNAVAILABLE");
     await expect(service.reconcileOwnerAuthority("unknown-share-token-000000", active.ownerDeleteSecret, now)).rejects.toThrow("SHARE_UNAVAILABLE");
