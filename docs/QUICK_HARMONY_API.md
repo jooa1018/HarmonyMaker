@@ -153,6 +153,43 @@ summary?: {
 추천은 사용자의 명시적 파트 선택과 별개이며, 같은 악보·선택 상태에서 결정적이다.
 화면이 바꾼 summary는 생성 입력으로 신뢰하지 않고 현재 작업 공간에서 다시 계산한다.
 
+## 저장된 프로젝트 읽기 (1-8)
+
+`src/product/project-view.ts`에서 다음 두 함수를 가져온다.
+
+```ts
+const song = describeHarmonyProject(project); // 동기, 예외를 던지지 않는 화면 요약
+const view = await projectPracticeView(project); // 반주 포함, 비동기
+```
+
+`describeHarmonyProject`는 `{ title, keyLabelKo, meters, measureCount, parts }`를 반환한다.
+제목·조성은 preparation.summary와 같은 규칙이며, 박자는 인쇄 순서에서 중복 제거하고
+마디 수는 반복 전 인쇄 마디 수다. `parts`는 멜로디를 제외한 생성 화음 트랙의 정규 순서다.
+각 항목은 `{ role: upper | lower | other, label, part?, status?, missingMeasures? }`다.
+quick-harmony v2에서는 알토·테너 이름과 part를 제공한다. 기존 프로젝트는 기존 역할
+레지스트리의 이름을 유지하며 part를 추측하지 않는다. 역할이 혼합되거나 없으면 other다.
+활성 결과를 읽을 수 있으면 quick-harmony와 같은 기준으로 complete·partial·missing 및
+누락된 인쇄 마디 번호를 계산한다. 결과가 없으면 상태 필드를 생략하며 완료로 단정하지 않는다.
+불완전한 옛 자료도 읽을 수 있는 요약을 반환한다. 이 요약 자체는 무결성 검증이 아니다.
+
+`projectPracticeView`의 반환형은 다음과 같다.
+
+```ts
+Promise<
+  | { status: "available"; abc: string; plan: PlaybackPlan; tempo: TempoSpec; identity: string }
+  | { status: "unavailable"; code: string }
+>
+```
+
+선택된 preset(없으면 standard)의 현재 전체 결과를 구체화하고 기존 ABC·반주·PlaybackPlan
+경로를 재사용한다. identity는 `${artifactDigest}:full`이다. 반주 계산을 마친 뒤 available을
+반환한다. H3는 available일 때만 플레이어 컴포넌트를 마운트하고 네 입력을 훅에 넘긴다.
+미생성·오래된 결과는 `ACTIVE_ARRANGEMENT_UNAVAILABLE` 또는 `PROJECT_AUTHORITY_STALE`,
+표기 제한은 `ABC_SERIALIZATION_UNAVAILABLE`로 unavailable을 반환한다. 검증되지 않은 편집
+스냅샷·잘못된 렌더 자료 등 기존 무결성 오류는 reject하므로 호출부에서 처리해야 한다.
+각 호출은 첫 await 전에 표시·반주 입력을 복사한다. 동시 호출이 서로의 결과를 수정하지 않으며,
+저장 프로젝트·digest·공유 형식은 변경하지 않는다.
+
 ## 연습 재생 훅 (1-7)
 
 `src/product/use-practice-player.ts`의 `usePracticePlayer`는 클라이언트 컴포넌트에서 호출한다.
