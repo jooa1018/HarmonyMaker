@@ -83,6 +83,12 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const notes = findings.filter(f => f.category === "warning").map(describe);
   if (assessment.provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred")) notes.push(
     quickHarmonyNotice({id:"automatic-values",code:"AUTOMATIC_VALUES",category:"warning"}, "악보 설정"));
+  for (const part of state.music?.parts ?? []) for (const measure of part.measures) {
+    for (const chord of measure.chords) if (chord.interpretation === "kind-text" && chord.source === "musicxml") {
+      notes.push(quickHarmonyNotice({ id: `chord-kind-text:${chord.key}`, code: "CHORD_KIND_TEXT", category: "warning" },
+        `${measure.number}번째 마디`, { chordName: chord.sourceText }));
+    }
+  }
   const request = assessment.request;
   const summary = state.music && request?.lead
     ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}) : undefined;

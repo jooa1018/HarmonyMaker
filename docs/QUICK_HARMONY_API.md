@@ -284,4 +284,13 @@ if (result.status === "complete" || result.status === "partial") {
 
 파일 오류의 `details.importError`와 함께 선택 필드 `details.importDiagnostics`가 구체 사유를 제공한다. 각 항목은 기존 가져오기 진단의 code·messageKo·details를 보존하며, details.reason으로 forbidden-doctype·malformed-xml·invalid-utf8·xml-size-limit·unsupported-score-root 등을 구분한다. 사용자용 기본 문구는 유지한다. score-timewise 선언 자체는 안전 파서를 통과하지만 기존 엔진의 score-partwise 입력 지원 범위는 확장하지 않는다.
 
+## MusicXML 코드 글자 해석 (1-15)
+
+`kind="other"`이고 degree 요소가 없을 때만 근음 + kind의 text + 베이스를 기존 코드 파서로 읽는다.
+완전히 해석되면 canonicalSymbol을 다시 파싱해 무결성이 확인된 결과를 사용한다.
+C2·G2는 Cadd2·Gadd2로, C2/G는 Cadd2/G로 정규화되어 major + degree add2와 같은 의미를 갖는다.
+이 처리는 새 other 가져오기 경로에 한정한다. 공통 코드 파서와 기존 프로젝트는 변경하지 않는다.
+원래 코드 표기는 출처에 남기고 notes에 “N번째 마디: 코드 이름 C2를 글자대로 읽었어요.”처럼 표시한다.
+빈 text·해석 실패·degree가 있는 other는 계속 질문으로 남긴다.
+
 H3 참고: 화면에서 같은 생성을 재시도해도 라이브러리에 중복 항목이 생기지 않도록 저장 id를 정하는 방법은 H3에서 정한다.

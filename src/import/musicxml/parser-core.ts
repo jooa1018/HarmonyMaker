@@ -1,4 +1,4 @@
-import { chordSemanticProjection, parseChord } from "../../domain/chord/parser";
+import { chordSemanticProjection, isChordParseResult, parseChord } from "../../domain/chord/parser";
 import type { ChordParseResult } from "../../domain/chord/model";
 import { binaryDigest, canonicalJson, compareCanonicalValues } from "../../domain/digest/canonical";
 import {
@@ -400,6 +400,19 @@ function parseHarmony(
   }
   const displaySuffix = kindText ?? suffix ?? kind;
   const fallbackSourceText = `${rootSymbol ?? rootStep}${displaySuffix}${bassSymbol ? `/${bassSymbol}` : ""}`;
+  if (kind === "other" && kindText && xmlChildren(harmony, "degree").length === 0
+    && rootSymbol && (!bass || bassSymbol) && !unsupportedToken) {
+    const textResult = parseChord(fallbackSourceText);
+    if (textResult.status === "ok") {
+      // Normalize only this newly supported import path. C2's legacy parser
+      // origin differs from Cadd2; the canonical spelling must pass integrity.
+      const canonicalResult = parseChord(textResult.chord.canonicalSymbol);
+      if (canonicalResult.status === "ok" && isChordParseResult(canonicalResult)) return {
+        partOrdinal, measureOrdinal, onset, sourceText: fallbackSourceText, parseResult: canonicalResult,
+        source: "musicxml", confirmation: "unconfirmed", interpretation: "kind-text",
+      };
+    }
+  }
   if (!rootSymbol || (bassStep && !bassSymbol) || suffix === undefined || unsupportedToken) {
     return {
       partOrdinal,
