@@ -4,10 +4,10 @@ import type { QuickHarmonyPreparation } from "../../product/quick-harmony";
 import type { PartChoice } from "../_ui/format";
 import { confirmRights, emptySelection, preparedSelection } from "./selection";
 
-export function useQuickPreparation() {
-  const [fileName, setFileName] = useState("");
-  const [preparation, setPreparation] = useState<QuickHarmonyPreparation>();
-  const [selection, setSelection] = useState(emptySelection);
+export function useQuickPreparation(initial?: { preparation: QuickHarmonyPreparation; fileName: string }) {
+  const [fileName, setFileName] = useState(initial?.fileName ?? "");
+  const [preparation, setPreparation] = useState<QuickHarmonyPreparation | undefined>(initial?.preparation);
+  const [selection, setSelection] = useState(() => initial ? preparedSelection(initial.preparation) : emptySelection());
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
   const request = useRef(0);

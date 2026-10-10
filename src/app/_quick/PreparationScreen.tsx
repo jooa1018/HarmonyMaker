@@ -4,10 +4,11 @@ import { Icon } from "../_ui/Icon";
 import { ctaLabel, titleFromFileName } from "../_ui/format";
 import { harmonyChoice, questionKind, unansweredQuestions } from "./selection";
 import type { QuickPreparationController } from "./useQuickPreparation";
-import type { QuickHarmonyChoice } from "../../product/quick-harmony";
+import type { QuickHarmonyChoice, QuickHarmonyPartResult } from "../../product/quick-harmony";
 
-export function PreparationScreen({ ui, onGenerate, onEdit }: {
+export function PreparationScreen({ ui, onGenerate, onEdit, blocked = [] }: {
   ui: QuickPreparationController;
+  blocked?: readonly QuickHarmonyPartResult[];
   onGenerate: (choice: QuickHarmonyChoice) => void;
   onEdit: () => void;
 }) {
@@ -35,6 +36,7 @@ export function PreparationScreen({ ui, onGenerate, onEdit }: {
     </div><button className="hm-song-change" type="button" onClick={ui.reset}>다른 파일</button></div>
       {summary && <div className="hm-chips"><span className="hm-chip">{summary.keyLabelKo}</span><span className="hm-chip">{summary.meters.join(" · ")}</span><span className="hm-chip">{summary.measureCount}마디</span><span className="hm-chip">{summary.hasLyrics ? `가사 ${summary.verseCount}절` : "가사 없음"}</span></div>}
     </section> : <h1 className="hm-title">{unsupported ? "이 악보는 아직 화음을 만들 수 없어요" : "만들기 전에 고칠 곳이 있어요"}</h1>}
+    {blocked.map(part => <div className="hm-notice is-stop" role="alert" key={part.part}><p className="hm-notice-text">{part.reasonKo}</p></div>)}
     {(unsupported ? prep.reasons : current ? [current] : []).map(notice => <div className={`hm-notice ${unsupported ? "is-stop" : needsEdit ? "is-warn" : "is-ask"}`} key={notice.id}>
       <div className="hm-notice-head"><Icon name={unsupported ? "stop" : needsEdit ? "alert" : "ask"} /><div><h2 className="hm-notice-title">{notice.messageKo}</h2><p className="hm-notice-text">{notice.actionKo}</p></div></div>
       {!unsupported && !needsEdit && <div className="hm-choices" role="radiogroup" aria-label="악보 확인">{notice.choices.map(answer => <label className={`hm-choice${[ui.selection.answers.lead, ui.selection.answers.unreadPrintedChords].includes(answer.value) ? " is-selected" : ""}`} key={answer.value}>
