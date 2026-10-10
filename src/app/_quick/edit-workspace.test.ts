@@ -17,4 +17,3 @@ it("saves editable copies under distinct UUIDs without replacing the quick works
   expect((await store.load(first))?.workspace.origin).toEqual(prep.workspace!.origin);
   expect((await store.load(second))?.workspace.origin).toEqual(prep.workspace!.origin);
 });
-

@@ -57,4 +57,3 @@ export function PreparationScreen({ ui, onGenerate, onEdit }: {
     <details className="hm-fold"><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{JSON.stringify(prep.details, null, 2)}</pre></div></details>
   </div></div>;
 }
-
