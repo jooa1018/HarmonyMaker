@@ -273,7 +273,13 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
-      return { id: `P-${metadata.harmonyRole}`, name: metadata.label, notationOctaveShift: track.notationOctaveShift, events: track.events.map((event) => ({ ...fromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
+      return { id: `P-${metadata.harmonyRole}`, name: metadata.label, notationOctaveShift: track.notationOctaveShift, events: track.events.map((event) => ({
+        ...fromGenerated(event, document.measures),
+        // MusicXML octave clefs position sounding pitches on the staff. The
+        // engine stores written pitches, so convert once at the export boundary.
+        ...(event.kind === "note" ? { pitch: { ...event.pitch, octave: event.pitch.octave + (track.notationOctaveShift ?? 0) } } : {}),
+        measureIndex: event.range.start.performanceMeasureIndex,
+      })) };
     }),
   ];
   const partList = tracks.map((track) => `<score-part id="${track.id}"><part-name>${xml(track.name)}</part-name></score-part>`).join("");

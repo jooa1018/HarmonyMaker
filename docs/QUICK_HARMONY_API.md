@@ -15,6 +15,8 @@
 `notationOctaveShift: -1`로 한 옥타브 낮게 재생한다(실제 소리 C3–A4 / D3–G4).
 알토 음역은 기존 F3–D5 / A3–C5다. MusicXML은 G2 및 `clef-octave-change=-1`,
 ABC·abcjs는 `clef=treble-8`을 사용한다. 엔진 배치·음역 검사는 악보 높이를 사용한다.
+MusicXML의 테너 `<pitch>`는 소리 높이(내부 악보 높이에서 한 옥타브 아래)로 내보내며,
+옥타브 clef가 악보상 위치를 표시한다. 별도 `<transpose>`를 더해 중복 이동하지 않는다.
 
 정책 표식은 `hm-auto-draft-policy-v2`, 파트 프리셋은 `hm-harmony-part-presets-v2`,
 생성 규칙은 `grammar-v1.1`이다. 기존 v1 표식과 v1.0.1 프로젝트는 해당 버전으로 재검증한다.

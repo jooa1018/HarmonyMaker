@@ -1,6 +1,8 @@
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { XMLParser } from "fast-xml-parser";
+import type { SpelledPitch } from "../domain/pitch";
 import { containsPitch, pitchMidiNumber } from "../domain/pitch";
 import { HARMONY_PART_PRESETS } from "../domain/part-presets";
 import { comparePositions } from "../domain/time";
@@ -56,6 +58,16 @@ describe("WAG 1.1 fixed parts, written tenor and meters", () => {
       const xml=exportArrangementMusicXml(document,trackRoles,metadata);
       const abc=arrangementRenderDocumentToAbc(document,trackRoles,metadata);
       expect(xml.includes("<clef-octave-change>-1</clef-octave-change>")).toBe(parts.some(p=>p==="tenor"));
+      const exported = new XMLParser({isArray: name => ["part", "measure", "note"].includes(name)}).parse(xml) as {
+        "score-partwise": { part: { measure: { note: { pitch?: SpelledPitch }[] }[] }[] };
+      };
+      for (const [index, part] of parts.entries()) {
+        const notes = exported["score-partwise"].part[index + 1].measure.flatMap(measure => measure.note).filter(note => note.pitch);
+        const written = document.generatedHarmonyTracks[index].events.filter(event => event.kind === "note");
+        expect(notes.map(note => pitchMidiNumber({...note.pitch!, alter: note.pitch!.alter ?? 0}))).toEqual(
+          written.map(note => pitchMidiNumber(note.pitch) + (part === "tenor" ? -12 : 0)),
+        );
+      }
       expect(abc.includes("clef=treble-8")).toBe(parts.some(p=>p==="tenor"));
       const payload=materializePracticeShare({project,presetId:"standard",materialized,workspaceShareConfirmedForThisExport:true});
       expect(isPracticeSharePayload(payload)).toBe(true);
