@@ -13,7 +13,7 @@ export interface NotationTupletEvent {
 
 /** Display-only groups, including generated rests. A sustained whole-group note
  * keeps ordinary notation; no new attack is added to any musical plan. */
-export function withTupletNotation<T extends NotationTupletEvent>(events: readonly T[], document: ArrangementRenderDocument, rest: (measureIndex: number, offset: Fraction, duration: Fraction) => T): readonly T[] {
+export function withTupletNotation<T extends NotationTupletEvent>(events: readonly T[], document: ArrangementRenderDocument, rest: (measureIndex: number, offset: Fraction, duration: Fraction) => T, splitAtBarline = false): readonly T[] {
   if (!document.sourceLeadTrack.atoms.some(a=>a.tuplets)) return events;
   const starts: Fraction[] = [fraction(0)];
   for (const measure of document.measures) starts.push(addFractions(starts.at(-1)!,measure.duration));
@@ -40,9 +40,23 @@ export function withTupletNotation<T extends NotationTupletEvent>(events: readon
     const members=filled.filter(e=>compareFractions(at(e.measureIndex,e.offset),group.start)>=0 && compareFractions(addFractions(at(e.measureIndex,e.offset),e.duration),group.end)<=0);
     if (members.length<2 || compareFractions(at(members[0].measureIndex,members[0].offset),group.start)!==0
       || compareFractions(addFractions(at(members.at(-1)!.measureIndex,members.at(-1)!.offset),members.at(-1)!.duration),group.end)!==0) continue;
-    for (const [index,event] of members.entries()) {
-      const {start,stop,...mark}=group.mark; void start; void stop;
-      replacements.set(event,{...event,tuplets:[{...mark,...(index===0?{start:true as const}:{}),...(index===members.length-1?{stop:true as const}:{})}],...(index===0?{tupletCount:members.length}:{})});
+    const spans = splitAtBarline
+      ? [...new Set(members.map(event => event.measureIndex))].map(index => members.filter(event => event.measureIndex === index))
+      : [members];
+    for (const span of spans) {
+      // abcjs cannot close a one-event tuplet. Ordinary sustained durations can
+      // stay ordinary; non-binary singletons must never leak an active multiplier.
+      if (splitAtBarline && span.length === 1) {
+        const event = span[0];
+        if ((event.duration.d & (event.duration.d - 1)) !== 0) throw new RangeError("ABC_SERIALIZATION_UNAVAILABLE");
+        const { tuplets, tupletCount, ...ordinary } = event; void tuplets; void tupletCount;
+        replacements.set(event, ordinary as T);
+        continue;
+      }
+      for (const [index,event] of span.entries()) {
+        const {start,stop,...mark}=group.mark; void start; void stop;
+        replacements.set(event,{...event,tuplets:[{...mark,...(index===0?{start:true as const}:{}),...(index===span.length-1?{stop:true as const}:{})}],...(index===0?{tupletCount:span.length}:{})});
+      }
     }
   }
   return filled.map(event=>replacements.get(event)??event);

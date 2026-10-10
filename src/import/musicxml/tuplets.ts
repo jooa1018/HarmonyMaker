@@ -5,6 +5,18 @@ import { xmlChild, xmlChildren, xmlDescendants, xmlText, type XmlElement } from 
 interface Member { note: XmlElement; measure: number; onset: Fraction; duration: Fraction; written: SourceTuplet["normalType"]; normal: SourceTuplet["normalType"]; number: number; start: boolean; stop: boolean; valid: boolean }
 const supportedType = (value: string | undefined): value is SourceTuplet["normalType"] => value === "quarter" || value === "eighth" || value === "16th";
 
+function consistentNotation(mark: XmlElement, normal: string | undefined): boolean {
+  return ([['tuplet-actual',3],['tuplet-normal',2]] as const).every(([name,number]) => {
+    const descriptions=xmlChildren(mark,name);
+    return descriptions.length<=1 && descriptions.every(description => {
+      const counts=xmlChildren(description,'tuplet-number'),types=xmlChildren(description,'tuplet-type');
+      return counts.length<=1 && counts.every(count=>Number(xmlText(count))===number)
+        && types.length<=1 && types.every(type=>xmlText(type)===normal)
+        && xmlChildren(description,'tuplet-dot').length===0;
+    });
+  });
+}
+
 /** Only returns complete, unambiguous groups. Unsupported notes remain absent
  * and are reported by the normal importer diagnostics, never silently stripped. */
 export function supportedMusicXmlTuplets(part: XmlElement): ReadonlyMap<XmlElement, readonly SourceTuplet[]> {
@@ -44,7 +56,7 @@ export function supportedMusicXmlTuplets(part: XmlElement): ReadonlyMap<XmlEleme
         && !xmlChild(child,"grace") && !xmlChild(child,"cue") && !xmlChild(child,"unpitched") && !xmlDescendants(child,"ornaments").length
         && xmlChildren(child,"type").length === 1 && xmlChildren(child,"duration").length === 1
         && xmlChildren(tm[0],"actual-notes").length === 1 && xmlChildren(tm[0],"normal-notes").length === 1 && xmlChildren(tm[0],"normal-type").length <= 1
-        && marks.length <= 1 && marks.every(mark => ["start","stop"].includes(mark.attributes.type))
+        && marks.length <= 1 && marks.every(mark => ["start","stop"].includes(mark.attributes.type) && consistentNotation(mark,normal))
         && Number.isSafeInteger(number) && number >= 1 && number <= 16;
       const entries = voices.get(voice) ?? [];
       entries.push({note:child,measure:measureIndex,onset,duration,written:written as SourceTuplet["normalType"],normal:normal as SourceTuplet["normalType"],number,start:marks[0]?.attributes.type === "start",stop:marks[0]?.attributes.type === "stop",valid});
@@ -77,6 +89,10 @@ export function supportedMusicXmlTuplets(part: XmlElement): ReadonlyMap<XmlEleme
       }
       const unit=tupletUnit(first.normal);
       if (!contiguous || compareFractions(sum,fraction(unit.n*2,unit.d))!==0) continue;
+      // abcjs 6.7 does not close (3:2:1 and changes the following notes' times.
+      // A cross-bar singleton cannot be faithfully displayed: reject at import.
+      const bars = [...new Set(group.map(item => item.measure))];
+      if (bars.length > 1 && bars.some(bar => group.filter(item => item.measure === bar).length === 1)) continue;
       for (const [index,item] of group.entries()) result.set(item.note,[{number:first.number,actualNotes:3,normalNotes:2,normalType:first.normal,...(index===0?{start:true as const}:{}),...(index===group.length-1?{stop:true as const}:{})}]);
       i+=group.length-1;
     }

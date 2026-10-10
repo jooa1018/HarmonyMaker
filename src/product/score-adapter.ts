@@ -132,7 +132,7 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const chordOwner = (measureIndex: number) => { const index = rhythm.findIndex((track) => track.atoms.some((atom) => atom.range.start.performanceMeasureIndex === measureIndex)); return index < 0 ? 0 : index + 1; };
   const voices = tracks.map((track, index) => {
     const ownedChords = Object.fromEntries(Object.entries(chordAt).filter(([key]) => chordOwner(Number(key.split(":")[0])) === index));
-    const events=withTupletNotation<AdapterEvent & {measureIndex:number}>(track.events,document,(measureIndex,offset,duration)=>({kind:"rest",measureIndex,offset,duration,tieStart:false,tieStop:false,lyricTokenIds:[]}));
+    const events=withTupletNotation<AdapterEvent & {measureIndex:number}>(track.events,document,(measureIndex,offset,duration)=>({kind:"rest",measureIndex,offset,duration,tieStart:false,tieStop:false,lyricTokenIds:[]}),true);
     const voice=`[V:${track.id}] ${voiceMeasures(events, document.measures, durations, ownedChords, index < sourceCount, input.key, rhythm.length > 0 && index < sourceCount)}`;
     return index===0 ? voice+melodyLyricLines(document) : voice;
   }).join("\n");
