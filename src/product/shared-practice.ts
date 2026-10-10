@@ -74,7 +74,12 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     if (parseResult.status !== "ok" && parseResult.status !== "no-chord") throw new RangeError("SHARE_PAYLOAD_INVALID");
     return { id: `share:chord:${index}`, range, parseResult, origin: { kind: "source-event" as const, sourceChordEventId: `share:chord-source:${index}` } };
   });
-  const firstLeadId = atoms[0]?.sourceEventId ?? "share:source-event:0";
+  // Compact links, not array order, identify the owning melody event. Older
+  // payloads may contain unlinked verses; never attach them to the first note.
+  const lyricOwners = new Map<string, string>();
+  for (const atom of atoms) for (const id of atom.lyricTokenIds) {
+    if (!lyricOwners.has(id)) lyricOwners.set(id, atom.sourceEventId);
+  }
   const document: ArrangementRenderDocument = {
     measures,
     sourceLeadTrack: { trackPlanId: "track:source-lead", atomizationDigest: payload.arrangementArtifactDigest, atoms },
@@ -87,7 +92,7 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
       spans,
       digest: payload.effectiveChordTimelineDigest,
     },
-    lyricTokens: payload.lyrics.map((token) => ({ ...token, leadEventId: firstLeadId, emphasis: "none" as const })),
+    lyricTokens: payload.lyrics.map((token) => ({ ...token, leadEventId: lyricOwners.get(token.id) ?? "share:unlinked-lyric", emphasis: "none" as const })),
   };
   return { document, trackRoles };
 }

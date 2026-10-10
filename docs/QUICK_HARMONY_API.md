@@ -230,6 +230,18 @@ H3는 `tracks.some(t => t.kind === "band")`로 반주 스위치 표시 여부를
 시간 표시는 `positionQuarter * secondsPerQuarter`, 전체 시간은 `totalQuarter * secondsPerQuarter`다.
 기존 ProductPracticePlayer도 같은 훅을 쓰며 기존 Play(처음부터)·Resume(이어서) 버튼을 유지한다.
 
+## 멜로디 가사 표시 (1-9)
+
+`arrangementRenderDocumentToAbc`는 원본 가사를 멜로디 보이스의 `w:` 줄로 표시한다.
+여러 절은 절 번호 오름차순으로 한 줄씩 넣는다. 쉼표·빈 구간·붙임줄에서도 다음 가사의
+음표 위치를 유지하며, 화음 보이스에는 가사를 중복하지 않는다. 가사가 없으면 기존 ABC와 같다.
+표시 중 원본 가사·생성 음·프로젝트 저장 바이트·결과물 digest·재생 음높이와 길이는 바뀌지 않는다.
+ABC 제어 문자는 표시할 때만 이스케이프하고 줄바꿈은 공백으로, 주석 문자 `%`는 `％`로 표시한다.
+
+새 공유는 기존 schemaVersion 4의 `lyricTokenIds`에 모든 절의 음표 연결을 담으므로 공유
+악보에서도 같은 가사를 표시한다. 예전 공유는 남아 있는 연결만 표시한다. 가사 텍스트만 있고
+음표 연결이 없는 옛 공유의 다른 절은 위치를 추측하지 않는다. 공유 형식의 버전은 유지한다.
+
 ## 화면 호출 예시
 
 ```ts
