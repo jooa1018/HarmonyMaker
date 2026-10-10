@@ -1,0 +1,162 @@
+[
+  {
+    "cpuRate": 1,
+    "prepareMs": 499.80000001192093,
+    "generateAndRenderMs": 6923.5,
+    "longestTaskMs": 4482,
+    "tasks": [
+      {
+        "stage": "prepare",
+        "duration": 156
+      },
+      {
+        "stage": "generate",
+        "duration": 244
+      },
+      {
+        "stage": "generate",
+        "duration": 4482
+      },
+      {
+        "stage": "generate",
+        "duration": 139
+      },
+      {
+        "stage": "generate",
+        "duration": 59
+      },
+      {
+        "stage": "generate",
+        "duration": 1064
+      },
+      {
+        "stage": "generate",
+        "duration": 223
+      }
+    ]
+  },
+  {
+    "cpuRate": 4,
+    "prepareMs": 5711.300000011921,
+    "generateAndRenderMs": 66635,
+    "longestTaskMs": 39737,
+    "tasks": [
+      {
+        "stage": "prepare",
+        "duration": 60
+      },
+      {
+        "stage": "prepare",
+        "duration": 570
+      },
+      {
+        "stage": "prepare",
+        "duration": 101
+      },
+      {
+        "stage": "prepare",
+        "duration": 203
+      },
+      {
+        "stage": "prepare",
+        "duration": 3278
+      },
+      {
+        "stage": "prepare",
+        "duration": 140
+      },
+      {
+        "stage": "generate",
+        "duration": 387
+      },
+      {
+        "stage": "generate",
+        "duration": 204
+      },
+      {
+        "stage": "generate",
+        "duration": 213
+      },
+      {
+        "stage": "generate",
+        "duration": 5711
+      },
+      {
+        "stage": "generate",
+        "duration": 39737
+      },
+      {
+        "stage": "generate",
+        "duration": 62
+      },
+      {
+        "stage": "generate",
+        "duration": 267
+      },
+      {
+        "stage": "generate",
+        "duration": 144
+      },
+      {
+        "stage": "generate",
+        "duration": 59
+      },
+      {
+        "stage": "generate",
+        "duration": 69
+      },
+      {
+        "stage": "generate",
+        "duration": 51
+      },
+      {
+        "stage": "generate",
+        "duration": 233
+      },
+      {
+        "stage": "generate",
+        "duration": 66
+      },
+      {
+        "stage": "generate",
+        "duration": 55
+      },
+      {
+        "stage": "generate",
+        "duration": 251
+      },
+      {
+        "stage": "generate",
+        "duration": 1583
+      },
+      {
+        "stage": "generate",
+        "duration": 482
+      },
+      {
+        "stage": "generate",
+        "duration": 339
+      },
+      {
+        "stage": "generate",
+        "duration": 128
+      },
+      {
+        "stage": "generate",
+        "duration": 130
+      },
+      {
+        "stage": "generate",
+        "duration": 11337
+      },
+      {
+        "stage": "generate",
+        "duration": 2596
+      },
+      {
+        "stage": "generate",
+        "duration": 66
+      }
+    ]
+  }
+]
