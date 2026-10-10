@@ -6,6 +6,7 @@ import type { TempoSpec } from "../domain/source/model";
 import type { PerformanceMeasureOccurrence } from "../domain/performance/repeat";
 import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
+import { displayLyricsByAtom } from "./display-lyrics";
 
 interface AdapterEvent {
   readonly slurs?: TimelineAtom["slurs"];
@@ -115,11 +116,44 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const chordOwner = (measureIndex: number) => { const index = rhythm.findIndex((track) => track.atoms.some((atom) => atom.range.start.performanceMeasureIndex === measureIndex)); return index < 0 ? 0 : index + 1; };
   const voices = tracks.map((track, index) => {
     const ownedChords = Object.fromEntries(Object.entries(chordAt).filter(([key]) => chordOwner(Number(key.split(":")[0])) === index));
-    return `[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, rhythm.length > 0 && index < sourceCount)}`;
+    const voice=`[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, rhythm.length > 0 && index < sourceCount)}`;
+    return index===0 ? voice+melodyLyricLines(document) : voice;
   }).join("\n");
   const score = rhythm.length ? `(${tracks.slice(0, sourceCount).map((track) => track.id).join(" ")}) ${tracks.slice(sourceCount).map((track) => track.id).join(" ")}` : tracks.map((track) => track.id).join(" ");
   const declarations = tracks.map((track) => `V:${track.id} name="${encodeAbcFreeText(track.label)}" clef=${track.notationOctaveShift === -1 ? "treble-8" : "treble"}`).join("\n");
   return `X:1\nT:${encodeAbcFreeText(input.title)}\nM:${document.measures[0]?.time.numerator ?? 4}/${document.measures[0]?.time.denominator ?? 4}\nL:1/16\nQ:${abcTempo(input.tempo)}\nK:${abcKey(input.key)}\n%%score ${score}\n${declarations}\n${voices}`;
+}
+
+function lyricText(text: string): string {
+  // abcjs treats % as a comment even when escaped. Keep it visible as a
+  // full-width percent; neutralize line injection only in the display copy.
+  return encodeAbcFreeText(text).replace(/%/gu,"％").replace(/[-_*|~]/gu,"\\$&").replace(/ /gu,"\u00a0");
+}
+
+function melodyLyricLines(document: ArrangementRenderDocument): string {
+  const lyrics=displayLyricsByAtom(document);
+  const verses=[...new Set([...lyrics.values()].flatMap(tokens=>tokens.filter(t=>t.text.trim()).map(t=>t.verse)))].sort((a,b)=>a-b);
+  return verses.map(verse=>{
+    const words:string[]=[];
+    for(const [index,measure] of document.measures.entries()){
+      let cursor=fraction(0);
+      const atoms=document.sourceLeadTrack.atoms.filter(atom=>atom.range.start.performanceMeasureIndex===index)
+        .sort((a,b)=>compareFractions(a.range.start.offset,b.range.start.offset));
+      for(const atom of atoms){
+        // abcjs 6.7 consumes a lyric skip on both visible and invisible rests.
+        // Include the exact same gaps/rests as voiceMeasures to keep alignment.
+        if(compareFractions(cursor,atom.range.start.offset)<0)words.push("*");
+        const tokens=(lyrics.get(atom.id) ?? []).filter(token=>token.verse===verse&&token.text.trim());
+        const text=tokens.map(token=>lyricText(token.text)).join("\u00a0");
+        const syllabic=tokens.at(-1)?.syllabic;
+        words.push(text ? `${text}${syllabic==="begin"||syllabic==="middle"?"-":""}` : atom.tiedFromPrevious ? "_" : "*");
+        cursor=addFractions(atom.range.start.offset,canonicalRangeDuration(document.measures,atom.range));
+      }
+      if(compareFractions(cursor,measure.duration)<0)words.push("*");
+      words.push("|");
+    }
+    return `\nw: ${words.join(" ")}`;
+  }).join("");
 }
 
 export type AbcSerializationOutcome =
