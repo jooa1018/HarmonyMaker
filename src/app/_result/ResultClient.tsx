@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { IndexedDbProjectStore, type LocalProjectRecord } from "../../product/local-project-store";
 import { describeHarmonyProject, projectPracticeView, type ProjectPracticeView } from "../../product/project-view";
-import { materializeActiveArrangement } from "../../product/render";
+import { productTrackRoles } from "../../product/track-roles";
 import { scoreVoiceRoles } from "../_ui/score-colors";
 import { generatedParts } from "../_quick/generate";
 import { QuickFlow } from "../_quick/QuickFlow";
@@ -59,12 +59,12 @@ function SavedResult({ projectId }: { projectId: string }) {
   }
   const voiceRoles = useMemo(() => {
     if (!record || view?.status !== "available") return undefined;
-    try { return scoreVoiceRoles(materializeActiveArrangement(record.project, record.project.selectedPresetId ?? "standard").trackRoles); }
+    try { return scoreVoiceRoles(productTrackRoles(record.project, record.project.selectedPresetId ?? "standard", view.plan.trackIds.filter(id => id !== "track:source-lead" && id !== "track:band"))); }
     catch { return undefined; }
   }, [record, view]);
+  const description = useMemo(() => record ? describeHarmonyProject(record.project) : undefined, [record]);
   if (again) return <QuickFlow initial={again} />;
   if (loading && !record) return <ResultLoading />;
-  const description = record ? describeHarmonyProject(record.project) : undefined;
   const title = description?.title ?? "제목 없는 악보";
   const parts = description?.parts ?? [];
   const details = error || (view?.status === "unavailable" ? view.code : "");

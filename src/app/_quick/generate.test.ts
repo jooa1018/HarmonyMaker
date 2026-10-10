@@ -6,6 +6,7 @@ import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { generateAndSave, quickProjectId } from "./generate";
 import { reprepareProject } from "../_result/reprepare";
 import { scoreVoiceRoles, voiceColorVars } from "../_ui/score-colors";
+import { productTrackRoles } from "../../product/track-roles";
 import { materializeActiveArrangement } from "../../product/render";
 import { projectPracticeView } from "../../product/project-view";
 import { projectMusicXml } from "../_result/download";
@@ -63,6 +64,7 @@ it("colors the engine h1/h2 voices from public placement metadata", async () => 
   if (view.status !== "available") throw new Error(view.code);
   const registry = materializeActiveArrangement(result.project, "standard").trackRoles;
   const roles = scoreVoiceRoles(registry);
+  expect(scoreVoiceRoles(productTrackRoles(result.project, "standard", view.plan.trackIds.filter(id => id !== "track:source-lead" && id !== "track:band")))).toEqual(roles);
   expect(voiceColorVars(view.abc, roles)).toEqual({ "--hm-v0": "var(--hm-melody)", "--hm-v1": "var(--hm-alto)", "--hm-v2": "var(--hm-tenor)" });
   const mixed = { ...registry, generatedTracks: registry.generatedTracks.map(track => ({ ...track, placements: [{ phraseId: "one", placementRole: "upper" as const }, { phraseId: "two", placementRole: "lower" as const }] })) };
   expect(voiceColorVars(view.abc, scoreVoiceRoles(mixed))["--hm-v1"]).toBe("currentColor");
