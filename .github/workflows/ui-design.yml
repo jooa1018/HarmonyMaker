@@ -1,5 +1,7 @@
 name: UI design
 on:
+  push:
+    branches: ['hm/ui-*']
   pull_request:
     branches: [develop]
     paths:
