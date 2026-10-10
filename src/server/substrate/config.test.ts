@@ -8,11 +8,6 @@ import {
 
 const completeEnvironment = {
   DATABASE_URL: "postgresql://example.invalid/harmonymaker",
-  S3_ENDPOINT: "https://objects.example.invalid",
-  S3_REGION: "test-region-1",
-  S3_BUCKET: "harmonymaker-test",
-  S3_ACCESS_KEY_ID: "test-access-key",
-  S3_SECRET_ACCESS_KEY: "test-secret-key",
   SESSION_TOKEN_HMAC_KEY: Buffer.alloc(32, 1).toString("base64url"),
   CSRF_HMAC_KEY: Buffer.alloc(32, 2).toString("base64url"),
   SHARE_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString("base64url"),
@@ -23,13 +18,13 @@ const completeEnvironment = {
 } as const;
 
 describe("production substrate configuration", () => {
-  it("derives PostgreSQL and S3-compatible configuration only from the named environment contract", () => {
+  it("derives PostgreSQL configuration only from the named environment contract", () => {
     const config = loadProductionSubstrateConfig(completeEnvironment);
 
     expect(config.database.connectionString).toBe(completeEnvironment.DATABASE_URL);
-    expect(config.objectStore.bucket).toBe(completeEnvironment.S3_BUCKET);
+    expect(config).not.toHaveProperty("objectStore");
     expect(config.secrets.shareEncryptionKey).toHaveLength(32);
-    expect(Object.keys(config)).toEqual(["database", "objectStore", "secrets"]);
+    expect(Object.keys(config)).toEqual(["database", "secrets"]);
   });
 
   it("fails closed instead of selecting a production memory or filesystem fallback", () => {
@@ -51,8 +46,8 @@ describe("production substrate configuration", () => {
   it("treats blank values as missing", () => {
     expect(() => loadProductionSubstrateConfig({
       ...completeEnvironment,
-      S3_BUCKET: "   ",
-    })).toThrow("missing required production substrate configuration: S3_BUCKET");
+      DATABASE_URL: "   ",
+    })).toThrow("missing required production substrate configuration: DATABASE_URL");
   });
 
   it.each(PRODUCTION_SUBSTRATE_ENVIRONMENT_VARIABLES)("fails closed when %s is missing", (name) => {

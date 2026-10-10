@@ -1,10 +1,5 @@
 export const PRODUCTION_SUBSTRATE_ENVIRONMENT_VARIABLES = Object.freeze([
   "DATABASE_URL",
-  "S3_ENDPOINT",
-  "S3_REGION",
-  "S3_BUCKET",
-  "S3_ACCESS_KEY_ID",
-  "S3_SECRET_ACCESS_KEY",
   "SESSION_TOKEN_HMAC_KEY",
   "CSRF_HMAC_KEY",
   "SHARE_ENCRYPTION_KEY",
@@ -20,13 +15,6 @@ export type ProductionSubstrateEnvironmentVariable =
 export interface ProductionSubstrateConfig {
   readonly database: {
     readonly connectionString: string;
-  };
-  readonly objectStore: {
-    readonly endpoint: string;
-    readonly region: string;
-    readonly bucket: string;
-    readonly accessKeyId: string;
-    readonly secretAccessKey: string;
   };
   readonly secrets: {
     readonly sessionTokenHmacKey: Uint8Array;
@@ -71,12 +59,13 @@ function decodeSecret(environment: Environment, name: ProductionSubstrateEnviron
 }
 
 /**
- * Resolves the only production persistence substrate allowed by the v0 plan.
+ * Resolves PostgreSQL and independent security keys for production.
  * This function deliberately has no in-memory or local-filesystem fallback.
  */
 export function loadProductionSubstrateConfig(
   environment: Environment = process.env,
 ): ProductionSubstrateConfig {
+  developmentMemoryPersistenceEnabled(environment);
   const missingVariables = PRODUCTION_SUBSTRATE_ENVIRONMENT_VARIABLES.filter(
     (name) => !present(environment[name]),
   );
@@ -86,21 +75,29 @@ export function loadProductionSubstrateConfig(
 
   return Object.freeze({
     database: Object.freeze({ connectionString: environment.DATABASE_URL as string }),
-    objectStore: Object.freeze({
-      endpoint: environment.S3_ENDPOINT as string,
-      region: environment.S3_REGION as string,
-      bucket: environment.S3_BUCKET as string,
-      accessKeyId: environment.S3_ACCESS_KEY_ID as string,
-      secretAccessKey: environment.S3_SECRET_ACCESS_KEY as string,
-    }),
-    secrets: Object.freeze({
-      sessionTokenHmacKey: decodeSecret(environment, "SESSION_TOKEN_HMAC_KEY"),
-      csrfHmacKey: decodeSecret(environment, "CSRF_HMAC_KEY"),
-      shareEncryptionKey: decodeSecret(environment, "SHARE_ENCRYPTION_KEY"),
-      shareTokenHmacKey: decodeSecret(environment, "SHARE_TOKEN_HMAC_KEY"),
-      ownerDeleteHmacKey: decodeSecret(environment, "OWNER_DELETE_HMAC_KEY"),
-      quotaIpHmacKey: decodeSecret(environment, "QUOTA_IP_HMAC_KEY"),
-      internalOperationsKey: decodeSecret(environment, "INTERNAL_OPERATIONS_KEY"),
-    }),
+    secrets: loadPersistenceSecrets(environment),
+  });
+}
+
+export function developmentMemoryPersistenceEnabled(environment: Environment = process.env): boolean {
+  if (environment.HM_DEV_MEMORY_PERSISTENCE !== "1") return false;
+  if (environment.NODE_ENV !== "development") {
+    throw new ProductionSubstrateConfigurationError([], "development memory persistence requires NODE_ENV=development");
+  }
+  return true;
+}
+
+/** Development still uses independent session/encryption keys; only persistence is replaced. */
+export function loadPersistenceSecrets(environment: Environment = process.env): ProductionSubstrateConfig["secrets"] {
+  const missing = PRODUCTION_SUBSTRATE_ENVIRONMENT_VARIABLES.filter(name => name !== "DATABASE_URL" && !present(environment[name]));
+  if (missing.length) throw new ProductionSubstrateConfigurationError(missing);
+  return Object.freeze({
+    sessionTokenHmacKey: decodeSecret(environment, "SESSION_TOKEN_HMAC_KEY"),
+    csrfHmacKey: decodeSecret(environment, "CSRF_HMAC_KEY"),
+    shareEncryptionKey: decodeSecret(environment, "SHARE_ENCRYPTION_KEY"),
+    shareTokenHmacKey: decodeSecret(environment, "SHARE_TOKEN_HMAC_KEY"),
+    ownerDeleteHmacKey: decodeSecret(environment, "OWNER_DELETE_HMAC_KEY"),
+    quotaIpHmacKey: decodeSecret(environment, "QUOTA_IP_HMAC_KEY"),
+    internalOperationsKey: decodeSecret(environment, "INTERNAL_OPERATIONS_KEY"),
   });
 }

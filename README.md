@@ -4,7 +4,17 @@
 
 HarmonyMaker는 멜로디, 확인된 코드, 곡 구조, 실제 가수 음역을 바탕으로 현대 워십 band-supported 문맥의 결정적 1–3성부 보컬 편곡을 만들고, 편집·연습·공유하는 Next.js 애플리케이션입니다. 유일한 제품 명세 authority는 [`docs/HARMONYMAKER_SPEC_v3.1.5.md`](docs/HARMONYMAKER_SPEC_v3.1.5.md)입니다.
 
-## 현재 repository 상태
+## 현재 저장소 설정 (H2 2-2)
+
+공유 저장은 PostgreSQL을 사용하며 S3 설정은 필요하지 않습니다. 운영 환경에는 `.env.example`의 `DATABASE_URL`, 일곱 개의 독립된 세션·암호화·내부 작업 키, 예약 정리용 `CRON_SECRET`을 설정하세요. 기존 `S3_*` 값은 런타임에서 읽지 않으며 S3 클라이언트를 만들지 않습니다.
+
+로컬에서 DB·S3 없이 공유 기능을 시험하려면 `.env.local`에 `HM_DEV_MEMORY_PERSISTENCE=1`과 일곱 개의 유효한 키를 설정한 뒤 `npm run dev`를 실행하세요. 각 키는 서로 다르게 생성합니다. 예를 들어 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`를 키마다 한 번씩 실행할 수 있습니다. `DATABASE_URL`은 생략 가능합니다. `NODE_ENV=development` 외 환경에서는 메모리 플래그를 거부합니다. `next start`/production/Preview에서는 사용하지 마세요.
+
+개발 메모리 데이터와 공유 링크는 같은 서버 프로세스가 살아 있는 동안만 유효하고 재시작하면 사라집니다. 플래그를 끄면 PostgreSQL 구성이 필요하며, DB 연결 실패 시 메모리로 우회하지 않습니다. 브라우저의 IndexedDB 저장은 이 서버 플래그와 별개입니다.
+
+예약 정리는 S3 없이 세션·공유·사용량·멱등 기록 정리를 수행합니다. 과거 객체 참조는 삭제 대기 상태로 남겨 두고 `generic.skippedItems`에 건너뛴 수를 표시하며, 실제 객체를 삭제한 것으로 기록하지 않습니다. 과거 S3 객체의 실제 삭제는 별도 운영 결정이 필요합니다. 기존 객체 저장소 어댑터와 시험은 보존합니다.
+
+## 현재 repository 상태 (제거 전 기록)
 
 - Segment A — authority 및 persistence/object-store substrate 결정: 구현 완료
 - Segment B — frozen WAG v1.0.1 결정적 편곡 lifecycle: 구현 완료
@@ -51,9 +61,9 @@ npm run build
 
 ## Migration 및 deployment contract
 
-최초 production은 clean PostgreSQL과 clean private S3-compatible storage에서 시작합니다. Application traffic 전에 migration `1 -> latest`를 순서대로 적용해야 하며, runtime은 current schema를 verify-only로 확인해야 합니다. 최초 live production migration/version이 이후 durable-data upgrade compatibility baseline입니다. Production 설정에서 Memory/test fallback은 허용되지 않습니다.
+Production 공유 저장에는 PostgreSQL을 사용합니다. S3는 필수 구성이 아닙니다. Application traffic 전에 migration `1 -> latest`를 순서대로 적용해야 하며, runtime은 current schema를 verify-only로 확인해야 합니다. 최초 live production migration/version이 이후 durable-data upgrade compatibility baseline입니다. Production 설정에서 Memory/test fallback은 허용되지 않습니다.
 
-Vercel 배포는 preview verification일 뿐 production-live PostgreSQL/S3 검증을 대신하지 않습니다. 필수 session/encryption/internal scheduler/PostgreSQL/S3 환경 설정은 배포 전에 fail-closed로 검증해야 합니다.
+Vercel 배포는 preview verification일 뿐 production-live PostgreSQL/S3 검증을 대신하지 않습니다. 필수 session/encryption/internal scheduler/PostgreSQL 환경 설정은 배포 전에 fail-closed로 검증해야 합니다.
 
 ## 외부 검증으로 남은 항목
 
