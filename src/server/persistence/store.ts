@@ -18,7 +18,7 @@ export interface DurableShareRecord {
   readonly tokenHash: string;
   readonly deleteSecretVerifier: string;
   readonly payloadDigest: string;
-  readonly encryptedPayload: AeadEnvelopeV1;
+  readonly encryptedPayload: AeadEnvelopeV1 | null;
   readonly plaintextSize: number;
   readonly rightsBasis: string;
   readonly lifecycle: ShareLifecycle;
@@ -116,6 +116,10 @@ export interface ObjectPublicationGenerationRecord {
 }
 
 export interface CleanupResult {
+  readonly removedShareCount?: number;
+  readonly removedSessionCount?: number;
+  readonly removedReportCount?: number;
+  readonly removedAuditCount?: number;
   readonly expiredSessionIds: readonly PrivateRowId[];
   readonly expiredShareIds: readonly PrivateRowId[];
   readonly expiredObjectIds: readonly PrivateRowId[];
@@ -274,5 +278,5 @@ export interface GovernanceStore {
     readonly lifecycle: ObjectReferenceRecord["lifecycle"];
     readonly at: string;
   }): Promise<void>;
-  cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult>;
+  cleanup(input: { readonly deadlineAt?: number; readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult>;
 }

@@ -1,13 +1,14 @@
+import { RETENTION, retentionCutoff } from "../cleanup/retention";
 import "server-only";
 
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 
 import type {
   AbuseReportInput, AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, CleanupResult, DurableShareRecord, GovernanceStore,
   IdempotencyClaim, IdempotencyRecoveryLookup, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
 } from "./store";
 
-type Queryable = Pick<Pool | PoolClient, "query">;
+type Queryable = { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }> };
 
 function id(value: string | number): PrivateRowId { return String(value) as PrivateRowId; }
 function iso(value: Date | string): string { return value instanceof Date ? value.toISOString() : value; }
@@ -220,6 +221,13 @@ export class PostgresGovernanceStore implements GovernanceStore {
     return result.rows[0] ? shareRow(result.rows[0]) : undefined;
   }
   async transitionShare(input: { readonly id: PrivateRowId; readonly lifecycle: "disabled" | "deleted" | "expired"; readonly at: string }): Promise<void> {
+    if (input.lifecycle === "deleted") {
+      // Preserve moderation/expiry state while honoring an authenticated owner's erasure request.
+      await this.database.query(`UPDATE share_records SET encrypted_payload=NULL,
+        lifecycle=CASE WHEN lifecycle='active' THEN 'deleted' ELSE lifecycle END,
+        deleted_at=COALESCE(deleted_at,$2) WHERE id=$1`, [input.id, input.at]);
+      return;
+    }
     const timestampColumn = input.lifecycle === "disabled" ? "disabled_at" : "deleted_at";
     await this.database.query(`UPDATE share_records SET lifecycle=$2,${timestampColumn}=COALESCE(${timestampColumn},$3) WHERE id=$1 AND lifecycle='active'`, [input.id, input.lifecycle, input.at]);
   }
@@ -641,8 +649,17 @@ export class PostgresGovernanceStore implements GovernanceStore {
       [input.id, input.ownerSessionId, input.lifecycle, input.at],
     );
   }
-  async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
-    const client = await this.database.connect();
+  async cleanup(input: { readonly deadlineAt?: number; readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
+    const raw = await this.database.connect();
+    const client: Queryable = { query: async (text, values) => {
+      if (text !== "BEGIN" && text !== "ROLLBACK" && input.deadlineAt !== undefined) {
+        const remaining = input.deadlineAt - Date.now();
+        if (remaining <= 0) throw new RangeError("CLEANUP_GENERIC_TIMEOUT");
+        // Bound each SQL statement by the shared deadline as well as the normal DB timeout.
+        await raw.query("SELECT set_config('statement_timeout',$1,true)", [String(Math.min(5000, remaining))]);
+      }
+      return raw.query(text, values);
+    } };
     try {
       await client.query("BEGIN");
       const sessions = await this.cleanupIds(client, "anonymous_sessions", "expires_at <= $1 AND revoked_at IS NULL", input, "revoked_at=$1");
@@ -673,6 +690,18 @@ export class PostgresGovernanceStore implements GovernanceStore {
       }
       const idempotency = await this.deleteExpired(client, "idempotency_records", input);
       const quota = await this.deleteExpired(client, "quota_windows", input);
+      const removedAuditCount = await this.deleteRetained(client, "audit_events", "created_at <= $1", retentionCutoff(input.now, RETENTION.auditDays), input);
+      const removedReportCount = await this.deleteRetained(client, "abuse_reports", "created_at <= $1 AND NOT (status='claimed' AND claim_expires_at > $3)", retentionCutoff(input.now, RETENTION.reportDays), input);
+      const removedShareCount = await this.deleteRetained(client, "share_records",
+        "(lifecycle='disabled' AND disabled_at <= $1) OR (lifecycle IN ('expired','deleted') AND expires_at <= $1)", retentionCutoff(input.now, RETENTION.shareDays), input);
+      const removedSessionCount = await this.deleteRetained(client, "anonymous_sessions", `expires_at <= $1
+        AND NOT EXISTS (SELECT 1 FROM share_records WHERE owner_session_id=anonymous_sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM object_references WHERE owner_session_id=anonymous_sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM omr_jobs WHERE owner_session_id=anonymous_sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM omr_create_idempotency WHERE owner_session_id=anonymous_sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM idempotency_records WHERE session_id=anonymous_sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM quota_leases WHERE session_id=anonymous_sessions.id)
+        AND NOT EXISTS (SELECT 1 FROM abuse_reports WHERE reporter_session_id=anonymous_sessions.id)`, input.now, input);
       if (input.dryRun) await client.query("ROLLBACK"); else await client.query("COMMIT");
       return {
         expiredSessionIds: sessions, expiredShareIds: shares, expiredObjectIds: objects.map((record) => record.id),
@@ -685,15 +714,23 @@ export class PostgresGovernanceStore implements GovernanceStore {
           return record;
         }),
         removedIdempotencyCount: idempotency, removedQuotaCount: quota,
+        removedAuditCount, removedReportCount, removedShareCount, removedSessionCount,
       };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
-    } finally { client.release(); }
+    } finally { raw.release(); }
+  }
+  private async deleteRetained(client: Queryable, table: string, predicate: string, cutoff: string,
+    input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<number> {
+    const values = predicate.includes("$3") ? [cutoff, input.batchSize, input.now] : [cutoff, input.batchSize];
+    const select = `SELECT id FROM ${table} WHERE ${predicate} ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`;
+    if (input.dryRun) return (await client.query(select, values)).rows.length;
+    return (await client.query(`WITH selected AS (${select}) DELETE FROM ${table} target USING selected WHERE target.id=selected.id RETURNING 1`, values)).rows.length;
   }
   private async cleanupIds(client: Queryable, table: string, predicate: string, input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }, update: string): Promise<readonly PrivateRowId[]> {
     const selected = await client.query(`SELECT id FROM ${table} WHERE ${predicate} ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`, [input.now, input.batchSize]);
-    const ids = selected.rows.map((row) => id(row.id));
+    const ids = selected.rows.map((row) => id(row.id as string));
     if (!input.dryRun && ids.length > 0) await client.query(`UPDATE ${table} SET ${update} WHERE id = ANY($2::bigint[])`, [input.now, ids]);
     return ids;
   }
