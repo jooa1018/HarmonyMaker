@@ -181,7 +181,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
     try {
       requestPlaybackAudioSession();
       const AudioContextConstructor = window.AudioContext;
-      const context = new AudioContextConstructor();
+      const context = new AudioContextConstructor({ latencyHint: "playback" });
       const secondsPerQuarter = quarterSeconds(tempo, speed);
       const session: ActiveAudio = {
         context, get nodes() { return session.graph?.nodes ?? []; }, startedAt: 0,
