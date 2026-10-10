@@ -9,6 +9,9 @@ class Param {
   setValueAtTime(value: number, time: number) { this.events.push({ kind: "set", value, time }); return this; }
   linearRampToValueAtTime(value: number, time: number) { this.events.push({ kind: "ramp", value, time }); return this; }
   cancelAndHoldAtTime(time: number) { this.events.push({ kind: "hold", value: this.value, time }); return this; }
+  setValueCurveAtTime(curve: Float32Array, time: number, duration: number) {
+    this.events.push({ kind: "curve-start", value: curve[0], time }, { kind: "curve-end", value: curve[curve.length - 1], time: time + duration }); return this;
+  }
 }
 class Node {
   outputs: unknown[] = [];
@@ -21,15 +24,22 @@ class Oscillator extends Node {
   start = vi.fn();
   stop = vi.fn();
   onended?: () => void;
+  setPeriodicWave = vi.fn();
 }
 class Gain extends Node { gain = new Param(); }
+class Filter extends Node { frequency = new Param(); Q = new Param(); type = "lowpass"; }
+class Compressor extends Node { threshold = new Param(); knee = new Param(); ratio = new Param(); attack = new Param(); release = new Param(); }
 function fakeContext() {
   const gains: Gain[] = [], oscillators: Oscillator[] = [];
+  const limiter = new Compressor(), filters: Filter[] = [];
   const context = { currentTime: 10, state: "suspended", destination: {},
+    createDynamicsCompressor: () => limiter,
+    createBiquadFilter: () => { const f = new Filter(); filters.push(f); return f; },
+    createPeriodicWave: vi.fn((real: Float32Array, imag: Float32Array) => ({real, imag})),
     close: vi.fn(async () => undefined),
     createGain: () => { const g = new Gain(); gains.push(g); return g; },
     createOscillator: () => { const o = new Oscillator(); oscillators.push(o); return o; } };
-  return { context, audio: context as unknown as AudioContext, gains, oscillators };
+  return { context, audio: context as unknown as AudioContext, gains, oscillators, limiter, filters };
 }
 const plan: PlaybackPlan = {
   totalQuarter: 4, trackIds: ["track:source-lead", "track:h1", "track:band"],
@@ -64,13 +74,13 @@ describe("practice audio signal and scheduling contract", () => {
     const f = fakeContext();
     const short = { ...plan, events: [{ ...plan.events[0], durationQuarter: 0.002 }] };
     schedulePracticeAudio(f.audio, short, options);
-    const envelope = f.gains[4].gain.events;
-    expect(envelope.map(e => e.value)).toEqual([0, 1, 1, 0]);
+    const envelope = f.gains[5].gain.events;
+    expect(envelope.map(e => e.value)).toEqual([0, 1, 1, 1, 0]);
     expect(envelope[0].time).toBe(10.05);
-    expect(envelope[3].time).toBe(10.051);
-    expect(envelope.every((e, i) => i === 0 || e.time > envelope[i - 1].time)).toBe(true);
-    expect(envelope[1].kind).toBe("ramp");
-    expect(envelope[3].kind).toBe("ramp");
+    expect(envelope.at(-1)!.time).toBeCloseTo(10.051, 10);
+    expect(envelope.every((e, i) => i === 0 || e.time >= envelope[i - 1].time)).toBe(true);
+    expect(envelope[0].kind).toBe("curve-start");
+    expect(envelope[4].kind).toBe("curve-end");
   });
 
   it("resumes inside sustained notes without scheduling the elapsed notes or moving the remaining end", () => {
@@ -87,13 +97,13 @@ describe("practice audio signal and scheduling contract", () => {
     expect([...graph.tracks.values()].map(g => g.gain.value)).toEqual([PRACTICE_AUDIO_GAINS.lead, PRACTICE_AUDIO_GAINS.harmony, PRACTICE_AUDIO_GAINS.band]);
     expect(graph.master.gain.value).toBe(1);
     updatePracticeAudioMix(graph, { audible: new Set(["track:h1"]), levels: { "track:h1": 1.5 }, masterLevel: 0.5 });
-    expect(f.gains[1].gain.events.at(-1)?.value).toBe(0);
-    expect(f.gains[2].gain.events.at(-1)?.value).toBe(0.048);
-    expect(f.gains[3].gain.events.at(-1)?.value).toBe(0);
+    expect(f.gains[2].gain.events.at(-1)?.value).toBe(0);
+    expect(f.gains[3].gain.events.at(-1)?.value).toBe(PRACTICE_AUDIO_GAINS.harmony * 1.5);
+    expect(f.gains[4].gain.events.at(-1)?.value).toBe(0);
     expect(f.gains[0].gain.events.at(-1)?.value).toBe(0.5);
     for (const node of f.oscillators) expect(node.start).toHaveBeenCalledOnce();
     expect(graph.scheduledCount).toBe(4);
-    expect(f.gains[2].gain.events[0].kind).toBe("hold");
+    expect(f.gains[3].gain.events[0].kind).toBe("hold");
   });
 
   it("silences invalid volume and rejects malformed timing before allocating nodes", () => {
@@ -118,11 +128,27 @@ describe("practice audio signal and scheduling contract", () => {
       expect(owner.active).toBeUndefined();
       expect(graph.released).toBe(true);
       expect(f.context.close).not.toHaveBeenCalled();
-      expect(f.gains[0].gain.events.at(-1)).toEqual({ kind: "ramp", value: 0, time: 10.008 });
-      for (const node of f.oscillators) expect(node.stop).toHaveBeenLastCalledWith(10.008);
+      expect(f.gains[0].gain.events.at(-1)).toEqual({ kind: "ramp", value: 0, time: 10.08 });
+      for (const node of f.oscillators) expect(node.stop).toHaveBeenLastCalledWith(10.08);
       vi.runAllTimers();
       expect(f.context.close).toHaveBeenCalledOnce();
       expect(graph.nodes.size).toBe(0);
+      expect(f.limiter.disconnect).toHaveBeenCalledOnce();
+      for (const filter of f.filters) expect(filter.disconnect).toHaveBeenCalledOnce();
     } finally { vi.useRealTimers(); }
+  });
+
+  it("uses harmonic waves through per-track lowpass filters and one post-master limiter", () => {
+    const f = fakeContext(), graph = schedulePracticeAudio(f.audio, {...plan, trackRoles:{"track:h1":"lower"}}, options);
+    expect(graph.master.connect).toBeDefined();
+    expect(f.gains[0].outputs).toEqual([f.limiter]);
+    expect(f.limiter.outputs).toEqual([graph.output]);
+    expect(f.gains[1].outputs).toEqual([f.context.destination]);
+    expect(graph.output.gain.value).toBe(0.6);
+    expect(f.limiter.threshold.value).toBe(-9);
+    expect(f.limiter.ratio.value).toBe(20);
+    expect(f.filters.map(filter => filter.frequency.value)).toEqual([2600,1800,900]);
+    expect(f.context.createPeriodicWave).toHaveBeenCalledTimes(3);
+    for (const oscillator of f.oscillators) expect(oscillator.setPeriodicWave).toHaveBeenCalledOnce();
   });
 });
