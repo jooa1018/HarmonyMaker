@@ -17,7 +17,7 @@ export type ShareCreationChoice =
   | { readonly kind: "store"; readonly token: string; readonly ownerDeleteSecret: string; readonly payloadDigest: SemanticDigest; readonly expiresAt: string };
 export interface ShareCreateResponse { readonly ok: true; readonly share: ShareCreationChoice }
 export type ShareOwnerReconciliation =
-  | { readonly status: "active" }
+  | { readonly status: "active"; readonly expiresAt: string }
   | { readonly status: "retired"; readonly reason: "expired" | "owner-deleted" };
 interface PreparedShareCreation { readonly choice: ShareCreationChoice; readonly durableRecord?: Omit<DurableShareRecord, "id"> }
 
@@ -157,7 +157,7 @@ export class ShareStoreService {
     if (!record || !matches || record.lifecycle === "disabled") throw new RangeError(SHARE_UNAVAILABLE);
     if (record.lifecycle === "deleted") return { status: "retired", reason: "owner-deleted" };
     if (record.lifecycle === "expired" || record.expiresAt <= now.toISOString()) return { status: "retired", reason: "expired" };
-    return { status: "active" };
+    return { status: "active", expiresAt: new Date(record.expiresAt).toISOString() };
   }
 
   async report(input: { readonly token: string; readonly reporterSessionId?: PrivateRowId; readonly category: string; readonly detail?: string; readonly now?: Date }): Promise<{ readonly accepted: true }> {

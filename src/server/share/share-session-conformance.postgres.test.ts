@@ -299,7 +299,7 @@ describe("actual PostgreSQL browser share-create recovery", () => {
 
       if (!recovered) throw new Error("browser recovery envelope missing");
       expect(completedShareRecoveryTransport(recovered, replacementAdmission.sessionAuthority)).toBe("owner-reconcile");
-      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt)).resolves.toEqual({ status: "active" });
+      await expect(shares.reconcileOwnerAuthority(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt)).resolves.toEqual({ status: "active", expiresAt: outcome.response.expiresAt });
       await shares.ownerDelete(outcome.response.token, outcome.response.ownerDeleteSecret, recoveryAt);
       await expect(shares.read(outcome.response.token, recoveryAt)).rejects.toThrow("SHARE_UNAVAILABLE");
       expect(await harness.activeShareCount()).toBe(0);
