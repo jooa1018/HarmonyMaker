@@ -2111,6 +2111,11 @@ IMPLEMENT_THROUGH_PRODUCT_COMPLETION = REQUIRED
 2026-10-10 Orchestrator 정정 판정을 적용한다. 위의 v1.0.1 본문과 canonical payload는
 동결 기준으로 보존한다. v1.1은 별도 canonical payload와 생성 단계 버전·config digest를 사용한다.
 
+새 생성에서 quick-harmony v2 요청이거나 원본 마디에 3/4 또는 12/8이 포함되면
+자동으로 WAG v1.1을 선택한다. 그 밖의 기존 경로는 v1.0.1을 유지한다.
+이미 기록된 프로젝트·편집 스냅샷의 WAG 버전이 있으면 그 버전이 우선하며,
+열기·편집·저장만으로 버전을 올리지 않는다.
+
 - quick-harmony v2 요청은 알토=Lower, 테너=Upper로 고정한다. auto 기본 파트도 동일하다.
   17.3의 역할 비교는 v1 경로에 남고, v2는 선택 파트의 역할만 평가한다.
 - 새 배치를 도입하지 않는다. 18.3 `Upper > Lead > Lower`, 독립 marginal 검증,

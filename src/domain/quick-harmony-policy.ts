@@ -18,6 +18,10 @@ export function quickHarmonyParts(source: SongSourceDocument): readonly HarmonyP
 }
 
 export function usesWag11(source: SongSourceDocument): boolean {
-  return quickHarmonyParts(source) !== undefined || source.sourceMeasures.some(m =>
+  return quickHarmonyParts(source) !== undefined || hasWag11Meter(source);
+}
+
+export function hasWag11Meter(source: SongSourceDocument): boolean {
+  return source.sourceMeasures.some(m =>
     (m.time.numerator === 3 && m.time.denominator === 4) || (m.time.numerator === 12 && m.time.denominator === 8));
 }

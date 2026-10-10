@@ -33,6 +33,7 @@ export interface WagAssemblyValidationReport {
 
 interface ValidatorContext {
   readonly input: WagLifecycleInput;
+  readonly versions: ReturnType<typeof wagVersions>;
   readonly intentPlan: ArrangementIntentPlan;
   readonly activityPlan: ArrangementActivityPlan;
   readonly anchorPlan: ArrangementAnchorPlan;
@@ -100,11 +101,12 @@ function rangeDuration(range: MusicalRange, measureDurations: readonly Fraction[
   return subtractFractions(absolute(range.end), absolute(range.start));
 }
 
-function primaryPulse(input: WagLifecycleInput, position: MusicalPosition): Fraction {
+function primaryPulse(context: ValidatorContext, position: MusicalPosition): Fraction {
+  const { input } = context;
   const occurrence = input.source.performanceSequence.occurrences[position.performanceMeasureIndex];
   if (!occurrence) throw new RangeError("UNSUPPORTED_METER");
   const groups = occurrence.time.beatGroups;
-  const expanded = wagVersions(input.source, input.grammarVersion).grammarVersion === "grammar-v1.1";
+  const expanded = context.versions.grammarVersion === "grammar-v1.1";
   if ((occurrence.time.numerator === 2 || (expanded && occurrence.time.numerator === 3) || occurrence.time.numerator === 4) && occurrence.time.denominator === 4
     && groups.length === occurrence.time.numerator && groups.every((group) => group === 1)) return fraction(1);
   if ((occurrence.time.numerator === 6 || (expanded && occurrence.time.numerator === 12)) && occurrence.time.denominator === 8
@@ -339,7 +341,7 @@ function checkTrack(
   }
   const sounding = ordered.filter((event) => event.kind === "note");
   const perceptible = sounding.length >= 2 || sounding.some((event) =>
-    compareFractions(rangeDuration(event.range, context.measureDurations), primaryPulse(context.input, event.range.start)) >= 0);
+    compareFractions(rangeDuration(event.range, context.measureDurations), primaryPulse(context, event.range.start)) >= 0);
   if (!perceptible) diagnostics.push(rawDiagnostic("GRAMMAR_BLOCKED", candidate.id, { reason: "MARGINAL_NOT_PERCEPTIBLE", trackPlanId }));
   for (const lock of context.input.locks?.solver ?? []) {
     if (lock.trackPlanId !== trackPlanId) continue;
@@ -487,6 +489,7 @@ async function contextFor(
   const measureDurations = input.source.performanceSequence.occurrences.map((occurrence) => occurrence.duration);
   return {
     input,
+    versions: wagVersions(input.source, input.grammarVersion),
     intentPlan,
     activityPlan,
     anchorPlan,
@@ -506,8 +509,8 @@ export async function validateWagCandidate(
   anchorPlan: ArrangementAnchorPlan,
   candidate: ArrangementCandidate,
 ): Promise<WagCandidateValidationReport> {
-  const authority = await loadFrozenWagAuthority(wagVersions(input.source, input.grammarVersion).grammarVersion);
   const context = await contextFor(input, intentPlan, activityPlan, anchorPlan);
+  const authority = await loadFrozenWagAuthority(context.versions.grammarVersion);
   const raw: Omit<Diagnostic, "id">[] = [];
   if (candidate.presetId !== input.effectiveConfig.presetId
     || candidate.anchorPlanDigest !== anchorPlan.anchorPlanDigest
@@ -583,7 +586,7 @@ export async function validateWagCandidate(
       overlap = addFractions(overlap, rangeDuration(upperEvent.range, context.measureDurations));
       if (new Set(midis).size === 3) distinctCount += 1;
     }
-    if (distinctCount < 2 || compareFractions(overlap, primaryPulse(input, input.source.phraseRegions[0].range.start)) < 0) {
+    if (distinctCount < 2 || compareFractions(overlap, primaryPulse(context, input.source.phraseRegions[0].range.start)) < 0) {
       raw.push(rawDiagnostic("GRAMMAR_BLOCKED", candidate.id, { reason: "PAIR_PERCEPTIBILITY" }));
     }
   }
@@ -607,9 +610,9 @@ export async function validateWagAssembly(
   anchorPlan: ArrangementAnchorPlan,
   result: ArrangementGenerationResult,
 ): Promise<WagAssemblyValidationReport> {
-  const authority = await loadFrozenWagAuthority(wagVersions(input.source, input.grammarVersion).grammarVersion);
   const accompanimentConfig = await loadAccompanimentConfig();
   const context = await contextFor(input, intentPlan, activityPlan, anchorPlan);
+  const authority = await loadFrozenWagAuthority(context.versions.grammarVersion);
   const candidateReports = await Promise.all(result.candidates.map((candidate) =>
     validateWagCandidate(input, intentPlan, activityPlan, anchorPlan, candidate)));
   const raw = candidateReports.flatMap((report) => report.diagnostics.map(diagnosticWithoutId));
@@ -639,11 +642,11 @@ export async function validateWagAssembly(
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: input.locks?.solver ?? [],
-    solverVersion: wagVersions(input.source, input.grammarVersion).solverVersion,
-    assemblerVersion: wagVersions(input.source, input.grammarVersion).assemblerVersion,
-    validatorVersion: wagVersions(input.source, input.grammarVersion).validatorVersion,
-    metricsVersion: wagVersions(input.source, input.grammarVersion).metricsVersion,
-    candidateProjectionVersion: wagVersions(input.source, input.grammarVersion).candidateProjectionVersion,
+    solverVersion: context.versions.solverVersion,
+    assemblerVersion: context.versions.assemblerVersion,
+    validatorVersion: context.versions.validatorVersion,
+    metricsVersion: context.versions.metricsVersion,
+    candidateProjectionVersion: context.versions.candidateProjectionVersion,
     solverConfigDigest: authority.wagOwnedConfigDigests.solverConfigDigest,
     assemblerConfigDigest: authority.wagOwnedConfigDigests.assemblerConfigDigest,
     validatorConfigDigest: authority.wagOwnedConfigDigests.validatorConfigDigest,
@@ -673,7 +676,7 @@ export async function validateWagAssembly(
   const digestMismatch = result.presetId !== input.effectiveConfig.presetId
     || Object.entries(expectedDigests).some(([key, value]) => result.digests[key as keyof typeof result.digests] !== value)
     || Object.entries(expectedConfigs).some(([key, value]) => result.configDigests[key] !== value)
-    || Object.entries(wagVersions(input.source, input.grammarVersion)).some(([key, value]) => result.versions[key] !== value);
+    || Object.entries(context.versions).some(([key, value]) => result.versions[key] !== value);
   if (digestMismatch) {
     raw.push(rawDiagnostic("ALGORITHM_CONFIG_MISMATCH", "result", { stage: "validation", reason: "RESULT_AUTHORITY_MISMATCH" }));
   }

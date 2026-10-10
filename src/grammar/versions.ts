@@ -1,6 +1,6 @@
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
 import type { SongSourceDocument } from "../domain/source/model";
-import { usesWag11 } from "../domain/quick-harmony-policy";
+import { usesWag11, hasWag11Meter, quickHarmonyParts } from "../domain/quick-harmony-policy";
 
 export const WAG_1_1_VERSIONS = Object.freeze({
   ...APPLICATION_ALGORITHM_VERSION_REGISTRY,
@@ -20,4 +20,11 @@ export function algorithmVersionsForWag(grammarVersion: string) {
 }
 export function wagVersions(source?: SongSourceDocument, recordedVersion?: string) {
   return algorithmVersionsForWag(recordedVersion ?? (source && usesWag11(source) ? "grammar-v1.1" : "grammar-v1.0.1"));
+}
+
+/** Invocation-local policy snapshot; never cache mutable project/source objects. */
+export function prepareWagPolicy(source: SongSourceDocument, recordedVersion?: string) {
+  const parts = quickHarmonyParts(source);
+  const versions = algorithmVersionsForWag(recordedVersion ?? (parts !== undefined || hasWag11Meter(source) ? "grammar-v1.1" : "grammar-v1.0.1"));
+  return { parts, versions };
 }

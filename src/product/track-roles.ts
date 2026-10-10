@@ -1,6 +1,7 @@
 import type { ArrangementPresetId } from "../domain/config";
 import type { GeneratedHarmonyTrackPlan, VocalPlacementRole } from "../domain/performer";
 import type { HarmonyProject } from "../domain/project";
+import { quickHarmonyParts } from "../domain/quick-harmony-policy";
 
 export type CandidateHarmonyRole = "H1" | "H2";
 
@@ -15,6 +16,7 @@ export interface ProductTrackRoleMetadata {
 }
 
 export interface ProductTrackRoleRegistry {
+  readonly sourceLeadLabel?: string;
   readonly generatedTracks: readonly ProductTrackRoleMetadata[];
   readonly byTrackPlanId: Readonly<Record<string, ProductTrackRoleMetadata>>;
 }
@@ -24,8 +26,9 @@ function placementLabel(placements: readonly ProductTrackRoleMetadata["placement
   return roles.length === 1 ? (roles[0] === "upper" ? "Upper" : "Lower") : "Upper/Lower";
 }
 
-function registry(entries: readonly ProductTrackRoleMetadata[]): ProductTrackRoleRegistry {
+function registry(entries: readonly ProductTrackRoleMetadata[], sourceLeadLabel?: string): ProductTrackRoleRegistry {
   return {
+    ...(sourceLeadLabel ? { sourceLeadLabel } : {}),
     generatedTracks: entries,
     byTrackPlanId: Object.fromEntries(entries.map((entry) => [entry.trackPlanId, entry])),
   };
@@ -36,6 +39,7 @@ export function productTrackRoles(
   presetId: ArrangementPresetId,
   includedTrackPlanIds: readonly string[],
 ): ProductTrackRoleRegistry {
+  const parts = quickHarmonyParts(project.source);
   const variant = project.variants[presetId];
   if (!variant || variant.lifecycle === "empty") {
     if (includedTrackPlanIds.length === 0) return registry([]);
@@ -57,10 +61,11 @@ export function productTrackRoles(
       if (placements.length === 0) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.id}`);
       const harmonyRole = harmonyRoleByTrackPlanId[track.id];
       if (!harmonyRole) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.id}`);
-      return { trackPlanId: track.id, harmonyRole, placements, label: `${placementLabel(placements)} / ${harmonyRole}` };
+      const part = parts?.[track.canonicalOrdinal - 1];
+      return { trackPlanId: track.id, harmonyRole, placements, label: part ? (part === "tenor" ? "테너" : "알토") : `${placementLabel(placements)} / ${harmonyRole}` };
     });
   if (tracks.length !== included.size) throw new RangeError("TRACK_ROLE_METADATA_UNAVAILABLE");
-  return registry(tracks);
+  return registry(tracks, parts ? "멜로디" : undefined);
 }
 
 export function trackRoleHasPlacement(metadata: ProductTrackRoleMetadata, role: VocalPlacementRole): boolean {
@@ -86,5 +91,6 @@ export function practiceShareTrackRoles(
     return { trackPlanId: `share:track:${harmonyRole.toLowerCase()}`, harmonyRole, placements, label: track.label };
   });
   if (new Set(generated.map((entry) => entry.harmonyRole)).size !== generated.length) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
-  return registry(generated.sort((left, right) => left.harmonyRole.localeCompare(right.harmonyRole)));
+  return registry(generated.sort((left, right) => left.harmonyRole.localeCompare(right.harmonyRole)),
+    tracks.find(track => track.kind === "source-lead")?.label === "멜로디" ? "멜로디" : undefined);
 }

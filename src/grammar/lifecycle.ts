@@ -1,5 +1,4 @@
-import { quickHarmonyParts } from "../domain/quick-harmony-policy";
-import { wagVersions } from "./versions";
+import { prepareWagPolicy } from "./versions";
 import { resolveEffectiveArrangementConfig, type EffectiveArrangementConfig, type UserArrangementCaps } from "../domain/config";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
 import {
@@ -124,6 +123,8 @@ export interface WagLocalDecision {
 export interface PreparedWagLifecycle {
   readonly input: WagLifecycleInput;
   readonly authority: LoadedFrozenWagAuthority;
+  readonly versions: ReturnType<typeof prepareWagPolicy>["versions"];
+  readonly parts: ReturnType<typeof prepareWagPolicy>["parts"];
   readonly locks: VariantStageLocks;
   readonly ordinals: PlanOrdinalRegistry;
   readonly assignedTracks: readonly PreparedAssignedTrack[];
@@ -196,7 +197,7 @@ export function primaryPulseAt(
   const measure = prepared.sourceMeasureById[occurrence.sourceMeasureId];
   if (!measure) throw new RangeError("UNSUPPORTED_METER");
   const time = measure.time;
-  const expanded = wagVersions(prepared.input.source, prepared.input.grammarVersion).grammarVersion === "grammar-v1.1";
+  const expanded = prepared.versions.grammarVersion === "grammar-v1.1";
   if ((time.numerator === 2 || (expanded && time.numerator === 3) || time.numerator === 4) && time.denominator === 4
     && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1)) {
     return fraction(1);
@@ -333,8 +334,9 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
   { readonly status: "complete"; readonly value: PreparedWagLifecycle }
   | { readonly status: "blocked"; readonly diagnostics: readonly Diagnostic[] }
 > {
-  const authority = await loadFrozenWagAuthority(wagVersions(input.source, input.grammarVersion).grammarVersion);
-  if (quickHarmonyParts(input.source) && wagVersions(input.source, input.grammarVersion).grammarVersion !== "grammar-v1.1") throw new RangeError("WAG_POLICY_VERSION_MISMATCH");
+  const { versions, parts } = prepareWagPolicy(input.source, input.grammarVersion);
+  const authority = await loadFrozenWagAuthority(versions.grammarVersion);
+  if (parts && versions.grammarVersion !== "grammar-v1.1") throw new RangeError("WAG_POLICY_VERSION_MISMATCH");
   const rawDiagnostics = structuralDiagnostics(input);
   if (input.effectiveConfig.presetProfileVersion !== authority.presetProfiles.presetProfileVersion
     || input.effectiveConfig.presetProfileDigest !== authority.presetProfiles.presetProfileDigest
@@ -369,8 +371,8 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
         sourceChordProjectionDigest,
         performanceSequenceDigest,
         policy: input.effectiveChordTimeline.resolutionPolicy,
-        resolverVersion: wagVersions(input.source, input.grammarVersion).chordTimelineResolverVersion,
-        expectedResolverVersion: wagVersions(input.source, input.grammarVersion).chordTimelineResolverVersion,
+        resolverVersion: versions.chordTimelineResolverVersion,
+        expectedResolverVersion: versions.chordTimelineResolverVersion,
       });
       if (timelineState.status !== "resolved" || timelineState.timeline.digest !== input.effectiveChordTimeline.digest) {
         rawDiagnostics.push({ code: "EFFECTIVE_CHORD_TIMELINE_STALE", severity: "blocking", messageKo: "EFFECTIVE_CHORD_TIMELINE_STALE" });
@@ -382,7 +384,7 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
           phraseRegions: input.source.phraseRegions,
           chordTimeline: timelineState.timeline,
           musicalSourceDigest,
-          atomizerVersion: wagVersions(input.source, input.grammarVersion).sourceLeadAtomizerVersion,
+          atomizerVersion: versions.sourceLeadAtomizerVersion,
         });
         if (atomization.digest !== input.sourceLeadAtomization.digest) {
           rawDiagnostics.push({ code: "SOURCE_LEAD_ATOMIZATION_STALE", severity: "blocking", messageKo: "SOURCE_LEAD_ATOMIZATION_STALE" });
@@ -430,6 +432,8 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
     value: {
       input,
       authority,
+      versions,
+      parts,
       locks: input.locks ?? EMPTY_LOCKS,
       ordinals: createOrdinals(input),
       assignedTracks,
@@ -544,7 +548,7 @@ function roleHypotheses(
   phrase: PhraseRegion,
 ): readonly (readonly PreparedAssignedTrackRole[])[] {
   const available = prepared.assignedTracks;
-  const parts = quickHarmonyParts(prepared.input.source);
+  const parts = prepared.parts;
   const count = prepared.input.effectiveConfig.maxHarmonyTracks;
   if (count === 0 || available.length === 0) return [];
   const hypotheses: PreparedAssignedTrackRole[][] = [];
@@ -740,7 +744,7 @@ function canonicalInputProjections(prepared: PreparedWagLifecycle): {
   const trackOrdinalById = prepared.ordinals.trackOrdinalById;
   const performerById = new Map(prepared.input.performers.map((performer) => [performer.id, performer]));
   const assignmentByTrack = new Map(prepared.input.assignments.map((assignment) => [assignment.trackPlanId, assignment]));
-  const parts = quickHarmonyParts(prepared.input.source);
+  const parts = prepared.parts;
   const tracks = prepared.input.trackPlans
     .slice()
     .sort((left, right) => left.canonicalOrdinal - right.canonicalOrdinal)
@@ -784,8 +788,8 @@ async function expectedIntentInputDigest(prepared: PreparedWagLifecycle): Promis
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: prepared.locks.intent,
-    plannerVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).plannerVersion,
-    grammarVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).grammarVersion,
+    plannerVersion: prepared.versions.plannerVersion,
+    grammarVersion: prepared.versions.grammarVersion,
     plannerConfigDigest: prepared.authority.wagOwnedConfigDigests.plannerConfigDigest,
     grammarConfigDigest: prepared.authority.wagOwnedConfigDigests.grammarConfigDigest,
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
@@ -803,7 +807,7 @@ async function expectedActivityInputDigest(prepared: PreparedWagLifecycle, inten
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: prepared.locks.activity,
-    activityPlannerVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).activityPlannerVersion,
+    activityPlannerVersion: prepared.versions.activityPlannerVersion,
     activityPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.activityPlannerConfigDigest,
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
@@ -820,7 +824,7 @@ async function expectedAnchorInputDigest(prepared: PreparedWagLifecycle, activit
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: prepared.locks.anchor,
-    anchorPlannerVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).anchorPlannerVersion,
+    anchorPlannerVersion: prepared.versions.anchorPlannerVersion,
     anchorPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.anchorPlannerConfigDigest,
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
@@ -842,14 +846,14 @@ export async function wagIntentAuthorityMatches(
       && intentPlan.effectiveConfigDigest === prepared.input.effectiveConfig.digest
       && intentPlan.presetProfileVersion === prepared.input.effectiveConfig.presetProfileVersion
       && intentPlan.presetProfileDigest === prepared.input.effectiveConfig.presetProfileDigest
-      && intentPlan.grammarVersion === wagVersions(prepared.input.source, prepared.input.grammarVersion).grammarVersion
-      && intentPlan.plannerVersion === wagVersions(prepared.input.source, prepared.input.grammarVersion).plannerVersion
+      && intentPlan.grammarVersion === prepared.versions.grammarVersion
+      && intentPlan.plannerVersion === prepared.versions.plannerVersion
       && intentPlan.grammarConfigDigest === prepared.authority.wagOwnedConfigDigests.grammarConfigDigest
       && intentPlan.plannerConfigDigest === prepared.authority.wagOwnedConfigDigests.plannerConfigDigest
       && intentPlan.diagnosticRegistryVersion === prepared.authority.diagnostics.registryVersion
       && intentPlan.diagnosticRegistryDigest === prepared.authority.diagnostics.registryDigest
       && (!intentPlan.grammarTrace
-        || intentPlan.grammarTrace.grammarVersion === wagVersions(prepared.input.source, prepared.input.grammarVersion).grammarVersion);
+        || intentPlan.grammarTrace.grammarVersion === prepared.versions.grammarVersion);
   } catch {
     return false;
   }
@@ -870,7 +874,7 @@ export async function wagActivityAuthorityMatches(
       && activityPlan.sourceLeadAtomizationDigest === prepared.input.sourceLeadAtomization.digest
       && activityPlan.effectiveConfigDigest === prepared.input.effectiveConfig.digest
       && activityPlan.presetProfileDigest === prepared.input.effectiveConfig.presetProfileDigest
-      && activityPlan.activityPlannerVersion === wagVersions(prepared.input.source, prepared.input.grammarVersion).activityPlannerVersion
+      && activityPlan.activityPlannerVersion === prepared.versions.activityPlannerVersion
       && activityPlan.activityPlannerConfigDigest === prepared.authority.wagOwnedConfigDigests.activityPlannerConfigDigest
       && activityPlan.diagnosticRegistryVersion === prepared.authority.diagnostics.registryVersion
       && activityPlan.diagnosticRegistryDigest === prepared.authority.diagnostics.registryDigest;
@@ -895,7 +899,7 @@ export async function wagAnchorAuthorityMatches(
       && anchorPlan.sourceLeadAtomizationDigest === prepared.input.sourceLeadAtomization.digest
       && anchorPlan.effectiveConfigDigest === prepared.input.effectiveConfig.digest
       && anchorPlan.presetProfileDigest === prepared.input.effectiveConfig.presetProfileDigest
-      && anchorPlan.anchorPlannerVersion === wagVersions(prepared.input.source, prepared.input.grammarVersion).anchorPlannerVersion
+      && anchorPlan.anchorPlannerVersion === prepared.versions.anchorPlannerVersion
       && anchorPlan.anchorPlannerConfigDigest === prepared.authority.wagOwnedConfigDigests.anchorPlannerConfigDigest
       && anchorPlan.diagnosticRegistryVersion === prepared.authority.diagnostics.registryVersion
       && anchorPlan.diagnosticRegistryDigest === prepared.authority.diagnostics.registryDigest;
@@ -1012,15 +1016,15 @@ export async function planWagIntent(input: WagLifecycleInput): Promise<StageExec
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     grammarId: "worship-arrangement-grammar-v1",
-    grammarVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).grammarVersion,
-    plannerVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).plannerVersion,
+    grammarVersion: prepared.versions.grammarVersion,
+    plannerVersion: prepared.versions.plannerVersion,
     grammarConfigDigest: prepared.authority.wagOwnedConfigDigests.grammarConfigDigest,
     plannerConfigDigest: prepared.authority.wagOwnedConfigDigests.plannerConfigDigest,
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
     sectionIntents,
     phraseIntents,
-    grammarTrace: { grammarVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).grammarVersion, candidatesByPhraseId: traceByPhrase },
+    grammarTrace: { grammarVersion: prepared.versions.grammarVersion, candidatesByPhraseId: traceByPhrase },
     intentPlanDigest: "" as SemanticDigest,
   };
   const intentPlanDigest = await digestIntentPlan(withoutDigest, prepared.ordinals);
@@ -1239,7 +1243,7 @@ export async function planWagActivity(
     presetId: input.effectiveConfig.presetId,
     intentPlanDigest: intentPlan.intentPlanDigest,
     activityInputDigest,
-    activityPlannerVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).activityPlannerVersion,
+    activityPlannerVersion: prepared.versions.activityPlannerVersion,
     activityPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.activityPlannerConfigDigest,
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
@@ -1394,7 +1398,7 @@ export async function planWagAnchor(
     presetId: input.effectiveConfig.presetId,
     activityPlanDigest: activityPlan.activityPlanDigest,
     anchorInputDigest,
-    anchorPlannerVersion: wagVersions(prepared.input.source, prepared.input.grammarVersion).anchorPlannerVersion,
+    anchorPlannerVersion: prepared.versions.anchorPlannerVersion,
     anchorPlannerConfigDigest: prepared.authority.wagOwnedConfigDigests.anchorPlannerConfigDigest,
     diagnosticRegistryVersion: prepared.authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,

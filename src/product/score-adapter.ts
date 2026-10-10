@@ -102,7 +102,7 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   }));
   const lead = document.sourceLeadTrack.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex }));
   const tracks = [
-    { id: "lead", label: "Lead", notationOctaveShift: 0, events: lead },
+    { id: "lead", label: trackRoles.sourceLeadLabel ?? "Lead", notationOctaveShift: 0, events: lead },
     ...(document.sourceRhythmTracks?.map((track) => ({ id: `rhythm${track.voice}`, label: `Source Rhythm ${track.voice}`, notationOctaveShift: 0, events: track.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) })) ?? []),
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];

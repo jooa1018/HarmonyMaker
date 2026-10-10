@@ -120,7 +120,7 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
   }) ?? [];
   const events = [...voices, ...band].sort((left, right) => left.startQuarter - right.startQuarter || left.trackId.localeCompare(right.trackId) || left.eventId.localeCompare(right.eventId));
   const trackLabels = {
-    "track:source-lead": "Lead",
+    "track:source-lead": trackRoles.sourceLeadLabel ?? "Lead",
     ...Object.fromEntries(document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);

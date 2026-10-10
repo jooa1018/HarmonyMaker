@@ -1,6 +1,9 @@
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { prepareWagLifecycle, primaryPulseAt } from "../grammar/lifecycle";
+import { wagInputFromProject } from "./workspace";
+import { fraction } from "../domain/fraction";
 import { XMLParser } from "fast-xml-parser";
 import type { SpelledPitch } from "../domain/pitch";
 import { containsPitch, pitchMidiNumber } from "../domain/pitch";
@@ -57,6 +60,13 @@ describe("WAG 1.1 fixed parts, written tenor and meters", () => {
       const metadata={title:project.source.title,key:project.source.defaultKey,tempo:project.source.defaultTempo};
       const xml=exportArrangementMusicXml(document,trackRoles,metadata);
       const abc=arrangementRenderDocumentToAbc(document,trackRoles,metadata);
+      expect(xml).toContain("<part-name>멜로디</part-name>");
+      expect(abc).toContain('name="멜로디"');
+      for (const part of parts) {
+        const label = part === "alto" ? "알토" : "테너";
+        expect(xml).toContain(`<part-name>${label}</part-name>`);
+        expect(abc).toContain(`name="${label}"`);
+      }
       expect(xml.includes("<clef-octave-change>-1</clef-octave-change>")).toBe(parts.some(p=>p==="tenor"));
       const exported = new XMLParser({isArray: name => ["part", "measure", "note"].includes(name)}).parse(xml) as {
         "score-partwise": { part: { measure: { note: { pitch?: SpelledPitch }[] }[] }[] };
@@ -70,8 +80,10 @@ describe("WAG 1.1 fixed parts, written tenor and meters", () => {
       }
       expect(abc.includes("clef=treble-8")).toBe(parts.some(p=>p==="tenor"));
       const payload=materializePracticeShare({project,presetId:"standard",materialized,workspaceShareConfirmedForThisExport:true});
+      expect(payload.arrangement.tracks.map(track=>track.label)).toEqual(["멜로디",...parts.map(part=>part==="alto"?"알토":"테너")]);
       expect(isPracticeSharePayload(payload)).toBe(true);
       const shared=materializeSharedPractice(payload);
+      expect(shared.trackRoles.sourceLeadLabel).toBe("멜로디");
       const sounds = (plan: ReturnType<typeof buildPlaybackPlan>) => plan.events.map(e=>[e.startQuarter,e.durationQuarter,e.midi]).sort((a,b)=>a[0]-b[0] || a[1]-b[1] || a[2]-b[2]);
       expect(sounds(buildPlaybackPlan(shared.document,shared.trackRoles))).toEqual(sounds(buildPlaybackPlan(document,trackRoles)));
       expect(arrangementRenderDocumentToAbc(shared.document,shared.trackRoles,metadata).includes("treble-8")).toBe(parts.some(p=>p==="tenor"));
@@ -111,6 +123,24 @@ describe("WAG 1.1 fixed parts, written tenor and meters", () => {
         for (const marginal of result.generation.execution.generation.marginals)expect(marginal.placementRole).toBe(result.parts[0].part==="alto"?"lower":"upper");
       }
     }
+  });
+
+  it("prepares the marker once and reuses it throughout pulse lookups", async () => {
+    const result = await generateQuickHarmony(await prepare(score("4-4-1")), {...choice,parts:["alto","tenor"]});
+    if(result.status !== "complete")throw new Error(result.status);
+    const input = await wagInputFromProject(result.project,"standard");
+    const info = input.source.importInfo;
+    if(info?.sourceKind !== "score-workspace")throw new Error("missing marker");
+    const marker = info.workspaceMetadata.autoDraft!.marker;
+    const spy = vi.spyOn(JSON,"parse");
+    try {
+      const prepared = await prepareWagLifecycle(input);
+      if(prepared.status !== "complete")throw new Error(prepared.status);
+      const before = spy.mock.calls.filter(([value]) => value === marker).length;
+      expect(before).toBe(1);
+      for(let i=0;i<100;i++)expect(primaryPulseAt(prepared.value,{performanceMeasureIndex:0,offset:fraction(0)})).toEqual(fraction(1));
+      expect(spy.mock.calls.filter(([value]) => value === marker)).toHaveLength(before);
+    } finally { spy.mockRestore(); }
   });
 
   it.each([3,9])("keeps %i/8 outside supported meters",async beats=>{
