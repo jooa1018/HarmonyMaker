@@ -44,10 +44,11 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     tiedFromPrevious: event.kind !== "rest" && event.tieStop === true,
     tiedToNext: event.kind !== "rest" && event.tieStart === true,
     lyricTokenIds: event.kind !== "rest" ? event.lyricTokenIds ?? [] : [],
+    ...(payload.schemaVersion === 5 && event.kind !== "rest" && event.slurs ? {slurs:event.slurs.map(mark=>({...mark}))} : {}),
   }));
   const trackRoles = practiceShareTrackRoles(payload.arrangement.tracks);
   const generatedHarmonyTracks = payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => {
-    const metadata = payload.schemaVersion === 4 && "harmonyRole" in track
+    const metadata = payload.schemaVersion >= 4 && "harmonyRole" in track
       ? trackRoles.generatedTracks.find((candidate) => candidate.harmonyRole === track.harmonyRole)
       : trackRoles.generatedTracks.find((candidate) => candidate.label === track.label);
     if (!metadata) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
