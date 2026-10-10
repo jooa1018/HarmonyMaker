@@ -158,8 +158,11 @@ describe("WAG 1.1 fixed parts, written tenor and meters", () => {
     const materialized=materializeActiveArrangement(result.project,"standard");
     const plan=buildPlaybackPlan(materialized.document,materialized.trackRoles);
     const oscillators:{frequency:{value:number}}[]=[];
-    const node=()=>({connect(){return this;},disconnect(){},gain:{value:1,setValueAtTime(){},linearRampToValueAtTime(){}}});
-    const context={destination:{},createGain:node,createOscillator:()=>{const o={...node(),frequency:{value:0},start(){},stop(){}};oscillators.push(o);return o;}};
+    const node=()=>({connect(){return this;},disconnect(){},gain:{value:1,setValueAtTime(){},linearRampToValueAtTime(){},setValueCurveAtTime(){}}});
+    const context={destination:{},createGain:node,createPeriodicWave(){return {};},
+      createBiquadFilter:()=>({...node(),frequency:{value:0},Q:{value:0}}),
+      createDynamicsCompressor:()=>({...node(),threshold:{value:0},knee:{value:0},ratio:{value:0},attack:{value:0},release:{value:0}}),
+      createOscillator:()=>{const o={...node(),frequency:{value:0},setPeriodicWave(){},start(){},stop(){}};oscillators.push(o);return o;}};
     schedulePracticeAudio(context as unknown as BaseAudioContext,plan,{fromQuarter:0,secondsPerQuarter:0.5,startedAt:0,audible:new Set(plan.trackIds),levels:{},masterLevel:1});
     expect(oscillators.map(o=>o.frequency.value)).toEqual(plan.events.map(e=>440*2**((e.midi-69)/12)));
     const tampered=JSON.parse(await exportHarmonyProject(result.project));

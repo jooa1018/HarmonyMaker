@@ -1,10 +1,20 @@
 import type { PlaybackPlan } from "./playback-plan";
 
 /** Output amplitude only. These values never enter the musical plan or WAG. */
-export const PRACTICE_AUDIO_GAINS = Object.freeze({ lead: 0.028, harmony: 0.032, band: 0.006, master: 1 });
-export const PRACTICE_AUDIO_ATTACK_SECONDS = 0.003;
-export const PRACTICE_AUDIO_RELEASE_SECONDS = 0.008;
+export const PRACTICE_AUDIO_GAINS = Object.freeze({ lead: 0.34, harmony: 0.30, band: 0.025, master: 1 });
+export const PRACTICE_AUDIO_ATTACK_SECONDS = 0.015;
+export const PRACTICE_AUDIO_RELEASE_SECONDS = 0.08;
 export const PRACTICE_AUDIO_START_LEAD_SECONDS = 0.05;
+
+// Zero slope at both ends prevents a step even on repeated, separate attacks.
+const ATTACK_CURVE = Float32Array.from({ length: 33 }, (_, i) => (1 - Math.cos(Math.PI * i / 32)) / 2);
+const RELEASE_CURVE = Float32Array.from(ATTACK_CURVE, value => 1 - value);
+function timbre(role: string) {
+  if (role === "band") return { harmonics: [0, 1, 0.18, 0.05, 0.01], cutoff: 900 };
+  if (role === "upper") return { harmonics: [0, 1, 0.45, 0.22, 0.1], cutoff: 2200 };
+  if (role === "lower") return { harmonics: [0, 1, 0.35, 0.28, 0.09], cutoff: 1800 };
+  return { harmonics: [0, 1, 0.55, 0.22, 0.12], cutoff: 2600 };
+}
 
 export interface PracticeAudioMix {
   readonly audible: ReadonlySet<string>;
@@ -19,6 +29,8 @@ export interface PracticeAudioGraph {
   readonly nodes: Set<OscillatorNode>;
   readonly tracks: ReadonlyMap<string, GainNode>;
   readonly master: GainNode;
+  readonly limiter: DynamicsCompressorNode;
+  readonly filters: ReadonlyMap<string, BiquadFilterNode>;
   readonly startedAt: number;
   readonly endsAt: number;
   readonly scheduledCount: number;
@@ -72,16 +84,31 @@ export function schedulePracticeAudio(
   }
   const nodes = new Set<OscillatorNode>();
   const tracks = new Map<string, GainNode>();
+  const filters = new Map<string, BiquadFilterNode>();
+  const waves = new Map<string, PeriodicWave>();
   const master = context.createGain();
   master.gain.value = PRACTICE_AUDIO_GAINS.master * practiceVolume(options.masterLevel, 1);
-  master.connect(context.destination);
+  const limiter = context.createDynamicsCompressor();
+  limiter.threshold.value = -9;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.12;
+  master.connect(limiter).connect(context.destination);
   let scheduledCount = 0;
   try {
     for (const id of plan.trackIds) {
       const bus = context.createGain();
       bus.gain.value = options.audible.has(id) ? trackGain(id) * practiceVolume(options.levels[id] ?? 1) : 0;
-      bus.connect(master);
       tracks.set(id, bus);
+      const tone = timbre(id === "track:band" ? "band" : plan.trackRoles?.[id] ?? "lead");
+      const filter = context.createBiquadFilter();
+      filters.set(id, filter);
+      filter.type = "lowpass";
+      filter.frequency.value = tone.cutoff;
+      filter.Q.value = 0.5;
+      bus.connect(filter).connect(master);
+      waves.set(id, context.createPeriodicWave(new Float32Array(tone.harmonics.length), new Float32Array(tone.harmonics)));
     }
     for (const event of plan.events) {
       if (event.startQuarter + event.durationQuarter <= fromQuarter) continue;
@@ -91,14 +118,15 @@ export function schedulePracticeAudio(
       const oscillator = context.createOscillator();
       nodes.add(oscillator);
       const envelope = context.createGain();
-      oscillator.type = event.kind === "band" ? "triangle" : "sine";
+      oscillator.setPeriodicWave(waves.get(event.trackId)!);
       oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
       // Short ramps remain inside the original audible range, including short
       // notes. Explicit ties were already merged by the unchanged playback plan.
-      envelope.gain.setValueAtTime(0, start);
-      envelope.gain.linearRampToValueAtTime(1, start + Math.min(PRACTICE_AUDIO_ATTACK_SECONDS, duration / 4));
-      envelope.gain.setValueAtTime(1, end - Math.min(PRACTICE_AUDIO_RELEASE_SECONDS, duration / 4));
-      envelope.gain.linearRampToValueAtTime(0, end);
+      const attack = Math.min(PRACTICE_AUDIO_ATTACK_SECONDS, duration / 4);
+      const release = Math.min(PRACTICE_AUDIO_RELEASE_SECONDS, duration / 2);
+      envelope.gain.setValueCurveAtTime(ATTACK_CURVE, start, attack);
+      envelope.gain.setValueAtTime(1, end - release);
+      envelope.gain.setValueCurveAtTime(RELEASE_CURVE, end - release, release);
       oscillator.connect(envelope).connect(tracks.get(event.trackId)!);
       oscillator.onended = () => { nodes.delete(oscillator); oscillator.disconnect(); envelope.disconnect(); };
       oscillator.start(start);
@@ -108,10 +136,12 @@ export function schedulePracticeAudio(
   } catch (error) {
     for (const node of nodes) { try { node.stop(); } catch { /* not started */ } node.disconnect(); }
     for (const bus of tracks.values()) bus.disconnect();
+    for (const filter of filters.values()) filter.disconnect();
     master.disconnect();
+    limiter.disconnect();
     throw error;
   }
-  return { context, nodes, tracks, master, startedAt,
+  return { context, nodes, tracks, master, limiter, filters, startedAt,
     endsAt: startedAt + (plan.totalQuarter - fromQuarter) * secondsPerQuarter, scheduledCount, released: false };
 }
 
@@ -127,7 +157,9 @@ export function releasePracticeAudio(graph: PracticeAudioGraph, context: AudioCo
     for (const node of graph.nodes) node.disconnect();
     graph.nodes.clear();
     for (const bus of graph.tracks.values()) bus.disconnect();
+    for (const filter of graph.filters.values()) filter.disconnect();
     graph.master.disconnect();
+    graph.limiter.disconnect();
     void context.close().catch(() => undefined);
   };
   // This timer only frees an already-silent graph. It never schedules music.
