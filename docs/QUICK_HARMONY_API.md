@@ -1,8 +1,8 @@
-# Quick Harmony API — WAG v1.1 (A등급 검토)
+# Quick Harmony API — WAG v1.1
 
 `src/product/quick-harmony.ts`는 MusicXML 자동 판정과 로컬 화음 생성의 진입점이다.
-1-1·1-4는 PR #14로 병합됐고, PR #16은 1-2 다중 파트와 1-3 박자를 함께 확장한다.
-전체 안내 코드 대응표(1-5)는 후속 작업이다.
+1-1·1-4는 PR #14, 1-2 다중 파트와 1-3 박자는 승인된 PR #16으로 병합됐다.
+화면용 요약(1-6)과 안내 코드 대응표(1-5)를 함께 제공한다.
 
 `parts`는 `auto`, `["alto"]`, `["tenor"]`, 두 파트 배열을 받는다. 역순은 알토→테너로
 정규화하고 빈 배열·중복·알 수 없는 파트는 거부한다. 지원 박자는 2/4·3/4·4/4·6/8·12/8이다.
@@ -73,6 +73,35 @@ generateQuickHarmony(
 prepare는 생성 권리를 부여하지 않는다. `RIGHTS_CONFIRMATION_REQUIRED`는 `details`에 보존하되 일반 질문에서 제외하여, 사용자에게 생성 버튼의 체크박스 한 번만 요구한다. `ready`는 권리가 이미 확인됐다는 의미가 아니다.
 
 generate는 전달받은 판정·질문·자세히를 신뢰하지 않는다. 현재 workspace의 journal과 증거를 검증하고, 선택한 파트·사용자 답·권리 입력으로 기존 자동 초안을 다시 판정한다. 새로운 판정은 반환값의 `preparation`에 담긴다.
+
+## 쉬운 안내 문구 대응표
+
+`src/product/quick-harmony-notices.ts`의 `QUICK_HARMONY_NOTICE_CATALOG`가
+질문·지원 안 함·경고 코드에 대한 한국어 문장, 행동 안내, 고정 선택지의 단일 대응표다.
+화면은 `questions`·`reasons`·`notes`의 `messageKo`, `actionKo`, `choices`를 그대로 표시한다.
+원시 finding의 문장을 기본 화면에 표시하지 않는다. 내부 코드와 원래 진단은 `details`에 남는다.
+
+| 코드 계열 | 안내 내용 |
+|---|---|
+| `LEAD_*`, `RIGHTS_CONFIRMATION_REQUIRED` | 기준 멜로디 선택·음표 유무·권리 확인 |
+| `PRINTED_CHORD_*`, `LYRIC_UNCERTAIN` | 코드·가사 판독, 명시적으로 선택한 앞 코드 이어 쓰기 |
+| `METER_*`, `TIMELINE_*`, `RHYTHM_SLASH_UNCERTAIN` | 박자표·마디 길이·리듬 기호 확인 |
+| `OMR_*`, `LEGACY_UNCERTAINTY`, `UNCLASSIFIED_UNCERTAINTY` | 기존 작업 공간의 원본 비교·미확인 부분 |
+| `UNSUPPORTED_*`, `INPUT_UNINTERPRETED` | 지원 범위와 악보 수정·재업로드 방법 |
+| `STRUCTURE_*` | 음표 겹침·길이·음높이·조성·코드·가수 음역 등 교정 |
+| `FERMATA_AS_WRITTEN` | 늘임표의 추가 길이를 반영하지 않는 재생 |
+| `AUTOMATIC_VALUES`, `FILE_UNREADABLE` | 자동 설정 참고·파일 읽기 실패 |
+
+마디 범위가 있으면 내부 마디 ID를 **인쇄 마디 번호**로 바꿔 `12마디: …`처럼 표시한다.
+악보 설정 문제는 `악보 설정`, 곡 전체 문제는 `악보 전체`, 파일 문제는 `파일`로 위치를 표시한다.
+마디 위치를 찾을 수 없으면 `위치를 확인할 수 없는 마디`라고 표시하고 번호를 만들어 내지 않는다.
+멜로디 선택지는 실제 악보의 후보로 채우며, 코드 질문의 `carry-previous` 및
+`edit-in-workspace` 값은 기존 계약을 유지한다. 권리 확인은 생성 시 한 번 받으므로
+일반 preparation 질문에서는 계속 제외한다.
+
+시험은 판정 코드 생성부와 구조 검사에서 나오는 코드들을 읽어 대응표의 누락을 검사한다.
+미등록 코드가 런타임에 들어오면 현재 질문·지원 안 함·경고 분류를 유지한 채 일반 안내를 제공한다.
+안내 문구는 화면 표시용이며, 저장된 원시 진단·생성 규칙·판정 등급을 바꾸지 않는다.
 
 ## 생성 결과와 실패
 

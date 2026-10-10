@@ -11,15 +11,10 @@ import { applyWorkspaceCommand, createImmutableWorkspace, createScoreWorkspace, 
 import type { ScoreWorkspace } from "../import/workspace/model";
 import { generateAutoDraftProject } from "./auto-draft";
 import { summarizeQuickHarmonyMelody, type QuickHarmonySummary } from "./quick-harmony-summary";
+import { quickHarmonyNotice, type QuickHarmonyNotice } from "./quick-harmony-notices";
 export type { QuickHarmonySummary } from "./quick-harmony-summary";
+export type { QuickHarmonyNotice } from "./quick-harmony-notices";
 import type { ProductGenerationOutcome } from "./workspace";
-
-export interface QuickHarmonyNotice {
-  readonly id: string;
-  readonly messageKo: string;
-  readonly actionKo: string;
-  readonly choices: readonly { readonly value: string; readonly labelKo: string }[];
-}
 
 export interface QuickHarmonyPreparation {
   readonly summary?: QuickHarmonySummary;
@@ -62,35 +57,21 @@ export class QuickHarmonyInputError extends RangeError {
   }
 }
 
-function notice(f: AutoDraftFinding): QuickHarmonyNotice {
-  if (f.code === "UNSUPPORTED_MODULATION") return {
-    id: f.id, messageKo: "곡 중간에 조가 바뀌는 악보는 아직 지원하지 않아요.",
-    actionKo: "조가 바뀌기 전까지만 잘라서 올려 보세요.", choices: [],
-  };
-  if (f.code === "UNSUPPORTED_METER") return {
-    id: f.id, messageKo: "이 악보에 아직 지원하지 않는 박자가 있어요.",
-    actionKo: "현재는 2/4·3/4·4/4·6/8·12/8 악보를 사용할 수 있어요.", choices: [],
-  };
-  return {
-    id: f.id, messageKo: f.messageKo, actionKo: f.effectKo,
-    choices: f.answers?.map(a => ({ value: a.option, labelKo: a.meaningKo }))
-      ?? (f.category === "question" ? [{ value: "edit-in-workspace", labelKo: "악보를 확인하고 고치기" }] : []),
-  };
-}
-
 async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAssessment): Promise<QuickHarmonyPreparation> {
   const { state } = await readVerifiedWorkspace(workspace);
+  const measures = new Map(state.music?.parts.flatMap(part => part.measures.map(measure => [measure.workspaceMeasureId, measure.number] as const)));
   const describe = (finding: AutoDraftFinding): QuickHarmonyNotice => {
-    const result = notice(finding);
+    const scope = finding.scope;
+    const number = scope?.kind === "measure" ? measures.get(scope.measureId) : undefined;
+    const locationKo = number !== undefined ? `${number}마디` : scope?.kind === "metadata" ? "악보 설정"
+      : scope?.kind === "measure" ? "위치를 확인할 수 없는 마디" : "악보 전체";
+    const result = quickHarmonyNotice(finding, locationKo);
     if (finding.code === "LEAD_SELECTION_REQUIRED") return { ...result,
       choices: (state.music?.leadCandidates ?? []).filter(c => c.noteCount > 0).map(c => ({
         value: c.key, labelKo: `${c.displayPartName} · 보표 ${c.staffNumber} · 성부 ${c.voiceKey} · 음표 ${c.noteCount}개`,
       })),
     };
-    const scope = finding.scope;
-    const measure = scope?.kind === "measure" ? state.music?.parts.flatMap(p => p.measures).find(m => m.workspaceMeasureId === scope.measureId) : undefined;
-    return measure && !result.messageKo.includes(`${measure.number}마디`)
-      ? { ...result, messageKo: `${measure.number}마디: ${result.messageKo}` } : result;
+    return result;
   };
   // Preparation describes musical readiness. No synthetic rights are supplied
   // to the engine; the raw missing-rights finding remains in details.
@@ -98,10 +79,8 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const questions = findings.filter(f => f.category === "question").map(describe);
   const reasons = findings.filter(f => f.category === "unsupported").map(describe);
   const notes = findings.filter(f => f.category === "warning").map(describe);
-  if (assessment.provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred")) notes.push({
-    id: "automatic-values", messageKo: "악보에서 비어 있는 설정은 연습용으로 자동 선택했어요.",
-    actionKo: "자세히에서 어떤 값을 사용했는지 확인할 수 있어요.", choices: [],
-  });
+  if (assessment.provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred")) notes.push(
+    quickHarmonyNotice({id:"automatic-values",code:"AUTOMATIC_VALUES",category:"warning"}, "악보 설정"));
   const request = assessment.request;
   const summary = state.music && request?.lead
     ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}) : undefined;
@@ -110,10 +89,9 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
 }
 
 function rejectedFile(importError: string): QuickHarmonyPreparation {
-  return { status: "unsupported", questions: [], notes: [], reasons: [{
-    id: "file", messageKo: "이 파일에서 악보를 안전하게 읽을 수 없어요.",
-    actionKo: "MuseScore에서 악보를 확인한 뒤 MusicXML(.musicxml, .xml, .mxl)로 다시 내보내 주세요.", choices: [],
-  }], details: { importError } };
+  return { status: "unsupported", questions: [], notes: [], reasons: [
+    quickHarmonyNotice({id:"file",code:"FILE_UNREADABLE",category:"unsupported"}, "파일")
+  ], details: { importError } };
 }
 
 /** Browser-local import; does not upload, persist, or confirm rights. */
