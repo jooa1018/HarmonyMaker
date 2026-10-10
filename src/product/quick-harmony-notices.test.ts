@@ -62,8 +62,8 @@ it("covers every emitted finding code, including the structural blocker code fam
 
 it("keeps supported answer values and owns its returned choice objects",()=>{
   const finding={id:"chord",code:"PRINTED_CHORD_UNREAD",category:"question"} as const;
-  const notice=quickHarmonyNotice(finding,"12마디");
-  expect(notice.messageKo).toMatch(/^12마디: /u);
+  const notice=quickHarmonyNotice(finding,"12번째 마디");
+  expect(notice.messageKo).toMatch(/^12번째 마디: /u);
   expect(notice.choices.map(choice=>choice.value)).toEqual(["carry-previous","edit-in-workspace"]);
   Object.assign(notice.choices[0],{labelKo:"tampered"});
   expect(quickHarmonyNotice(finding).choices[0].labelKo).not.toBe("tampered");
@@ -90,7 +90,7 @@ it.each([
   const raw=prep.details.assessment!.findings.find(f=>f.code===code)!;
   expect(raw).toBeDefined();
   const notice=[...prep.questions,...prep.reasons,...prep.notes].find(n=>n.id===raw.id)!;
-  expect(notice.messageKo).toMatch(/^1마디: /u);
+  expect(notice.messageKo).toMatch(/^1번째 마디: /u);
   expect(notice.messageKo).not.toBe(raw.messageKo);
   expect(notice.actionKo).not.toBe(raw.effectKo);
   expect(notice.messageKo+notice.actionKo).not.toMatch(/Lead|WAG|이벤트|hard|provenance/u);
