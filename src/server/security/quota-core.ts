@@ -2,7 +2,6 @@ import type { SemanticDigest } from "../../domain/digest/canonical";
 import type { GovernanceStore, IdempotencyClaim, IdempotencyRecoveryLookup, PrivateRowId } from "../persistence/store";
 import { keyedTokenHash } from "./crypto-core";
 
-export const OMR_QUOTA_POLICY = Object.freeze({ maxConcurrentJobsPerSession: 1, maxJobsPerSessionPerHour: 3 });
 export const SHARE_CREATE_PER_HOUR = 12;
 export const SHARE_READ_PER_HOUR = 120;
 export const ABUSE_REPORT_PER_HOUR = 6;

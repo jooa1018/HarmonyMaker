@@ -1,5 +1,7 @@
 # HarmonyMaker
 
+> 2026-10-09 서버 정리: 앱 내부의 사진·PDF OMR과 로컬 이미지 인식 페이지/API 및 실행 도구를 제거했습니다. 앱 밖에서 만든 MusicXML/MXL을 올려 사용하세요. 기존 로컬 후보 묶음과 브라우저 저장 자료의 읽기 기능은 유지합니다. 기존 OMR DB 테이블과 적용 마이그레이션은 변경하지 않습니다. 아래의 Segment/OMR 진행 기록은 제거 전 기록이며, 전체 운영 문서는 후속 정리에서 갱신합니다.
+
 HarmonyMaker는 멜로디, 확인된 코드, 곡 구조, 실제 가수 음역을 바탕으로 현대 워십 band-supported 문맥의 결정적 1–3성부 보컬 편곡을 만들고, 편집·연습·공유하는 Next.js 애플리케이션입니다. 유일한 제품 명세 authority는 [`docs/HARMONYMAKER_SPEC_v3.1.5.md`](docs/HARMONYMAKER_SPEC_v3.1.5.md)입니다.
 
 ## 현재 repository 상태
