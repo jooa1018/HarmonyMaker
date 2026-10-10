@@ -1,3 +1,4 @@
+import { normalizeClientIp } from "./ip-address";
 import type { SemanticDigest } from "../../domain/digest/canonical";
 import type { GovernanceStore, IdempotencyClaim, IdempotencyRecoveryLookup, PrivateRowId } from "../persistence/store";
 import { keyedTokenHash } from "./crypto-core";
@@ -6,11 +7,20 @@ export const SHARE_CREATE_PER_HOUR = 12;
 export const SHARE_READ_PER_HOUR = 120;
 export const ABUSE_REPORT_PER_HOUR = 6;
 export const SESSION_CREATE_PER_HOUR = 12;
+export const UNKNOWN_IP_GLOBAL_QUOTA_MULTIPLIER = 100;
 export const IDEMPOTENCY_PENDING_LEASE_SECONDS = 300;
 
 export function normalizeIpAddress(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  return normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+  const normalized = normalizeClientIp(value);
+  // Internal global-bucket identifiers are not IP addresses.
+  if (!normalized) return value.trim().toLowerCase();
+  if (!normalized.includes(":")) return normalized;
+  const [left, right] = normalized.split("::");
+  const leading = left ? left.split(":") : [];
+  const trailing = right ? right.split(":") : [];
+  const words = right === undefined ? leading
+    : [...leading, ...Array<string>(8 - leading.length - trailing.length).fill("0"), ...trailing];
+  return `${words.slice(0, 4).join(":")}::/64`;
 }
 
 function hourlyWindow(now: Date): { readonly start: string; readonly end: string } {
@@ -22,6 +32,13 @@ function hourlyWindow(now: Date): { readonly start: string; readonly end: string
 export class QuotaAndIdempotencyService {
   constructor(private readonly store: GovernanceStore, private readonly hmacKey: Uint8Array) {}
   ipHash(ip: string): string { return keyedTokenHash(normalizeIpAddress(ip), this.hmacKey, "quota-ip-v1"); }
+
+  async consumeClientIpHourly(input: { readonly ipAddress: string | undefined; readonly policyKey: string; readonly limit: number; readonly now: Date }): Promise<boolean> {
+    const unknown = input.ipAddress === undefined;
+    return this.consumeHourly({ ownerKind: "ip-hmac", owner: input.ipAddress ?? "unknown-ip-global",
+      policyKey: unknown ? `${input.policyKey}:unknown-ip-global` : input.policyKey,
+      limit: unknown ? input.limit * UNKNOWN_IP_GLOBAL_QUOTA_MULTIPLIER : input.limit, now: input.now });
+  }
 
   async consumeHourly(input: { readonly ownerKind: "session" | "ip-hmac"; readonly owner: string; readonly policyKey: string; readonly limit: number; readonly now: Date }): Promise<boolean> {
     const window = hourlyWindow(input.now);

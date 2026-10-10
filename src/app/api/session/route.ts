@@ -6,6 +6,8 @@ import { SESSION_COOKIE_NAME } from "../../../server/security/session";
 import { assertBodylessRequest, hasExactRequestOrigin } from "../../../server/http/bounded-json";
 import { admitAnonymousSession } from "../../../server/security/session-admission";
 
+import { resolveClientIp } from "../../../server/security/client-ip";
+
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -15,7 +17,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     await assertBodylessRequest(request);
     const services = await getProductionServices();
     const existing = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip")?.trim() ?? "unknown";
+    const ip = resolveClientIp(request, api);
     const admission = await admitAnonymousSession({ sessions: services.sessions, quota: services.quota, ...(existing ? { existingToken: existing } : {}), ipAddress: ip, now: new Date() });
     if (admission.status === "quota-exceeded") {
       return api.respond(apiError("QUOTA_EXCEEDED", 429, "새 세션 생성 한도를 초과했습니다."));

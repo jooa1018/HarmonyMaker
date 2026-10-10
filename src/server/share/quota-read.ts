@@ -12,10 +12,10 @@ export async function readShareWithIpQuota(input: {
   readonly quota: QuotaAndIdempotencyService;
   readonly shares: ShareStoreService;
   readonly token: string;
-  readonly ipAddress: string;
+  readonly ipAddress: string | undefined;
   readonly now: Date;
 }): Promise<ShareReadResult> {
-  const allowed = await input.quota.consumeHourly({ ownerKind: "ip-hmac", owner: input.ipAddress, policyKey: "share-read-v1", limit: SHARE_READ_PER_HOUR, now: input.now });
+  const allowed = await input.quota.consumeClientIpHourly({ ipAddress: input.ipAddress, policyKey: "share-read-v1", limit: SHARE_READ_PER_HOUR, now: input.now });
   if (!allowed) return { status: "quota-exceeded" };
   return { status: "ok", payload: await input.shares.read(input.token, input.now) };
 }
