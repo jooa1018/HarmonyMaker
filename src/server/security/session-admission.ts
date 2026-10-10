@@ -15,7 +15,7 @@ export async function admitAnonymousSession(input: {
   readonly sessions: AnonymousSessionService;
   readonly quota: QuotaAndIdempotencyService;
   readonly existingToken?: string;
-  readonly ipAddress: string;
+  readonly ipAddress: string | undefined;
   readonly now: Date;
 }): Promise<SessionAdmissionResult> {
   if (input.existingToken) {
@@ -32,9 +32,8 @@ export async function admitAnonymousSession(input: {
       // Invalid and expired cookies receive bounded replacement admission.
     }
   }
-  const admitted = await input.quota.consumeHourly({
-    ownerKind: "ip-hmac",
-    owner: input.ipAddress,
+  const admitted = await input.quota.consumeClientIpHourly({
+    ipAddress: input.ipAddress,
     policyKey: "session-create-v1",
     limit: SESSION_CREATE_PER_HOUR,
     now: input.now,
