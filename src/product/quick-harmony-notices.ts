@@ -56,6 +56,7 @@ export const QUICK_HARMONY_NOTICE_CATALOG: Readonly<Record<string, NoticeCopy>> 
   STRUCTURE_KEY: copy("이 부분의 조성을 정하지 못했어요.", "원본의 조표와 장조·단조를 확인해 주세요."),
   STRUCTURE_FIFTHS: copy("선택한 조성과 악보의 조표가 서로 맞지 않아요.", "원본의 조표를 보고 선택한 조성을 고쳐 주세요."),
   STRUCTURE_REVIEW: copy("이 마디를 원본과 비교해야 해요.", "멜로디와 코드, 악보 기호를 원본과 확인해 주세요."),
+  CHORD_KIND_TEXT: copy("코드 이름 {chordName}를 글자대로 읽었어요.", "원본 악보의 코드 이름과 비교해 주세요."),
   STRUCTURE_CHORD: copy("해석할 수 없는 코드가 있어요.", "원본의 코드 이름을 확인하고 고쳐 주세요."),
   STRUCTURE_TEMPO: copy("연습 속도가 정해지지 않았어요.", "박의 단위와 분당 박 수를 확인하고 입력해 주세요."),
   STRUCTURE_RIGHTS: rights,
@@ -66,7 +67,7 @@ export const QUICK_HARMONY_NOTICE_CATALOG: Readonly<Record<string, NoticeCopy>> 
 };
 
 /** Unknown future codes keep their category and get an actionable safe fallback. */
-export function quickHarmonyNotice(finding: Pick<AutoDraftFinding,"id"|"code"|"category">, locationKo?: string): QuickHarmonyNotice {
+export function quickHarmonyNotice(finding: Pick<AutoDraftFinding,"id"|"code"|"category">, locationKo?: string, values?: { readonly chordName: string }): QuickHarmonyNotice {
   const entry = Object.hasOwn(QUICK_HARMONY_NOTICE_CATALOG, finding.code) ? QUICK_HARMONY_NOTICE_CATALOG[finding.code] : undefined;
   const fallback = finding.category === "unsupported"
     ? copy("이 악보에는 아직 지원하지 않는 내용이 있어요.", "자세히에서 위치를 확인하고 원본 악보를 고친 뒤 다시 올려 주세요.")
@@ -74,6 +75,6 @@ export function quickHarmonyNotice(finding: Pick<AutoDraftFinding,"id"|"code"|"c
       ? copy("원본과 비교할 참고 사항이 있어요.", "자세히에서 해당 부분을 확인해 주세요.")
       : copy("화음을 만들기 전에 확인할 부분이 있어요.", "자세히에서 해당 부분을 확인하고 악보를 고쳐 주세요.");
   const value = entry ?? fallback;
-  return {id:finding.id, messageKo: `${locationKo ? `${locationKo}: ` : ""}${value.messageKo}`, actionKo:value.actionKo,
+  return {id:finding.id, messageKo: `${locationKo ? `${locationKo}: ` : ""}${value.messageKo.replace("{chordName}", () => values?.chordName ?? "")}`, actionKo:value.actionKo,
     choices: (value.choices ?? (finding.category === "question" ? [edit] : [])).map(choice=>({...choice}))};
 }

@@ -94,6 +94,8 @@ export interface ImportedKeyObservation {
 }
 
 export interface ImportedChordDraft {
+  /** Present only when kind=other was fully resolved from its display text. */
+  readonly interpretation?: "kind-text";
   readonly key: string;
   readonly partOrdinal: number;
   readonly measureOrdinal: number;
