@@ -217,6 +217,7 @@ export function Screen08partial({ ui }: { ui: PreviewController }) { return (
 <button className="hm-btn hm-btn-secondary" type="button" aria-label="다른 파트로 다시 만들기" onClick={ui.otherPart}><Icon name="refresh" />다른 파트로</button>
 </div>
 </div>
+<PracticePanel player={ui.player} />
 </div>
 <section className="hm-score" aria-label="악보">
 <div className="hm-score-head"><b>악보</b><span className="hm-small">한 줄에 2마디</span></div>
