@@ -67,6 +67,28 @@ export interface PracticePlayerController {
   setLevel(trackId: string, level: number): void;
   setMasterLevel(level: number): void;
 }
+// Audio Session is optional. Invoke only from the user's Play/Resume action.
+function requestPlaybackAudioSession(): void {
+  try {
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session) session.type = "playback";
+  } catch { /* A partial/unsupported implementation must not prevent ordinary playback. */ }
+}
+
+async function resumeWithDeadline(context: AudioContext): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      context.resume(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("AUDIO_RESUME_TIMEOUT")), 3000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, preferredMeasuresPerLine = 4}: {
   abc: string; plan: PlaybackPlan; tempo: TempoSpec; identity: string;
   initialSettings?: PracticeSettings;
@@ -157,6 +179,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
     setPhase("starting");
     let pending: ActiveAudio | undefined;
     try {
+      requestPlaybackAudioSession();
       const AudioContextConstructor = window.AudioContext;
       const context = new AudioContextConstructor();
       const secondsPerQuarter = quarterSeconds(tempo, speed);
@@ -177,7 +200,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
       session.startedAt = context.currentTime + PRACTICE_AUDIO_START_LEAD_SECONDS;
       session.graph = schedulePracticeAudio(context, plan, { fromQuarter, secondsPerQuarter,
         startedAt: session.startedAt, audible, levels, masterLevel });
-      await context.resume();
+      await resumeWithDeadline(context);
       if (!audioOwner.isCurrent(session)) return;
       setPhase("playing");
       const timer = setInterval(() => {
@@ -196,7 +219,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
     } catch {
       if (pending && !audioOwner.isCurrent(pending)) return;
       stopNodes("startup-failure");
-      setError("오디오를 시작하지 못했습니다. 재생 버튼을 다시 눌러 주세요.");
+      setError("소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요.");
       setPhase("ready");
     }
   };

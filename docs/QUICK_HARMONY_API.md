@@ -217,6 +217,10 @@ const player = usePracticePlayer({
 
 `play()`는 ready·finished에서 처음부터, paused에서 이어서 재생한다. starting·playing에서는
 중복 시작하지 않는다. `restart()`는 멈추고 처음으로, `setSpeed()`도 처음으로 돌아간다.
+지원되는 브라우저에서는 재생 버튼으로 시작할 때만 `navigator.audioSession.type = "playback"`을 요청한다.
+페이지를 열 때는 설정하지 않는다. 기존 suspend → 음 예약 → resume 순서를 유지한다.
+resume 거부 또는 3초 시간 초과 시 ready로 돌아가고 “소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요.”를 표시한다.
+
 속도는 `PracticeSpeed`의 50·75·100·125·150이다. 파트 음량은 0–2, 전체 음량은 0–1로 제한한다.
 솔로는 한 트랙만 켜지고 음소거는 여러 트랙에 적용할 수 있다. 믹서는 재생 중에도 적용된다.
 identity가 바뀌거나 컴포넌트가 사라지면 이전 오디오와 타이머를 해제한다.

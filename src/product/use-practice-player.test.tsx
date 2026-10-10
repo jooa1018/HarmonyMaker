@@ -17,7 +17,7 @@ class Audio {
   static instances: Audio[]=[];
   currentTime=0;
   suspend=vi.fn(async():Promise<void>=>undefined);
-  resume=vi.fn(async()=>undefined);
+  resume=vi.fn(async():Promise<void>=>undefined);
   close=vi.fn(async()=>undefined);
   constructor(){Audio.instances.push(this);}
 }
@@ -117,4 +117,58 @@ it("retains separate legacy Play-from-start and Resume buttons",async()=>{
   await act(async()=>button("Resume").click());expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2].fromQuarter).toBeGreaterThan(0);
   await act(async()=>button("Pause").click());
   await act(async()=>button("Play").click());expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2].fromQuarter).toBe(0);
+});
+
+
+it("requests the optional playback session only on Play/Resume and preserves startup order",async()=>{
+  const writes:string[]=[];
+  vi.stubGlobal("navigator",{audioSession:{set type(value:string){writes.push(value);}}});
+  await mount();expect(writes).toEqual([]);expect(Audio.instances).toHaveLength(0);
+  await act(async()=>{player.toggleMute("track:a");player.setSpeed(75);});
+  expect(writes).toEqual([]);
+  await act(async()=>player.play());expect(writes).toEqual(["playback"]);
+  const audio=Audio.instances[0];
+  expect(audio.suspend.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(schedulePracticeAudio).mock.invocationCallOrder[0]);
+  expect(vi.mocked(schedulePracticeAudio).mock.invocationCallOrder[0]).toBeLessThan(audio.resume.mock.invocationCallOrder[0]);
+  await act(async()=>player.play());expect(writes).toHaveLength(1);
+  await act(async()=>player.pause());await act(async()=>player.play());expect(writes).toEqual(["playback","playback"]);
+});
+
+it.each([{}, {audioSession:{set type(_value:string){throw new Error("unsupported");}}}])("plays without usable Audio Session support",async navigator=>{
+  vi.stubGlobal("navigator",navigator);
+  await mount();await act(async()=>player.play());
+  expect(player.phase).toBe("playing");expect(player.error).toBeUndefined();
+});
+
+it("returns to ready with the requested message when resume rejects and allows retry",async()=>{
+  vi.stubGlobal("AudioContext",class extends Audio {resume=vi.fn(async()=>{throw new Error("NotAllowedError");});});
+  await mount();await act(async()=>player.play());
+  expect(player.phase).toBe("ready");
+  expect(player.error).toBe("소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요.");
+  expect(releasePracticeAudio).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+  vi.stubGlobal("AudioContext",Audio);
+  await act(async()=>player.play());expect(player.phase).toBe("playing");expect(player.error).toBeUndefined();
+});
+
+it("times out resume at three seconds and a late resolution cannot restart disposed audio",async()=>{
+  let resolve!:()=>void;
+  vi.stubGlobal("AudioContext",class extends Audio {resume=vi.fn(()=>new Promise<void>(done=>{resolve=done;}));});
+  await mount();await act(async()=>player.play());
+  await act(async()=>{await vi.advanceTimersByTimeAsync(2999);});expect(player.phase).toBe("starting");
+  await act(async()=>{await vi.advanceTimersByTimeAsync(1);});
+  expect(player.phase).toBe("ready");expect(player.error).toBe("소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요.");
+  expect(releasePracticeAudio).toHaveBeenCalledTimes(1);
+  await act(async()=>resolve());expect(player.phase).toBe("ready");expect(vi.getTimerCount()).toBe(0);
+});
+
+it("does not let a replaced resume timeout overwrite the new session",async()=>{
+  vi.stubGlobal("AudioContext",class extends Audio {resume=vi.fn(()=>new Promise<void>(()=>{}));});
+  await mount();await act(async()=>player.play());
+  await act(async()=>player.restart());
+  vi.stubGlobal("AudioContext",Audio);
+  await act(async()=>player.play());
+  await act(async()=>{await vi.advanceTimersByTimeAsync(3000);});
+  expect(player.phase).toBe("playing");expect(player.error).toBeUndefined();
+  expect(releasePracticeAudio).toHaveBeenCalledTimes(1);
 });
