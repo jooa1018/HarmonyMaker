@@ -19,7 +19,7 @@ class Audio {
   suspend=vi.fn(async():Promise<void>=>undefined);
   resume=vi.fn(async():Promise<void>=>undefined);
   close=vi.fn(async()=>undefined);
-  constructor(){Audio.instances.push(this);}
+  constructor(readonly options?: AudioContextOptions){Audio.instances.push(this);}
 }
 const plan:PlaybackPlan={events:[],trackIds:["track:source-lead","track:a","track:b"],totalQuarter:4,
   effectiveChordTimelineDigest:"test",trackLabels:{"track:source-lead":"멜로디","track:a":"테너","track:b":"알토"},
@@ -128,6 +128,7 @@ it("requests the optional playback session only on Play/Resume and preserves sta
   expect(writes).toEqual([]);
   await act(async()=>player.play());expect(writes).toEqual(["playback"]);
   const audio=Audio.instances[0];
+  expect(audio.options).toEqual({latencyHint:"playback"});
   expect(audio.suspend.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(schedulePracticeAudio).mock.invocationCallOrder[0]);
   expect(vi.mocked(schedulePracticeAudio).mock.invocationCallOrder[0]).toBeLessThan(audio.resume.mock.invocationCallOrder[0]);
   await act(async()=>player.play());expect(writes).toHaveLength(1);
