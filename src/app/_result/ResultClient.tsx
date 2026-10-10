@@ -13,6 +13,7 @@ import { createResultShare } from "./create-share";
 import { AppBar } from "../_ui/controls";
 import { Icon } from "../_ui/Icon";
 import { partialTitle } from "../_ui/format";
+import { ActionTiles } from "../_ui/ActionTiles";
 import { LivePractice } from "./LivePractice";
 import { downloadMusicXml } from "./download";
 import { reprepareProject } from "./reprepare";
@@ -68,10 +69,9 @@ function SavedResult({ projectId }: { projectId: string }) {
   const title = description?.title ?? "제목 없는 악보";
   const parts = description?.parts ?? [];
   const details = error || (view?.status === "unavailable" ? view.code : "");
-  const actions = <div className="hm-actions">
+  const actions = (openAudio?: () => void) => <div className="hm-actions">
     <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={() => setSharing(true)}><Icon name="share" />팀원과 공유</button>
-    <div className="hm-btn-row"><button className="hm-btn hm-btn-secondary" type="button" onClick={() => { try { if (record) downloadMusicXml(record.project); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }}><Icon name="download" />MusicXML 받기</button>
-      <button className="hm-btn hm-btn-secondary" type="button" aria-label="다른 파트로 다시 만들기" disabled={preparing} onClick={() => void otherParts()}><Icon name="refresh" />{preparing ? "악보 읽는 중…" : "다른 파트로"}</button></div>
+    <ActionTiles onAudio={openAudio ?? (() => {})} disabledAudio={!openAudio} onDownload={() => { try { if (record) downloadMusicXml(record.project); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }} onOther={() => void otherParts()} preparing={preparing} />
   </div>;
   return <div className="hm"><div className="hm-page is-wide" inert={sharing} aria-hidden={sharing || undefined}><AppBar />
     {!record ? <div className="hm-empty"><b>{error ? "악보를 열지 못했어요" : "이 기기에 저장된 악보가 없어요"}</b><Link className="hm-btn hm-btn-primary" href="/library">내 악보</Link></div> : <div className="hm-result">
@@ -81,7 +81,7 @@ function SavedResult({ projectId }: { projectId: string }) {
       {parts.filter(part => part.status === "partial" || part.status === "missing").map((part, index) => <div className="hm-banner" role="status" key={index}><Icon name="alert" /><div><p className="hm-banner-title">{partialTitle(part.label, part.missingMeasures ?? [])}</p>
         {generatedParts(projectId)?.find(item => item.part === part.part)?.reasonKo && <p className="hm-banner-text">{generatedParts(projectId)?.find(item => item.part === part.part)?.reasonKo}</p>}
         <div className="hm-chips">{parts.map((item, n) => <span className={`hm-chip ${item.status === "complete" ? "is-done" : "is-partial"}`} key={n}>{item.label} {item.status === "complete" ? "완료" : item.status === "missing" ? "없음" : "일부"}</span>)}</div></div></div>)}
-      {view?.status === "available" ? <LivePractice view={view} voiceRoles={voiceRoles} title={title} actions={actions} /> : <>{actions}<p role="status">{loading ? "악보를 그리는 중…" : "악보를 표시하지 못했어요. 고급 편집에서 확인해 주세요."}</p></>}
+      {view?.status === "available" ? <LivePractice view={view} voiceRoles={voiceRoles} title={title} actions={actions} /> : <>{actions()}<p role="status">{loading ? "악보를 그리는 중…" : "악보를 표시하지 못했어요. 고급 편집에서 확인해 주세요."}</p></>}
       {notice && <p className="hm-notice is-ask" role="status">{notice}</p>}
       <details className="hm-fold"><summary>고급 편집</summary><ul><li><Link href={`/workspace?project=${encodeURIComponent(projectId)}`}>음 하나씩 고치기, 후보 비교<small>프로젝트 워크스페이스에서 열려요</small></Link></li></ul></details>
     </div>}

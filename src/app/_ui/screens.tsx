@@ -3,6 +3,9 @@ import Link from "next/link";
 // Screen markup transcribed from the approved mockup. The preview controller supplies fixture state.
 import { AppBar, PartPicker, CtaBar, FileDrop, LeadQuestionChoices, CopyPromptButton, LibraryList, NotesFold } from "./controls";
 import { PracticePanel, ScoreNotation, MiniPlayerBar } from "./practice";
+import { AudioSheet } from "./AudioSheet";
+import { ActionTiles } from "./ActionTiles";
+import { silentAudio } from "./audio-export";
 import { ShareSheet } from "./ShareSheet";
 import { Icon } from "./Icon";
 import { BrandMark } from "./BrandMark";
@@ -172,10 +175,7 @@ export function Screen07result({ ui }: { ui: PreviewController }) { return (
 <div className="hm-result-side">
 <div className="hm-actions">
 <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={ui.openShare}><Icon name="share" />팀원과 공유</button>
-<div className="hm-btn-row">
-<button className="hm-btn hm-btn-secondary" type="button" onClick={ui.download}><Icon name="download" />MusicXML 받기</button>
-<button className="hm-btn hm-btn-secondary" type="button" aria-label="다른 파트로 다시 만들기" onClick={ui.otherPart}><Icon name="refresh" />다른 파트로</button>
-</div>
+<ActionTiles onAudio={ui.openAudio} onDownload={ui.download} onOther={ui.otherPart} />
 </div>
 <PracticePanel player={ui.player} />
 </div>
@@ -212,10 +212,7 @@ export function Screen08partial({ ui }: { ui: PreviewController }) { return (
 <div className="hm-result-side">
 <div className="hm-actions">
 <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={ui.openShare}><Icon name="share" />팀원과 공유</button>
-<div className="hm-btn-row">
-<button className="hm-btn hm-btn-secondary" type="button" onClick={ui.download}><Icon name="download" />MusicXML 받기</button>
-<button className="hm-btn hm-btn-secondary" type="button" aria-label="다른 파트로 다시 만들기" onClick={ui.otherPart}><Icon name="refresh" />다른 파트로</button>
-</div>
+<ActionTiles onAudio={ui.openAudio} onDownload={ui.download} onOther={ui.otherPart} />
 </div>
 <PracticePanel player={ui.player} />
 </div>
@@ -278,6 +275,7 @@ export function Screen12shared({ ui }: { ui: PreviewController }) { return (
 <div className="hm-chips"><span className="hm-chip"><span className="hm-dot is-melody"></span>멜로디</span><span className="hm-chip"><span className="hm-dot is-alto"></span>알토</span><span className="hm-chip"><span className="hm-dot is-tenor"></span>테너</span></div>
 </section>
 <PracticePanel player={ui.player} />
+<button className="hm-btn hm-btn-secondary hm-btn-block" type="button" onClick={ui.openAudio}><Icon name="headphones" />연습 음원 받기</button>
 <section className="hm-score" aria-label="악보">
 <div className="hm-score-head"><b>악보</b></div>
 <ScoreNotation source="full" />
@@ -344,10 +342,7 @@ export function Screendesktopresult({ ui }: { ui: PreviewController }) { return 
 <div className="hm-result-side">
 <div className="hm-actions">
 <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={ui.openShare}><Icon name="share" />팀원과 공유</button>
-<div className="hm-btn-row">
-<button className="hm-btn hm-btn-secondary" type="button" onClick={ui.download}><Icon name="download" />MusicXML 받기</button>
-<button className="hm-btn hm-btn-secondary" type="button" aria-label="다른 파트로 다시 만들기" onClick={ui.otherPart}><Icon name="refresh" />다른 파트로</button>
-</div>
+<ActionTiles onAudio={ui.openAudio} onDownload={ui.download} onOther={ui.otherPart} />
 </div>
 <PracticePanel player={ui.player} />
 </div>
@@ -360,7 +355,13 @@ export function Screendesktopresult({ ui }: { ui: PreviewController }) { return 
 </div>
 </div>
 ); }
+export function Screen13audio({ ui }: { ui: PreviewController }) { return <div className="hm"><div className="hm-page" aria-hidden="true" inert><header className="hm-appbar"><span className="hm-brand"><BrandMark />HarmonyMaker</span></header><section className="hm-result-head"><h1 className="hm-result-title">시냇가에 심은 나무</h1><p className="hm-result-meta">G장조 · 4/4 · 24마디</p></section></div><AudioSheet title="시냇가에 심은 나무" player={ui.player} onClose={ui.closeAudio} /></div>; }
+export function ScreenGaudio({ ui }: { ui: PreviewController }) { return <div className="hm"><div className="hm-page"><AudioSheet title="시냇가에 심은 나무" player={ui.player} onClose={ui.closeAudio} standalone previewMaking /></div></div>; }
+export function ScreenHaudio({ ui }: { ui: PreviewController }) { return <div className="hm"><div className="hm-page"><AudioSheet title="시냇가에 심은 나무" player={ui.player} onClose={ui.closeAudio} standalone initialResult={silentAudio(96)} /></div></div>; }
 export const screens = {
+"13-audio": Screen13audio,
+"G-audio-making": ScreenGaudio,
+"H-audio-done": ScreenHaudio,
 "01-start": Screen01start,
 "02-parts": Screen02parts,
 "03-lead": Screen03lead,
