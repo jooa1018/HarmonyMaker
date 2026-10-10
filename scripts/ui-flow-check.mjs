@@ -118,6 +118,20 @@ try {
   console.log("PASS partial reload and legacy names at 360px");
   await context.close();
 
+  const doctypeContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const doctypePage = await doctypeContext.newPage();
+  const doctypeRequests = [], doctypeErrors = [];
+  doctypePage.on("request", request => { if (request.url().includes("musicxml.org")) doctypeRequests.push(request.url()); });
+  doctypePage.on("pageerror", error => doctypeErrors.push(error.message));
+  const standardDoctype = '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">';
+  await upload(doctypePage, (await fixture("wag11/4-4-1.musicxml")).replace("?>", `?>\n${standardDoctype}\n`), "standard-doctype.musicxml");
+  await generate(doctypePage);
+  for (const label of ["멜로디", "알토", "테너"]) await expect(doctypePage.getByRole("button", { name: `${label}만 듣기` })).toBeVisible();
+  expect(doctypeRequests).toEqual([]); expect(doctypeErrors).toEqual([]);
+  results.push({ case: "standard-musicxml-doctype-upload-and-generate", passed: true });
+  console.log("PASS standard MusicXML DOCTYPE upload and generation without external DTD request");
+  await doctypeContext.close();
+
   }
   if (process.env.HM_UI_SKIP_PERF !== "1") {
   // Warm routes before measuring. Test data repeats our own four-bar fixture.
