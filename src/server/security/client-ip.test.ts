@@ -49,3 +49,25 @@ describe("separate unknown-IP global quotas", () => {
     expect(await quota.consumeClientIpHourly({ ipAddress: undefined, policyKey: "test", limit: 1, now: new Date("2026-10-10T01:00:00.000Z") })).toBe(true);
   });
 });
+
+
+describe("IPv6 /64 quota grouping", () => {
+  it("shares a bucket within /64 and separates adjacent prefixes", async () => {
+    const quota = new QuotaAndIdempotencyService(new MemoryGovernanceStore(), new Uint8Array(32).fill(1));
+    const consume = (ipAddress: string) => quota.consumeClientIpHourly({ ipAddress, policyKey: "test", limit: 1, now: new Date("2026-10-10T00:00:00Z") });
+    expect(await consume("2001:db8:abcd:12::1")).toBe(true);
+    expect(await consume("2001:0DB8:abcd:0012:ffff:ffff:ffff:ffff")).toBe(false);
+    expect(await consume("2001:db8:abcd:13::1")).toBe(true);
+    expect(quota.ipHash("::1")).toBe(quota.ipHash("::2"));
+    expect(quota.ipHash("2001:db8::1")).toBe(quota.ipHash("2001:db8:0:0:1:2:3:4"));
+    expect(quota.ipHash("2001:db8::1")).not.toBe(quota.ipHash("2001:db8:0:1::1"));
+  });
+  it("keeps IPv4 address granularity including mapped IPv6", async () => {
+    const quota = new QuotaAndIdempotencyService(new MemoryGovernanceStore(), new Uint8Array(32).fill(1));
+    const consume = (ipAddress: string) => quota.consumeClientIpHourly({ ipAddress, policyKey: "test", limit: 1, now: new Date("2026-10-10T00:00:00Z") });
+    expect(await consume("192.0.2.1")).toBe(true);
+    expect(await consume("::ffff:192.0.2.1")).toBe(false);
+    expect(await consume("::ffff:c000:201")).toBe(false);
+    expect(await consume("192.0.2.2")).toBe(true);
+  });
+});

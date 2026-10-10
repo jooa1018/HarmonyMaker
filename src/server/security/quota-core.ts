@@ -1,3 +1,4 @@
+import { normalizeClientIp } from "./ip-address";
 import type { SemanticDigest } from "../../domain/digest/canonical";
 import type { GovernanceStore, IdempotencyClaim, IdempotencyRecoveryLookup, PrivateRowId } from "../persistence/store";
 import { keyedTokenHash } from "./crypto-core";
@@ -10,8 +11,16 @@ export const UNKNOWN_IP_GLOBAL_QUOTA_MULTIPLIER = 100;
 export const IDEMPOTENCY_PENDING_LEASE_SECONDS = 300;
 
 export function normalizeIpAddress(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  return normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+  const normalized = normalizeClientIp(value);
+  // Internal global-bucket identifiers are not IP addresses.
+  if (!normalized) return value.trim().toLowerCase();
+  if (!normalized.includes(":")) return normalized;
+  const [left, right] = normalized.split("::");
+  const leading = left ? left.split(":") : [];
+  const trailing = right ? right.split(":") : [];
+  const words = right === undefined ? leading
+    : [...leading, ...Array<string>(8 - leading.length - trailing.length).fill("0"), ...trailing];
+  return `${words.slice(0, 4).join(":")}::/64`;
 }
 
 function hourlyWindow(now: Date): { readonly start: string; readonly end: string } {
