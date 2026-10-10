@@ -1,0 +1,40 @@
+name: UI quick flow
+on:
+  push:
+    branches: ['hm/ui-*']
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'src/app/**'
+      - 'src/product/**'
+      - 'src/import/**'
+      - 'scripts/ui-flow-*.mjs'
+      - 'package*.json'
+      - '.github/workflows/ui-flow.yml'
+permissions:
+  contents: read
+jobs:
+  quick-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise local generation and disposable sharing
+        run: |
+          node scripts/ui-flow-server.mjs > /tmp/hm-flow-server.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            curl --fail --silent http://127.0.0.1:3133/ > /dev/null && break
+            sleep 1
+          done
+          node scripts/ui-flow-check.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: h3-quick-flow-evidence
+          path: runtime-browser-evidence/h3-flow

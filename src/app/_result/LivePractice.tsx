@@ -26,11 +26,12 @@ export function LivePractice({ view, title, actions, initialSettings, voiceRoles
   useEffect(() => {
     const el = panel.current;
     if (!el) return;
-    const observer = new IntersectionObserver(([entry]) => {
-      const narrow = (el.closest(".hm")?.clientWidth ?? 1280) < 720;
-      setMini(narrow && !entry.isIntersecting && entry.boundingClientRect.bottom < 0);
-    });
-    observer.observe(el); return () => observer.disconnect();
+    const app = el.closest(".hm");
+    const update = () => setMini((app?.clientWidth ?? 1280) < 720 && el.getBoundingClientRect().bottom < 0);
+    const observer = new IntersectionObserver(update);
+    const resize = new ResizeObserver(update);
+    observer.observe(el); if (app) resize.observe(app);
+    return () => { observer.disconnect(); resize.disconnect(); };
   }, []);
   const controls: PlayerController = {
     phase: player.phase, seconds: player.positionQuarter * player.secondsPerQuarter, totalSeconds: player.totalQuarter * player.secondsPerQuarter,
