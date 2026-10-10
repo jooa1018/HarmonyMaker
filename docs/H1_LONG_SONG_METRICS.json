@@ -1,0 +1,178 @@
+[
+  {
+    "cpuRate": 1,
+    "created": {
+      "stages": {
+        "prepare": 274.59999999403954,
+        "generate": 1203.199999988079,
+        "save": 597.6999999880791
+      },
+      "tasks": [
+        {
+          "duration": 277,
+          "start": 169
+        },
+        {
+          "duration": 1203,
+          "start": 446.40000000596046
+        },
+        {
+          "duration": 573,
+          "start": 1649.9000000059605
+        }
+      ],
+      "calls": [
+        {
+          "name": "generateDeterministicAccompaniment",
+          "phase": "generate",
+          "ms": 1.300000011920929
+        },
+        {
+          "name": "exportHarmonyProject",
+          "phase": "save",
+          "ms": 572.7999999821186
+        }
+      ]
+    },
+    "reopened": {
+      "stages": {
+        "coldLoad": 1323.4000000059605,
+        "practiceView": 113.69999998807907,
+        "abcjsRender": 586.7000000178814
+      },
+      "tasks": [
+        {
+          "duration": 1302,
+          "start": 104.30000001192093
+        },
+        {
+          "duration": 113,
+          "start": 1406.9000000059605
+        },
+        {
+          "duration": 586,
+          "start": 1525.199999988079
+        }
+      ],
+      "calls": [
+        {
+          "name": "importHarmonyProject",
+          "phase": "coldLoad",
+          "ms": 1301
+        },
+        {
+          "name": "materializeActiveArrangement",
+          "phase": "practiceView",
+          "ms": 1.2000000178813934
+        },
+        {
+          "name": "arrangementRenderDocumentToAbc",
+          "phase": "practiceView",
+          "ms": 47.400000005960464
+        },
+        {
+          "name": "generateDeterministicAccompaniment",
+          "phase": "practiceView",
+          "ms": 3.699999988079071
+        },
+        {
+          "name": "buildPlaybackPlan",
+          "phase": "practiceView",
+          "ms": 42.599999994039536
+        }
+      ],
+      "svgCount": 1,
+      "eventCount": 1920
+    }
+  },
+  {
+    "cpuRate": 4,
+    "created": {
+      "stages": {
+        "prepare": 1049.7000000178814,
+        "generate": 24148.19999998808,
+        "save": 13555.09999999404
+      },
+      "tasks": [
+        {
+          "duration": 1056,
+          "start": 147.2999999821186
+        },
+        {
+          "duration": 24148,
+          "start": 1203.7999999821186
+        },
+        {
+          "duration": 13432,
+          "start": 25366.19999998808
+        },
+        {
+          "duration": 59,
+          "start": 38848
+        }
+      ],
+      "calls": [
+        {
+          "name": "generateDeterministicAccompaniment",
+          "phase": "generate",
+          "ms": 21.30000001192093
+        },
+        {
+          "name": "exportHarmonyProject",
+          "phase": "save",
+          "ms": 13422.40000000596
+        }
+      ]
+    },
+    "reopened": {
+      "stages": {
+        "coldLoad": 14712.90000000596,
+        "practiceView": 1376.0999999940395,
+        "abcjsRender": 7243.800000011921
+      },
+      "tasks": [
+        {
+          "duration": 14660,
+          "start": 495.5
+        },
+        {
+          "duration": 1376,
+          "start": 15158.40000000596
+        },
+        {
+          "duration": 7244,
+          "start": 16542.30000001192
+        }
+      ],
+      "calls": [
+        {
+          "name": "importHarmonyProject",
+          "phase": "coldLoad",
+          "ms": 14656.899999976158
+        },
+        {
+          "name": "materializeActiveArrangement",
+          "phase": "practiceView",
+          "ms": 16.30000001192093
+        },
+        {
+          "name": "arrangementRenderDocumentToAbc",
+          "phase": "practiceView",
+          "ms": 633.2000000178814
+        },
+        {
+          "name": "generateDeterministicAccompaniment",
+          "phase": "practiceView",
+          "ms": 76.59999999403954
+        },
+        {
+          "name": "buildPlaybackPlan",
+          "phase": "practiceView",
+          "ms": 502.09999999403954
+        }
+      ],
+      "svgCount": 1,
+      "eventCount": 1920
+    }
+  }
+]
