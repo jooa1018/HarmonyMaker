@@ -1041,7 +1041,7 @@ async function validateVariantIntegrity(
   const locks: VariantStageLocks = project.locksByPreset[variant.presetId]
     ?? { intent: [], activity: [], anchor: [], solver: [] };
   const intent = variant.intentPlan;
-  requireIntegrity(["grammar-v1.0.1", "grammar-v1.1"].includes(intent.grammarVersion), `WAG_VERSION_UNSUPPORTED:${intent.grammarVersion}`, "ALGORITHM_CONFIG_MISMATCH");
+  // The installed registry is the version authority; unregistered versions fail closed.
   const installed = expected.versions.grammarVersion === intent.grammarVersion ? expected : expected.compatible?.[intent.grammarVersion];
   requireIntegrity(installed !== undefined, `WAG_VERSION_UNSUPPORTED:${intent.grammarVersion}`, "ALGORITHM_CONFIG_MISMATCH");
   expected = installed;
