@@ -36,7 +36,7 @@ export interface AlgorithmConfigDigestRegistry {
   readonly accompanimentConfigDigest: SemanticDigest;
   readonly diagnosticRegistryDigest: SemanticDigest;
 }
-export interface AlgorithmExecutionRegistry { readonly versions: AlgorithmVersionRegistry; readonly configDigests: AlgorithmConfigDigestRegistry }
+export interface AlgorithmExecutionRegistry { readonly versions: AlgorithmVersionRegistry; readonly configDigests: AlgorithmConfigDigestRegistry; readonly compatible?: Readonly<Record<string, AlgorithmExecutionRegistry>> }
 export interface RegistryExpectation { readonly versions: Partial<AlgorithmVersionRegistry>; readonly configDigests: Partial<AlgorithmConfigDigestRegistry> }
 export type RegistryValidationResult = { readonly status: "valid" } | { readonly status: "blocked"; readonly code: "ALGORITHM_CONFIG_MISMATCH"; readonly mismatches: readonly string[] };
 

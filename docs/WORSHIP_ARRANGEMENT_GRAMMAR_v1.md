@@ -2103,3 +2103,32 @@ DIAGNOSTIC_EXTENSION_DIGEST = aee570a5fc6110107979c40708ebb0b48f645e23853a0e7508
 FULL_DIAGNOSTIC_REGISTRY_DIGEST = 0bdb9f5067cba55dad165d3679460a04f21e98b450a4624fa21eca1ffa3dcc77
 IMPLEMENT_THROUGH_PRODUCT_COMPLETION = REQUIRED
 ```
+
+<!-- WAG v1.1 extension -->
+
+# 25. WAG v1.1 — Quick Harmony 파트·표기·박자 확장
+
+2026-10-10 Orchestrator 정정 판정을 적용한다. 위의 v1.0.1 본문과 canonical payload는
+동결 기준으로 보존한다. v1.1은 별도 canonical payload와 생성 단계 버전·config digest를 사용한다.
+
+- quick-harmony v2 요청은 알토=Lower, 테너=Upper로 고정한다. auto 기본 파트도 동일하다.
+  17.3의 역할 비교는 v1 경로에 남고, v2는 선택 파트의 역할만 평가한다.
+- 새 배치를 도입하지 않는다. 18.3 `Upper > Lead > Lower`, 독립 marginal 검증,
+  perceptibility, dropout, Source chord 존중, hard range/leap 규칙을 그대로 유지한다.
+- 파트 프리셋 v2는 악보 높이다. 테너 hard C4–A5, comfortable D4–G5;
+  알토 hard F3–D5, comfortable A3–C5. 테너 트랙의 선택 필드
+  `notationOctaveShift: -1`은 표기·재생에만 적용한다. 필드가 없거나 0이면 기존 동작이다.
+  후보 음표·배치·음역 검사는 written pitch로 하고, 재생·공유·연습 오디오는 테너만 -12 semitones다.
+- MusicXML 테너 clef는 G2와 octave-change -1, ABC는 treble-8이다.
+- 명시 파트 선택은 제품 반환 계약에서 필수다. 엔진이 허용한 후보만 사용하며,
+  선택 결과에 없는 파트나 부족한 구간은 `parts[].status/missingMeasures/reasonKo`로 보고한다.
+  모두 완성되면 complete, 일부만 되면 partial, 모두 없으면 blocked다.
+  auto는 18.5 optional H2 및 기존 내부 상태를 유지한다.
+- 3/4는 `[1,1,1]` 및 주 박 1 quarter, 12/8은 `[3,3,3,3]` 및 주 박 3/2 quarter다.
+  2/4·4/4·6/8은 그대로다. 3/8·9/8은 박 묶음을 왜곡하지 않고 지원 밖으로 판정한다.
+- 기존 프로젝트·편집 스냅샷은 저장된 intent WAG 버전으로 검증한다. 편집으로 버전을
+  조용히 바꾸지 않는다. v1.0.1/v1.1 권위만 설치하며 알 수 없는 버전은 차단한다.
+
+검증: 기존 v1 프로젝트 import/export·재생성 및 변경 전 코드의 편집 바이트 기준을 보존한다.
+자작 4/4·3/4·12/8 각 세 곡(못갖춘마디 포함)에 대해 알토·테너·둘 다 생성,
+고정 배치·음역·결정성·내보내기·재생·공유·편집 저장을 시험한다.

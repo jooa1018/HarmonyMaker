@@ -1,4 +1,4 @@
-import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
+import { wagVersions } from "./versions";
 import { loadAccompanimentConfig } from "../accompaniment/deterministic";
 import type { ChordToneSpec } from "../domain/chord/model";
 import { compareCanonicalValues, semanticDigest } from "../domain/digest/canonical";
@@ -104,10 +104,11 @@ function primaryPulse(input: WagLifecycleInput, position: MusicalPosition): Frac
   const occurrence = input.source.performanceSequence.occurrences[position.performanceMeasureIndex];
   if (!occurrence) throw new RangeError("UNSUPPORTED_METER");
   const groups = occurrence.time.beatGroups;
-  if ((occurrence.time.numerator === 2 || occurrence.time.numerator === 4) && occurrence.time.denominator === 4
+  const expanded = wagVersions(input.source, input.grammarVersion).grammarVersion === "grammar-v1.1";
+  if ((occurrence.time.numerator === 2 || (expanded && occurrence.time.numerator === 3) || occurrence.time.numerator === 4) && occurrence.time.denominator === 4
     && groups.length === occurrence.time.numerator && groups.every((group) => group === 1)) return fraction(1);
-  if (occurrence.time.numerator === 6 && occurrence.time.denominator === 8
-    && groups.length === 2 && groups[0] === 3 && groups[1] === 3) return fraction(3, 2);
+  if ((occurrence.time.numerator === 6 || (expanded && occurrence.time.numerator === 12)) && occurrence.time.denominator === 8
+    && groups.length === occurrence.time.numerator / 3 && groups.every(group => group === 3)) return fraction(3, 2);
   throw new RangeError("UNSUPPORTED_METER");
 }
 
@@ -505,7 +506,7 @@ export async function validateWagCandidate(
   anchorPlan: ArrangementAnchorPlan,
   candidate: ArrangementCandidate,
 ): Promise<WagCandidateValidationReport> {
-  const authority = await loadFrozenWagAuthority();
+  const authority = await loadFrozenWagAuthority(wagVersions(input.source, input.grammarVersion).grammarVersion);
   const context = await contextFor(input, intentPlan, activityPlan, anchorPlan);
   const raw: Omit<Diagnostic, "id">[] = [];
   if (candidate.presetId !== input.effectiveConfig.presetId
@@ -606,7 +607,7 @@ export async function validateWagAssembly(
   anchorPlan: ArrangementAnchorPlan,
   result: ArrangementGenerationResult,
 ): Promise<WagAssemblyValidationReport> {
-  const authority = await loadFrozenWagAuthority();
+  const authority = await loadFrozenWagAuthority(wagVersions(input.source, input.grammarVersion).grammarVersion);
   const accompanimentConfig = await loadAccompanimentConfig();
   const context = await contextFor(input, intentPlan, activityPlan, anchorPlan);
   const candidateReports = await Promise.all(result.candidates.map((candidate) =>
@@ -638,11 +639,11 @@ export async function validateWagAssembly(
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: input.locks?.solver ?? [],
-    solverVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.solverVersion,
-    assemblerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.assemblerVersion,
-    validatorVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion,
-    metricsVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.metricsVersion,
-    candidateProjectionVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.candidateProjectionVersion,
+    solverVersion: wagVersions(input.source, input.grammarVersion).solverVersion,
+    assemblerVersion: wagVersions(input.source, input.grammarVersion).assemblerVersion,
+    validatorVersion: wagVersions(input.source, input.grammarVersion).validatorVersion,
+    metricsVersion: wagVersions(input.source, input.grammarVersion).metricsVersion,
+    candidateProjectionVersion: wagVersions(input.source, input.grammarVersion).candidateProjectionVersion,
     solverConfigDigest: authority.wagOwnedConfigDigests.solverConfigDigest,
     assemblerConfigDigest: authority.wagOwnedConfigDigests.assemblerConfigDigest,
     validatorConfigDigest: authority.wagOwnedConfigDigests.validatorConfigDigest,
@@ -672,7 +673,7 @@ export async function validateWagAssembly(
   const digestMismatch = result.presetId !== input.effectiveConfig.presetId
     || Object.entries(expectedDigests).some(([key, value]) => result.digests[key as keyof typeof result.digests] !== value)
     || Object.entries(expectedConfigs).some(([key, value]) => result.configDigests[key] !== value)
-    || Object.entries(APPLICATION_ALGORITHM_VERSION_REGISTRY).some(([key, value]) => result.versions[key] !== value);
+    || Object.entries(wagVersions(input.source, input.grammarVersion)).some(([key, value]) => result.versions[key] !== value);
   if (digestMismatch) {
     raw.push(rawDiagnostic("ALGORITHM_CONFIG_MISMATCH", "result", { stage: "validation", reason: "RESULT_AUTHORITY_MISMATCH" }));
   }

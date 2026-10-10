@@ -53,6 +53,7 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     if (!metadata) throw new RangeError("SHARE_TRACK_ROLE_INVALID");
     return {
     trackPlanId: metadata.trackPlanId,
+    ...("notationOctaveShift" in track && track.notationOctaveShift === -1 ? { notationOctaveShift: -1 as const } : {}),
     events: track.events.map((event, eventIndex): GeneratedVoiceEvent => {
       if (event.kind === "rhythm") throw new RangeError("SHARE_GENERATED_RHYTHM_INVALID");
       return event.kind === "rest" ? {

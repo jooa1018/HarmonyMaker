@@ -15,7 +15,7 @@ export interface GeneratedNoteEventPayload { readonly kind: "note"; readonly ran
 export interface GeneratedRestEventPayload { readonly kind: "rest"; readonly range: MusicalRange }
 export type GeneratedVoiceEventPayload = GeneratedNoteEventPayload | GeneratedRestEventPayload;
 export type GeneratedVoiceEvent = GeneratedVoiceEventPayload & { readonly id: string };
-export interface GeneratedHarmonyTrack { readonly trackPlanId: string; readonly events: readonly GeneratedVoiceEvent[] }
+export interface GeneratedHarmonyTrack { readonly trackPlanId: string; readonly events: readonly GeneratedVoiceEvent[]; readonly notationOctaveShift?: -1 | 0 }
 export interface RealizedHarmonyAnchor { readonly directiveId: string; readonly trackPlanId: string; readonly position: MusicalPosition; readonly pitch: SpelledPitch }
 export interface TextureDensityMetrics extends ActivityDensityMetrics { readonly harmonicDivergenceCoverage: DurationRateMetric; readonly exactlyTwoPitchCoverage: DurationRateMetric; readonly exactlyThreePitchCoverage: DurationRateMetric; readonly medianRegisterSpreadSemitones: number }
 export interface PhraseBoundaryState { readonly firstPitchByTrack: Readonly<Record<string, SpelledPitch | null>>; readonly lastPitchByTrack: Readonly<Record<string, SpelledPitch | null>>; readonly endingActivityByTrack: Readonly<Record<string, VoiceActivityDirective>>; readonly placementRoleByTrack: Readonly<Record<string, VocalPlacementRole>>; readonly unresolvedNctPlanIds: readonly string[]; readonly recentTextureIds: readonly TexturePatternId[] }

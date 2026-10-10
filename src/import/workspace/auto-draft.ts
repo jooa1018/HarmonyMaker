@@ -4,7 +4,7 @@ import { pitchMidiNumber as midiNumber, type KeySignature, type SpelledPitch } f
 import { validatePerformer } from "../../domain/performer";
 import { validateRights, type RightsMetadata, type TempoSpec } from "../../domain/source/model";
 import { localCandidateEvidence } from "../../domain/omr/local-candidate";
-import { HARMONY_PART_PRESET_VERSION, defaultHarmonyPart, isHarmonyPartPreset, presetPerformer, sourceLeadSpanPerformer, type HarmonyPartPreset } from "../../domain/part-presets";
+import { HARMONY_PART_PRESET_VERSION, defaultHarmonyPart, isHarmonyPartPreset, presetPerformer, sourceLeadSpanPerformer, type HarmonyPartPreset, type HarmonyPartPresetVersion } from "../../domain/part-presets";
 import { performerId } from "../../domain/ids";
 import { __musicXmlParserInternals } from "../musicxml/parser-core";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
@@ -23,6 +23,7 @@ import type { ArrangementRequest, ScoreWorkspace, WorkspaceIssue, WorkspaceScope
  */
 export const AUTO_DRAFT_POLICY_VERSION = "hm-auto-draft-policy-v2" as const;
 export type AutoDraftPolicyVersion = "hm-auto-draft-policy-v1" | typeof AUTO_DRAFT_POLICY_VERSION;
+const presetVersionForPolicy = (version: AutoDraftPolicyVersion): HarmonyPartPresetVersion => version === "hm-auto-draft-policy-v1" ? "hm-harmony-part-presets-v1" : HARMONY_PART_PRESET_VERSION;
 
 export interface AutoDraftOptions {
   /** One or two distinct parts; normalized to alto → tenor. */
@@ -43,7 +44,7 @@ export interface AutoDraftFinding {
 }
 export interface AutoDraftAssessment {
   readonly version: AutoDraftPolicyVersion;
-  readonly presetVersion: typeof HARMONY_PART_PRESET_VERSION;
+  readonly presetVersion: HarmonyPartPresetVersion;
   readonly workspaceId: string; readonly workspaceRevision: number; readonly workspaceDigest: string;
   readonly optionsDigest: string;
   readonly status: "ready" | "ready-with-warnings" | "needs-decision" | "unsupported";
@@ -82,11 +83,11 @@ function optionsForPolicy(options: AutoDraftOptions, version: AutoDraftPolicyVer
   return { ...rest, ...(harmonyParts ? { harmonyPart: harmonyParts[0] } : {}) };
 }
 export const serializeAutoDraftOptions = (options: AutoDraftOptions, version: AutoDraftPolicyVersion = AUTO_DRAFT_POLICY_VERSION) => canonicalJson({
-  version, presetVersion: HARMONY_PART_PRESET_VERSION, options: optionsForPolicy(normalizeAutoDraftOptions(options), version),
+  version, presetVersion: presetVersionForPolicy(version), options: optionsForPolicy(normalizeAutoDraftOptions(options), version),
 });
 export function parseAutoDraftMarker(text: string): { readonly version: AutoDraftPolicyVersion; readonly options: AutoDraftOptions } {
   const value = JSON.parse(text) as { version?: string; presetVersion?: string; options?: unknown };
-  if (!value || !["hm-auto-draft-policy-v1", AUTO_DRAFT_POLICY_VERSION].includes(value.version ?? "") || value.presetVersion !== HARMONY_PART_PRESET_VERSION) throw new RangeError("AUTO_DRAFT_VERSION_UNSUPPORTED");
+  if (!value || !["hm-auto-draft-policy-v1", AUTO_DRAFT_POLICY_VERSION].includes(value.version ?? "") || value.presetVersion !== presetVersionForPolicy(value.version as AutoDraftPolicyVersion)) throw new RangeError("AUTO_DRAFT_VERSION_UNSUPPORTED");
   const version = value.version as AutoDraftPolicyVersion;
   let rawOptions = value.options;
   if (version === "hm-auto-draft-policy-v1") {
@@ -135,7 +136,8 @@ const PRACTICE_TEMPO: Readonly<Record<"simple" | "compound", TempoSpec>> = {
 
 /** Build the effective request. Values the user set in the journal win; empty
  * fields are filled from the source, then from named product defaults. */
-function effectiveRequest(state: WorkspaceState, options: AutoDraftOptions, performanceVersion: string, provenance: AutoDraftProvenance[], findings: AutoDraftFinding[]): ArrangementRequest | undefined {
+function effectiveRequest(state: WorkspaceState, options: AutoDraftOptions, performanceVersion: string, provenance: AutoDraftProvenance[], findings: AutoDraftFinding[], policyVersion: AutoDraftPolicyVersion): ArrangementRequest | undefined {
+  const presetVersion = presetVersionForPolicy(policyVersion);
   const music = state.music!, seed = state.request;
   const lead = chooseLead(music, seed);
   if (!lead.lead) {
@@ -161,7 +163,7 @@ function effectiveRequest(state: WorkspaceState, options: AutoDraftOptions, perf
   if (tempo) provenance.push({ field: "tempo", origin: "user-edit", value: tempo, noteKo: "작업 공간에서 사용자가 입력한 템포" });
   else if (music.defaultTempo) { tempo = music.defaultTempo; provenance.push({ field: "tempo", origin: "source-read", value: tempo, noteKo: "악보 파일에 기록된 템포" }); }
   else {
-    const compound = part.measures[0]?.time.numerator === 6 && part.measures[0]?.time.denominator === 8;
+    const compound = [6, 12].includes(part.measures[0]?.time.numerator) && part.measures[0]?.time.denominator === 8;
     tempo = PRACTICE_TEMPO[compound ? "compound" : "simple"];
     provenance.push({ field: "tempo", origin: "policy-default", value: tempo, noteKo: "악보에서 템포를 읽지 못해 제품 연습 템포를 사용(원본 템포 아님)" });
   }
@@ -176,7 +178,7 @@ function effectiveRequest(state: WorkspaceState, options: AutoDraftOptions, perf
   }
   let singerCount: 1 | 2 | 3 = 2, performers = seed.performers;
   const leadSlot = seed.performers[0]?.profile && validatePerformer(seed.performers[0].profile) ? seed.performers[0] : undefined;
-  if (userComplete && !options.harmonyParts) {
+  if (userComplete && !options.harmonyParts && policyVersion === "hm-auto-draft-policy-v1") {
     singerCount = seed.singerCount; performers = seed.performers;
     provenance.push({ field: "performers", origin: "user-edit", value: seed.performers.map(p => p.profile), noteKo: "작업 공간에서 사용자가 지정한 가수 음역(고급 설정)을 그대로 사용" });
   } else {
@@ -186,12 +188,12 @@ function effectiveRequest(state: WorkspaceState, options: AutoDraftOptions, perf
     const leadProfile = leadSlot?.profile ?? sourceLeadSpanPerformer(leadPitches);
     performers = [{ id: performerId(0), displayName: leadProfile.displayName, profile: { ...leadProfile, id: performerId(0) } },
       ...parts.map((part, index) => {
-        const profile = presetPerformer(part, index === 0 ? "pf:1" : "pf:2");
+        const profile = presetPerformer(part, index === 0 ? "pf:1" : "pf:2", presetVersion);
         return { id: profile.id, displayName: profile.displayName, profile };
       })];
     provenance.push({ field: "performers[0]", origin: leadSlot ? "user-edit" : "policy-default", value: leadProfile,
       noteKo: leadSlot ? "사용자가 지정한 Lead 가수 제약(고급 설정)을 적용" : "Lead는 원본 멜로디 그대로: 악보의 실제 Lead 음역을 기록(가수 음역 아님, 이조·삭제 없음)" });
-    parts.forEach((part, index) => provenance.push({ field: `performers[${index + 1}]`, origin: options.harmonyParts ? "user-choice" : "policy-default", value: { preset: part, version: HARMONY_PART_PRESET_VERSION },
+    parts.forEach((part, index) => provenance.push({ field: `performers[${index + 1}]`, origin: options.harmonyParts ? "user-choice" : "policy-default", value: { preset: part, version: presetVersion },
       noteKo: options.harmonyParts ? `사용자가 선택한 생성 화음 프리셋: ${part}` : `선택이 없어 Lead 중앙 음높이(MIDI ${median}) 기준 기본 프리셋 ${part}` }));
   }
   let rights = seed.rights;
@@ -324,7 +326,7 @@ async function computeAutoDraft(workspace: ScoreWorkspace, options: AutoDraftOpt
   const categories: Record<AutoDraftCategory, number> = { auto: 0, "reviewed-record": 0, warning: 0, question: 0, unsupported: 0, "not-applicable": 0 };
   let request: ArrangementRequest | undefined;
   if (!state.music) findings.push({ id: "uninterpreted", code: "INPUT_UNINTERPRETED", category: "unsupported", messageKo: "원본을 보존했지만 현재 모델로 음악을 해석하지 못했습니다.", effectKo: "생성할 수 없습니다." });
-  else request = effectiveRequest(state, options, workspace.algorithmVersions.performanceExpanderVersion, provenance, findings);
+  else request = effectiveRequest(state, options, workspace.algorithmVersions.performanceExpanderVersion, provenance, findings, policyVersion);
   if (request) {
     const evidence = workspace.origin.localCandidate ? localCandidateEvidence(workspace.origin.localCandidate) : undefined;
     const reviewedByRecord = await currentlyReviewedIssueIds(state, evidenceDigest);
@@ -343,7 +345,7 @@ async function computeAutoDraft(workspace: ScoreWorkspace, options: AutoDraftOpt
   const status = findings.some(f => f.category === "unsupported") ? "unsupported" : findings.some(f => f.category === "question") ? "needs-decision"
     : findings.length || provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred") ? "ready-with-warnings" : "ready";
   return {
-    version: policyVersion, presetVersion: HARMONY_PART_PRESET_VERSION,
+    version: policyVersion, presetVersion: presetVersionForPolicy(policyVersion),
     workspaceId: workspace.id, workspaceRevision: workspace.revision, workspaceDigest: workspace.digest,
     optionsDigest: await semanticDigest(optionsForPolicy(options, policyVersion)), status, ...(request ? { request } : {}), provenance, findings,
     rawIssueCount: state.issues.length, issueCategories: categories,

@@ -41,6 +41,7 @@ import type {
 } from "./plans";
 import type { HarmonyProject, ArrangementVariant } from "./project";
 import { workspaceSourceChordPolicyMatches, workspaceSourcePerformersMatch } from "../import/workspace/source-integrity";
+import { quickHarmonyParts } from "./quick-harmony-policy";
 import type { AlgorithmExecutionRegistry } from "./registries";
 import {
   atomizeSourceLead, type SourceLeadAtomization,
@@ -443,10 +444,13 @@ function canonicalPerformerProjections(
 }
 
 function canonicalTrackProjections(project: HarmonyProject): readonly CanonicalTrackProjection[] {
+  const parts = quickHarmonyParts(project.source);
   return project.trackPlans.map((track) => ({
     trackOrdinal: track.canonicalOrdinal,
     kind: track.kind,
     enabled: track.enabled,
+    ...(parts && track.kind === "generated-harmony" ? { fixedPlacementRole: parts[track.canonicalOrdinal - 1] === "alto" ? "lower" as const : "upper" as const } : {}),
+    ...(track.kind === "generated-harmony" && track.notationOctaveShift === -1 ? { notationOctaveShift: -1 as const } : {}),
   }));
 }
 
@@ -678,6 +682,7 @@ async function validateCandidateIntegrity(
   const evidence = await deriveCandidateEvidence({
     lifecycleInput: {
       source: project.source,
+      grammarVersion: intent.grammarVersion,
       effectiveChordTimeline: timeline,
       sourceLeadAtomization: atomization,
       effectiveConfig,
@@ -831,6 +836,7 @@ async function validateSnapshots(
   requireIntegrity(timeline !== undefined && atomization !== undefined, "snapshot lacks retained timeline/atomization authority", "EDIT_SNAPSHOT_INVALID");
   const lifecycleInput: WagLifecycleInput = {
     source: project.source,
+    grammarVersion: intent.grammarVersion,
     effectiveChordTimeline: timeline,
     sourceLeadAtomization: atomization,
     effectiveConfig,
@@ -1035,6 +1041,11 @@ async function validateVariantIntegrity(
   const locks: VariantStageLocks = project.locksByPreset[variant.presetId]
     ?? { intent: [], activity: [], anchor: [], solver: [] };
   const intent = variant.intentPlan;
+  requireIntegrity(["grammar-v1.0.1", "grammar-v1.1"].includes(intent.grammarVersion), `WAG_VERSION_UNSUPPORTED:${intent.grammarVersion}`, "ALGORITHM_CONFIG_MISMATCH");
+  const installed = expected.versions.grammarVersion === intent.grammarVersion ? expected : expected.compatible?.[intent.grammarVersion];
+  requireIntegrity(installed !== undefined, `WAG_VERSION_UNSUPPORTED:${intent.grammarVersion}`, "ALGORITHM_CONFIG_MISMATCH");
+  expected = installed;
+  requireIntegrity(!quickHarmonyParts(project.source) || intent.grammarVersion === "grammar-v1.1", "WAG_POLICY_VERSION_MISMATCH", "ALGORITHM_CONFIG_MISMATCH");
   if (variant.lifecycle === "generation-attempted" && !isFresh(variant, "generation")) {
     await validateRetainedGenerationArtifacts(variant, project, expected, ordinals, effectiveConfig);
   }
@@ -1247,6 +1258,10 @@ export async function validateHarmonyProjectIntegrity(
     );
     requireIntegrity(await workspaceSourcePerformersMatch(project.source, project.performers),
       "project performers differ from the sealed automatic-draft request", "PERFORMER_RANGE_INVALID");
+    const parts = quickHarmonyParts(project.source);
+    if (parts) requireIntegrity(project.trackPlans.every(track => track.kind !== "generated-harmony"
+      || (track.notationOctaveShift ?? 0) === (parts[track.canonicalOrdinal - 1] === "tenor" ? -1 : 0)),
+      "track octave differs from the sealed automatic-draft part", "TRACK_ASSIGNMENT_INVALID");
     const timeline = resolvedTimeline(project);
     if (timeline) {
       requireIntegrity(await workspaceSourceChordPolicyMatches(project.source, timeline.resolutionPolicy),

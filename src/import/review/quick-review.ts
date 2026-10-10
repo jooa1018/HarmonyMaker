@@ -131,12 +131,12 @@ function selectedLeadDiagnostics(draft: MusicXmlImportDraft): readonly ImportDia
 function supportedPlanningMeter(sourceMeasures: readonly SourceMeasure[]): boolean {
   return sourceMeasures.every((measure) => {
     const time = measure.time;
-    return ((time.numerator === 2 || time.numerator === 4)
+    return ((time.numerator === 2 || time.numerator === 3 || time.numerator === 4)
         && time.denominator === 4
         && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1))
-      || (time.numerator === 6
+      || ((time.numerator === 6 || time.numerator === 12)
         && time.denominator === 8
-        && canonicalJson(time.beatGroups) === canonicalJson([3, 3]));
+        && time.beatGroups.length === time.numerator / 3 && time.beatGroups.every(group => group === 3));
   });
 }
 

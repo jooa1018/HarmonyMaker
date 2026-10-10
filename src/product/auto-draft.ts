@@ -2,7 +2,7 @@ import type { ArrangementPresetId } from "../domain/config";
 import type { Diagnostic } from "../domain/diagnostics";
 import type { HarmonyProject } from "../domain/project";
 import { deriveQuickReview } from "../import/review/quick-review";
-import { assessAutoDraft, autoDraftGeneratable, type AutoDraftAssessment, type AutoDraftOptions } from "../import/workspace/auto-draft";
+import { assessAutoDraft, autoDraftGeneratable, type AutoDraftAssessment, type AutoDraftOptions, AUTO_DRAFT_POLICY_VERSION, type AutoDraftPolicyVersion } from "../import/workspace/auto-draft";
 import { projectAutoDraftWorkspace } from "../import/workspace/projection";
 import type { ScoreWorkspace } from "../import/workspace/model";
 import { createProjectFromQuickReview, generateProjectVariant, type ProductGenerationOutcome } from "./workspace";
@@ -17,10 +17,10 @@ export type AutoDraftGenerationResult =
   | { readonly status: "source-blocked"; readonly assessment: AutoDraftAssessment; readonly diagnostics: readonly Diagnostic[] }
   | { readonly status: "generated"; readonly assessment: AutoDraftAssessment; readonly project: HarmonyProject; readonly generation: ProductGenerationOutcome };
 
-export async function generateAutoDraftProject(workspace: ScoreWorkspace, options: AutoDraftOptions = {}, presetId: ArrangementPresetId = "standard"): Promise<AutoDraftGenerationResult> {
-  const assessment = await assessAutoDraft(workspace, options);
+export async function generateAutoDraftProject(workspace: ScoreWorkspace, options: AutoDraftOptions = {}, presetId: ArrangementPresetId = "standard", policyVersion: AutoDraftPolicyVersion = AUTO_DRAFT_POLICY_VERSION): Promise<AutoDraftGenerationResult> {
+  const assessment = await assessAutoDraft(workspace, options, policyVersion);
   if (!autoDraftGeneratable(assessment)) return { status: "not-generated", assessment };
-  const draft = await projectAutoDraftWorkspace(workspace, options);
+  const draft = await projectAutoDraftWorkspace(workspace, options, policyVersion);
   const analysis = await deriveQuickReview(draft, workspace.algorithmVersions);
   // The assessment shares the structural gate with the Source validator. A
   // block here means the two disagree; surface it rather than retrying.

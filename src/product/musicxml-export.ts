@@ -205,7 +205,7 @@ function tempoXml(tempo: TempoSpec): string {
   return `<direction placement="above"><direction-type><metronome><beat-unit>${beatUnit}</beat-unit>${tempo.dotted ? "<beat-unit-dot/>" : ""}<per-minute>${tempo.bpm}</per-minute></metronome></direction-type></direction>`;
 }
 
-function partXml(input: { readonly id: string; readonly events: readonly (XmlEvent & { readonly measureIndex: number })[]; readonly document: ArrangementRenderDocument; readonly divisions: number; readonly key: KeySignature; readonly tempo: TempoSpec; readonly includeHarmony: boolean; readonly includeTempo: boolean }): string {
+function partXml(input: { readonly id: string; readonly events: readonly (XmlEvent & { readonly measureIndex: number })[]; readonly document: ArrangementRenderDocument; readonly divisions: number; readonly key: KeySignature; readonly tempo: TempoSpec; readonly includeHarmony: boolean; readonly includeTempo: boolean; readonly notationOctaveShift?: -1 | 0 }): string {
   const lyricById = Object.fromEntries(input.document.lyricTokens.map((token) => [token.id, token]));
   const measures = input.document.measures.map((measure, measureIndex) => {
     const events = input.events.filter((event) => event.measureIndex === measureIndex).sort((a, b) => compareFractions(a.offset, b.offset));
@@ -222,7 +222,7 @@ function partXml(input: { readonly id: string; readonly events: readonly (XmlEve
       || previous.time.numerator !== measure.time.numerator
       || previous.time.denominator !== measure.time.denominator;
     const attributes = measureIndex === 0
-      ? `<attributes><divisions>${input.divisions}</divisions><key><fifths>${fifths(input.key)}</fifths><mode>${input.key.mode}</mode></key>${timeXml(measure)}<clef><sign>G</sign><line>2</line></clef></attributes>`
+      ? `<attributes><divisions>${input.divisions}</divisions><key><fifths>${fifths(input.key)}</fifths><mode>${input.key.mode}</mode></key>${timeXml(measure)}<clef><sign>G</sign><line>2</line>${input.notationOctaveShift === -1 ? "<clef-octave-change>-1</clef-octave-change>" : ""}</clef></attributes>`
       : meterChanged ? `<attributes>${timeXml(measure)}</attributes>` : "";
     const implicit = !equalFraction(measure.duration, fullMeasureDuration(measure));
     let content = filled.map((event) => noteXml(event, input.divisions, lyricById)).join("");
@@ -269,15 +269,15 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
   const divisions = allFractions.reduce((value, item) => lcm(value, item.d), 1);
   if (!Number.isSafeInteger(divisions) || divisions > 1_000_000) throw new RangeError("MUSICXML_DIVISIONS_UNREPRESENTABLE");
   const tracks = [
-    { id: "P1", name: "Source Lead", events: document.sourceLeadTrack.atoms.map((atom) => ({ ...fromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) },
+    { id: "P1", name: "Source Lead", notationOctaveShift: 0 as const, events: document.sourceLeadTrack.atoms.map((atom) => ({ ...fromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) },
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
-      return { id: `P-${metadata.harmonyRole}`, name: metadata.label, events: track.events.map((event) => ({ ...fromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
+      return { id: `P-${metadata.harmonyRole}`, name: metadata.label, notationOctaveShift: track.notationOctaveShift, events: track.events.map((event) => ({ ...fromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
     }),
   ];
   const partList = tracks.map((track) => `<score-part id="${track.id}"><part-name>${xml(track.name)}</part-name></score-part>`).join("");
-  const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
+  const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, notationOctaveShift: track.notationOctaveShift, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
   const projection=input.workspaceProjection;
   const workspaceField=projection?`<miscellaneous-field name="harmonymaker-workspace-projection">${xml(JSON.stringify({version:projection.version,originKind:projection.originKind,workspaceId:projection.workspaceId,workspaceRevision:projection.workspaceRevision,workspaceDigest:projection.workspaceDigest,requestDigest:projection.requestDigest,range:"whole-score",selectedVoices:projection.selectedVoices,excludedVoices:projection.excludedVoices,policy:"existing-wag-v1",...(projection.autoDraft?{sourceStatus:"auto-draft",humanSourceReview:projection.autoDraft.humanSourceReview,autoDraftPolicyVersion:projection.autoDraft.policyVersion,presetVersion:projection.autoDraft.presetVersion,autoDraftStatus:projection.autoDraft.status}:{})}))}</miscellaneous-field>`:"";
   const policyMetadata = policySpans.length ? {

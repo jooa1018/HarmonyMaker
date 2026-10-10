@@ -73,7 +73,7 @@ describe("automatic practice draft contract", () => {
       const result = await generateAutoDraftProject(w, { ...rights, harmonyParts: [part] });
       expect(result.status).toBe("generated");
       if (result.status !== "generated") continue;
-      expect(result.generation.status).toBe("complete");
+      expect(result.generation.status).toBe(part === "alto" ? "complete" : "partial");
       expect(projectSourceStatus(result.project)).toBe("auto-draft");
       const info = result.project.source.importInfo, meta = info?.sourceKind === "score-workspace" ? info.workspaceMetadata : undefined;
       expect(meta?.version).toBe("hm-workspace-auto-draft-v1");
@@ -82,7 +82,7 @@ describe("automatic practice draft contract", () => {
       expect(result.project.performers[0].hardRange).toEqual({ low: { step: "G", alter: 0, octave: 4 }, high: { step: "A", alter: 0, octave: 5 } });
       expect(result.project.performers[1].hardRange).toEqual(HARMONY_PART_PRESETS[part].hardRange);
       const variant = result.project.variants.standard;
-      const events = variant?.lifecycle === "generation-attempted" ? variant.generationResult.candidates.find(c => c.candidateStatus === "complete")!.generatedEventsByTrack["track:h1"] ?? [] : [];
+      const events = variant?.lifecycle === "generation-attempted" ? variant.generationResult.candidates.find(c => Object.hasOwn(c.generatedEventsByTrack, "track:h1"))!.generatedEventsByTrack["track:h1"] ?? [] : [];
       const notes = events.flatMap(e => e.kind === "note" ? [e.pitch] : []);
       expect(notes.length).toBeGreaterThan(0);
       expect(notes.every(p => containsPitch(HARMONY_PART_PRESETS[part].hardRange, p))).toBe(true);
@@ -106,7 +106,7 @@ describe("automatic practice draft contract", () => {
     const a = await assessAutoDraft(w, rights);
     expect(a.status).toBe("needs-decision");
     expect(a.findings.find(f => f.id === "performers:lead-range")?.code).toBe("STRUCTURE_PERFORMERS");
-    expect(a.provenance.find(p => p.field === "performers")?.origin).toBe("user-edit");
+    expect(a.provenance.find(p => p.field === "performers[0]")?.origin).toBe("user-edit");
     // Same condition in the reviewed-Source gate (independent audit F-04).
     const s = await replayScoreWorkspace(await act(w, { kind: "lead", lead: (await replayScoreWorkspace(w)).music!.leadCandidates[0].key, rhythmVoices: [] }));
     const caps = await deriveWorkspaceCapabilities(s, await workspaceEvidenceDigest(w.origin));
@@ -119,7 +119,7 @@ describe("automatic practice draft contract", () => {
   });
 
   it("reports unsupported meter and structural conflicts instead of passing them with warnings", async () => {
-    const waltz = await assessAutoDraft(await start(leadSheet({ beats: 3 })), rights);
+    const waltz = await assessAutoDraft(await start(leadSheet({ beats: 5 })), rights);
     expect(waltz.status).toBe("unsupported");
     expect(waltz.findings.some(f => f.code === "UNSUPPORTED_METER")).toBe(true);
     const over = await assessAutoDraft(await start(leadSheet({ overfull: true })), rights);

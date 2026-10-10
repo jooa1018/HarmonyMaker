@@ -1,20 +1,27 @@
-# Quick Harmony API — H1 1-2 작업 중
+# Quick Harmony API — WAG v1.1 (A등급 검토)
 
-상태: 1-1·1-4는 PR #14로 승인·병합됐다. 1-2의 입력 형태는 승인됐으나, 실제 3성부 생성과 기존 WAG의 optional H2 계약 충돌로 구현을 중단하고 Orchestrator 판정을 기다린다. 아래 다중 파트 경로는 아직 완료된 API가 아니다.
+`src/product/quick-harmony.ts`는 MusicXML 자동 판정과 로컬 화음 생성의 진입점이다.
+1-1·1-4는 PR #14로 병합됐고, PR #16은 1-2 다중 파트와 1-3 박자를 함께 확장한다.
+전체 안내 코드 대응표(1-5)는 후속 작업이다.
 
-## 이번 PR 범위
+`parts`는 `auto`, `["alto"]`, `["tenor"]`, 두 파트 배열을 받는다. 역순은 알토→테너로
+정규화하고 빈 배열·중복·알 수 없는 파트는 거부한다. 지원 박자는 2/4·3/4·4/4·6/8·12/8이다.
+3/4 주 박은 4분음표, 12/8은 점4분음표이며 자동 연습 템포는 점4분음표 60이다.
+3/8·9/8과 전조는 지원하지 않는다.
 
-`src/product/quick-harmony.ts`는 기존 자동 초안 엔진을 브라우저에서 호출하는 진입점이다. 서버 요청, 자동 저장, 화면 변경은 없다. 엔진 규칙과 저장 형식도 그대로 사용한다.
+알토는 항상 Lower, 테너는 항상 Upper다. auto로 선택된 기본 파트에도 같은 역할을 적용한다.
+기존 WAG의 `Upper > Lead > Lower` 배치, 독립 marginal 검증과 pair gate를 그대로 사용한다.
+테너 v2 프리셋은 **악보 높이** hard C4–A5, comfortable D4–G5이며,
+`notationOctaveShift: -1`로 한 옥타브 낮게 재생한다(실제 소리 C3–A4 / D3–G4).
+알토 음역은 기존 F3–D5 / A3–C5다. MusicXML은 G2 및 `clef-octave-change=-1`,
+ABC·abcjs는 `clef=treble-8`을 사용한다. 엔진 배치·음역 검사는 악보 높이를 사용한다.
 
-1-2 작업 브랜치는 `auto`, `["alto"]`, `["tenor"]`, `["alto", "tenor"]`를 받는다. 두 파트는 역순도 받으며 알토→테너로 정규화한다. 빈 배열·중복·알 수 없는 파트는 거부한다. 현재 지원 박자는 2/4·4/4·6/8이며 3/4·12/8은 1-3에서 추가한다. 전체 안내 코드 대응표와 위치 표현 통일은 1-5의 후속 작업이다.
-
-### 1-2 중단 사유와 재현
-
-`src/product/auto-draft-compatibility.test.ts`의 3성부 시험은 현재 실패한다. 자작 4/4 C장조 선율(C5–B5)에 두 파트를 요청하면 가수는 3명으로 설정되지만, 실제 기본 candidate는 알토 한 파트이고 결과는 `complete`다. 테너는 Lead 위로 배치되어 음역을 만족하지 못한다. 내부 rejection은 `OPTIONAL_MARGINAL_NOT_PERCEPTIBLE`, `OPTIONAL_PAIR_DEGRADED_TO_SINGLE`이며 일반 diagnostics는 비어 있다.
-
-`src/grammar/lifecycle.ts`의 `roleHypotheses`는 두 화음에 upper/lower 조합만 탐색한다. WAG 문서 18.5·23.2절은 H2를 선택 사항으로 두고 한 화음으로 줄어도 complete를 허용한다. 따라서 "둘 다 선택 → 실제 알토·테너 생성"을 이 API의 파트 수 설정만으로 보장할 수 없다. 두 화음을 Lead 아래에 배치하는 규칙 확장과, 요청한 두 파트를 만들지 못했을 때의 반환 계약에 대한 설계 판정이 필요하다. 엔진 규칙은 수정하지 않았다.
-
-새 표식은 `hm-auto-draft-policy-v2`와 `harmonyParts`를 기록한다. 기존 v1 표식은 `harmonyPart`를 읽되 원래 버전·표식·요약을 유지하여 무결성을 재검증한다. 변경 전 커밋에서 만든 자동·알토·테너 v1 파일의 import/export 바이트 및 기존 2성부 생성 결과 회귀 시험은 통과했다.
+정책 표식은 `hm-auto-draft-policy-v2`, 파트 프리셋은 `hm-harmony-part-presets-v2`,
+생성 규칙은 `grammar-v1.1`이다. 기존 v1 표식과 v1.0.1 프로젝트는 해당 버전으로 재검증한다.
+기존 프로젝트 편집은 저장된 intent 버전을 따르며 자동 업그레이드하지 않는다.
+새 quick-harmony 생성은 v1.1을 사용한다. 미등록 버전은 `WAG_VERSION_UNSUPPORTED` 또는
+프로젝트 경계의 `PROJECT_INTEGRITY_INVALID`로 거부한다. 선택 옥타브 필드가 없는 기존
+프로젝트·공유 데이터는 0으로 처리한다.
 
 ## 함수와 입력
 
@@ -68,10 +75,18 @@ generate는 전달받은 판정·질문·자세히를 신뢰하지 않는다. �
 
 | `status` | 반환값과 화면 처리 |
 |---|---|
-| `complete` | `project`, `generation`, `preparation`. 지원 구간의 생성 완료. |
-| `partial` | 같은 필드. 일부 구간만 생성됐으므로 완료로 표시하지 않고 기존 generation 진단을 안내한다. |
-| `blocked` | `diagnostics`, `preparation`, 선택적 `project`. 생성 차단이며 재생 가능한 결과로 취급하지 않는다. |
+| `complete` | `project`, `generation`, `preparation`, `parts`. 명시 요청한 모든 파트가 완성됨. |
+| `partial` | 같은 필드. 일부 파트나 구간만 생성됐으므로 `parts`의 누락 위치와 안내를 표시한다. |
+| `blocked` | `diagnostics`, `preparation`, `parts`, 선택적 `project`. 요청 파트가 모두 없거나 엔진이 차단됨. |
 | `needs-input` / `unsupported` | `preparation`. 프로젝트를 만들지 않았다. |
+
+각 파트는 `{ part, status: "complete" | "partial" | "missing", missingMeasures, reasonKo }`로 반환한다.
+명시 요청은 알토→테너 순서로 모두 보고하며, 빠진 파트를 숨긴 채 complete로 처리하지 않는다.
+`missingMeasures`는 선택된 결과에서 코드가 있는 Lead 음표 구간을 덮지 못한 **원본 마디 번호**다.
+번호는 정렬·중복 제거하므로 반복 연주의 같은 원본 마디는 한 번만 나온다. 원본 쉼표·N.C.는
+누락으로 세지 않는다. 생성 전 Source 차단으로 마디를 확정할 수 없으면 빈 목록과 차단 안내를 준다.
+`reasonKo`는 UI에서 직접 표시할 수 있다. 원시 엔진 `generation.status`보다 바깥쪽 `status`가
+사용자가 요청한 파트의 충족 여부를 나타낸다. auto의 전체 상태는 기존 WAG 18.5 optional 계약을 유지한다.
 
 UI는 `complete`/`partial`을 명시적으로 분기한다. 기존 내부 `generated`는 엔진 시도가 차단된 경우도 포함하므로 이 API는 그 문자열을 성공으로 노출하지 않는다.
 

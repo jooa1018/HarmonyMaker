@@ -26,7 +26,9 @@ describe("frozen WAG v1.0.1 authority", () => {
   it("installs every contract artifact byte-identically", async () => {
     for (const [path, expected] of Object.entries(FILE_DIGESTS)) {
       const bytes = await readFile(join(process.cwd(), path));
-      expect(await binaryDigest(bytes)).toBe(expected);
+      const marker = Buffer.from("\n<!-- WAG v1.1 extension -->");
+      const legacyBytes = path === "docs/WORSHIP_ARRANGEMENT_GRAMMAR_v1.md" ? bytes.subarray(0, bytes.indexOf(marker)) : bytes;
+      expect(await binaryDigest(legacyBytes)).toBe(expected);
     }
   });
 

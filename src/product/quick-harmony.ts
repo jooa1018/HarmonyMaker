@@ -1,3 +1,5 @@
+import { quickHarmonyParts } from "../domain/quick-harmony-policy";
+import { comparePositions } from "../domain/time";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
 import type { Diagnostic } from "../domain/diagnostics";
 import type { HarmonyPartPreset } from "../domain/part-presets";
@@ -37,10 +39,18 @@ export interface QuickHarmonyChoice {
   readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous" };
 }
 
+export interface QuickHarmonyPartResult {
+  readonly part: HarmonyPartPreset;
+  readonly status: "complete" | "partial" | "missing";
+  /** Printed Source measure numbers, sorted and deduplicated (including repeats). */
+  readonly missingMeasures: readonly number[];
+  readonly reasonKo: string;
+}
+
 export type QuickHarmonyResult =
   | { readonly status: "needs-input" | "unsupported"; readonly preparation: QuickHarmonyPreparation }
-  | { readonly status: "blocked"; readonly preparation: QuickHarmonyPreparation; readonly project?: HarmonyProject; readonly diagnostics: readonly Diagnostic[] }
-  | { readonly status: "complete" | "partial"; readonly preparation: QuickHarmonyPreparation; readonly project: HarmonyProject; readonly generation: Exclude<ProductGenerationOutcome, { status: "blocked" }> };
+  | { readonly status: "blocked"; readonly preparation: QuickHarmonyPreparation; readonly project?: HarmonyProject; readonly parts: readonly QuickHarmonyPartResult[]; readonly diagnostics: readonly Diagnostic[] }
+  | { readonly status: "complete" | "partial"; readonly preparation: QuickHarmonyPreparation; readonly project: HarmonyProject; readonly parts: readonly QuickHarmonyPartResult[]; readonly generation: Exclude<ProductGenerationOutcome, { status: "blocked" }> };
 
 export class QuickHarmonyInputError extends RangeError {
   constructor(readonly code: "QUICK_HARMONY_RIGHTS_REQUIRED" | "QUICK_HARMONY_CHOICE_INVALID" | "QUICK_HARMONY_LEAD_INVALID", messageKo: string) {
@@ -56,7 +66,7 @@ function notice(f: AutoDraftFinding): QuickHarmonyNotice {
   };
   if (f.code === "UNSUPPORTED_METER") return {
     id: f.id, messageKo: "이 악보에 아직 지원하지 않는 박자가 있어요.",
-    actionKo: "현재는 2/4·4/4·6/8 악보를 사용할 수 있어요.", choices: [],
+    actionKo: "현재는 2/4·3/4·4/4·6/8·12/8 악보를 사용할 수 있어요.", choices: [],
   };
   return {
     id: f.id, messageKo: f.messageKo, actionKo: f.effectKo,
@@ -125,6 +135,36 @@ export async function prepareQuickHarmonyWorkspace(workspace: ScoreWorkspace): P
   return preparation(owned, await assessAutoDraft(owned));
 }
 
+function partResults(project: HarmonyProject, generation: ProductGenerationOutcome): readonly QuickHarmonyPartResult[] {
+  const requested = quickHarmonyParts(project.source) ?? [];
+  const document = generation.status === "blocked" ? undefined : generation.execution.renderDocument;
+  const atoms = project.sourceLeadAtomizationState.status === "resolved" ? project.sourceLeadAtomizationState.atomization.atoms : [];
+  const timeline = project.chordTimelineState.status === "resolved" ? project.chordTimelineState.timeline : undefined;
+  // Source rests and N.C. are intentional silence. Missing means an uncovered
+  // pitched Lead interval with an effective chord, in the selected output.
+  const eligible = atoms.filter(atom => atom.pitch && timeline?.spans.some(span => span.parseResult.status === "ok"
+    && comparePositions(span.range.start, atom.range.end) < 0 && comparePositions(atom.range.start, span.range.end) < 0));
+  return requested.map((part, index) => {
+    const plan = project.trackPlans.find(t => t.canonicalOrdinal === index + 1);
+    const notes = document?.generatedHarmonyTracks.find(t => t.trackPlanId === plan?.id)?.events.filter(e => e.kind === "note") ?? [];
+    const missing = eligible.filter(atom => {
+      let cursor = atom.range.start;
+      for (const note of notes) {
+        if (comparePositions(note.range.end, cursor) <= 0) continue;
+        if (comparePositions(note.range.start, cursor) > 0) break;
+        cursor = note.range.end;
+        if (comparePositions(cursor, atom.range.end) >= 0) return false;
+      }
+      return true;
+    });
+    const missingMeasures = [...new Set(missing.map(atom => project.source.performanceSequence.occurrences[atom.range.start.performanceMeasureIndex].sourceMeasureNumber))].sort((a,b) => a-b);
+    const status = notes.length === 0 ? "missing" : missing.length ? "partial" : "complete";
+    const name = part === "alto" ? "알토" : "테너";
+    return { part, status, missingMeasures, reasonKo: status === "complete" ? `${name} 화음을 만들었어요.`
+      : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.` };
+  });
+}
+
 export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice: QuickHarmonyChoice): Promise<QuickHarmonyResult> {
   if (!choice || choice.rightsConfirmed !== true) throw new QuickHarmonyInputError("QUICK_HARMONY_RIGHTS_REQUIRED", "화음을 만들 권리가 있는지 확인해 주세요.");
   const c = structuredClone(choice);
@@ -160,7 +200,12 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
   const result = await generateAutoDraftProject(workspace, options);
   const fresh = await preparation(workspace, result.assessment);
   if (result.status === "not-generated") return { status: fresh.status === "unsupported" ? "unsupported" : "needs-input", preparation: fresh };
-  if (result.status === "source-blocked") return { status: "blocked", preparation: fresh, diagnostics: result.diagnostics };
-  if (result.generation.status === "blocked") return { status: "blocked", preparation: fresh, project: result.project, diagnostics: result.generation.diagnostics };
-  return { status: result.generation.status, preparation: fresh, project: result.project, generation: result.generation };
+  if (result.status === "source-blocked") return { status: "blocked", preparation: fresh, parts: (options.harmonyParts ?? []).map(part => ({ part, status: "missing", missingMeasures: [], reasonKo: "악보 판정에서 생성이 중단됐어요." })), diagnostics: result.diagnostics };
+  const parts = partResults(result.project, result.generation);
+  if (result.generation.status === "blocked") return { status: "blocked", preparation: fresh, project: result.project, parts, diagnostics: result.generation.diagnostics };
+  if (options.harmonyParts && parts.every(p => p.status === "missing")) return {
+    status: "blocked", preparation: fresh, project: result.project, parts, diagnostics: result.generation.execution.generation.result.diagnostics,
+  };
+  const status = options.harmonyParts && parts.some(p => p.status !== "complete") ? "partial" : result.generation.status;
+  return { status, preparation: fresh, project: result.project, parts, generation: result.generation };
 }

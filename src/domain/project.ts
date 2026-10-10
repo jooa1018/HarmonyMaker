@@ -607,14 +607,15 @@ function isPerformerProfile(value: unknown): value is PerformerProfile {
 
 function isTrackPlan(value: unknown): value is VocalTrackPlan {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["kind", "id", "displayLabel", "canonicalOrdinal", "enabled"])
+    || !hasExactKeys(value, ["kind", "id", "displayLabel", "canonicalOrdinal", "enabled"], ["notationOctaveShift"])
     || !isCanonicalId(value.id)
     || typeof value.displayLabel !== "string" || value.displayLabel.length === 0) return false;
   return value.kind === "source-lead"
-    ? value.id === "track:source-lead" && value.canonicalOrdinal === 0 && value.enabled === true
+    ? value.id === "track:source-lead" && value.canonicalOrdinal === 0 && value.enabled === true && value.notationOctaveShift === undefined
     : value.kind === "generated-harmony"
       && (value.canonicalOrdinal === 1 || value.canonicalOrdinal === 2)
-      && typeof value.enabled === "boolean";
+      && typeof value.enabled === "boolean"
+      && (value.notationOctaveShift === undefined || value.notationOctaveShift === 0 || value.notationOctaveShift === -1);
 }
 
 function isAssignment(value: unknown): value is PerformerTrackAssignment {

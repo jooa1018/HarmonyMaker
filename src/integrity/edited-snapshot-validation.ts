@@ -128,7 +128,7 @@ export async function validateEditedSnapshot(input: {
   readonly tracks: readonly GeneratedHarmonyTrack[];
   readonly realizedAnchors: readonly RealizedHarmonyAnchor[];
 }): Promise<{ readonly valid: boolean; readonly diagnostics: readonly Diagnostic[]; readonly metrics: FullSongMetrics }> {
-  const authority = await loadFrozenWagAuthority();
+  const authority = await loadFrozenWagAuthority(input.intentPlan.grammarVersion);
   const rawDiagnostics: Omit<Diagnostic, "id">[] = [];
   const performerById = Object.fromEntries(input.lifecycleInput.performers.map((performer) => [performer.id, performer]));
   const performerByTrack = Object.fromEntries(input.lifecycleInput.assignments.map((assignment) => [assignment.trackPlanId, performerById[assignment.performerId]]));

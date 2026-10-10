@@ -7,7 +7,7 @@ import type {
 import type { PlanOrdinalRegistry } from "./plans";
 
 export interface CanonicalPerformerProjection { readonly performerOrdinal: number; readonly hardRange: PitchRange; readonly comfortableRange: PitchRange; readonly preferredTessitura: PitchRange | null }
-export interface CanonicalTrackProjection { readonly trackOrdinal: number; readonly kind: "source-lead" | "generated-harmony"; readonly enabled: boolean }
+export interface CanonicalTrackProjection { readonly trackOrdinal: number; readonly kind: "source-lead" | "generated-harmony"; readonly enabled: boolean; readonly notationOctaveShift?: -1; readonly fixedPlacementRole?: "upper" | "lower" }
 export interface CanonicalAssignmentProjection { readonly trackOrdinal: number; readonly performerOrdinal: number }
 export interface StageInputDigests { readonly intentInputDigest: SemanticDigest; readonly activityInputDigest: SemanticDigest; readonly anchorInputDigest: SemanticDigest; readonly generationInputDigest: SemanticDigest }
 export type StaleStage = "intent" | "activity" | "anchor" | "generation";
