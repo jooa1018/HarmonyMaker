@@ -24,6 +24,8 @@ export interface PlaybackPlan {
   readonly totalQuarter: number;
   readonly effectiveChordTimelineDigest: string;
   readonly trackLabels: Readonly<Record<string, string>>;
+  /** Runtime presentation metadata only; never part of a saved project or digest. */
+  readonly trackRoles?: Readonly<Record<string, "lead" | "upper" | "lower" | "band" | "other">>;
 }
 
 export type PlaybackPlanConstructionOutcome =
@@ -134,6 +136,14 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
     totalQuarter: document.measures.reduce((sum, measure) => sum + value(measure.duration), 0),
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,
     trackLabels,
+    trackRoles: {
+      "track:source-lead": "lead",
+      ...Object.fromEntries(document.generatedHarmonyTracks.map(track => {
+        const placements = new Set(trackRoles.byTrackPlanId[track.trackPlanId]?.placements.map(p => p.placementRole));
+        return [track.trackPlanId, placements.size === 1 ? [...placements][0] : "other"];
+      })),
+      ...(band.length > 0 ? {"track:band": "band" as const} : {}),
+    },
   };
 }
 

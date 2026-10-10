@@ -1,5 +1,5 @@
 import { quickHarmonyParts } from "../domain/quick-harmony-policy";
-import { comparePositions } from "../domain/time";
+import { projectPartStatus } from "./project-part-status";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
 import type { Diagnostic } from "../domain/diagnostics";
 import type { HarmonyPartPreset } from "../domain/part-presets";
@@ -63,7 +63,7 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const describe = (finding: AutoDraftFinding): QuickHarmonyNotice => {
     const scope = finding.scope;
     const number = scope?.kind === "measure" ? measures.get(scope.measureId) : undefined;
-    const locationKo = number !== undefined ? `${number}마디` : scope?.kind === "metadata" ? "악보 설정"
+    const locationKo = number !== undefined ? `${number}번째 마디` : scope?.kind === "metadata" ? "악보 설정"
       : scope?.kind === "measure" ? "위치를 확인할 수 없는 마디" : "악보 전체";
     const result = quickHarmonyNotice(finding, locationKo);
     if (finding.code === "LEAD_SELECTION_REQUIRED") return { ...result,
@@ -123,30 +123,12 @@ export async function prepareQuickHarmonyWorkspace(workspace: ScoreWorkspace): P
 function partResults(project: HarmonyProject, generation: ProductGenerationOutcome): readonly QuickHarmonyPartResult[] {
   const requested = quickHarmonyParts(project.source) ?? [];
   const document = generation.status === "blocked" ? undefined : generation.execution.renderDocument;
-  const atoms = project.sourceLeadAtomizationState.status === "resolved" ? project.sourceLeadAtomizationState.atomization.atoms : [];
-  const timeline = project.chordTimelineState.status === "resolved" ? project.chordTimelineState.timeline : undefined;
-  // Source rests and N.C. are intentional silence. Missing means an uncovered
-  // pitched Lead interval with an effective chord, in the selected output.
-  const eligible = atoms.filter(atom => atom.pitch && timeline?.spans.some(span => span.parseResult.status === "ok"
-    && comparePositions(span.range.start, atom.range.end) < 0 && comparePositions(atom.range.start, span.range.end) < 0));
   return requested.map((part, index) => {
     const plan = project.trackPlans.find(t => t.canonicalOrdinal === index + 1);
-    const notes = document?.generatedHarmonyTracks.find(t => t.trackPlanId === plan?.id)?.events.filter(e => e.kind === "note") ?? [];
-    const missing = eligible.filter(atom => {
-      let cursor = atom.range.start;
-      for (const note of notes) {
-        if (comparePositions(note.range.end, cursor) <= 0) continue;
-        if (comparePositions(note.range.start, cursor) > 0) break;
-        cursor = note.range.end;
-        if (comparePositions(cursor, atom.range.end) >= 0) return false;
-      }
-      return true;
-    });
-    const missingMeasures = [...new Set(missing.map(atom => project.source.performanceSequence.occurrences[atom.range.start.performanceMeasureIndex].sourceMeasureNumber))].sort((a,b) => a-b);
-    const status = notes.length === 0 ? "missing" : missing.length ? "partial" : "complete";
+    const {status,missingMeasures} = projectPartStatus(project,document,plan?.id);
     const name = part === "alto" ? "알토" : "테너";
     return { part, status, missingMeasures, reasonKo: status === "complete" ? `${name} 화음을 만들었어요.`
-      : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.` };
+      : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "번째 마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.` };
   });
 }
 

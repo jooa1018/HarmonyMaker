@@ -109,6 +109,8 @@ describe("WAG 1.1 fixed parts, written tenor and meters", () => {
     const absent=result.parts.find(p=>p.part===(octave===3?"alto":"tenor"))!;
     expect(absent.status).not.toBe("complete");
     expect(absent.missingMeasures.length).toBeGreaterThan(0);
+    expect(absent.reasonKo).toContain(`${absent.missingMeasures.join("·")}번째 마디에서`);
+    expect(absent.reasonKo).not.toMatch(/\d마디/u);
     if (result.status==="partial") {
       for (const m of result.generation.execution.generation.marginals)expect(m.placementRole).toBe(m.track.trackOrdinal===1?"lower":"upper");
     }

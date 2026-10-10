@@ -92,7 +92,7 @@ generate는 전달받은 판정·질문·자세히를 신뢰하지 않는다. �
 | `FERMATA_AS_WRITTEN` | 늘임표의 추가 길이를 반영하지 않는 재생 |
 | `AUTOMATIC_VALUES`, `FILE_UNREADABLE` | 자동 설정 참고·파일 읽기 실패 |
 
-마디 범위가 있으면 내부 마디 ID를 **인쇄 마디 번호**로 바꿔 `12마디: …`처럼 표시한다.
+마디 범위가 있으면 내부 마디 ID를 **인쇄 마디 번호**로 바꿔 `12번째 마디: …`처럼 표시한다.
 악보 설정 문제는 `악보 설정`, 곡 전체 문제는 `악보 전체`, 파일 문제는 `파일`로 위치를 표시한다.
 마디 위치를 찾을 수 없으면 `위치를 확인할 수 없는 마디`라고 표시하고 번호를 만들어 내지 않는다.
 멜로디 선택지는 실제 악보의 후보로 채우며, 코드 질문의 `carry-previous` 및
@@ -119,6 +119,8 @@ generate는 전달받은 판정·질문·자세히를 신뢰하지 않는다. �
 누락으로 세지 않는다. 생성 전 Source 차단으로 마디를 확정할 수 없으면 빈 목록과 차단 안내를 준다.
 `reasonKo`는 UI에서 직접 표시할 수 있다. 원시 엔진 `generation.status`보다 바깥쪽 `status`가
 사용자가 요청한 파트의 충족 여부를 나타낸다. auto의 전체 상태는 기존 WAG 18.5 optional 계약을 유지한다.
+questions·reasons·notes 및 parts[].reasonKo의 위치 표기는 `N번째 마디`로 통일한다.
+여러 누락 위치는 `1·2·4번째 마디에서 …`처럼 표시하며, 마디 개수를 나타내는 요약과 구분한다.
 
 UI는 `complete`/`partial`을 명시적으로 분기한다. 기존 내부 `generated`는 엔진 시도가 차단된 경우도 포함하므로 이 API는 그 문자열을 성공으로 노출하지 않는다.
 
@@ -152,6 +154,93 @@ summary?: {
 멜로디의 첫 마디에서 판정한 값이다. 여러 조성이 있는 경우 지원 판정은 `reasons`를 따른다.
 추천은 사용자의 명시적 파트 선택과 별개이며, 같은 악보·선택 상태에서 결정적이다.
 화면이 바꾼 summary는 생성 입력으로 신뢰하지 않고 현재 작업 공간에서 다시 계산한다.
+
+## 저장된 프로젝트 읽기 (1-8)
+
+`src/product/project-view.ts`에서 다음 두 함수를 가져온다.
+
+```ts
+const song = describeHarmonyProject(project); // 동기, 예외를 던지지 않는 화면 요약
+const view = await projectPracticeView(project); // 반주 포함, 비동기
+```
+
+`describeHarmonyProject`는 `{ title, keyLabelKo, meters, measureCount, parts }`를 반환한다.
+제목·조성은 preparation.summary와 같은 규칙이며, 박자는 인쇄 순서에서 중복 제거하고
+마디 수는 반복 전 인쇄 마디 수다. `parts`는 멜로디를 제외한 생성 화음 트랙의 정규 순서다.
+각 항목은 `{ role: upper | lower | other, label, part?, status?, missingMeasures? }`다.
+quick-harmony v2에서는 알토·테너 이름과 part를 제공한다. 기존 프로젝트는 기존 역할
+레지스트리의 이름을 유지하며 part를 추측하지 않는다. 역할이 혼합되거나 없으면 other다.
+활성 결과를 읽을 수 있으면 quick-harmony와 같은 기준으로 complete·partial·missing 및
+누락된 인쇄 마디 번호를 계산한다. 결과가 없으면 상태 필드를 생략하며 완료로 단정하지 않는다.
+불완전한 옛 자료도 읽을 수 있는 요약을 반환한다. 이 요약 자체는 무결성 검증이 아니다.
+
+`projectPracticeView`의 반환형은 다음과 같다.
+
+```ts
+Promise<
+  | { status: "available"; abc: string; plan: PlaybackPlan; tempo: TempoSpec; identity: string }
+  | { status: "unavailable"; code: string }
+>
+```
+
+선택된 preset(없으면 standard)의 현재 전체 결과를 구체화하고 기존 ABC·반주·PlaybackPlan
+경로를 재사용한다. identity는 `${artifactDigest}:full`이다. 반주 계산을 마친 뒤 available을
+반환한다. H3는 available일 때만 플레이어 컴포넌트를 마운트하고 네 입력을 훅에 넘긴다.
+미생성·오래된 결과는 `ACTIVE_ARRANGEMENT_UNAVAILABLE` 또는 `PROJECT_AUTHORITY_STALE`,
+표기 제한은 `ABC_SERIALIZATION_UNAVAILABLE`로 unavailable을 반환한다. 검증되지 않은 편집
+스냅샷·잘못된 렌더 자료 등 기존 무결성 오류는 reject하므로 호출부에서 처리해야 한다.
+각 호출은 첫 await 전에 표시·반주 입력을 복사한다. 동시 호출이 서로의 결과를 수정하지 않으며,
+저장 프로젝트·digest·공유 형식은 변경하지 않는다.
+
+## 연습 재생 훅 (1-7)
+
+`src/product/use-practice-player.ts`의 `usePracticePlayer`는 클라이언트 컴포넌트에서 호출한다.
+화면의 `<div ref={player.scoreRef} />`에 abcjs 악보를 그리며 버튼·믹서는 화면이 그린다.
+
+```ts
+const player = usePracticePlayer({
+  abc, plan, tempo, identity,
+  initialSettings, // 공유 데이터의 PracticeSettings. 해당 identity의 처음 상태
+  preferredMeasuresPerLine: narrow ? 2 : 4, // 기본 4
+});
+```
+
+반환형 `PracticePlayerController`:
+
+- `scoreRef`, `scoreReady`, `error`
+- `phase: ready | starting | playing | paused | finished`, `positionQuarter`, `totalQuarter`
+- `secondsPerQuarter`, `speed`, `tracks: { id, label, kind, role }[]`
+- `muted`, `solo`, `bandEnabled`, `levels`, `masterLevel`
+- `play()`, `pause()`, `restart()`, `setSpeed(speed)`
+- `toggleMute(trackId)`, `toggleSolo(trackId)`, `setBandEnabled(on)`
+- `setLevel(trackId, level)`, `setMasterLevel(level)`
+
+`play()`는 ready·finished에서 처음부터, paused에서 이어서 재생한다. starting·playing에서는
+중복 시작하지 않는다. `restart()`는 멈추고 처음으로, `setSpeed()`도 처음으로 돌아간다.
+속도는 `PracticeSpeed`의 50·75·100·125·150이다. 파트 음량은 0–2, 전체 음량은 0–1로 제한한다.
+솔로는 한 트랙만 켜지고 음소거는 여러 트랙에 적용할 수 있다. 믹서는 재생 중에도 적용된다.
+identity가 바뀌거나 컴포넌트가 사라지면 이전 오디오와 타이머를 해제한다.
+다른 identity는 새 초기 설정을 적용한다. 같은 identity에서 초기 설정 변경은 재생 상태를 덮어쓰지 않는다.
+
+트랙 역할은 실행 중 `PlaybackPlan.trackRoles`에서 읽는다. `buildPlaybackPlan`이 역할
+레지스트리에서 채우며 표시 이름으로 추측하지 않는다. `track:source-lead`는 lead,
+`track:band`는 band, 하나의 역할만 있으면 upper/lower, 혼합·정보 없음은 other다.
+이 선택 필드는 프로젝트·공유 데이터·digest에 저장하지 않는다. 반주가 없으면 tracks에도 없다.
+H3는 `tracks.some(t => t.kind === "band")`로 반주 스위치 표시 여부를 정한다.
+시간 표시는 `positionQuarter * secondsPerQuarter`, 전체 시간은 `totalQuarter * secondsPerQuarter`다.
+기존 ProductPracticePlayer도 같은 훅을 쓰며 기존 Play(처음부터)·Resume(이어서) 버튼을 유지한다.
+
+## 멜로디 가사 표시 (1-9)
+
+`arrangementRenderDocumentToAbc`는 원본 가사를 멜로디 보이스의 `w:` 줄로 표시한다.
+여러 절은 절 번호 오름차순으로 한 줄씩 넣는다. 쉼표·빈 구간·붙임줄에서도 다음 가사의
+음표 위치를 유지하며, 화음 보이스에는 가사를 중복하지 않는다. 가사가 없으면 기존 ABC와 같다.
+표시 중 원본 가사·생성 음·프로젝트 저장 바이트·결과물 digest·재생 음높이와 길이는 바뀌지 않는다.
+ABC 제어 문자는 표시할 때만 이스케이프하고 줄바꿈은 공백으로, 주석 문자 `%`는 `％`로 표시한다.
+
+새 공유는 기존 schemaVersion 4의 `lyricTokenIds`에 모든 절의 음표 연결을 담으므로 공유
+악보에서도 같은 가사를 표시한다. 예전 공유는 남아 있는 연결만 표시한다. 가사 텍스트만 있고
+음표 연결이 없는 옛 공유의 다른 절은 위치를 추측하지 않는다. 공유 형식의 버전은 유지한다.
 
 ## 화면 호출 예시
 
