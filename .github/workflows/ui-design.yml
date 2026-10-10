@@ -1,0 +1,38 @@
+name: UI design
+on:
+  push:
+    branches: ['hm/ui-*']
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'src/app/**'
+      - 'scripts/ui-design-check.mjs'
+      - 'package*.json'
+      - '.github/workflows/ui-design.yml'
+permissions:
+  contents: read
+jobs:
+  screens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: Check fixture screens
+        run: |
+          npx next start --hostname 127.0.0.1 --port 3133 > /tmp/hm-ui-server.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:3133/ > /dev/null && break
+            sleep 1
+          done
+          node scripts/ui-design-check.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: h3-ui-design-evidence
+          path: runtime-browser-evidence/h3
