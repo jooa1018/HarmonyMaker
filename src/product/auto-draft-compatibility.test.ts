@@ -7,6 +7,9 @@ import { parseScoreWorkspace } from "../import/workspace/journal";
 import { exportHarmonyProject, importHarmonyProject } from "./project-transfer";
 import { generateAutoDraftProject, projectSourceStatus } from "./auto-draft";
 import { IndexedDbProjectStore } from "./local-project-store";
+import { materializeActiveArrangement } from "./render";
+import { exportArrangementMusicXml } from "./musicxml-export";
+import { arrangementRenderDocumentToAbc } from "./score-adapter";
 
 const oldBytes = (part: string) => readFileSync(new URL(`./fixtures/auto-draft-v1-${part}.json`, import.meta.url), "utf8");
 const choice = { rightsConfirmed: true, confirmedAt: "2026-10-09T10:00:00.000Z" } as const;
@@ -17,6 +20,12 @@ describe("auto draft policy v2 compatibility and multiple parts", () => {
     const old = await importHarmonyProject(bytes);
     expect(projectSourceStatus(old)).toBe("auto-draft");
     expect(await exportHarmonyProject(old)).toBe(bytes);
+    const {document,trackRoles}=materializeActiveArrangement(old,"standard");
+    expect(trackRoles.sourceLeadLabel).toBeUndefined();
+    expect(trackRoles.generatedTracks.every(track=>/^(Upper|Lower|Upper\/Lower) \/ H[12]$/u.test(track.label))).toBe(true);
+    const display={title:old.source.title,key:old.source.defaultKey,tempo:old.source.defaultTempo};
+    expect(exportArrangementMusicXml(document,trackRoles,display)).toContain("<part-name>Source Lead</part-name>");
+    expect(arrangementRenderDocumentToAbc(document,trackRoles,display)).toContain('name="Lead"');
     const info = old.source.importInfo;
     if (info?.sourceKind !== "score-workspace") throw new Error("fixture missing workspace");
     const metadata = info.workspaceMetadata;

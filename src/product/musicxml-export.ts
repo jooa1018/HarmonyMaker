@@ -269,7 +269,7 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
   const divisions = allFractions.reduce((value, item) => lcm(value, item.d), 1);
   if (!Number.isSafeInteger(divisions) || divisions > 1_000_000) throw new RangeError("MUSICXML_DIVISIONS_UNREPRESENTABLE");
   const tracks = [
-    { id: "P1", name: "Source Lead", notationOctaveShift: 0 as const, events: document.sourceLeadTrack.atoms.map((atom) => ({ ...fromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) },
+    { id: "P1", name: trackRoles.sourceLeadLabel ?? "Source Lead", notationOctaveShift: 0 as const, events: document.sourceLeadTrack.atoms.map((atom) => ({ ...fromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) },
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);

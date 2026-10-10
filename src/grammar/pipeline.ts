@@ -1,4 +1,3 @@
-import { wagVersions } from "./versions";
 import { loadAccompanimentConfig } from "../accompaniment/deterministic";
 import { buildArrangementCandidate, validateGenerationResultState, type CandidateOrdinalRegistry } from "../domain/generation/candidate";
 import type {
@@ -497,11 +496,11 @@ export async function assembleWagGeneration(
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: prepared.locks.solver,
-    solverVersion: wagVersions(input.source, input.grammarVersion).solverVersion,
-    assemblerVersion: wagVersions(input.source, input.grammarVersion).assemblerVersion,
-    validatorVersion: wagVersions(input.source, input.grammarVersion).validatorVersion,
-    metricsVersion: wagVersions(input.source, input.grammarVersion).metricsVersion,
-    candidateProjectionVersion: wagVersions(input.source, input.grammarVersion).candidateProjectionVersion,
+    solverVersion: prepared.versions.solverVersion,
+    assemblerVersion: prepared.versions.assemblerVersion,
+    validatorVersion: prepared.versions.validatorVersion,
+    metricsVersion: prepared.versions.metricsVersion,
+    candidateProjectionVersion: prepared.versions.candidateProjectionVersion,
     solverConfigDigest: prepared.authority.wagOwnedConfigDigests.solverConfigDigest,
     assemblerConfigDigest: prepared.authority.wagOwnedConfigDigests.assemblerConfigDigest,
     validatorConfigDigest: prepared.authority.wagOwnedConfigDigests.validatorConfigDigest,
@@ -694,7 +693,7 @@ export async function assembleWagGeneration(
       accompanimentConfigDigest: accompanimentConfig.configDigest,
       diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
     },
-    versions: { ...wagVersions(input.source, input.grammarVersion) },
+    versions: { ...prepared.versions },
   };
   return {
     result,

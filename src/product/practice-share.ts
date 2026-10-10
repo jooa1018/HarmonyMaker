@@ -53,7 +53,7 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
   if (document.sourceLeadTrack.atoms.some((atom) => atom.slurs?.length)) throw new RangeError("SHARE_SOURCE_SLURS_UNSUPPORTED");
   const localLyrics = lyricMap(document);
   const tracks: CompactTrack[] = [
-    { kind: "source-lead", label: "Lead", events: document.sourceLeadTrack.atoms.map((atom) => atomEvent(atom, document, localLyrics.sourceToLocal)) },
+    { kind: "source-lead", label: input.materialized.trackRoles.sourceLeadLabel ?? "Lead", events: document.sourceLeadTrack.atoms.map((atom) => atomEvent(atom, document, localLyrics.sourceToLocal)) },
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = input.materialized.trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
