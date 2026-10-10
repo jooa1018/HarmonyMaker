@@ -299,4 +299,12 @@ C2·G2는 Cadd2·Gadd2로, C2/G는 Cadd2/G로 정규화되어 major + degree add
 
 이음줄이 없는 출력은 기존 V4 바이트를 유지하고, V3·V4 읽기도 유지한다. 크기 제한은 그대로다. 승인된 1-14의 `tuplets`도 같은 V5에 선택 필드로 통합할 예정이며, 생성·표시·검증 경로가 완성되기 전에는 미지원 필드를 허용하거나 버리지 않는다. 첫 코드 선행 적용 정책과 별도 원본 리듬 성부는 아직 공유할 수 없다.
 
+## 연습 음원 파일 (1-20)
+
+`src/product/render-practice-audio.ts`의 `renderPracticeAudio({ plan, tempo, speed, mix, bandEnabled, signal? })`는 `{ blob, seconds, bytes }`를 비동기로 반환한다. `projectPracticeView`의 plan·tempo와 플레이어의 speed를 그대로 전달한다. mix는 `{ kind: "full" }` 또는 `{ kind: "emphasize", trackId }`이며, 강조할 성부는 기본 크기, 다른 성부는 0.35배다. 반주는 bandEnabled일 때만 기본 크기로 들어간다. 없는 트랙이나 반주를 강조 대상으로 주면 `PRACTICE_AUDIO_MIX_INVALID`로 거부한다.
+
+실시간 재생과 같은 음색·엔벨로프·리미터를 OfflineAudioContext로 렌더한다. WAV는 PCM 16-bit 모노 22,050 Hz이고 최대값을 -1 dBFS로 맞춘다(전부 무음이면 무음 유지). 길이는 곡 끝까지이며 프레임 단위로 올림한다. Blob의 MIME은 audio/wav다. 서버 전송과 저장은 하지 않으며 파일 이름과 다운로드 UI는 호출자가 정한다.
+
+signal 취소는 AbortError로 끝나고 파일을 반환하지 않는다. OfflineAudioContext에는 close API가 없으므로 렌더 중에는 1초 분량 간격의 오디오 시각 체크포인트에서 일시정지하고 다시 시작하지 않는다. PCM 변환 중에도 취소를 확인한다. 각 호출은 독립 컨텍스트를 사용한다. API 미지원·렌더 실패는 reject되므로 화면에서 오류를 처리한다.
+
 H3 참고: 화면에서 같은 생성을 재시도해도 라이브러리에 중복 항목이 생기지 않도록 저장 id를 정하는 방법은 H3에서 정한다.
