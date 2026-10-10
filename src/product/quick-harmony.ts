@@ -10,6 +10,8 @@ import { originFromMusicXml } from "../import/workspace/input";
 import { applyWorkspaceCommand, createImmutableWorkspace, createScoreWorkspace, readVerifiedWorkspace } from "../import/workspace/journal";
 import type { ScoreWorkspace } from "../import/workspace/model";
 import { generateAutoDraftProject } from "./auto-draft";
+import { summarizeQuickHarmonyMelody, type QuickHarmonySummary } from "./quick-harmony-summary";
+export type { QuickHarmonySummary } from "./quick-harmony-summary";
 import type { ProductGenerationOutcome } from "./workspace";
 
 export interface QuickHarmonyNotice {
@@ -20,6 +22,7 @@ export interface QuickHarmonyNotice {
 }
 
 export interface QuickHarmonyPreparation {
+  readonly summary?: QuickHarmonySummary;
   readonly status: "ready" | "needs-input" | "unsupported";
   /** Absent only when the file cannot be imported safely. */
   readonly workspace?: ScoreWorkspace;
@@ -99,7 +102,11 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
     id: "automatic-values", messageKo: "악보에서 비어 있는 설정은 연습용으로 자동 선택했어요.",
     actionKo: "자세히에서 어떤 값을 사용했는지 확인할 수 있어요.", choices: [],
   });
-  return { status: reasons.length ? "unsupported" : questions.length ? "needs-input" : "ready", workspace, questions, reasons, notes, details: { assessment } };
+  const request = assessment.request;
+  const summary = state.music && request?.lead
+    ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}) : undefined;
+  return { status: reasons.length ? "unsupported" : questions.length ? "needs-input" : "ready", workspace, questions, reasons, notes,
+    ...(summary ? {summary} : {}), details: { assessment } };
 }
 
 function rejectedFile(importError: string): QuickHarmonyPreparation {
