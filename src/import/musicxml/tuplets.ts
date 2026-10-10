@@ -9,24 +9,30 @@ const supportedType = (value: string | undefined): value is SourceTuplet["normal
  * and are reported by the normal importer diagnostics, never silently stripped. */
 export function supportedMusicXmlTuplets(part: XmlElement): ReadonlyMap<XmlElement, readonly SourceTuplet[]> {
   const voices = new Map<string, Member[]>();
+  const measureDurations: Fraction[] = [];
   let divisions = 1;
+  let meter = fraction(4);
   for (const [measureIndex,measure] of xmlChildren(part,"measure").entries()) {
-    let cursor = fraction(0);
+    let cursor = fraction(0), maximum = fraction(0);
     for (const child of measure.children) {
       if (child.kind !== "element") continue;
       if (child.name === "attributes") {
         const value = Number(xmlText(xmlChild(child,"divisions")));
         if (Number.isSafeInteger(value) && value > 0) divisions = value;
+        const time = xmlChild(child,"time"), beats = Number(time && xmlText(xmlChild(time,"beats"))), denominator = Number(time && xmlText(xmlChild(time,"beat-type")));
+        if (Number.isSafeInteger(beats) && beats > 0 && Number.isSafeInteger(denominator) && denominator > 0) meter = fraction(beats*4,denominator);
       }
       if (["backup","forward"].includes(child.name)) {
         const value = Number(xmlText(xmlChild(child,"duration")));
         if (Number.isSafeInteger(value) && value > 0) cursor = child.name === "backup" ? subtractFractions(cursor,fraction(value,divisions)) : addFractions(cursor,fraction(value,divisions));
+        if (compareFractions(cursor,maximum)>0) maximum=cursor;
       }
       if (child.name !== "note") continue;
       const durationValue = Number(xmlText(xmlChild(child,"duration")));
       const duration = Number.isSafeInteger(durationValue) && durationValue > 0 ? fraction(durationValue,divisions) : fraction(0);
       const onset = cursor;
       if (!xmlChild(child,"chord")) cursor = addFractions(cursor,duration);
+      if (compareFractions(cursor,maximum)>0) maximum=cursor;
       const voice = `${xmlText(xmlChild(child,"staff")) ?? "1"}:${xmlText(xmlChild(child,"voice")) ?? "1"}`;
       const tm = xmlChildren(child,"time-modification"), marks = xmlDescendants(child,"tuplet");
       const written = xmlText(xmlChild(child,"type")), normal = tm[0] && (xmlText(xmlChild(tm[0],"normal-type")) ?? written);
@@ -35,13 +41,16 @@ export function supportedMusicXmlTuplets(part: XmlElement): ReadonlyMap<XmlEleme
       const valid = tm.length === 1 && Number(xmlText(xmlChild(tm[0],"actual-notes"))) === 3 && Number(xmlText(xmlChild(tm[0],"normal-notes"))) === 2
         && supportedType(written) && supportedType(normal) && compareFractions(duration,fraction(expected.n*2,expected.d*3)) === 0
         && !xmlChild(child,"dot") && !xmlChild(tm[0],"normal-dot") && !xmlChild(child,"chord")
-        && !xmlChild(child,"grace") && !xmlChild(child,"cue") && !xmlDescendants(child,"ornaments").length
+        && !xmlChild(child,"grace") && !xmlChild(child,"cue") && !xmlChild(child,"unpitched") && !xmlDescendants(child,"ornaments").length
+        && xmlChildren(child,"type").length === 1 && xmlChildren(child,"duration").length === 1
+        && xmlChildren(tm[0],"actual-notes").length === 1 && xmlChildren(tm[0],"normal-notes").length === 1 && xmlChildren(tm[0],"normal-type").length <= 1
         && marks.length <= 1 && marks.every(mark => ["start","stop"].includes(mark.attributes.type))
         && Number.isSafeInteger(number) && number >= 1 && number <= 16;
       const entries = voices.get(voice) ?? [];
       entries.push({note:child,measure:measureIndex,onset,duration,written:written as SourceTuplet["normalType"],normal:normal as SourceTuplet["normalType"],number,start:marks[0]?.attributes.type === "start",stop:marks[0]?.attributes.type === "stop",valid});
       voices.set(voice,entries);
     }
+    measureDurations.push(measure.attributes.implicit === "yes" && maximum.n > 0 ? maximum : meter);
   }
   const result = new Map<XmlElement, readonly SourceTuplet[]>();
   for (const members of voices.values()) {
@@ -63,7 +72,7 @@ export function supportedMusicXmlTuplets(part: XmlElement): ReadonlyMap<XmlEleme
       let sum=fraction(0), contiguous=true;
       for (const [index,item] of group.entries()) {
         const previous=group[index-1];
-        if (previous && (item.measure === previous.measure ? compareFractions(addFractions(previous.onset,previous.duration),item.onset)!==0 : item.measure !== previous.measure+1 || item.onset.n!==0)) contiguous=false;
+        if (previous && (item.measure === previous.measure ? compareFractions(addFractions(previous.onset,previous.duration),item.onset)!==0 : item.measure !== previous.measure+1 || item.onset.n!==0 || compareFractions(addFractions(previous.onset,previous.duration),measureDurations[previous.measure])!==0)) contiguous=false;
         sum=addFractions(sum,item.duration);
       }
       const unit=tupletUnit(first.normal);

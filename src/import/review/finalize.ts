@@ -78,10 +78,12 @@ function blockedInput(
 }
 
 function leadProjection(event: ImportedLeadEventDraft): object {
-  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
+  const tuplets = event.tuplets ? {tuplets:event.tuplets} : {};
+  if (event.kind === "rhythm") return { ...tuplets, kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
-    ? { kind: "rest", onset: event.onset, duration: event.duration }
+    ? { ...tuplets, kind: "rest", onset: event.onset, duration: event.duration }
     : {
+        ...tuplets,
         kind: "note",
         onset: event.onset,
         duration: event.duration,
