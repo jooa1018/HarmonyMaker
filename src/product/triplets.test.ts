@@ -22,7 +22,7 @@ async function generate(xml:string,parts:Parameters<typeof generateQuickHarmony>
   const prep=await prepareQuickHarmony({bytes:new TextEncoder().encode(xml),fileName:"original-triplets.musicxml"});
   expect(prep.status,JSON.stringify(prep)).toBe("ready");
   const result=await generateQuickHarmony(prep,{parts,rightsConfirmed:true,confirmedAt:"2026-10-10T00:00:00.000Z"});
-  if(result.status!=="complete"&&result.status!=="partial")throw Error(JSON.stringify({status:result.status,diagnostics:result.diagnostics}));
+  if(result.status!=="complete"&&result.status!=="partial")throw Error(JSON.stringify({status:result.status,diagnostics:"diagnostics" in result ? result.diagnostics:[]}));
   return result;
 }
 function checkAbc(abc:string,plan:ReturnType<typeof buildPlaybackPlan>){
