@@ -10,6 +10,7 @@ import { isShareCreateIdempotencyKey } from "../../product/share-create-key";
 import { ProductionSubstrateConfigurationError } from "../substrate/config";
 import { getProductionServices } from "../substrate/services";
 import { SESSION_COOKIE_NAME, SessionSecurityError } from "../security/session";
+import { requestHost } from "./trusted-host";
 import { readBoundedStructuredJson } from "./bounded-json";
 
 import { createApiRequest, logUnexpectedApiError, type ApiRequestContext } from "./request-context";
@@ -47,13 +48,13 @@ export async function mapApiFailure(error: unknown, context: ApiRequestContext =
 
 export async function authorizeMutation(request: NextRequest) {
   const services = await getProductionServices();
-  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+
   const record = await services.sessions.authorizeMutation({
     sessionToken: request.cookies.get(SESSION_COOKIE_NAME)?.value,
     csrfToken: request.headers.get("x-csrf-token") ?? undefined,
     origin: request.headers.get("origin") ?? undefined,
-    host: request.headers.get("host") ?? undefined,
-    ...(forwardedHost ? { forwardedHost } : {}), now: new Date(),
+    host: requestHost(request),
+    now: new Date(),
   });
   return { services, record };
 }
