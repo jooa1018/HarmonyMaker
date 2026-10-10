@@ -108,7 +108,8 @@ describe("arrangement pickup policy export boundaries", () => {
     expect(abc).toContain('"Bb (편곡 정책)"');
     expect(abc.match(/편곡 정책/gu)).toHaveLength(1);
     expect(abc).toContain('"Bb"');
-    expect(abc).toContain("=F,2");
+    expect(abc).toContain("F,2");
+    expect(abc).not.toContain("=F,2");
   });
 
   it("combines export selection and policy metadata without exposing workspace proof", () => {

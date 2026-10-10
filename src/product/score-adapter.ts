@@ -1,6 +1,7 @@
 import { addFractions, compareFractions, fraction, subtractFractions, type Fraction } from "../domain/fraction";
 import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/generation/model";
 import type { KeySignature, SpelledPitch } from "../domain/pitch";
+import { deriveFifths } from "../domain/pitch";
 import type { TimelineAtom } from "../domain/source/atomization";
 import type { TempoSpec } from "../domain/source/model";
 import type { PerformanceMeasureOccurrence } from "../domain/performance/repeat";
@@ -15,12 +16,18 @@ interface AdapterEvent {
   readonly duration: Fraction;
   readonly pitch?: SpelledPitch;
   readonly tieStart: boolean;
+  readonly tieStop: boolean;
   readonly lyricTokenIds: readonly string[];
 }
 
-function abcPitch(pitch: SpelledPitch): string {
+function abcPitch(pitch: SpelledPitch, keyAlter: ReadonlyMap<string, number>, barAlter: Map<string, number>, tieStop: boolean): string {
   if (!Number.isSafeInteger(pitch.octave) || pitch.octave < -1 || pitch.octave > 9) throw new RangeError("ABC_SERIALIZATION_UNAVAILABLE");
-  const accidental = pitch.alter === -2 ? "__" : pitch.alter === -1 ? "_" : pitch.alter === 1 ? "^" : pitch.alter === 2 ? "^^" : "=";
+  const identity = `${pitch.step}:${pitch.octave}`;
+  const current = barAlter.get(identity) ?? keyAlter.get(pitch.step) ?? 0;
+  // abcjs resolves ties before applying bar accidentals: a continuation carries
+  // its source pitch but does not change the accidental for following attacks.
+  const accidental = tieStop || current === pitch.alter ? "" : pitch.alter === -2 ? "__" : pitch.alter === -1 ? "_" : pitch.alter === 1 ? "^" : pitch.alter === 2 ? "^^" : "=";
+  if (!tieStop) barAlter.set(identity, pitch.alter);
   const upper = pitch.octave <= 4;
   const letter = upper ? pitch.step : pitch.step.toLowerCase();
   const octave = pitch.octave < 4 ? ",".repeat(4 - pitch.octave) : pitch.octave > 5 ? "'".repeat(pitch.octave - 5) : "";
@@ -37,12 +44,12 @@ function abcLength(duration: Fraction): string {
 
 function eventFromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
   const duration = canonicalRangeDuration(measures, atom.range);
-  return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}) };
+  return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}) };
 }
 
 function eventFromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
   const duration = canonicalRangeDuration(measures, event.range);
-  return { kind: event.kind, offset: event.range.start.offset, duration, ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.kind === "note" && event.tieStart, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] };
+  return { kind: event.kind, offset: event.range.start.offset, duration, ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.kind === "note" && event.tieStart, tieStop: event.kind === "note" && event.tieStop, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] };
 }
 
 /** Keeps domain text intact and neutralizes structural ABC syntax only at serialization. */
@@ -66,9 +73,13 @@ function abcTempo(tempo: TempoSpec): string {
   return `${numerator}/${denominator}=${tempo.bpm}`;
 }
 
-function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: ArrangementRenderDocument["measures"], durations: readonly Fraction[], chordAt: Readonly<Record<string, string>>, includeChords: boolean, invisibleGaps = false): string {
+function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: ArrangementRenderDocument["measures"], durations: readonly Fraction[], chordAt: Readonly<Record<string, string>>, includeChords: boolean, key: KeySignature, invisibleGaps = false): string {
   const measures: string[] = [];
+  const fifths = deriveFifths(key);
+  const keyAlter = new Map((fifths < 0 ? "BEADGCF" : "FCGDAEB").slice(0, Math.abs(fifths)).split("").map(step => [step, Math.sign(fifths)]));
   for (let measureIndex = 0; measureIndex < measuresAuthority.length; measureIndex += 1) {
+    // abcjs 6.7 applies accidentals to this octave only and resets at each bar.
+    const barAlter = new Map<string, number>();
     const selected = events.filter((event) => (event as AdapterEvent & { measureIndex?: number }).measureIndex === measureIndex).sort((a, b) => compareFractions(a.offset, b.offset));
     let cursor = fraction(0);
     const tokens: string[] = [];
@@ -77,7 +88,7 @@ function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: Arran
       const chord = includeChords ? chordAt[`${measureIndex}:${event.offset.n}/${event.offset.d}`] : undefined;
       // B is only ABC's staff position for its rhythm glyph; playback uses the
       // pitch-free domain atom, never this engraving placeholder.
-      const glyph = event.kind === "rhythm" ? "!style=rhythm!B" : event.kind === "note" && event.pitch ? abcPitch(event.pitch) : "z";
+      const glyph = event.kind === "rhythm" ? "!style=rhythm!B" : event.kind === "note" && event.pitch ? abcPitch(event.pitch, keyAlter, barAlter, event.tieStop) : "z";
       const openSlurs = "(".repeat(event.slurs?.filter((mark) => mark.type === "start").length ?? 0), closeSlurs = ")".repeat(event.slurs?.filter((mark) => mark.type === "stop").length ?? 0);
       tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${openSlurs}${glyph}${abcLength(event.duration)}${event.tieStart ? "-" : ""}${closeSlurs}`);
       cursor = addFractions(event.offset, event.duration);
@@ -116,7 +127,7 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const chordOwner = (measureIndex: number) => { const index = rhythm.findIndex((track) => track.atoms.some((atom) => atom.range.start.performanceMeasureIndex === measureIndex)); return index < 0 ? 0 : index + 1; };
   const voices = tracks.map((track, index) => {
     const ownedChords = Object.fromEntries(Object.entries(chordAt).filter(([key]) => chordOwner(Number(key.split(":")[0])) === index));
-    const voice=`[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, rhythm.length > 0 && index < sourceCount)}`;
+    const voice=`[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, input.key, rhythm.length > 0 && index < sourceCount)}`;
     return index===0 ? voice+melodyLyricLines(document) : voice;
   }).join("\n");
   const score = rhythm.length ? `(${tracks.slice(0, sourceCount).map((track) => track.id).join(" ")}) ${tracks.slice(sourceCount).map((track) => track.id).join(" ")}` : tracks.map((track) => track.id).join(" ");
