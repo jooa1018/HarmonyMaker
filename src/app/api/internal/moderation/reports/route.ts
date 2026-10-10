@@ -1,12 +1,13 @@
-import { type NextRequest, NextResponse } from "next/server";
+import { type NextRequest, type NextResponse } from "next/server";
 
-import { mapApiFailure } from "../../../../../server/http/api";
+import { createApiRequest, mapApiFailure } from "../../../../../server/http/api";
 import { authorizeInternalRequest, moderationStatus } from "../../../../../server/http/internal-api";
 import { getProductionServices } from "../../../../../server/substrate/services";
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
+  const api = createApiRequest("/api/internal/moderation/reports");
   try {
     const authorization = authorizeInternalRequest(request);
     const services = await getProductionServices();
@@ -18,6 +19,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       ...(status ? { status } : {}),
       limit: Number(rawLimit),
     });
-    return NextResponse.json({ ok: true, reports });
-  } catch (error) { return mapApiFailure(error); }
+    return api.json({ ok: true, reports });
+  } catch (error) { return mapApiFailure(error, api); }
 }

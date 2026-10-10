@@ -14,6 +14,14 @@ HarmonyMaker는 멜로디, 확인된 코드, 곡 구조, 실제 가수 음역을
 
 예약 정리는 S3 없이 세션·공유·사용량·멱등 기록 정리를 수행합니다. 과거 객체 참조는 삭제 대기 상태로 남겨 두고 `generic.skippedItems`에 건너뛴 수를 표시하며, 실제 객체를 삭제한 것으로 기록하지 않습니다. 과거 S3 객체의 실제 삭제는 별도 운영 결정이 필요합니다. 기존 객체 저장소 어댑터와 시험은 보존합니다.
 
+## 오류 문의와 DB 운영
+
+API 응답의 `x-request-id`를 오류 문의에 포함하세요. 예상하지 못한 오류는 서버에서 시각·요청 ID·정적 경로 템플릿·종류·메시지·스택을 JSON 한 줄로 기록합니다. 등록된 내부 오류 코드 외 메시지는 가리고, 스택은 프레임 순서와 숫자 위치만 보존합니다. 요청 헤더·본문·공유 토큰·쿠키·IP 원문·절대 파일 경로는 기록하지 않습니다. 알려지지 않은 RangeError는 500 `SERVER_OPERATION_FAILED`로 응답합니다.
+
+공개 `/api/substrate-compatibility` 진단 API는 제거했습니다.
+
+`DATABASE_URL`에는 풀링 주소(예: PgBouncer·Neon pooled URL)를 쓰세요. 앱 인스턴스당 최대 연결은 3개, 연결 대기 5초, 유휴 연결 10초, DB statement_timeout 5초, 클라이언트 query_timeout 6초입니다. 인스턴스 수가 늘면 총 연결 수도 늘어납니다. 명시적으로 실행하는 마이그레이션 작업은 별도 연결 설정을 유지합니다.
+
 ## 현재 repository 상태 (제거 전 기록)
 
 - Segment A — authority 및 persistence/object-store substrate 결정: 구현 완료

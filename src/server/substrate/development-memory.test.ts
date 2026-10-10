@@ -60,6 +60,8 @@ describe("explicit development memory persistence", () => {
     vi.stubEnv("DATABASE_URL", "postgresql://example.invalid/test");
     const { getProductionServices } = await import("./services");
     await expect(getProductionServices()).rejects.toThrow("TEST_DATABASE_CONNECTION_BLOCKED");
+    const { Pool } = await import("pg");
+    expect(Pool).toHaveBeenCalledWith({ connectionString: "postgresql://example.invalid/test", max: 3, connectionTimeoutMillis: 5000, idleTimeoutMillis: 10000, statement_timeout: 5000, query_timeout: 6000 });
   });
   it("still requires valid independent security keys", async () => {
     vi.stubEnv("SHARE_ENCRYPTION_KEY", "");

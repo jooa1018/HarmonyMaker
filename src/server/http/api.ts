@@ -12,6 +12,9 @@ import { getProductionServices } from "../substrate/services";
 import { SESSION_COOKIE_NAME, SessionSecurityError } from "../security/session";
 import { readBoundedStructuredJson } from "./bounded-json";
 
+import { createApiRequest, logUnexpectedApiError, type ApiRequestContext } from "./request-context";
+export { createApiRequest } from "./request-context";
+
 const rights: readonly RightsBasis[] = ["self-authored", "public-domain", "licensed", "user-confirmed-rights"];
 export const SHARE_REQUEST_MAX_BYTES = 384 * 1024;
 export const SHARE_SMALL_REQUEST_MAX_BYTES = 8 * 1024;
@@ -20,24 +23,26 @@ export function apiError(code: string, status: number, messageKo: string): NextR
   return NextResponse.json({ ok: false, error: { code, messageKo } }, { status });
 }
 
-export async function mapApiFailure(error: unknown): Promise<NextResponse> {
-  if (error instanceof ProductionSubstrateConfigurationError) return apiError("PERSISTENCE_UNAVAILABLE", 503, "서버 저장 기능이 아직 구성되지 않았습니다.");
-  if (error instanceof SessionSecurityError) return apiError(error.code, 403, "요청 보안 확인에 실패했습니다.");
+export async function mapApiFailure(error: unknown, context: ApiRequestContext = createApiRequest("/api/[unknown]")): Promise<NextResponse> {
+  const failure = (code: string, status: number, message: string) => context.respond(apiError(code, status, message));
+  if (error instanceof ProductionSubstrateConfigurationError) return failure("PERSISTENCE_UNAVAILABLE", 503, "서버 저장 기능이 아직 구성되지 않았습니다.");
+  if (error instanceof SessionSecurityError) return failure(error.code, 403, "요청 보안 확인에 실패했습니다.");
   if (error instanceof RangeError) {
-    if (error.message === "MIGRATION_REQUIRED" || error.message === "MIGRATION_HISTORY_DIVERGED") return apiError(error.message, 503, "데이터베이스 schema migration이 준비되지 않았습니다.");
-    if (error.message === "INTERNAL_AUTHORITY_INVALID") return apiError(error.message, 403, "내부 작업 권한을 확인할 수 없습니다.");
-    if (error.message === "CRON_AUTHORITY_INVALID") return apiError(error.message, 401, "예약 정리 작업 권한을 확인할 수 없습니다.");
-    if (error.message === "MODERATION_CLAIM_CONFLICT") return apiError(error.message, 409, "신고 처리 권위가 만료되었거나 다른 작업자가 보유 중입니다.");
-    if (error.message === "MODERATION_REQUEST_TOO_LARGE") return apiError(error.message, 413, "내부 요청 크기 한도를 초과했습니다.");
-    if (error.message === "SHARE_REQUEST_TOO_LARGE" || error.message === "SHARE_PAYLOAD_TOO_LARGE") return apiError(error.message, 413, "공유 요청 크기 한도를 초과했습니다.");
-    if (error.message === "SESSION_REQUEST_TOO_LARGE") return apiError(error.message, 413, "세션 생성 요청은 body를 허용하지 않습니다.");
-    if (error.message === "SESSION_REQUEST_INVALID") return apiError(error.message, 400, "세션 생성 요청을 확인해 주세요.");
-    if (error.message.includes("CONFLICT") || error.message.includes("PENDING")) return apiError(error.message, 409, "작업 상태가 요청과 맞지 않습니다.");
-    if (error.message === "SHARE_UNAVAILABLE") return apiError("SHARE_UNAVAILABLE", 404, "공유를 열 수 없습니다.");
-    if (error.message === "SHARE_RIGHTS_REQUIRED") return apiError("SHARE_RIGHTS_REQUIRED", 400, "공유 권리를 확인해 주세요.");
-    return apiError(error.message, 400, "요청 내용을 확인해 주세요.");
+    if (error.message === "MIGRATION_REQUIRED" || error.message === "MIGRATION_HISTORY_DIVERGED") return failure(error.message, 503, "데이터베이스 schema migration이 준비되지 않았습니다.");
+    if (error.message === "INTERNAL_AUTHORITY_INVALID") return failure(error.message, 403, "내부 작업 권한을 확인할 수 없습니다.");
+    if (error.message === "CRON_AUTHORITY_INVALID") return failure(error.message, 401, "예약 정리 작업 권한을 확인할 수 없습니다.");
+    if (error.message === "MODERATION_CLAIM_CONFLICT") return failure(error.message, 409, "신고 처리 권위가 만료되었거나 다른 작업자가 보유 중입니다.");
+    if (error.message === "MODERATION_REQUEST_TOO_LARGE") return failure(error.message, 413, "내부 요청 크기 한도를 초과했습니다.");
+    if (error.message === "SHARE_REQUEST_TOO_LARGE" || error.message === "SHARE_PAYLOAD_TOO_LARGE") return failure(error.message, 413, "공유 요청 크기 한도를 초과했습니다.");
+    if (error.message === "SESSION_REQUEST_TOO_LARGE") return failure(error.message, 413, "세션 생성 요청은 body를 허용하지 않습니다.");
+    if (error.message === "SESSION_REQUEST_INVALID") return failure(error.message, 400, "세션 생성 요청을 확인해 주세요.");
+    if (["IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_PENDING", "IDEMPOTENCY_REPLAY_UNAVAILABLE"].includes(error.message)) return failure(error.message, 409, "작업 상태가 요청과 맞지 않습니다.");
+    if (error.message === "SHARE_UNAVAILABLE") return failure("SHARE_UNAVAILABLE", 404, "공유를 열 수 없습니다.");
+    if (error.message === "SHARE_RIGHTS_REQUIRED") return failure("SHARE_RIGHTS_REQUIRED", 400, "공유 권리를 확인해 주세요.");
+    if (["ABUSE_REPORT_INVALID", "IDEMPOTENCY_KEY_INVALID", "MODERATION_REQUEST_INVALID", "SHARE_CREATE_RECOVERY_INVALID", "SHARE_DELETE_INVALID", "SHARE_OWNER_RECONCILE_INVALID", "SHARE_PAYLOAD_INVALID", "SHARE_REQUEST_INVALID"].includes(error.message)) return failure(error.message, 400, "요청 내용을 확인해 주세요.");
   }
-  return apiError("SERVER_OPERATION_FAILED", 500, "서버 작업을 완료하지 못했습니다.");
+  logUnexpectedApiError(error, context);
+  return failure("SERVER_OPERATION_FAILED", 500, "서버 작업을 완료하지 못했습니다.");
 }
 
 export async function authorizeMutation(request: NextRequest) {
