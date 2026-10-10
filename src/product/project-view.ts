@@ -4,7 +4,7 @@ import type { HarmonyProject } from "../domain/project";
 import { quickHarmonyParts } from "../domain/quick-harmony-policy";
 import type { TempoSpec } from "../domain/source/model";
 import { buildPlaybackPlan, type PlaybackPlan } from "./playback-plan";
-import { projectPartStatus } from "./project-part-status";
+import { projectPartStatus, recordedPartReason } from "./project-part-status";
 import { materializeActiveArrangement, type MaterializedArrangement } from "./render";
 import { arrangementRenderDocumentToAbc } from "./score-adapter";
 import { productTrackRoles } from "./track-roles";
@@ -20,6 +20,7 @@ export interface HarmonyProjectDescription {
     readonly part?: "alto" | "tenor";
     readonly status?: "complete" | "partial" | "missing";
     readonly missingMeasures?: readonly number[];
+    readonly reasonKo?: string;
   }[];
 }
 
@@ -52,7 +53,9 @@ export function describeHarmonyProject(project: HarmonyProject): HarmonyProjectD
           role=placements.size===1 ? [...placements][0] : "other";
           label=metadata.label;
         } catch { /* Keep the recorded track label when role metadata is unavailable. */ }
-        return {role,label,...(part ? {part} : {}),...(materialized ? projectPartStatus(project,materialized.document,track.id) : {})};
+        const coverage = materialized ? projectPartStatus(project,materialized.document,track.id) : undefined;
+        const reasonKo = part && coverage ? recordedPartReason(project,preset,track.id,part,coverage) : undefined;
+        return {role,label,...(part ? {part} : {}),...coverage,...(reasonKo ? {reasonKo} : {})};
       });
     result={...result,parts};
   } catch { /* Best effort even for incomplete legacy records; never throw from list rendering. */ }
