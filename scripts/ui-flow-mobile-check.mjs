@@ -27,8 +27,8 @@ try {
     await expect(page.getByRole("heading", { name: "화음 파트를 고르세요" })).toBeVisible({ timeout: 60000 });
     console.log(`PASS ${name} with generic downloaded-file MIME`);
   }
-  // Six unsupported notation entries in the same measure must produce one visible card.
-  const repeated = xml.replace("</pitch>", '</pitch>' + '<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>'.repeat(6));
+  // Keep grouping coverage independent of the separately planned tuplet support.
+  const repeated = xml.replace("</note>", `<notations><ornaments>${"<trill-mark/>".repeat(6)}</ornaments></notations></note>`);
   await page.goto(base, { waitUntil: "networkidle" });
   await page.locator('input[type="file"]').setInputFiles({ name: "repeated.musicxml", mimeType: "application/xml", buffer: Buffer.from(repeated) });
   await expect(page.getByRole("heading", { name: "이 악보는 아직 화음을 만들 수 없어요" })).toBeVisible({ timeout: 60000 });
