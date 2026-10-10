@@ -1,2 +1,2 @@
-import { DesignPreview } from "./_ui/DesignPreview";
-export default function Home() { return <DesignPreview />; }
+import { QuickFlow } from "./_quick/QuickFlow";
+export default function Page() { return <QuickFlow />; }
