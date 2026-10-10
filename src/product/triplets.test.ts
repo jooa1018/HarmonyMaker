@@ -60,7 +60,7 @@ it.each(["quarter","eighth","16th"] as const)("infers an unmarked same-duration 
 });
 
 it.each(baseline)("$name preserves pre-triplet project/share/ABC/XML bytes",async expected=>{
-  const prep=await prepareQuickHarmony({bytes:new TextEncoder().encode(readFileSync(new URL(`./fixtures/wag11/${expected.name}.musicxml`,import.meta.url),"utf8").replaceAll("\r\n","\n")),fileName:`${expected.name}.musicxml`});
+  const prep=await prepareQuickHarmony({bytes:new Uint8Array(readFileSync(new URL(`./fixtures/wag11/${expected.name}.musicxml`,import.meta.url))),fileName:`${expected.name}.musicxml`});
   const result=await generateQuickHarmony(prep,{parts:["alto","tenor"],rightsConfirmed:true,confirmedAt:"2026-10-10T00:00:00.000Z"});
   if(result.status!=="complete"&&result.status!=="partial")throw Error(result.status);
   const project=result.project,materialized=materializeActiveArrangement(project,"standard"),notation={title:project.source.title,key:project.source.defaultKey,tempo:project.source.defaultTempo};
