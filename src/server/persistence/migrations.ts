@@ -536,13 +536,23 @@ export async function verifyMigrationsWithClient(
   try {
     rows = (await client.query("SELECT version, name, checksum FROM schema_migrations ORDER BY version")).rows;
   } catch { throw new RangeError("MIGRATION_REQUIRED"); }
-  if (rows.length !== migrations.length) throw new RangeError("MIGRATION_REQUIRED");
-  for (let index = 0; index < rows.length; index += 1) {
+  if (rows.length < migrations.length) throw new RangeError("MIGRATION_REQUIRED");
+  for (let index = 0; index < migrations.length; index += 1) {
     const row = rows[index];
     const expected = migrations[index];
     if (row.version !== expected.version || row.name !== expected.name || row.checksum !== migrationChecksum(expected)) {
       throw new RangeError("MIGRATION_HISTORY_DIVERGED");
     }
+  }
+  // Unknown additive migrations may follow, but the history must stay contiguous.
+  for (let index = migrations.length; index < rows.length; index += 1) {
+    if (rows[index].version !== index + 1) throw new RangeError("MIGRATION_HISTORY_DIVERGED");
+  }
+  if (rows.length > migrations.length) {
+    console.warn(JSON.stringify({
+      event: "migration-schema-ahead", timestamp: new Date().toISOString(),
+      codeVersion: migrations.length, databaseVersion: rows.length,
+    }));
   }
 }
 
