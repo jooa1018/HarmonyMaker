@@ -41,6 +41,7 @@ it("reads v1.0.1 without renaming, upgrading or changing its serialized bytes",a
   expect(description.parts).toHaveLength(1);
   expect(description.parts[0].label).toMatch(/^(Upper|Lower)(\/Lower)? \/ H[12]$/u);
   expect(description.parts[0].part).toBeUndefined();
+  expect(description.parts[0].reasonKo).toBeUndefined();
   expect((await projectPracticeView(project)).status).toBe("available");
   expect(await exportHarmonyProject(project)).toBe(bytes);
 });
@@ -53,6 +54,19 @@ it("retains requested missing parts when reopening a partial result",async()=>{
     .toEqual(result.parts.map(({part,status,missingMeasures})=>({part,status,missingMeasures})));
   expect(description.parts).toHaveLength(2);
   expect(description.parts.some(p=>p.status!=="complete")).toBe(true);
+  for(const part of description.parts.filter(p=>p.status!=="complete")) expect(part.reasonKo).toBe(result.parts.find(p=>p.part===part.part)!.reasonKo);
+});
+
+it("omits reasons when recorded diagnostics are absent, unknown or belong to a different track",async()=>{
+  const {project}=await generated("4-4-1",3);
+  const before=await exportHarmonyProject(project);
+  for(const mode of ["absent","unknown","other-track"]){
+    const copy=structuredClone(project),variant=copy.variants.standard;
+    if(variant?.lifecycle!=="generation-attempted")throw Error("missing variant");
+    for(const candidate of variant.generationResult.candidates) Object.assign(candidate,{diagnostics:mode==="absent"?[]:candidate.diagnostics.map(d=>mode==="unknown"?{...d,code:"UNKNOWN_FUTURE_REASON"}:{...d,location:{trackPlanIds:["track:unrelated"]}})});
+    expect(describeHarmonyProject(copy).parts.every(p=>p.reasonKo===undefined)).toBe(true);
+  }
+  expect(await exportHarmonyProject(project)).toBe(before);
 });
 
 it("owns concurrent results and captures input before asynchronous accompaniment",async()=>{

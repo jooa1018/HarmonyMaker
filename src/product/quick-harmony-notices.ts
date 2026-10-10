@@ -1,5 +1,12 @@
 import type { AutoDraftFinding } from "../import/workspace/auto-draft";
 
+/** Shared presentation for fresh results and recoverable saved diagnostics. */
+export function quickHarmonyPartReason(part: "alto" | "tenor", status: "complete" | "partial" | "missing", missingMeasures: readonly number[]): string {
+  const name = part === "alto" ? "알토" : "테너";
+  return status === "complete" ? `${name} 화음을 만들었어요.`
+    : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "번째 마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.`;
+}
+
 export interface QuickHarmonyNotice {
   readonly id: string;
   readonly messageKo: string;

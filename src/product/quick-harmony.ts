@@ -13,7 +13,7 @@ import { applyWorkspaceCommand, createImmutableWorkspace, createScoreWorkspace, 
 import type { ScoreWorkspace } from "../import/workspace/model";
 import { generateAutoDraftProject } from "./auto-draft";
 import { summarizeQuickHarmonyMelody, type QuickHarmonySummary } from "./quick-harmony-summary";
-import { quickHarmonyNotice, type QuickHarmonyNotice } from "./quick-harmony-notices";
+import { quickHarmonyNotice, quickHarmonyPartReason, type QuickHarmonyNotice } from "./quick-harmony-notices";
 export type { QuickHarmonySummary } from "./quick-harmony-summary";
 export type { QuickHarmonyNotice } from "./quick-harmony-notices";
 import type { ProductGenerationOutcome } from "./workspace";
@@ -134,9 +134,7 @@ function partResults(project: HarmonyProject, generation: ProductGenerationOutco
   return requested.map((part, index) => {
     const plan = project.trackPlans.find(t => t.canonicalOrdinal === index + 1);
     const {status,missingMeasures} = projectPartStatus(project,document,plan?.id);
-    const name = part === "alto" ? "알토" : "테너";
-    return { part, status, missingMeasures, reasonKo: status === "complete" ? `${name} 화음을 만들었어요.`
-      : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "번째 마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.` };
+    return { part, status, missingMeasures, reasonKo: quickHarmonyPartReason(part,status,missingMeasures) };
   });
 }
 

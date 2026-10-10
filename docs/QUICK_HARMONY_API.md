@@ -167,7 +167,8 @@ const view = await projectPracticeView(project); // 반주 포함, 비동기
 `describeHarmonyProject`는 `{ title, keyLabelKo, meters, measureCount, parts }`를 반환한다.
 제목·조성은 preparation.summary와 같은 규칙이며, 박자는 인쇄 순서에서 중복 제거하고
 마디 수는 반복 전 인쇄 마디 수다. `parts`는 멜로디를 제외한 생성 화음 트랙의 정규 순서다.
-각 항목은 `{ role: upper | lower | other, label, part?, status?, missingMeasures? }`다.
+각 항목은 `{ role: upper | lower | other, label, part?, status?, missingMeasures?, reasonKo? }`다.
+`reasonKo`는 일부·누락 결과의 저장된 진단에서 복원 가능한 경우만 제공한다. 현재는 선택된 결과의 `WAG_V1_PARTIAL_REQUIRED_COVERAGE`, 또는 같은 생성에서 해당 트랙을 명시한 후보 진단을 생성 직후와 같은 문구 함수로 해석한다. 편집 결과는 해당 스냅샷의 검증 진단만 사용한다. 다른 후보의 위치 없는 진단, 다른 트랙·알 수 없는 코드·진단 없는 기록에서는 추측하지 않고 생략한다. 프로젝트 바이트와 내부 진단은 바꾸지 않는다.
 quick-harmony v2에서는 알토·테너 이름과 part를 제공한다. 기존 프로젝트는 기존 역할
 레지스트리의 이름을 유지하며 part를 추측하지 않는다. 역할이 혼합되거나 없으면 other다.
 활성 결과를 읽을 수 있으면 quick-harmony와 같은 기준으로 complete·partial·missing 및

@@ -1,6 +1,25 @@
 import type { ArrangementRenderDocument } from "../domain/generation/model";
 import type { HarmonyProject } from "../domain/project";
 import { comparePositions } from "../domain/time";
+import type { ArrangementPresetId } from "../domain/config";
+import { quickHarmonyPartReason } from "./quick-harmony-notices";
+
+/** Only recorded, attributable diagnostics can explain a saved partial result.
+ * Other candidates may document this requested track's incomplete coverage;
+ * unscoped diagnostics from nonselected candidates are not evidence for it. */
+export function recordedPartReason(project: HarmonyProject, preset: ArrangementPresetId, trackId: string, part: "alto" | "tenor", coverage: ReturnType<typeof projectPartStatus>): string | undefined {
+  if (coverage.status === "complete") return undefined;
+  const variant = project.variants[preset];
+  if (variant?.lifecycle !== "generation-attempted" || variant.staleness || !variant.activeArrangement) return undefined;
+  const active = variant.activeArrangement;
+  const diagnostics = active.kind === "edited-snapshot"
+    ? variant.editedSnapshots.find(s => s.id === active.snapshotId)?.validationDiagnostics ?? []
+    : variant.generationResult.candidates.flatMap(candidate => candidate.diagnostics.filter(diagnostic =>
+      candidate.id === active.candidateId || diagnostic.location?.trackPlanIds?.includes(trackId)));
+  const recorded = diagnostics.some(diagnostic => diagnostic.code === "WAG_V1_PARTIAL_REQUIRED_COVERAGE"
+    && (!diagnostic.location?.trackPlanIds?.length || diagnostic.location.trackPlanIds.includes(trackId)));
+  return recorded ? quickHarmonyPartReason(part,coverage.status,coverage.missingMeasures) : undefined;
+}
 
 /** Same coverage contract for a newly generated result and a saved active output. */
 export function projectPartStatus(project: HarmonyProject, document: ArrangementRenderDocument | undefined, trackId: string | undefined): {
