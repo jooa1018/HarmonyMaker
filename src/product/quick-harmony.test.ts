@@ -87,7 +87,7 @@ describe("quick harmony API draft", () => {
     for (const [xml, expected] of [[score({ beats: 5 }), "unsupported"], [score({ extra: true }), "needs-input"]] as const) {
       const prep = await prepareQuickHarmony(file(xml));
       expect(prep.status).toBe(expected);
-      if (expected === "unsupported") expect(prep.reasons[0].messageKo).toContain("1마디");
+      if (expected === "unsupported") expect(prep.reasons[0].messageKo).toContain("1번째 마디");
       const forged = { ...prep, status: "ready" as const, reasons: [], questions: [], details: {} };
       const result = await generateQuickHarmony(forged, choice);
       expect(result.status).toBe(expected);

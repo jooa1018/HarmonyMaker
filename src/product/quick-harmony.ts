@@ -63,7 +63,7 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const describe = (finding: AutoDraftFinding): QuickHarmonyNotice => {
     const scope = finding.scope;
     const number = scope?.kind === "measure" ? measures.get(scope.measureId) : undefined;
-    const locationKo = number !== undefined ? `${number}마디` : scope?.kind === "metadata" ? "악보 설정"
+    const locationKo = number !== undefined ? `${number}번째 마디` : scope?.kind === "metadata" ? "악보 설정"
       : scope?.kind === "measure" ? "위치를 확인할 수 없는 마디" : "악보 전체";
     const result = quickHarmonyNotice(finding, locationKo);
     if (finding.code === "LEAD_SELECTION_REQUIRED") return { ...result,
@@ -128,7 +128,7 @@ function partResults(project: HarmonyProject, generation: ProductGenerationOutco
     const {status,missingMeasures} = projectPartStatus(project,document,plan?.id);
     const name = part === "alto" ? "알토" : "테너";
     return { part, status, missingMeasures, reasonKo: status === "complete" ? `${name} 화음을 만들었어요.`
-      : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.` };
+      : `${name} ${missingMeasures.length ? missingMeasures.join("·") + "번째 마디에서 " : ""}화음을 ${status === "missing" ? "만들지 못했어요" : "일부만 만들었어요"}. 음역과 기존 화음 규칙을 지키는 결과만 남겼어요.` };
   });
 }
 
