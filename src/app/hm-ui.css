@@ -124,6 +124,13 @@
 .hm-btn-sm { min-height: 44px; padding: 0 14px; font-size: 14px; border-radius: 10px; }
 .hm-btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .hm-btn-row .hm-btn { padding-inline: 10px; gap: 6px; font-size: 15px; }
+.hm-tiles3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.hm-tile { display: grid; justify-items: center; align-content: center; gap: 4px; min-height: 64px; padding: 8px 4px; border: 1px solid var(--hm-line); border-radius: var(--hm-r-md); background: var(--hm-surface); color: var(--hm-ink); font-family: var(--hm-font-body); font-size: 13.5px; font-weight: 600; line-height: 1.2; text-align: center; cursor: pointer; }
+.hm-tile:hover { border-color: var(--hm-staff); }
+.hm-tile .hm-icon { width: 22px; height: 22px; color: var(--hm-accent); }
+.hm-filecard { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--hm-line); border-radius: var(--hm-r-md); background: var(--hm-sunken); }
+.hm-filecard b { display: block; font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
+.hm-filecard small { display: block; font-size: 12.5px; color: var(--hm-muted); font-variant-numeric: tabular-nums; }
 .hm-iconbtn { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 0; background: transparent; color: var(--hm-muted); cursor: pointer; flex: none; }
 .hm-iconbtn:hover { background: var(--hm-sunken); color: var(--hm-ink); }
 
@@ -233,6 +240,8 @@
 .hm-choice { display: flex; gap: 12px; align-items: center; min-height: 52px; padding: 10px 14px; border: 1px solid var(--hm-line); border-radius: var(--hm-r-md); background: var(--hm-surface); font-size: 15px; line-height: 1.4; cursor: pointer; }
 .hm-choice input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--hm-accent); }
 .hm-choice.is-selected { border-color: var(--hm-accent); }
+.hm-choice b { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.hm-choice small { display: block; font-size: 12.5px; color: var(--hm-muted); }
 
 .hm-howto { display: grid; gap: 6px; padding-left: 22px; list-style: decimal; font-size: 14.5px; line-height: 1.5; }
 .hm-howto li { padding-left: 2px; }

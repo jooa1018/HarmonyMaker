@@ -29,6 +29,25 @@ async function share(page) {
   await expect(page.getByText("공유 링크를 만들었어요")).toBeVisible({ timeout: 60000 });
   return page.locator(".hm-linkbox-text").innerText();
 }
+async function practiceAudioDownload(page) {
+  await page.getByRole("button", { name: "연습 음원 받기", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("radio", { name: /테너 강조/ })).toBeChecked();
+  await dialog.getByRole("button", { name: "음원 만들기", exact: true }).click();
+  await expect(dialog.getByText("음원을 만들었어요")).toBeVisible({ timeout: 60000 });
+  const downloaded = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "파일로 저장", exact: true }).click();
+  const download = await downloaded, wav = await readFile(await download.path());
+  expect(download.suggestedFilename()).toMatch(/ - 테너 강조 - 100%\.wav$/);
+  expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
+  expect(wav.toString("ascii", 8, 12)).toBe("WAVE");
+  expect(wav.readUInt32LE(24)).toBe(22050);
+  expect(wav.readUInt16LE(22)).toBe(1);
+  expect(wav.readUInt16LE(34)).toBe(16);
+  expect(wav.length).toBe(wav.readUInt32LE(40) + 44);
+  expect(wav.subarray(44).some(byte => byte !== 0)).toBe(true);
+  await dialog.getByRole("button", { name: "닫기" }).click();
+}
 try {
   if (process.env.HM_UI_PERF_ONLY !== "1") {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
@@ -63,6 +82,7 @@ try {
         await page.evaluate(() => scrollTo(0, 0));
       }
       await page.screenshot({ path: `${evidence}/${viewport.width}-${name}.png`, fullPage: true, caret: "initial" });
+      if (index === 0) await practiceAudioDownload(page);
       const link = await share(page);
       await page.getByRole("button", { name: "링크 복사" }).click();
       expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(link);
@@ -70,6 +90,10 @@ try {
       await expect(page.getByRole("button", { name: "테너만 듣기" })).toBeVisible({ timeout: 60000 });
       await expect(page.locator(".hm-score-notation svg").first()).toBeVisible();
       expect(await widthFits(page)).toBe(true);
+      if (index === 0) {
+        await page.getByRole("button", { name: "테너만 듣기" }).click();
+        await practiceAudioDownload(page);
+      }
       if (index === 0) {
         await page.goto(`${base}/share?token=conflicting_token${new URL(link).hash}`);
         await expect(page.getByText("공유 악보를 열 수 없어요. 보낸 분에게 링크를 다시 확인해 주세요.")).toBeVisible();

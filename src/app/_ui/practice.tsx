@@ -24,16 +24,17 @@ export interface PlayerController {
   toggleBand: () => void;
 }
 export function usePreviewPlayer(screen: string): PlayerController {
+  const audio = ["13-audio", "G-audio-making", "H-audio-done"].includes(screen);
   const shared = screen === "12-shared";
   const desktop = screen === "desktop-result";
   const [phase, setPhase] = useState<PlayerController["phase"]>(shared ? "ready" : desktop ? "paused" : "playing");
   const [seconds, setSeconds] = useState(shared ? 0 : desktop ? 42 : 23);
-  const [speed, setSpeedValue] = useState(shared || desktop ? 75 : 100);
+  const [speed, setSpeedValue] = useState(shared || desktop || audio ? 75 : 100);
   const [solo, setSolo] = useState<string | undefined>(shared ? "upper" : desktop ? undefined : "lower");
   const [muted, setMuted] = useState<string[]>(desktop ? ["upper"] : []);
   const [bandEnabled, setBandEnabled] = useState(!shared);
   // Fixture time deliberately stays still for deterministic visual review. No audio is scheduled.
-  return { phase, seconds, totalSeconds: 72, speed, solo, muted, bandEnabled,
+  return { phase, seconds, totalSeconds: audio ? 96 : 72, speed, solo, muted, bandEnabled,
     tracks: [{ id: "lead", label: "멜로디", role: "lead" }, { id: "lower", label: "알토", role: "lower" }, { id: "upper", label: "테너", role: "upper" }],
     togglePlay: () => setPhase(value => value === "playing" ? "paused" : "playing"),
     restart: () => { setSeconds(0); setPhase("ready"); },

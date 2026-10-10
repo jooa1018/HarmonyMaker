@@ -11,7 +11,7 @@ const base = process.env.HM_UI_BASE_URL ?? "http://127.0.0.1:3133";
 const out = process.env.HM_UI_EVIDENCE_DIR ?? "runtime-browser-evidence/h3";
 const channel = process.env.HM_UI_BROWSER_CHANNEL;
 const names = ["01-start", "02-parts", "03-lead", "04-fix", "05-unsupported", "06-making", "07-result", "08-partial", "09-share", "10-library", "11-guide", "12-shared", "A-reading", "B-dragover", "C-unreadable", "D-share-before", "E-library-empty", "F-minibar"];
-const cases = [...names.map(name => ({ name, width: 390, height: 844 })), ...["07-result", "10-library"].map(name => ({ name, width: 360, height: 780 })), { name: "desktop-result", width: 1280, height: 800 }];
+const cases = [...names.map(name => ({ name, width: 390, height: 844 })), ...["07-result", "10-library"].map(name => ({ name, width: 360, height: 780 })), { name: "desktop-result", width: 1280, height: 800 }, ...["13-audio", "G-audio-making", "H-audio-done"].map(name => ({ name, width: 390, height: 880 }))];
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch({ ...(channel ? { channel } : {}) });
 const results = [];
@@ -20,6 +20,12 @@ try {
   for (const theme of (process.env.HM_UI_INTERACTIONS_ONLY === "1" ? [] : ["light", "dark"])) {
     await mkdir(join(out, theme), { recursive: true });
     const context = await browser.newContext({ colorScheme: theme, reducedMotion: "reduce", deviceScaleFactor: 2 });
+    // Screen H depicts a device that supports native file sharing.
+    await context.addInitScript(() => {
+      if (!location.pathname.endsWith("/H-audio-done")) return;
+      Object.defineProperty(navigator, "canShare", { value: () => true });
+      Object.defineProperty(navigator, "share", { value: async () => {} });
+    });
     const page = await context.newPage();
     for (const target of cases) {
       await page.setViewportSize({ width: target.width, height: target.height });
@@ -107,6 +113,31 @@ try {
     await expect(page.getByRole("button", { name: "닫기" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+  await check("audio settings snapshot, focus trap, cancel and download", async () => {
+    await page.goto(`${base}/ui-preview/07-result`);
+    await page.getByRole("button", { name: "테너만 듣기" }).click();
+    await page.locator(".hm-seg label").filter({ has: page.getByRole("radio", { name: "75%", exact: true }) }).click();
+    const trigger = page.getByRole("button", { name: "연습 음원 받기", exact: true });
+    await trigger.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("radio", { name: /테너 강조/ })).toBeChecked();
+    await expect(dialog.getByRole("radio", { name: "75%", exact: true })).toBeChecked();
+    await expect(dialog.getByRole("heading")).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(dialog.getByRole("button", { name: "음원 만들기", exact: true })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "닫기" })).toBeFocused();
+    await dialog.getByRole("button", { name: "음원 만들기", exact: true }).click();
+    await dialog.getByRole("button", { name: "취소", exact: true }).click();
+    await expect(dialog.getByRole("radio", { name: /테너 강조/ })).toBeChecked();
+    await dialog.getByRole("button", { name: "음원 만들기", exact: true }).click();
+    await expect(dialog.getByText("음원을 만들었어요")).toBeVisible();
+    const downloaded = page.waitForEvent("download");
+    await dialog.getByRole("button", { name: "파일로 저장", exact: true }).click();
+    expect((await downloaded).suggestedFilename()).toBe("시냇가에 심은 나무 - 테너 강조 - 75%.wav");
+    await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
   });
   await check("library cancellation preserves item, deletion is local fixture only", async () => {
