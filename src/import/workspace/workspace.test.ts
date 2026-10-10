@@ -283,13 +283,13 @@ describe("persistent score boundary",()=>{
     expect(selected.range).toBe("whole-score");
   });
   it("retains unknown pitch/overfull/unsupported meter without turning them into rests or allowing arrangement",async()=>{
-    const unknown=await start(score({body:'<note><pitch><step>?</step><octave>4</octave></pitch><duration>5</duration><voice>1</voice></note>',time:3}));
+    const unknown=await start(score({body:'<note><pitch><step>?</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice></note>',time:5}));
     const s=await state(unknown),c=await caps(unknown);
     expect(s.music!.parts[0].measures[0].leadEvents).toHaveLength(0);
     expect(s.music!.parts[0].measures[0].unresolvedEvents?.[0].kind).toBe("unknown");
     expect(c.saveDraft&&c.edit&&c.view&&!c.arrange).toBe(true);
     expect(c.blockers.some(b=>b.id.startsWith("meter:"))).toBe(true);
-    const corrected=await act(unknown,{kind:"note",eventId:s.music!.parts[0].measures[0].unresolvedEvents![0].id,value:{kind:"note",pitch:{step:"D",alter:0,octave:4},onset:fraction(0),duration:fraction(5),tieStart:false,tieStop:false}});
+    const corrected=await act(unknown,{kind:"note",eventId:s.music!.parts[0].measures[0].unresolvedEvents![0].id,value:{kind:"note",pitch:{step:"D",alter:0,octave:4},onset:fraction(0),duration:fraction(6),tieStart:false,tieStop:false}});
     expect((await caps(corrected)).blockers.some(b=>b.id.startsWith("overfull:"))).toBe(true);
   });
   it("preserves fermata-bearing note identity and pitch when only the symbol is corrected",async()=>{

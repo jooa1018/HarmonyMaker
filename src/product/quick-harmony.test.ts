@@ -10,7 +10,7 @@ import * as autoDraft from "./auto-draft";
 
 // Original test melody, written for this API; no user score or external data.
 function score({ beats = 4, extra = false, voices = false } = {}) {
-  const note = (step: string, voice = 1) => `<note><pitch><step>${step}</step><octave>5</octave></pitch><duration>1</duration><voice>${voice}</voice><type>quarter</type></note>`;
+  const note = (step: string, voice = 1) => `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>1</duration><voice>${voice}</voice><type>quarter</type></note>`;
   const bars = [["C", "E", "D", "C", "E"], ["F", "F", "A", "G", "F"], ["G", "D", "G", "B", "D"], ["C", "C", "E", "C", "G"]];
   const measures = bars.map(([root, ...steps], index) => `<measure number="${index + 1}">${index === 0 ? `<attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>${beats}</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>` : ""}<harmony><root><root-step>${root}</root-step></root><kind>major</kind></harmony>${steps.slice(0, beats).map(s => note(s)).join("")}${extra && index === 1 ? note("C") : ""}${voices ? `<backup><duration>4</duration></backup>${steps.map(s => note(s, 2)).join("")}` : ""}</measure>`).join("");
   return `<score-partwise><work><work-title>API 연습곡</work-title></work><part-list><score-part id="P1"><part-name>Melody</part-name></score-part></part-list><part id="P1">${measures}</part></score-partwise>`;
@@ -81,7 +81,7 @@ describe("quick harmony API draft", () => {
   }, 180_000);
 
   it("recomputes unsupported and needs-input verdicts even if UI details were forged", async () => {
-    for (const [xml, expected] of [[score({ beats: 3 }), "unsupported"], [score({ extra: true }), "needs-input"]] as const) {
+    for (const [xml, expected] of [[score({ beats: 5 }), "unsupported"], [score({ extra: true }), "needs-input"]] as const) {
       const prep = await prepareQuickHarmony(file(xml));
       expect(prep.status).toBe(expected);
       if (expected === "unsupported") expect(prep.reasons[0].messageKo).toContain("1마디");
@@ -104,7 +104,7 @@ describe("quick harmony API draft", () => {
   it("requires explicit rights and rejects invalid choices and tampered workspace history", async () => {
     const prep = await prepareQuickHarmony(file());
     await expect(generateQuickHarmony(prep, { ...choice, rightsConfirmed: false } as unknown as QuickHarmonyChoice)).rejects.toMatchObject({ code: "QUICK_HARMONY_RIGHTS_REQUIRED" });
-    for (const override of [{ confirmedAt: "" }, { parts: [] }, { parts: ["alto", "tenor"] }, { parts: ["soprano"] }, { answers: null }, { answers: { lead: 5 } }]) {
+    for (const override of [{ confirmedAt: "" }, { parts: [] }, { parts: ["alto", "alto"] }, { parts: ["soprano"] }, { answers: null }, { answers: { lead: 5 } }]) {
       await expect(generateQuickHarmony(prep, { ...choice, ...override } as unknown as QuickHarmonyChoice)).rejects.toMatchObject({ code: "QUICK_HARMONY_CHOICE_INVALID" });
     }
     const tampered = structuredClone(prep);

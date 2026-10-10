@@ -255,8 +255,8 @@ function parseTime(attributes: XmlElement, context: ParseContext, measureOrdinal
     });
     return undefined;
   }
-  const groups = beats === 6 && beatType === 8
-    ? [3, 3]
+  const groups = beats % 3 === 0 && beatType === 8
+    ? Array.from({ length: beats / 3 }, () => 3)
     : Array.from({ length: beats }, () => 1);
   return timeSignature(beats, beatType, groups);
 }

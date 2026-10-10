@@ -10,7 +10,7 @@ export interface PerformerProfile {
 export interface SourceLeadTrackPlan { readonly kind: "source-lead"; readonly id: "track:source-lead"; readonly displayLabel: string; readonly canonicalOrdinal: 0; readonly enabled: true }
 export type GeneratedTrackOrdinal = 1 | 2;
 export type VocalPlacementRole = "upper" | "lower";
-export interface GeneratedHarmonyTrackPlan { readonly kind: "generated-harmony"; readonly id: string; readonly displayLabel: string; readonly canonicalOrdinal: GeneratedTrackOrdinal; readonly enabled: boolean }
+export interface GeneratedHarmonyTrackPlan { readonly kind: "generated-harmony"; readonly id: string; readonly displayLabel: string; readonly canonicalOrdinal: GeneratedTrackOrdinal; readonly enabled: boolean; readonly notationOctaveShift?: -1 | 0 }
 export type VocalTrackPlan = SourceLeadTrackPlan | GeneratedHarmonyTrackPlan;
 export interface TrackRoleSegment { readonly id: string; readonly phraseId: string; readonly trackPlanId: string; readonly placementRole: VocalPlacementRole }
 export interface PerformerTrackAssignment { readonly trackPlanId: string; readonly performerId: string }

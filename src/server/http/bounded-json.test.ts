@@ -29,7 +29,7 @@ describe("bounded structured HTTP input", () => {
   it("normalizes malformed and mismatched Origin to deterministic false", () => {
     expect(hasExactRequestOrigin(new Request("https://hm.test", { headers: { origin: "not a URL", host: "hm.test" } }))).toBe(false);
     expect(hasExactRequestOrigin(new Request("https://hm.test", { headers: { origin: "https://other.test", host: "hm.test" } }))).toBe(false);
-    expect(hasExactRequestOrigin(new Request("https://hm.test", { headers: { origin: "https://hm.test", host: "internal", "x-forwarded-host": "hm.test" } }))).toBe(true);
+    expect(hasExactRequestOrigin(new Request("https://hm.test", { headers: { origin: "https://hm.test", host: "internal", "x-forwarded-host": "hm.test" } }), {})).toBe(false);
   });
 
   it("locks the share create top-level object to exact bounded fields", async () => {

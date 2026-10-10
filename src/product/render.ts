@@ -45,7 +45,10 @@ export function materializeActiveArrangement(project: HarmonyProject, presetId: 
     measures: project.source.performanceSequence.occurrences,
     sourceLeadTrack: { trackPlanId: "track:source-lead", atomizationDigest: project.sourceLeadAtomizationState.atomization.digest, atoms: project.sourceLeadAtomizationState.atomization.atoms },
     ...(rhythm.length ? { sourceRhythmTracks: rhythm } : {}),
-    generatedHarmonyTracks: artifact.tracks.slice().sort((left, right) => ordinal[left.trackPlanId] - ordinal[right.trackPlanId]),
+    generatedHarmonyTracks: artifact.tracks.slice().sort((left, right) => ordinal[left.trackPlanId] - ordinal[right.trackPlanId]).map(track => {
+      const plan = project.trackPlans.find(p => p.id === track.trackPlanId);
+      return { ...track, ...(plan?.kind === "generated-harmony" && plan.notationOctaveShift !== undefined ? { notationOctaveShift: plan.notationOctaveShift } : {}) };
+    }),
     effectiveChordTimeline: project.chordTimelineState.timeline,
     lyricTokens: project.source.sourceMeasures.flatMap((measure) => measure.lyricTokens),
   };

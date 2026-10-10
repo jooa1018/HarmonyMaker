@@ -1,12 +1,29 @@
-# Quick Harmony API — H1 1-1 초안
+# Quick Harmony API — WAG v1.1 (A등급 검토)
 
-상태: A등급 검토 대기. H3 구현 기준으로 확정하기 전 Orchestrator 판정이 필요하다.
+`src/product/quick-harmony.ts`는 MusicXML 자동 판정과 로컬 화음 생성의 진입점이다.
+1-1·1-4는 PR #14로 병합됐고, PR #16은 1-2 다중 파트와 1-3 박자를 함께 확장한다.
+전체 안내 코드 대응표(1-5)는 후속 작업이다.
 
-## 이번 PR 범위
+`parts`는 `auto`, `["alto"]`, `["tenor"]`, 두 파트 배열을 받는다. 역순은 알토→테너로
+정규화하고 빈 배열·중복·알 수 없는 파트는 거부한다. 지원 박자는 2/4·3/4·4/4·6/8·12/8이다.
+3/4 주 박은 4분음표, 12/8은 점4분음표이며 자동 연습 템포는 점4분음표 60이다.
+3/8·9/8과 전조는 지원하지 않는다.
 
-`src/product/quick-harmony.ts`는 기존 자동 초안 엔진을 브라우저에서 호출하는 진입점이다. 서버 요청, 자동 저장, 화면 변경은 없다. 엔진 규칙과 저장 형식도 그대로 사용한다.
+알토는 항상 Lower, 테너는 항상 Upper다. auto로 선택된 기본 파트에도 같은 역할을 적용한다.
+기존 WAG의 `Upper > Lead > Lower` 배치, 독립 marginal 검증과 pair gate를 그대로 사용한다.
+테너 v2 프리셋은 **악보 높이** hard C4–A5, comfortable D4–G5이며,
+`notationOctaveShift: -1`로 한 옥타브 낮게 재생한다(실제 소리 C3–A4 / D3–G4).
+알토 음역은 기존 F3–D5 / A3–C5다. MusicXML은 G2 및 `clef-octave-change=-1`,
+ABC·abcjs는 `clef=treble-8`을 사용한다. 엔진 배치·음역 검사는 악보 높이를 사용한다.
+MusicXML의 테너 `<pitch>`는 소리 높이(내부 악보 높이에서 한 옥타브 아래)로 내보내며,
+옥타브 clef가 악보상 위치를 표시한다. 별도 `<transpose>`를 더해 중복 이동하지 않는다.
 
-1-1 API 초안과 1-4 권리 확인을 포함한다. 현재 성부 선택은 `auto`, `["alto"]`, `["tenor"]`다. 1-2에서 `["alto", "tenor"]`와 정규화·정책 버전 호환을 추가한다. 아직 두 파트를 전달하면 입력 오류다. 현재 지원 박자는 2/4·4/4·6/8이며 3/4·12/8은 1-3에서 추가한다. 전체 안내 코드 대응표와 위치 표현 통일은 1-5의 후속 작업이다.
+정책 표식은 `hm-auto-draft-policy-v2`, 파트 프리셋은 `hm-harmony-part-presets-v2`,
+생성 규칙은 `grammar-v1.1`이다. 기존 v1 표식과 v1.0.1 프로젝트는 해당 버전으로 재검증한다.
+기존 프로젝트 편집은 저장된 intent 버전을 따르며 자동 업그레이드하지 않는다.
+새 quick-harmony 생성은 v1.1을 사용한다. 미등록 버전은 `WAG_VERSION_UNSUPPORTED` 또는
+프로젝트 경계의 `PROJECT_INTEGRITY_INVALID`로 거부한다. 선택 옥타브 필드가 없는 기존
+프로젝트·공유 데이터는 0으로 처리한다.
 
 ## 함수와 입력
 
@@ -21,7 +38,8 @@ prepareQuickHarmonyWorkspace(workspace: ScoreWorkspace): Promise<QuickHarmonyPre
 generateQuickHarmony(
   preparation: QuickHarmonyPreparation,
   choice: {
-    parts?: "auto" | readonly ["alto" | "tenor"];
+    parts?: "auto" | readonly ["alto" | "tenor"]
+      | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
     rightsConfirmed: true;
     confirmedAt: string;
     answers?: {
@@ -59,10 +77,18 @@ generate는 전달받은 판정·질문·자세히를 신뢰하지 않는다. �
 
 | `status` | 반환값과 화면 처리 |
 |---|---|
-| `complete` | `project`, `generation`, `preparation`. 지원 구간의 생성 완료. |
-| `partial` | 같은 필드. 일부 구간만 생성됐으므로 완료로 표시하지 않고 기존 generation 진단을 안내한다. |
-| `blocked` | `diagnostics`, `preparation`, 선택적 `project`. 생성 차단이며 재생 가능한 결과로 취급하지 않는다. |
+| `complete` | `project`, `generation`, `preparation`, `parts`. 명시 요청한 모든 파트가 완성됨. |
+| `partial` | 같은 필드. 일부 파트나 구간만 생성됐으므로 `parts`의 누락 위치와 안내를 표시한다. |
+| `blocked` | `diagnostics`, `preparation`, `parts`, 선택적 `project`. 요청 파트가 모두 없거나 엔진이 차단됨. |
 | `needs-input` / `unsupported` | `preparation`. 프로젝트를 만들지 않았다. |
+
+각 파트는 `{ part, status: "complete" | "partial" | "missing", missingMeasures, reasonKo }`로 반환한다.
+명시 요청은 알토→테너 순서로 모두 보고하며, 빠진 파트를 숨긴 채 complete로 처리하지 않는다.
+`missingMeasures`는 선택된 결과에서 코드가 있는 Lead 음표 구간을 덮지 못한 **원본 마디 번호**다.
+번호는 정렬·중복 제거하므로 반복 연주의 같은 원본 마디는 한 번만 나온다. 원본 쉼표·N.C.는
+누락으로 세지 않는다. 생성 전 Source 차단으로 마디를 확정할 수 없으면 빈 목록과 차단 안내를 준다.
+`reasonKo`는 UI에서 직접 표시할 수 있다. 원시 엔진 `generation.status`보다 바깥쪽 `status`가
+사용자가 요청한 파트의 충족 여부를 나타낸다. auto의 전체 상태는 기존 WAG 18.5 optional 계약을 유지한다.
 
 UI는 `complete`/`partial`을 명시적으로 분기한다. 기존 내부 `generated`는 엔진 시도가 차단된 경우도 포함하므로 이 API는 그 문자열을 성공으로 노출하지 않는다.
 

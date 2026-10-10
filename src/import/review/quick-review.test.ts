@@ -180,9 +180,9 @@ describe("Quick Review blocking completeness", () => {
   });
 
   it("reports planning-unsupported meter/grouping", async () => {
-    const threeNotes = Array.from({ length: 3 }, () => "<note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>1</staff></note>").join("");
-    const time = "<time><beats>3</beats><beat-type>4</beat-type></time>";
-    const review = await deriveQuickReview(selectAndConfirm(await draftFrom(score(threeNotes, { time }))));
+    const fiveNotes = Array.from({ length: 5 }, () => "<note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>1</staff></note>").join("");
+    const time = "<time><beats>5</beats><beat-type>4</beat-type></time>";
+    const review = await deriveQuickReview(selectAndConfirm(await draftFrom(score(fiveNotes, { time }))));
     expect(review.diagnostics.some((item) => item.code === "UNSUPPORTED_METER")).toBe(true);
     expect(review.state.readyForPlanning).toBe(false);
   });

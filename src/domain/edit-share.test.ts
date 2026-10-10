@@ -76,7 +76,7 @@ describe("Step 2 edit and PracticeShare foundation", () => {
     expect(isPracticeSharePayload(withMeter([4, 4], [9, 2]))).toBe(false);
     expect(isPracticeSharePayload(withMeter([6, 8], [7, 2]))).toBe(false);
     expect(isPracticeSharePayload(withMeter([4, 4], [10_000_000, 1]))).toBe(false);
-    expect(isPracticeSharePayload(withMeter([3, 4], [3, 1]))).toBe(false);
+    expect(isPracticeSharePayload(withMeter([3, 4], [3, 1]))).toBe(true);
     expect(isPracticeSharePayload(withMeter([4, 8], [2, 1]))).toBe(false);
     expect(isPracticeSharePayload(withMeter([Number.MAX_SAFE_INTEGER, 8], [1, 1]))).toBe(false);
     const withPitch = (pitch: readonly [string, number, number]) => ({

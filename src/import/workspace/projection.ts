@@ -1,6 +1,6 @@
 import { canonicalJson, semanticDigest } from "../../domain/digest/canonical";
 import type { SongSourceDocument, WorkspaceProjectionMetadata } from "../../domain/source/model";
-import { assessAutoDraft, autoDraftGeneratable, autoDraftSummary, parseAutoDraftMarker, serializeAutoDraftOptions, type AutoDraftOptions } from "./auto-draft";
+import { AUTO_DRAFT_POLICY_VERSION, assessAutoDraft, autoDraftGeneratable, autoDraftSummary, parseAutoDraftMarker, serializeAutoDraftOptions, type AutoDraftOptions, type AutoDraftPolicyVersion } from "./auto-draft";
 import type { MusicXmlImportDraft } from "../musicxml/types";
 import { buildImportedSectionOccurrenceReviews } from "../review/occurrences";
 import { clean } from "./edit";
@@ -25,12 +25,17 @@ export async function projectScoreWorkspace(value:ScoreWorkspace):Promise<MusicX
 /** Automatic practice draft: same projection, with the request built by the
  * auto-draft contract and its marker sealed in the draft identity. Refuses
  * anything but ready/ready-with-warnings; never writes or needs attestations. */
-export async function projectAutoDraftWorkspace(value:ScoreWorkspace,options:AutoDraftOptions={}):Promise<MusicXmlImportDraft> {
-  const captured=captureWorkspace(value),marker=serializeAutoDraftOptions(options);
-  const assessment=await assessAutoDraft(value,options);
+export async function projectAutoDraftWorkspace(value:ScoreWorkspace,options:AutoDraftOptions={},policyVersion:AutoDraftPolicyVersion=AUTO_DRAFT_POLICY_VERSION):Promise<MusicXmlImportDraft> {
+  const captured=captureWorkspace(value),marker=serializeAutoDraftOptions(options,policyVersion);
+  const assessment=await assessAutoDraft(value,options,policyVersion);
   if(!autoDraftGeneratable(assessment)||!assessment.request) throw new RangeError(`AUTO_DRAFT_NOT_READY:${assessment.status}:${assessment.findings.filter(f=>f.category!=="warning").map(f=>f.code).join(",")}`);
   const {state}=await readVerifiedWorkspace(value);
   return finishProjection(value,captured,{...state,request:assessment.request},marker);
+}
+/** Saved markers retain their original policy and bytes throughout validation. */
+export async function replayAutoDraftWorkspace(value:ScoreWorkspace,marker:string):Promise<MusicXmlImportDraft> {
+  const parsed=parseAutoDraftMarker(marker);
+  return projectAutoDraftWorkspace(value,parsed.options,parsed.version);
 }
 async function finishProjection(value:ScoreWorkspace,captured:string,state:Awaited<ReturnType<typeof readVerifiedWorkspace>>["state"],autoDraft?:string):Promise<MusicXmlImportDraft> {
   const originKind=value.origin.kind,performanceVersion=value.algorithmVersions.performanceExpanderVersion;
@@ -72,7 +77,7 @@ async function validateProjection(draft:MusicXmlImportDraft,immutable:boolean):P
   const workspace=await (immutable?parseImmutableScoreWorkspace:parseScoreWorkspace)(proof);
   if(hit?.proof!==proof||hit.identity!==identity) {
     const expected=draft.workspaceAutoDraft!==undefined
-      ? await projectAutoDraftWorkspace(workspace,parseAutoDraftMarker(draft.workspaceAutoDraft))
+      ? await replayAutoDraftWorkspace(workspace,draft.workspaceAutoDraft)
       : await projectScoreWorkspace(workspace);
     if(identity!==projectedDraftIdentity(expected))throw new RangeError("WORKSPACE_PROJECTION_SUBSTITUTED");
   }
@@ -91,7 +96,7 @@ export async function assertProjectedWorkspaceDraft(draft:MusicXmlImportDraft):P
 export async function workspaceProjectionMetadata(draft:MusicXmlImportDraft,source:SongSourceDocument):Promise<WorkspaceProjectionMetadata> {
   const workspace=await validateProjection(draft,true),replayed=await replayScoreWorkspace(workspace);
   const autoOptions=draft.workspaceAutoDraft!==undefined?parseAutoDraftMarker(draft.workspaceAutoDraft):undefined;
-  const assessment=autoOptions?await assessAutoDraft(workspace,autoOptions):undefined;
+  const assessment=autoOptions?await assessAutoDraft(workspace,autoOptions.options,autoOptions.version):undefined;
   const state=assessment?{...replayed,request:assessment.request!}:replayed,part=selectedWorkspacePart(state)!;
   const selected=[state.request.lead!,...state.request.rhythmVoices];
   const targetMap:{workspaceId:string;sourceId:string;kind:"measure"|"event"|"chord"}[]=[];
