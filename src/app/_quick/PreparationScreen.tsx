@@ -2,6 +2,7 @@
 import { AppBar, NotesFold, PartPicker } from "../_ui/controls";
 import { Icon } from "../_ui/Icon";
 import { ctaLabel, titleFromFileName } from "../_ui/format";
+import { uniqueNotices } from "./notices";
 import { harmonyChoice, questionKind, unansweredQuestions } from "./selection";
 import type { QuickPreparationController } from "./useQuickPreparation";
 import type { QuickHarmonyChoice, QuickHarmonyPartResult } from "../../product/quick-harmony";
@@ -22,7 +23,7 @@ export function PreparationScreen({ ui, onGenerate, onEdit, blocked = [] }: {
   const choice = harmonyChoice(prep, ui.selection);
   const selectable = !unsupported && !needsEdit;
   if (unsupported && !prep.workspace) return <div className="hm"><div className="hm-page">
-    {prep.reasons.map(notice => <div className="hm-notice is-stop" key={notice.id}><div className="hm-notice-head"><Icon name="stop" /><div><h2 className="hm-notice-title">{notice.messageKo}</h2><p className="hm-notice-text">{notice.actionKo}</p></div></div></div>)}
+    {uniqueNotices(prep.reasons).map(notice => <div className="hm-notice is-stop" key={notice.id}><div className="hm-notice-head"><Icon name="stop" /><div><h2 className="hm-notice-title">{notice.messageKo}</h2><p className="hm-notice-text">{notice.actionKo}</p></div></div></div>)}
     <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={ui.reset}>다른 파일 올리기</button>
     <details className="hm-fold"><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{JSON.stringify(prep.details, null, 2)}</pre></div></details>
   </div></div>;
@@ -37,7 +38,7 @@ export function PreparationScreen({ ui, onGenerate, onEdit, blocked = [] }: {
       {summary && <div className="hm-chips"><span className="hm-chip">{summary.keyLabelKo}</span><span className="hm-chip">{summary.meters.join(" · ")}</span><span className="hm-chip">{summary.measureCount}마디</span><span className="hm-chip">{summary.hasLyrics ? `가사 ${summary.verseCount}절` : "가사 없음"}</span></div>}
     </section> : <h1 className="hm-title">{unsupported ? "이 악보는 아직 화음을 만들 수 없어요" : "만들기 전에 고칠 곳이 있어요"}</h1>}
     {blocked.map(part => <div className="hm-notice is-stop" role="alert" key={part.part}><p className="hm-notice-text">{part.reasonKo}</p></div>)}
-    {(unsupported ? prep.reasons : current ? [current] : []).map(notice => <div className={`hm-notice ${unsupported ? "is-stop" : needsEdit ? "is-warn" : "is-ask"}`} key={notice.id}>
+    {(unsupported ? uniqueNotices(prep.reasons) : current ? [current] : []).map(notice => <div className={`hm-notice ${unsupported ? "is-stop" : needsEdit ? "is-warn" : "is-ask"}`} key={notice.id}>
       <div className="hm-notice-head"><Icon name={unsupported ? "stop" : needsEdit ? "alert" : "ask"} /><div><h2 className="hm-notice-title">{notice.messageKo}</h2><p className="hm-notice-text">{notice.actionKo}</p></div></div>
       {!unsupported && !needsEdit && <div className="hm-choices" role="radiogroup" aria-label="악보 확인">{notice.choices.map(answer => <label className={`hm-choice${[ui.selection.answers.lead, ui.selection.answers.unreadPrintedChords].includes(answer.value) ? " is-selected" : ""}`} key={answer.value}>
         <input type="radio" name={`question-${notice.id}`} checked={[ui.selection.answers.lead, ui.selection.answers.unreadPrintedChords].includes(answer.value)} onChange={() => answer.value === "edit-in-workspace" ? onEdit() : questionKind(notice) === "lead" ? ui.setLead(answer.value) : ui.setCarry()} />

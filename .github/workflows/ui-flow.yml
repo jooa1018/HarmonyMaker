@@ -32,6 +32,7 @@ jobs:
             curl --fail --silent http://127.0.0.1:3133/ > /dev/null && break
             sleep 1
           done
+          node scripts/ui-flow-mobile-check.mjs
           node scripts/ui-flow-check.mjs
       - uses: actions/upload-artifact@v4
         if: always()
