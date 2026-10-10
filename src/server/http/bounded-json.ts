@@ -1,3 +1,4 @@
+import { requestHost, type HostTrustEnvironment } from "./trusted-host";
 import "server-only";
 
 export interface BoundedJsonPolicy {
@@ -64,10 +65,9 @@ export async function assertBodylessRequest(request: Request): Promise<void> {
   } finally { reader.releaseLock(); }
 }
 
-export function hasExactRequestOrigin(request: Request): boolean {
+export function hasExactRequestOrigin(request: Request, environment: HostTrustEnvironment = process.env): boolean {
   const origin = request.headers.get("origin");
-  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-  const host = forwardedHost ?? request.headers.get("host")?.trim();
+  const host = requestHost(request, environment);
   if (!origin || !host) return false;
   try {
     return new URL(origin).host.toLowerCase() === host.toLowerCase();
