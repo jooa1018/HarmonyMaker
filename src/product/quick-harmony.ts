@@ -1,3 +1,5 @@
+import { RecoveryXmlError } from "../import/review/recovery";
+import type { ImportDiagnosticInput } from "../import/musicxml/diagnostics";
 import { quickHarmonyParts } from "../domain/quick-harmony-policy";
 import { projectPartStatus } from "./project-part-status";
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
@@ -26,7 +28,7 @@ export interface QuickHarmonyPreparation {
   /** Collapsed 참고 by default. */
   readonly notes: readonly QuickHarmonyNotice[];
   /** Only for 자세히; never an input authority for generation. */
-  readonly details: { readonly assessment?: AutoDraftAssessment; readonly importError?: string };
+  readonly details: { readonly assessment?: AutoDraftAssessment; readonly importError?: string; readonly importDiagnostics?: readonly ImportDiagnosticInput[] };
 }
 
 export interface QuickHarmonyChoice {
@@ -88,10 +90,10 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
     ...(summary ? {summary} : {}), details: { assessment } };
 }
 
-function rejectedFile(importError: string): QuickHarmonyPreparation {
+function rejectedFile(importError: string, importDiagnostics?: readonly ImportDiagnosticInput[]): QuickHarmonyPreparation {
   return { status: "unsupported", questions: [], notes: [], reasons: [
     quickHarmonyNotice({id:"file",code:"FILE_UNREADABLE",category:"unsupported"}, "파일")
-  ], details: { importError } };
+  ], details: { importError, ...(importDiagnostics ? { importDiagnostics } : {}) } };
 }
 
 /** Browser-local import; does not upload, persist, or confirm rights. */
@@ -99,7 +101,7 @@ export async function prepareQuickHarmony(file: { readonly bytes: Uint8Array; re
   if (!file || !(file.bytes instanceof Uint8Array) || typeof file.fileName !== "string"
     || !/\.(?:musicxml|xml|mxl)$/iu.test(file.fileName) || file.fileName.length > 512) return rejectedFile("QUICK_HARMONY_FILE_INVALID");
   const archive = file.bytes[0] === 0x50 && file.bytes[1] === 0x4b;
-  if (!file.bytes.length || file.bytes.length > (archive ? DEFAULT_IMPORT_SECURITY_LIMITS.maxArchiveBytes : DEFAULT_IMPORT_SECURITY_LIMITS.maxXmlBytes)) return rejectedFile("QUICK_HARMONY_FILE_SIZE");
+  if (!file.bytes.length || file.bytes.length > (archive ? DEFAULT_IMPORT_SECURITY_LIMITS.maxArchiveBytes : DEFAULT_IMPORT_SECURITY_LIMITS.maxXmlBytes)) return rejectedFile("QUICK_HARMONY_FILE_SIZE", [{ code: "IMPORT_CORRUPT_XML", messageKo: "파일 크기가 허용 범위를 벗어났습니다.", details: { reason: !file.bytes.length ? "empty" : archive ? "archive-size-limit" : "xml-size-limit" } }]);
   const bytes = file.bytes.slice(), fileName = file.fileName;
   let workspace: ScoreWorkspace;
   try {
@@ -109,7 +111,7 @@ export async function prepareQuickHarmony(file: { readonly bytes: Uint8Array; re
     workspace = await createScoreWorkspace(origin, APPLICATION_ALGORITHM_VERSION_REGISTRY, `quick:${origin.xmlDigest}`);
   } catch (error) {
     if (!(error instanceof RangeError || error instanceof TypeError)) throw error;
-    return rejectedFile(error.message);
+    return rejectedFile(error.message, error instanceof RecoveryXmlError ? error.diagnostics : undefined);
   }
   return prepareQuickHarmonyWorkspace(workspace);
 }

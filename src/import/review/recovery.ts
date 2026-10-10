@@ -1,3 +1,4 @@
+import type { ImportDiagnosticInput } from "../musicxml/diagnostics";
 import { binaryDigest } from "../../domain/digest/canonical";
 import { fraction, type Fraction } from "../../domain/fraction";
 import type { SpelledPitch } from "../../domain/pitch";
@@ -52,9 +53,19 @@ export interface RecoveryMeasure {
 }
 const encoder = new TextEncoder();
 const typeQuarters = { whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625 } as const;
+export class RecoveryXmlError extends RangeError {
+  constructor(readonly diagnostics: readonly ImportDiagnosticInput[]) {
+    super("RECOVERY_XML_UNREPRESENTABLE");
+    this.name = "RecoveryXmlError";
+  }
+}
 export function recoveryXmlRoot(xml: string): XmlElement {
   const parsed = parseSafeXml(encoder.encode(xml), DEFAULT_IMPORT_SECURITY_LIMITS);
-  if (parsed.status !== "complete" || parsed.root.name !== "score-partwise") throw new RangeError("RECOVERY_XML_UNREPRESENTABLE");
+  if (parsed.status !== "complete") throw new RecoveryXmlError(parsed.diagnostics);
+  if (parsed.root.name !== "score-partwise") throw new RecoveryXmlError([{
+    code: "IMPORT_UNSUPPORTED_ELEMENT", messageKo: "score-partwise MusicXML만 지원합니다.",
+    details: { reason: "unsupported-score-root", rootName: parsed.root.name },
+  }]);
   const parts = xmlChildren(parsed.root, "part");
   const measures = parts.flatMap((part) => xmlChildren(part, "measure"));
   if (parts.length > 32 || measures.length > 512 || measures.some((measure) => xmlChildren(measure, "note").length > 1024)) throw new RangeError("RECOVERY_EDITOR_LIMIT");
