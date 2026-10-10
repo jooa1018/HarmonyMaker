@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -55,20 +53,28 @@ describe("versioned PostgreSQL migrations", () => {
     expect(client.calls.filter((call) => call === "COMMIT")).toHaveLength(2);
   });
 
-  it("keeps additive Ultra SQL artifacts semantic with their checksummed runtime migrations", async () => {
-    const expectedChecksums = new Map([
-      [12, "68fae44f5fb02cbdf42bb0a4d510627a4a5b8b29b279378590ab41d776ed44d2"],
-      [13, "d86e98a41a0e72f121e7bd12a89bbca7b8c7fa4578a9f09cec3a7778d7d3ccb5"],
-      [14, "bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140"],
-      [15, "1097517a33a1ca967e850aea6f4b42a9ce870ca719e20152e3a5f87474f2371c"],
-    ]);
-    for (const migration of MIGRATIONS.filter(({ version }) => version >= 12 && version <= 15)) {
-      const filename = `${String(migration.version).padStart(3, "0")}_${migration.name}.sql`;
-      const checkedIn = await readFile(join(process.cwd(), "src/server/persistence/migrations", filename), "utf8");
-      const normalizeSql = (sql: string) => sql.replace(/\s+/g, " ").trim();
-      expect(normalizeSql(checkedIn), filename).toBe(normalizeSql(migration.sql));
-      expect(migrationChecksum(migration), filename).toBe(expectedChecksums.get(migration.version));
-    }
+  it("pins the version, name and exact SQL checksum of migrations 1–16", () => {
+    // Approved deployed-history baseline. Never regenerate to accommodate an SQL edit.
+    const expected = [
+      [1, "segment_c_foundation", "eb91c7e50c00277a965b7732124602b2e175b3da0317990f140d1b07ac933c98"],
+      [2, "idempotency_recovery", "39e9804d3816351383458b38e3220500b0dddcdc04c13a4a7a5c7a14cd30925e"],
+      [3, "share_replay_envelope", "28b691d68ca83da2babc41e05688e9fea76f009fea83329e06b40f24b9a1c1e1"],
+      [4, "omr_core", "1988920e0c2f23809f5fe54cc3c533b3cfd3ade5e7b4ffb237305b39fd2bbdfa"],
+      [5, "omr_recovery", "592c3defe170239d1d174e3ee037d167194e1e3093ead307d73bc25b32c8d60f"],
+      [6, "omr_correctness_closure", "b2449e17d64e757e1188171cd457257f5d109497446a09b9590c056b2b8069d8"],
+      [7, "omr_provider_safety", "8c021c5f1fbb32703fdc0289645fc632894424cc226d3e567acbc47c1d12d3a0"],
+      [8, "omr_create_outcome_certainty", "bba5c4a48fdd50f653251acf24f6471ad6036a6d01715d8d880cb60607a9df52"],
+      [9, "omr_resaturation_closure", "c0200adbbdcde4fa057e4e8905ad51d6d4f1a9571b6b8a7775ab58b33a3837d3"],
+      [10, "object_publication_late_put_fencing", "73dc27392da51c5dcdd94dcdcd31f0773ce284a65691a57a7fa142fff333f527"],
+      [11, "object_publication_physical_key_isolation", "52a32d7168a031ac0dbd1e83f8a22aa7d71124943902abd28546faf8813c0089"],
+      [12, "share_moderation_lifecycle", "68fae44f5fb02cbdf42bb0a4d510627a4a5b8b29b279378590ab41d776ed44d2"],
+      [13, "omr_provider_delete_authority", "d86e98a41a0e72f121e7bd12a89bbca7b8c7fa4578a9f09cec3a7778d7d3ccb5"],
+      [14, "share_create_cross_session_recovery", "bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140"],
+      [15, "omr_cleanup_fairness", "1097517a33a1ca967e850aea6f4b42a9ce870ca719e20152e3a5f87474f2371c"],
+      [16, "share_retention", "d067c02cdb14ca712979f7765b2bbea12a3f0f646d40d3adaca4dd1827721e9c"],
+    ];
+    expect(MIGRATIONS.slice(0, 16).map(m => [m.version, m.name, migrationChecksum(m)])).toEqual(expected);
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(16);
   });
 
   it("runtime verification is read-only and rejects stale schema", async () => {

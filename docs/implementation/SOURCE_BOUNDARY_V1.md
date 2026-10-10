@@ -105,7 +105,7 @@ private 직렬화/replay 재사용, 동일 작업의 읽기·encoding/evidence �
 
 선행 인계 243파일+22helper는 265개 모두 hash/크기 일치. 기존 검토 인계 282파일+26helper 중 307개는 동일하고, 당시 실행 중이던 Chrome stderr 한 파일은 1943→2088bytes append뿐이며 원래 prefix hash는 같다. 옛 raw FAIL/addendum도 보존했다. 원본·r550/r551·r1019·모델·profile·과거 build 삭제, 새 OMR/WAG/오디오 규칙 변경, push/배포/병합은 없다. 자동화 중간 실패와 과거 특정 profile의 native 다운로드 문제는 최종 전용 profile 통과와 분리해 기록한다.
 
-비공개 루트: C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-review-persistence-v1. 현재 안내는 시작안내-후속.md, 실행-created.ps1, 검증보고서-후속.md, created-summary.json, artifact-manifest-followup.json이다. 최종 초안 created-flow-a-source/workspace-after-reload.json, 프로젝트/XML은 project-ui-chrome-created-flow-a에 있다. 시험 소유 Chrome과 서버는 정상 종료했고 3203 listener 부재를 확인했다. 사용자는 정확한 시작 명령으로 재개한다. 옛 보고서/manifest는 동결 보존했다.
+비공개 루트: %USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-review-persistence-v1. 현재 안내는 시작안내-후속.md, 실행-created.ps1, 검증보고서-후속.md, created-summary.json, artifact-manifest-followup.json이다. 최종 초안 created-flow-a-source/workspace-after-reload.json, 프로젝트/XML은 project-ui-chrome-created-flow-a에 있다. 시험 소유 Chrome과 서버는 정상 종료했고 3203 listener 부재를 확인했다. 사용자는 정확한 시작 명령으로 재개한다. 옛 보고서/manifest는 동결 보존했다.
 
 성능 목표 미달이므로 VERIFIED나 전면 실사용 완료로 승격하지 않는다. 329개 질문의 실제 검토 부담도 남는다. 자동 OMR 정확도 개선·소량 교정 실용성·외부 배포·출시 완료를 뜻하지 않는다.
 
@@ -127,7 +127,7 @@ private 직렬화/replay 재사용, 동일 작업의 읽기·encoding/evidence �
 
 동일 PC 최종 3회에서 r1019 cold 복구 7.11–9.57초, 초안 저장 2.50–2.70초, 프로젝트 복구 7.59–9.10초, 프로젝트 저장 0.68–2.06초, 프로젝트 내보내기 0.66–0.96초였다. r1019 파일 가져오기 9.81–10.85초와 프로젝트 가져오기 12.46–15.04초, 국소 변경의 1초 목표는 미달이다. 최초 proof 검증·정규화·직렬화와 main-thread 점유가 남았다. 측정 3회로 p95를 계산하거나 기준을 낮추지 않았다.
 
-비공개 결과 루트는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-review-persistence-v1`다. `시작안내.md`, `실행-ui.ps1`, `검증보고서.md`, `summary.json`, `artifact-manifest.json`과 새 r542 초안/프로젝트/XML을 분리해 보존했다. 음악·원본·private proof는 저장소에 추가하지 않았다. 서버 주소는 검증한 `http://127.0.0.1:3203`이며 세션 이후 상시 실행을 보장하지 않는다. UI 전면 개편·OMR 정확도 개선·소량 교정 실용성·출시 완료 판정이 아니다.
+비공개 결과 루트는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-review-persistence-v1`다. `시작안내.md`, `실행-ui.ps1`, `검증보고서.md`, `summary.json`, `artifact-manifest.json`과 새 r542 초안/프로젝트/XML을 분리해 보존했다. 음악·원본·private proof는 저장소에 추가하지 않았다. 서버 주소는 검증한 `http://127.0.0.1:3203`이며 세션 이후 상시 실행을 보장하지 않는다. UI 전면 개편·OMR 정확도 개선·소량 교정 실용성·출시 완료 판정이 아니다.
 
 ## 2026-09-20 최신 자동 후보 교정·실사용 경로
 
@@ -143,7 +143,7 @@ private 직렬화/replay 재사용, 동일 작업의 읽기·encoding/evidence �
 
 설치 Chrome 153.0.8010.48, `http://127.0.0.1:3203`에서 정상 Source, complete 1/partial 1 생성과 complete 선택, 악보, 실제 Lead/화음/Band 출력 및 제어, 전곡 재생, 저장/reload, 같은 profile/origin의 브라우저·서버 정상 재시작 복구, workspace/project/XML 실제 다운로드·일반 UI 재입력이 통과했다. 프로젝트 새 사본과 기존 프로젝트를 구분하며 파일 음악·요청·proof를 대조했다. XML은 Quick Review로 들어가고 새 권리/Source를 자동 승인하지 않는다. 실제 native PCM과 710개 발음 일정은 별도 프로젝트 유도 계획과 일치했다. 최초 오디오 관측은 favicon 404 때문에 전체 helper FAIL(PCM 항목은 PASS)이었고, 원인을 별도 기록한 동일 조건 재관측은 console/page 오류 없이 PASS였다. 사람 청감·물리 스피커 품질을 대신하지 않는다.
 
-비공개 결과는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-latest-candidate-assisted-trial-v1`의 `시작안내.md`, `실행-최종.ps1`, `검증보고서.md`, `correction-ledger.json`, `burden-summary-final.json`, `Source-요청-provenance.json`, `artifact-manifest.json`에 있다. 음악/원본/private proof는 저장소에 추가하지 않았다. 서버는 재시작 가능한 명령을 제공하며 세션 이후 상시 실행을 약속하지 않는다. 초기 159개 인계 artifact 및 원본/r551 hash를 재확인했다. 소량 교정·짧은 사람 시간·OMR 무오류·모든 악보 지원·출시 판정이 아니다. 기존 데이터 삭제·push·PR·원격 CI·배포·병합은 하지 않았다.
+비공개 결과는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-latest-candidate-assisted-trial-v1`의 `시작안내.md`, `실행-최종.ps1`, `검증보고서.md`, `correction-ledger.json`, `burden-summary-final.json`, `Source-요청-provenance.json`, `artifact-manifest.json`에 있다. 음악/원본/private proof는 저장소에 추가하지 않았다. 서버는 재시작 가능한 명령을 제공하며 세션 이후 상시 실행을 약속하지 않는다. 초기 159개 인계 artifact 및 원본/r551 hash를 재확인했다. 소량 교정·짧은 사람 시간·OMR 무오류·모든 악보 지원·출시 판정이 아니다. 기존 데이터 삭제·push·PR·원격 CI·배포·병합은 하지 않았다.
 
 ## 2026-09-16 Ending Structure Recovery v1
 
@@ -163,7 +163,7 @@ raw token 단계의 잘못된 pitch/trill, hollow head와 rhythm 역할 혼동, 
 
 시험 브라우저는 Browser.close, 서버는 원래 PTY Ctrl+C로 종료했고 소유 프로세스/3203 listener 부재를 확인했다. 최종 C: 16.25GiB, 가용 RAM 1,794MiB, commit 10.50/15.42GiB. 기존 데이터·모델·build·프로필은 삭제하지 않았다. PostgreSQL/원격 OMR은 미변경 경로로 NOT_RUN, 사람 평가는 HUMAN_RECHECK_PENDING이다. 과거 브라우저 프로필의 다운로드 장애가 해결됐다고 주장하지 않는다. push·배포·병합·원격 CI는 하지 않았다.
 
-비공개 결과와 실행 안내는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-ending-structure-recovery-v1`의 `시작안내.md`, `실행.ps1`, `검증보고서.md`, `이벤트-대조표.md`, `artifact-manifest.json`에 있다. 실제 Chrome 다운로드 `ui-fresh-open/fresh-workspace.json`을 작업 공간 파일 열기로 가져온다. 원본·실제 음악·전체 proof는 저장소에 추가하지 않았다.
+비공개 결과와 실행 안내는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-ending-structure-recovery-v1`의 `시작안내.md`, `실행.ps1`, `검증보고서.md`, `이벤트-대조표.md`, `artifact-manifest.json`에 있다. 실제 Chrome 다운로드 `ui-fresh-open/fresh-workspace.json`을 작업 공간 파일 열기로 가져온다. 원본·실제 음악·전체 proof는 저장소에 추가하지 않았다.
 
 ## 2026-09-16 Lyric Recovery v1.1 · 실제 신규 이미지 UI 검증 완료
 
@@ -181,7 +181,7 @@ raw token 단계의 잘못된 pitch/trill, hollow head와 rhythm 역할 혼동, 
 
 신규 XML은 보존 raw XML보다 선두 XML 선언/줄바꿈 41 bytes만 길며 이후 바이트는 완전히 동일하다. 음악/근거 차이를 임의 정규화하지 않았다. 누락 31개, 문자 오독 5개(신규 1 포함), 기준 밖 출력 1개와 extend 불일치 2개를 계속 남긴다. 시험 전 기존 두 PID는 이미 없었다. 이번 Chrome 세 실행은 정상 종료(exit 0), 서버는 최종 Ctrl+C 후 PID와 listener 부재를 확인했다. child exit 로그가 없어 Next 내부 graceful cleanup까지 단정하지 않는다. 최종 서버는 꺼져 있고 profile과 파일은 보존했다.
 
-비공개 결과: `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1-followup`. `final-audit/` 오류 원장, `fresh-automatic/` 신규 동결 결과, `fresh-evaluation/` 평가, `ui-fresh-open/` 실제 다운로드, `ui-state-verification.json` UI 왕복 비교, `verified-code/` 기존 검증 로그, `시작안내.md`와 manifest를 따른다. 실제 원본·전체 가사·proof·평가 정답은 repo에 추가하지 않았다. 기존 모델·교정본·프로젝트·build·프로필을 보존했고 삭제·push·배포·병합은 하지 않았다.
+비공개 결과: `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1-followup`. `final-audit/` 오류 원장, `fresh-automatic/` 신규 동결 결과, `fresh-evaluation/` 평가, `ui-fresh-open/` 실제 다운로드, `ui-state-verification.json` UI 왕복 비교, `verified-code/` 기존 검증 로그, `시작안내.md`와 manifest를 따른다. 실제 원본·전체 가사·proof·평가 정답은 repo에 추가하지 않았다. 기존 모델·교정본·프로젝트·build·프로필을 보존했고 삭제·push·배포·병합은 하지 않았다.
 
 ## 2026-09-16 Lyrics Recovery v1
 
@@ -193,7 +193,7 @@ raw token 단계의 잘못된 pitch/trill, hollow head와 rhythm 역할 혼동, 
 
 타입·전체 lint, 기본 118파일 1,137개, 별도 private 3파일 5개, Python 가사/코드/시간축 38개, 기존 프로젝트 보존 8검사와 production build가 통과했다. 관련 TS 34개는 기본 수에 중복 합산하지 않는다. Build ID `xF2Qp-4KY63W7VOELp06l`, `.next-local-lyrics`, origin `http://127.0.0.1:3201`에서 새 homr 1회를 일반 Chrome UI로 실행했다. cacheReused=false, actor=ui-test, source 미승인을 유지한다. UI 가사 142개를 text/verse/voice/syllabic/extend까지 대조하고 저장·reload·실제 download·재입력·같은 프로필의 브라우저 프로세스 재시작을 검증했다. 네 다운로드의 SHA가 같고 revision/operations/attestations는 모두 0이다. 기존 프로필의 다운로드 문제 해결을 주장하지 않는다.
 
-PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이며 사람 청감·교정 시간도 NOT_RUN이다. 비공개 결과는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1`의 시작안내·검증보고서·상세 원장·원본 사례·manifest를 따른다. 원본과 전체 가사·proof를 repo에 추가하지 않았다. 설치 모델·기존 build·교정본·사용자 프로필을 삭제하거나 초기화하지 않았으며 push·원격 CI·배포·병합은 하지 않았다.
+PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이며 사람 청감·교정 시간도 NOT_RUN이다. 비공개 결과는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-lyrics-recovery-v1`의 시작안내·검증보고서·상세 원장·원본 사례·manifest를 따른다. 원본과 전체 가사·proof를 repo에 추가하지 않았다. 설치 모델·기존 build·교정본·사용자 프로필을 삭제하거나 초기화하지 않았으며 push·원격 CI·배포·병합은 하지 않았다.
 
 ## 2026-09-15 Chord Recovery v1
 
@@ -207,7 +207,7 @@ PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이며 사람 청감·교�
 
 타입·전체 lint, 기본 118파일 1,136개, opt-in private 3파일 5개, Python 코드/시간축 27개, 프로젝트 보존 8검사와 production build가 통과했다. 관련 33개 재실행은 기본 수에 중복 합산하지 않는다. Build ID `DT-4dszOxMLtXwIdWhyc6`, origin `http://127.0.0.1:3200`에서 설치 Chrome으로 정확한 JPEG의 새 homr 1회를 일반 UI에서 실행했다. `cacheReused=false`, 자동 chord 51개와 시간축 처리 호출을 확인했다. 39개 구간의 코드 값/위치를 DOM과 대조하고 저장·reload·실제 다운로드·재입력·같은 프로필의 브라우저 재시작을 검증했다. 네 다운로드의 SHA-256이 같으며 revision 0, 사용자 대조 승인 0건, Source 차단을 유지한다. 기존 브라우저 프로필의 과거 다운로드 문제를 해결했다고 주장하지 않는다.
 
-PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이다. 사람 평가도 NOT_RUN이다. WAG·재생·믹서·공통 음악 parser·Source 승인 조건·가사·슬래시·끝부분 다성부는 바꾸지 않았다. 모델·원본·r551·선행 감사 입력 506파일·시간축 인계 91파일·동결 평가기 48파일을 보존했다. 비공개 결과는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-chord-recovery-v1`의 검증보고서, 시작안내, 코드 원장, manifest를 따른다. 정답·음악·원본·proof는 저장소에 추가하지 않았고 외부 전송·push·배포·병합·기존 데이터 삭제를 하지 않았다.
+PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이다. 사람 평가도 NOT_RUN이다. WAG·재생·믹서·공통 음악 parser·Source 승인 조건·가사·슬래시·끝부분 다성부는 바꾸지 않았다. 모델·원본·r551·선행 감사 입력 506파일·시간축 인계 91파일·동결 평가기 48파일을 보존했다. 비공개 결과는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-chord-recovery-v1`의 검증보고서, 시작안내, 코드 원장, manifest를 따른다. 정답·음악·원본·proof는 저장소에 추가하지 않았고 외부 전송·push·배포·병합·기존 데이터 삭제를 하지 않았다.
 
 ## 2026-09-15 자동 시간축 v1.1 시스템 경계 완료
 
@@ -223,7 +223,7 @@ PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이다. 사람 평가도 NO
 
 타입, 전체 lint, 기본 118파일 1,136개, Python 15개, 관련 private 8검사, production build가 통과했다. Build ID는 `nX75eovUmqL8h11KPhMgX`다. `http://127.0.0.1:3199`의 production 모드에서 같은 원본 JPEG를 일반 UI로 새 homr 1회 실행했고 `cacheReused=false`, 외부 전송 0회였다. Chrome에서 새 후보를 저장·reload·실제 다운로드·작업 공간 파일 재입력했으며 세 파일 SHA-256과 제품 parser/replay 결과가 일치했다. revision 0과 사용자 확인 0건을 유지해 Source는 계속 차단한다.
 
-이 변경은 박자·pickup·시스템 경계 시간축에만 한정한다. 마지막 불완전 glyph coverage 1건과 overfull 1건, 코드·가사·슬래시·끝부분 다성부 OMR은 남아 있다. WAG·재생·믹서·Source 승인 조건·DB/schema는 바꾸지 않았다. PostgreSQL과 원격 OMR은 변경 경로가 아니므로 다시 실행하지 않고 새 PASS로 세지 않는다. 보존 입력 506개와 동결 평가기 48개 해시는 모두 재확인했다. 비공개 인계 루트는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-timeline-v1-system-boundary-v2`다. private 음악·정답·proof는 저장소에 추가하지 않았고 push·배포·병합·기존 자료 삭제를 하지 않았다.
+이 변경은 박자·pickup·시스템 경계 시간축에만 한정한다. 마지막 불완전 glyph coverage 1건과 overfull 1건, 코드·가사·슬래시·끝부분 다성부 OMR은 남아 있다. WAG·재생·믹서·Source 승인 조건·DB/schema는 바꾸지 않았다. PostgreSQL과 원격 OMR은 변경 경로가 아니므로 다시 실행하지 않고 새 PASS로 세지 않는다. 보존 입력 506개와 동결 평가기 48개 해시는 모두 재확인했다. 비공개 인계 루트는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-timeline-v1-system-boundary-v2`다. private 음악·정답·proof는 저장소에 추가하지 않았고 push·배포·병합·기존 자료 삭제를 하지 않았다.
 
 ## 2026-09-15 자동 시간축 후보 v1
 
@@ -235,7 +235,7 @@ PostgreSQL·원격 OMR은 미변경 경로라 NOT_RUN이다. 사람 평가도 NO
 
 타입·전체 lint·기본 118파일 1,136개·Python 독립 11개·관련 private 8검사·production build가 통과했다. 기본 opt-in 3파일 5개와 PostgreSQL/원격 OMR은 NOT_RUN이며 구분 기록했다. Build ID `r2zOb90gPa3SDDLMyFvkO`, origin `http://127.0.0.1:3199`에서 정확한 JPEG로 새 homr 1회와 새 단계 연결을 일반 UI로 검증했다. Chrome 직접 기동·동일 프로필 서버/브라우저 재시작, Edge 새 프로필 가져오기, 실제 다운로드/재입력 파일과 앱 시간 의미가 같았다. 새 후보는 revision 0/사용자 대조 승인 0이며 Source 차단을 유지한다. 기존 r551/A 프로젝트 재생·저장·내보내기 비회귀도 확인했다.
 
-비공개 인계 루트는 `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-timeline-v1`이다. `검증보고서.md`, `시작안내.md`, `실행.ps1`, `재현.ps1`, 최종 metrics/원장/manifest를 따른다. 이전 입력 506개·동결 평가기 48개 해시는 보존됐다. 이 절과 build 자동 생성 `next-env.d.ts` 타입 참조 갱신은 검증 구현 후 인계 변경이다. 사람 재확인은 `HUMAN_RECHECK_PENDING`이고 기존 문제 프로필까지 해결됐다고 주장하지 않는다. private 음악·정답·proof는 저장소에 추가하지 않았으며 push·배포·병합·삭제를 하지 않았다.
+비공개 인계 루트는 `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-timeline-v1`이다. `검증보고서.md`, `시작안내.md`, `실행.ps1`, `재현.ps1`, 최종 metrics/원장/manifest를 따른다. 이전 입력 506개·동결 평가기 48개 해시는 보존됐다. 이 절과 build 자동 생성 `next-env.d.ts` 타입 참조 갱신은 검증 구현 후 인계 변경이다. 사람 재확인은 `HUMAN_RECHECK_PENDING`이고 기존 문제 프로필까지 해결됐다고 주장하지 않는다. private 음악·정답·proof는 저장소에 추가하지 않았으며 push·배포·병합·삭제를 하지 않았다.
 
 ## 2026-09-14 JPEG 시험 음역 승인과 일반 UI 전곡 완료
 
@@ -277,7 +277,7 @@ Chrome 일반 UI 교정·저장·reload·다운로드와 같은 origin의 서버
 
 Edge 첫 다운로드의 자동화 임시 파일 ENOENT는 실패 기록으로 보존했다. 해당 실행에 두 CDP 연결이 있었으며 브라우저 native 종료는 없었다. 단일 CDP로 재개한 5개 실제 다운로드는 통과했다. 연결 간섭은 가설이며 모든 과거 다운로드 문제가 해결됐다고 일반화하지 않는다. 설치 브라우저를 직접 기동했고 launchPersistentContext는 사용하지 않았다.
 
-로컬 비공개 인계: `C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-user-jpeg-assisted-v1`. `시작안내.md`, `실행.ps1`, `검증보고서.md`, `교정기록.md`, 최종 작업 공간 및 실제 manifest를 따른다. 원본 음악·이미지·전체 proof는 저장소에 추가하지 않았다. 선행 manifest의 실제 831개 파일은 크기·해시가 보존됐다. push·원격 CI·외부 공유·배포·병합·기존 파일 삭제는 하지 않았다.
+로컬 비공개 인계: `%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-user-jpeg-assisted-v1`. `시작안내.md`, `실행.ps1`, `검증보고서.md`, `교정기록.md`, 최종 작업 공간 및 실제 manifest를 따른다. 원본 음악·이미지·전체 proof는 저장소에 추가하지 않았다. 선행 manifest의 실제 831개 파일은 크기·해시가 보존됐다. push·원격 CI·외부 공유·배포·병합·기존 파일 삭제는 하지 않았다.
 
 ## 로컬 PNG/JPEG 입력 연결
 
@@ -345,14 +345,14 @@ Edge 첫 다운로드의 자동화 임시 파일 ENOENT는 실패 기록으로 �
 실행은 저장소에서 다음 명령을 사용했다. 시작 후 주소는 `http://127.0.0.1:3196/score-workspace`, 프로젝트 파일 열기는 `/workspace`다.
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\eccto\Documents\Codex\2026-09-07\files-pasted-by-the-user-harmonymaker\work\HarmonyMaker'
+Set-Location -LiteralPath '%USERPROFILE%\Documents\Codex\2026-09-07\files-pasted-by-the-user-harmonymaker\work\HarmonyMaker'
 $env:NEXT_TELEMETRY_DISABLED='1'
 node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3196
 ```
 
 새 설치 없이 사용하는 실제 안내·수정 전 A·최종 초안·최종 프로젝트·편곡 MusicXML·검증 manifest/로그는 다음 로컬 인계 폴더에 구분해서 보존한다.
 
-`C:\Users\eccto\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-local-trial`
+`%USERPROFILE%\Documents\Codex\2026-09-12\head-docs-implementation-source-boundary-v1\outputs\HarmonyMaker-local-trial`
 
 `시작안내.md`는 사용자 실행 절차이고 `검증보고서.md`와 `verification/`은 상세 검증/실패 증거다. `delivery-receipt.json`은 후속 문서 commit과 최종 서버 상태를 기록한다. 초안과 프로젝트 JSON은 원본/proof 복구용이고 편곡 MusicXML은 선택 Lead/생성 성부의 음악 교환용이다. 과거 `1c7569e` reader의 출처 enum은 새 출처를 받지 않으며, 이를 manual/musicxml/omr로 거짓 변환하지 않는다.
 
@@ -473,8 +473,8 @@ node --max-old-space-size=768 node_modules/typescript/bin/tsc --noEmit
 node --max-old-space-size=768 node_modules/eslint/bin/eslint.js .
 # 아래 세 경로는 이 노트북에서 실제 사용한 보존 자료다.
 $env:HM_BOUNDARY_PRIVATE=(Resolve-Path '..\source-boundary-v1-2026-09-12.private').Path
-$env:HM_BOUNDARY_INPUT='C:\Users\eccto\Documents\Codex\2026-09-09\files-pasted-by-the-user-harmonymaker\work\candidate-review-burden-2026-09-12.private'
-$env:HM_BOUNDARY_LEGACY='C:\Users\eccto\Documents\Codex\2026-09-09\files-pasted-by-the-user-harmonymaker\work\structural-recovery.private\latest-recovery-bundle.private.json'
+$env:HM_BOUNDARY_INPUT='%USERPROFILE%\Documents\Codex\2026-09-09\files-pasted-by-the-user-harmonymaker\work\candidate-review-burden-2026-09-12.private'
+$env:HM_BOUNDARY_LEGACY='%USERPROFILE%\Documents\Codex\2026-09-09\files-pasted-by-the-user-harmonymaker\work\structural-recovery.private\latest-recovery-bundle.private.json'
 node --max-old-space-size=768 node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism --reporter=dot
 ```
 
@@ -483,7 +483,7 @@ node --max-old-space-size=768 node_modules/vitest/vitest.mjs run --maxWorkers=1 
 UI 재현은 아래 개발 서버를 먼저 켠 뒤 `HM_BOUNDARY_PRIVATE`를 위처럼 설정하고 실행한다. 별도 `HM_BOUNDARY_PROFILE`이 없으면 새 임시 시험 세션을 쓴다. 주 시험의 UI 입력 JSON은 원본 판독 후 기록한 명시적 시험 결정이며, 사람의 판단을 자동화했다고 주장하지 않는다.
 
 ```powershell
-$env:NODE_PATH='C:\Users\eccto\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
+$env:NODE_PATH='%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
 $env:HM_BOUNDARY_BROWSER='chrome'
 node experiments/homr-integration/boundary-ui.cjs "$env:HM_BOUNDARY_PRIVATE\a-delivery-v1.json"
 ```
@@ -530,7 +530,7 @@ node experiments/homr-integration/boundary-ui.cjs "$env:HM_BOUNDARY_PRIVATE\a-de
 실제 사용한 경로와 실행 명령:
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\eccto\Documents\Codex\2026-09-07\files-pasted-by-the-user-harmonymaker\work\HarmonyMaker'
+Set-Location -LiteralPath '%USERPROFILE%\Documents\Codex\2026-09-07\files-pasted-by-the-user-harmonymaker\work\HarmonyMaker'
 $env:HM_LOCAL_NO_DISK_CACHE='1'
 $env:NODE_OPTIONS='--max-old-space-size=640'
 $env:NEXT_TELEMETRY_DISABLED='1'

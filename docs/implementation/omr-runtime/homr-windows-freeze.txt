@@ -4,7 +4,7 @@ charset-normalizer==3.4.4
 colorama==0.4.6
 colorlog==6.10.1
 flatbuffers==25.12.19
-homr @ file:///C:/Users/eccto/Documents/Codex/2026-09-09/files-pasted-by-the-user-harmonymaker/work/engine-compare-2026-09-11.private/homr-source
+homr @ file:///%USERPROFILE%/Documents/Codex/2026-09-09/files-pasted-by-the-user-harmonymaker/work/engine-compare-2026-09-11.private/homr-source
 idna==3.11
 mpmath==1.3.0
 numpy==2.4.2

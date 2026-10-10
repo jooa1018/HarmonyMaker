@@ -1,18 +1,57 @@
 # HarmonyMaker
 
-> 2026-10-09 서버 정리: 앱 내부의 사진·PDF OMR과 로컬 이미지 인식 페이지/API 및 실행 도구를 제거했습니다. 앱 밖에서 만든 MusicXML/MXL을 올려 사용하세요. 기존 로컬 후보 묶음과 브라우저 저장 자료의 읽기 기능은 유지합니다. 기존 OMR DB 테이블과 적용 마이그레이션은 변경하지 않습니다. 아래의 Segment/OMR 진행 기록은 제거 전 기록이며, 전체 운영 문서는 후속 정리에서 갱신합니다.
+앱 밖에서 만든 MusicXML/MXL을 올리고, 알토·테너·둘 다 중 필요한 화음 파트를 골라 생성·연습하는 앱입니다. MusicXML 읽기와 화음 생성, 악보 표시·재생, 프로젝트 저장은 브라우저에서 수행합니다. 서버는 공유 링크·익명 세션·신고·정리 작업을 담당합니다.
 
-HarmonyMaker는 멜로디, 확인된 코드, 곡 구조, 실제 가수 음역을 바탕으로 현대 워십 band-supported 문맥의 결정적 1–3성부 보컬 편곡을 만들고, 편집·연습·공유하는 Next.js 애플리케이션입니다. 유일한 제품 명세 authority는 [`docs/HARMONYMAKER_SPEC_v3.1.5.md`](docs/HARMONYMAKER_SPEC_v3.1.5.md)입니다.
+지원 박자는 2/4·3/4·4/4·6/8·12/8입니다. 사진·PDF를 MusicXML로 바꾸는 OMR과 로컬 이미지 인식 서버는 제거했습니다. 외부 도구에서 변환한 악보를 확인한 뒤 가져오세요. 기존 IndexedDB 프로젝트와 보존된 로컬 후보 묶음 읽기는 유지합니다.
 
-## 현재 저장소 설정 (H2 2-2)
+## 로컬 실행
 
-공유 저장은 PostgreSQL을 사용하며 S3 설정은 필요하지 않습니다. 운영 환경에는 `.env.example`의 `DATABASE_URL`, 일곱 개의 독립된 세션·암호화·내부 작업 키, 예약 정리용 `CRON_SECRET`을 설정하세요. 기존 `S3_*` 값은 런타임에서 읽지 않으며 S3 클라이언트를 만들지 않습니다.
+Node.js 22와 저장소의 package-lock.json을 사용합니다.
 
-로컬에서 DB·S3 없이 공유 기능을 시험하려면 `.env.local`에 `HM_DEV_MEMORY_PERSISTENCE=1`과 일곱 개의 유효한 키를 설정한 뒤 `npm run dev`를 실행하세요. 각 키는 서로 다르게 생성합니다. 예를 들어 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`를 키마다 한 번씩 실행할 수 있습니다. `DATABASE_URL`은 생략 가능합니다. `NODE_ENV=development` 외 환경에서는 메모리 플래그를 거부합니다. `next start`/production/Preview에서는 사용하지 마세요.
+```sh
+npm ci
+npm run dev
+```
 
-개발 메모리 데이터와 공유 링크는 같은 서버 프로세스가 살아 있는 동안만 유효하고 재시작하면 사라집니다. 플래그를 끄면 PostgreSQL 구성이 필요하며, DB 연결 실패 시 메모리로 우회하지 않습니다. 브라우저의 IndexedDB 저장은 이 서버 플래그와 별개입니다.
+브라우저에서 기본 개발 주소 `http://localhost:3000`을 엽니다. 가져오기·생성·로컬 저장에는 DB나 S3가 필요하지 않습니다. 로컬 프로젝트는 해당 브라우저의 IndexedDB에 저장되므로 프로젝트 내보내기로 별도 보관하세요.
 
-예약 정리는 S3 없이 세션·공유·사용량·멱등 기록 정리를 수행합니다. 과거 객체 참조는 삭제 대기 상태로 남겨 두고 `generic.skippedItems`에 건너뛴 수를 표시하며, 실제 객체를 삭제한 것으로 기록하지 않습니다. 과거 S3 객체의 실제 삭제는 별도 운영 결정이 필요합니다. 기존 객체 저장소 어댑터와 시험은 보존합니다.
+공유까지 DB 없이 시험하려면 `.env.example`을 `.env.local`로 복사하고 `HM_DEV_MEMORY_PERSISTENCE=1` 및 아래 독립 키 7개를 설정합니다. DATABASE_URL은 생략할 수 있습니다. 메모리 모드는 `NODE_ENV=development`에서만 허용되며 서버 재시작 시 공유 데이터가 사라집니다. production·Preview·next start에서는 거부합니다. DB 연결 실패 시 메모리로 우회하지 않습니다.
+
+키마다 다음 명령을 따로 실행해 서로 다른 값을 사용합니다. 생성한 값은 저장소에 넣지 않습니다.
+
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+## 환경 변수
+
+`.env.example`의 키 값은 설명용이므로 실제 유효한 값으로 교체합니다. 서버 키에 NEXT_PUBLIC_ 접두어를 붙이지 않습니다.
+
+| 변수 | 용도·조건 |
+|---|---|
+| DATABASE_URL | PostgreSQL 공유 저장. 개발 메모리 모드 외 필수 |
+| SESSION_TOKEN_HMAC_KEY | 세션 서명, base64url 최소 32바이트 |
+| CSRF_HMAC_KEY | CSRF, base64url 최소 32바이트 |
+| SHARE_ENCRYPTION_KEY | 공유 암호화, base64url 정확히 32바이트 |
+| SHARE_TOKEN_HMAC_KEY | 공유 토큰 해시, base64url 최소 32바이트 |
+| OWNER_DELETE_HMAC_KEY | 소유자 삭제 증거, base64url 최소 32바이트 |
+| QUOTA_IP_HMAC_KEY | IP 한도 식별자 해시, base64url 최소 32바이트 |
+| INTERNAL_OPERATIONS_KEY | 내부 작업 인증, base64url 최소 32바이트 |
+| CRON_SECRET | 예약 정리 Bearer 인증, 추측 불가능한 32자 이상 |
+| HM_DEV_MEMORY_PERSISTENCE | 기본 0. 개발 서버에서만 1 허용 |
+| TRUSTED_CLIENT_IP_HEADER | 프록시가 덮어쓰는 단일 IP 헤더. Vercel 기본 x-real-ip |
+| TRUST_FORWARDED_HOST | 1이면 전달 Host 신뢰, 0이면 해제. 미설정 시 Vercel만 기본 신뢰 |
+| HM_LOCAL_DIST_DIR | 선택적 검증 빌드 폴더. `.next-local-` 뒤 소문자·숫자·하이픈만 허용 |
+| HM_LOCAL_NO_DISK_CACHE | 선택적 로컬 개발 캐시 비활성화, 1일 때 적용 |
+| TEST_DATABASE_URL | PostgreSQL 시험에만 사용. 반드시 일회용 시험 DB |
+
+`NODE_ENV`는 Next 실행 모드가 관리하며 `VERCEL=1`은 Vercel 배포에서 제공하는 환경 표시입니다. S3_*와 OMR_*는 앱 런타임에서 읽지 않습니다. PostgreSQL 공유 저장에는 S3가 필요하지 않습니다.
+
+## 출처 검사와 보안 헤더
+
+기본 출처 검사는 Host를 사용합니다. `TRUST_FORWARDED_HOST=1`이거나 해당 변수가 없는 `VERCEL=1` 환경에서만 X-Forwarded-Host를 사용합니다. 명시값 0은 Vercel에서도 신뢰를 해제합니다. 신뢰한 헤더가 없으면 Host로 돌아가고, 목록·경로·사용자 정보·잘못된 포트는 거부합니다. 앞단 프록시가 외부 입력을 덮어쓰는 환경에서만 신뢰를 켜세요.
+
+모든 경로에 HSTS(max-age=31536000), nosniff, strict-origin-when-cross-origin Referrer-Policy, X-Frame-Options DENY, camera/microphone/geolocation 제한, CSP Report-Only를 설정합니다. CSP는 차단하지 않으며 별도 보고 수집 endpoint는 없습니다. iframe 삽입은 DENY로 거부합니다. [검증 기록](docs/implementation/H2_2_9_SECURITY_HEADERS.md)을 참고하세요.
 
 ## 사용자 IP와 한도 정책
 
@@ -42,48 +81,21 @@ API 응답의 `x-request-id`를 오류 문의에 포함하세요. 예상하지 �
 
 ## 마이그레이션과 배포 순서
 
+실행 SQL의 유일한 기준은 `src/server/persistence/migrations.ts`입니다. SQL 사본 15개는 제거했으며, `migrations.test.ts`가 1–16의 버전·이름·체크섬을 고정합니다. 기존 항목을 수정하지 말고 새 마이그레이션만 추가하세요.
+
 배포는 **추가형 마이그레이션 적용 → 새 앱 배포** 순서입니다. 배포할 코드의 `npm run migrate`를 별도 운영 작업으로 먼저 실행하고 성공을 확인한 뒤 앱을 배포하세요. 앱 요청 처리 중에는 마이그레이션을 적용하지 않습니다.
 
 실행 중 확인은 DB가 코드보다 최신이어도 코드가 아는 앞부분의 버전·이름·체크섬이 모두 일치하고 버전 이력이 연속이면 허용하며, `migration-schema-ahead` 경고에 시각과 코드/DB 버전만 기록합니다. DB가 뒤처지면 `MIGRATION_REQUIRED`, 알려진 이력이 다르거나 최신 이력에 누락이 있으면 `MIGRATION_HISTORY_DIVERGED`로 거부합니다. 마이그레이션 적용 명령은 기존처럼 더 최신인 DB를 거부하므로 최신 배포 코드로 실행해야 합니다.
 
 이 검사는 실제 스키마의 하위 호환성을 보증하지 않습니다. 추가형 변경은 기존 앱과 새 앱이 함께 동작하도록 설계해야 하며, 기존 SQL·체크섬을 수정하지 않습니다.
 
-## 현재 repository 상태 (제거 전 기록)
+## 예약 작업과 검증
 
-- Segment A — authority 및 persistence/object-store substrate 결정: 구현 완료
-- Segment B — frozen WAG v1.0.1 결정적 편곡 lifecycle: 구현 완료
-- Segment C — Product Core: 구현 완료
-- Segment D — provider-neutral OMR Core 및 PostgreSQL/S3 substrate: 구현 완료
-- Ultra whole-repository discovery: 완료 (`d81d7dfb3f749a78cb2ebac45b8319dd865598a8`)
-- Ultra finding closure: 구현·repository validation 완료 (`10 P1 + 14 P2 + 7 TG`), 별도 Ultra re-audit 준비 완료; `ULTRA_ACCEPTED=NO`, `SEGMENT_D_ACCEPTED=NO`
-- Step 11: 시작하지 않음
+`vercel.json`은 `/api/internal/cleanup`을 매일 00:00 UTC에 호출하도록 선언합니다. CRON_SECRET이 맞아야 실행됩니다. S3 없이도 DB 정리는 수행하지만 과거 객체 참조는 보존하고 `skippedItems`로 보고합니다. 실제 객체 삭제가 완료됐다고 기록하지 않습니다. 기존 OMR 테이블·외래키도 보존합니다.
 
-Ultra discovery의 historical evidence는 [`docs/implementation/ULTRA_AUDIT_DISCOVERY_REPORT.md`](docs/implementation/ULTRA_AUDIT_DISCOVERY_REPORT.md)에 있고, consolidated closure 결과는 [`docs/implementation/ULTRA_CLOSURE_REPORT.md`](docs/implementation/ULTRA_CLOSURE_REPORT.md)에 있습니다. Closure 결과가 green이어도 acceptance를 뜻하지 않으며, 별도 re-audit가 필요합니다.
-
-## 구현 범위
-
-Product Core는 다음 authority를 한 프로젝트 lifecycle로 연결합니다.
-
-- MusicXML 및 안전한 MXL 가져오기, exact Fraction timing, pickup/incomplete measure, measure별 4/4·6/8 meter와 tempo 보존
-- Quick Review의 Lead part/staff/voice 선택, key·tempo·chord·section·verse·performer range·rights 확인
-- frozen WAG v1.0.1 Intent → Activity → Anchor → Solver → assembly → Validator pipeline과 결정적 Candidate 선택
-- immutable OutputEdit revision 및 current materializer/Validator/metrics/diagnostic authority로 재검증되는 EditedArrangementSnapshot
-- project-keyed IndexedDB 저장, project export/import, score projection, ABC/MusicXML export, deterministic playback/accompaniment
-- rights-gated PracticeShare URL/서버 저장, anonymous session·CSRF·quota·idempotency·owner delete 기반
-- PostgreSQL persistence와 private S3-compatible object substrate, cleanup/retry 및 provider-neutral OMR job/page/evidence/correction lifecycle
-- MusicXML/OMR Quick Review가 프로젝트를 생성한 이후의 durable reload recovery
-
-직접 MusicXML/MXL을 연 뒤 프로젝트를 만들기 전의 Quick Review draft는 의도적으로 non-durable입니다. 새로고침하면 draft가 사라지며, 프로젝트 생성 이후부터 IndexedDB 저장 authority가 시작됩니다.
-
-OMR substrate에는 MIME/magic/size 검증, image/PDF normalization, durable job/page lifecycle, retry/reconciliation, evidence mapping, correction 및 Quick Review handoff가 구현되어 있습니다. 이는 provider-neutral software substrate입니다. 실제 외부 OMR provider는 연결되어 있지 않습니다.
-
-## 실행 및 검증
-
-Repository runtime contract는 Node.js 22와 lockfile의 npm 버전입니다.
-
-```bash
-npm ci
-npm run dev
+```sh
+node --test scripts/check-private-paths.test.mjs
+node scripts/check-private-paths.mjs
 npm run typecheck
 npm run lint
 npm test
@@ -91,22 +103,13 @@ npm run test:postgres
 npm run build
 ```
 
-개발 서버는 기본적으로 `http://localhost:3000`에서 열립니다. PostgreSQL test suite는 별도의 disposable PostgreSQL 17 test database가 필요합니다.
+PostgreSQL 시험은 TEST_DATABASE_URL로 지정한 일회용 PostgreSQL 17 DB에서만 실행합니다. 운영 DB를 지정하지 마세요. CI는 자체 PostgreSQL 컨테이너를 사용합니다. 개인정보 검사는 추적 파일의 사용자 프로필 경로와 호스트 식별 필드를 검사하며 실제 값을 로그에 출력하지 않습니다.
 
-## Migration 및 deployment contract
+저장된 공유는 기본 180일 만료이며, 소유자 확인을 통과한 복구 API의 active 응답은 ISO UTC `expiresAt`을 제공합니다. 배포 검증용 Preview와 CI 통과는 운영 DB에 마이그레이션을 적용했다는 뜻이 아닙니다. **운영 DB의 016 적용과 production 배포는 사용자가 배포 시 결정합니다.**
 
-Production 공유 저장에는 PostgreSQL을 사용합니다. S3는 필수 구성이 아닙니다. Application traffic 전에 migration `1 -> latest`를 순서대로 적용해야 하며, runtime은 current schema를 verify-only로 확인해야 합니다. 최초 live production migration/version이 이후 durable-data upgrade compatibility baseline입니다. Production 설정에서 Memory/test fallback은 허용되지 않습니다.
+## 관련 문서
 
-Vercel 배포는 preview verification일 뿐 production-live PostgreSQL/S3 검증을 대신하지 않습니다. 필수 session/encryption/internal scheduler/PostgreSQL 환경 설정은 배포 전에 fail-closed로 검증해야 합니다.
-
-## 외부 검증으로 남은 항목
-
-다음 항목은 repository PASS로 주장하지 않습니다.
-
-- 실제 OMR provider 선택·credentials·인식 정확도·가격·refund·retention·deletion·idempotency/reconciliation 계약
-- rights-safe Dev corpus 36개 이상 및 sealed corpus 24개 이상 calibration
-- production-live PostgreSQL 및 production-live S3-compatible storage
-- physical iPhone Safari 및 Kakao in-app browser
-- cybersecurity penetration audit (`CYBER_SECURITY_AUDIT=NOT_PERFORMED`)
-
-실제 provider API 호출, corpus calibration, production-live infrastructure probing, Step 11은 현재 범위 밖입니다.
+- [제품 명세](docs/HARMONYMAKER_SPEC_v3.1.5.md)
+- [Quick Harmony API와 호환성](docs/QUICK_HARMONY_API.md)
+- [서버 정리 전 진행 기록](docs/implementation/README_PRE_SERVER_CLEANUP.md)
+- [서버 정리 완료 보고](docs/implementation/H2_FINAL_REPORT.md)

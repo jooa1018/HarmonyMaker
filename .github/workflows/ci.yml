@@ -27,6 +27,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: node --test scripts/check-private-paths.test.mjs
+      - run: node scripts/check-private-paths.mjs
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
