@@ -54,6 +54,59 @@ const plan: PlaybackPlan = {
 const options = { fromQuarter: 0, secondsPerQuarter: 0.5, startedAt: 10.05, audible: new Set(plan.trackIds), levels: {}, masterLevel: 1 };
 
 describe("practice audio signal and scheduling contract", () => {
+  it.each([[0,0.5],[3.5,1],[1,0.4]])("lookahead matches full scheduling within 1ms (from %s at %s seconds/quarter)", (fromQuarter,secondsPerQuarter) => {
+    vi.useFakeTimers();
+    try {
+      const long = {...plan,totalQuarter:32,events:Array.from({length:8},(_,i)=>plan.events.map(e=>({...e,eventId:`${i}:${e.eventId}`,startQuarter:e.startQuarter+i*4}))).flat()};
+      const full=fakeContext(), live=fakeContext();
+      schedulePracticeAudio(full.audio,long,{...options,fromQuarter,secondsPerQuarter});
+      const graph=schedulePracticeAudio(live.audio,long,{...options,fromQuarter,secondsPerQuarter,lookahead:true});
+      expect(live.oscillators.length).toBeLessThan(full.oscillators.length);
+      for(let tick=1;tick<=140;tick++){
+        live.context.currentTime=10+tick*0.25;
+        vi.advanceTimersByTime(250);
+      }
+      const notes=(f:ReturnType<typeof fakeContext>)=>f.oscillators.map(o=>[o.start.mock.calls[0][0],o.stop.mock.calls[0][0],o.frequency.value]).sort((a,b)=>a[0]-b[0]||a[1]-b[1]||a[2]-b[2]);
+      const actual=notes(live), expected=notes(full);
+      expect(actual).toHaveLength(expected.length);
+      actual.forEach((note,i)=>note.forEach((value,j)=>expect(Math.abs(value-expected[i][j])).toBeLessThan(0.001)));
+      expect(graph.lateStartCount).toBe(0);expect(graph.expiredCount).toBe(0);expect(vi.getTimerCount()).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
+
+  it("resumes only the unelapsed portion after a delayed refill and counts late starts",()=>{
+    vi.useFakeTimers();
+    try {
+      const f=fakeContext();
+      const delayed={...plan,totalQuarter:16,events:[plan.events[0],{...plan.events[1],startQuarter:4},{...plan.events[2],startQuarter:6,durationQuarter:4}]};
+      const graph=schedulePracticeAudio(f.audio,delayed,{...options,lookahead:true});
+      expect(f.oscillators).toHaveLength(1);
+      f.context.currentTime=14;vi.advanceTimersByTime(250);
+      expect(f.oscillators).toHaveLength(2);
+      expect(f.oscillators[1].start).toHaveBeenCalledWith(14);
+      expect(f.oscillators[1].stop).toHaveBeenCalledWith(15.05);
+      expect(graph.lateStartCount).toBe(1);expect(graph.expiredCount).toBe(1);
+    } finally {vi.useRealTimers();}
+  });
+
+  it("keeps future sources on the current solo/mute buses and cancels refill on pause/reset",()=>{
+    vi.useFakeTimers();
+    try {
+      const f=fakeContext();
+      const future={...plan,totalQuarter:32,events:plan.events.map(e=>({...e,startQuarter:e.startQuarter+8}))};
+      const graph=schedulePracticeAudio(f.audio,future,{...options,lookahead:true});
+      expect(f.oscillators).toHaveLength(0);
+      updatePracticeAudioMix(graph,{audible:new Set(["track:h1"]),levels:{"track:h1":0.5},masterLevel:1});
+      f.context.currentTime=13;vi.advanceTimersByTime(250);
+      expect(f.oscillators.length).toBeGreaterThan(0);
+      expect(graph.tracks.get("track:source-lead")!.gain).toMatchObject({events:expect.arrayContaining([expect.objectContaining({value:0})])});
+      const count=f.oscillators.length;
+      releasePracticeAudio(graph,f.audio);
+      f.context.currentTime=30;vi.advanceTimersByTime(10000);
+      expect(f.oscillators).toHaveLength(count);expect(vi.getTimerCount()).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
+
   it("preserves every frequency/start/end and sustains a merged tie on one source", () => {
     const f = fakeContext(), before = JSON.stringify(plan);
     const graph = schedulePracticeAudio(f.audio, plan, options);

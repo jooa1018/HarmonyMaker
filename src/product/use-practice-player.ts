@@ -199,13 +199,17 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
       if (!audioOwner.isCurrent(session)) return;
       session.startedAt = context.currentTime + PRACTICE_AUDIO_START_LEAD_SECONDS;
       session.graph = schedulePracticeAudio(context, plan, { fromQuarter, secondsPerQuarter,
-        startedAt: session.startedAt, audible, levels, masterLevel });
+        startedAt: session.startedAt, audible, levels, masterLevel, lookahead: true });
       await resumeWithDeadline(context);
       if (!audioOwner.isCurrent(session)) return;
       setPhase("playing");
       const timer = setInterval(() => {
         const current = audioOwner.active;
         if (!current) return;
+        if (current.graph?.schedulingError) {
+          stopNodes("startup-failure"); setPhase("ready");
+          setError("소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요."); return;
+        }
         const nextPosition = current.positionQuarter + Math.max(0, current.context.currentTime - current.startedAt) / secondsPerQuarter;
         if (nextPosition >= plan.totalQuarter) {
           stopNodes("finish");

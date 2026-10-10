@@ -5,6 +5,8 @@ export const PRACTICE_AUDIO_GAINS = Object.freeze({ lead: 0.34, harmony: 0.30, b
 export const PRACTICE_AUDIO_ATTACK_SECONDS = 0.015;
 export const PRACTICE_AUDIO_RELEASE_SECONDS = 0.08;
 export const PRACTICE_AUDIO_START_LEAD_SECONDS = 0.05;
+export const PRACTICE_AUDIO_LOOKAHEAD_SECONDS = 2;
+export const PRACTICE_AUDIO_REFILL_MS = 250;
 
 // Zero slope at both ends prevents a step even on repeated, separate attacks.
 const ATTACK_CURVE = Float32Array.from({ length: 33 }, (_, i) => (1 - Math.cos(Math.PI * i / 32)) / 2);
@@ -35,6 +37,11 @@ export interface PracticeAudioGraph {
   readonly startedAt: number;
   readonly endsAt: number;
   readonly scheduledCount: number;
+  /** Late, still-live events resumed at the current audio clock. Runtime only. */
+  readonly lateStartCount: number;
+  readonly expiredCount: number;
+  stopScheduling(): void;
+  schedulingError?: unknown;
   released: boolean;
 }
 
@@ -65,13 +72,13 @@ export function updatePracticeAudioMix(graph: PracticeAudioGraph, mix: PracticeA
 
 /**
  * Schedule against one audio clock while the live context is suspended. The
- * complete plan is queued before resume, so JS/cursor stalls cannot omit notes.
- * Also accepts OfflineAudioContext for actual deterministic WebAudio rendering.
+ * live option queues a two-second window. The default keeps complete scheduling
+ * for OfflineAudioContext, whose clock runs faster than wall time.
  */
 export function schedulePracticeAudio(
   context: BaseAudioContext,
   plan: PlaybackPlan,
-  options: PracticeAudioMix & { readonly fromQuarter: number; readonly secondsPerQuarter: number; readonly startedAt: number },
+  options: PracticeAudioMix & { readonly fromQuarter: number; readonly secondsPerQuarter: number; readonly startedAt: number; readonly lookahead?: boolean },
 ): PracticeAudioGraph {
   const { fromQuarter, secondsPerQuarter, startedAt } = options;
   if (![fromQuarter, secondsPerQuarter, startedAt, plan.totalQuarter].every(Number.isFinite)
@@ -101,6 +108,42 @@ export function schedulePracticeAudio(
   output.gain.value = 0.6;
   master.connect(limiter).connect(output).connect(context.destination);
   let scheduledCount = 0;
+  let lateStartCount = 0, expiredCount = 0, cursor = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stopScheduling = () => { if (timer !== undefined) { clearInterval(timer); timer = undefined; } };
+  const events = options.lookahead ? [...plan.events].sort((a,b) => a.startQuarter-b.startQuarter) : plan.events;
+  const fill = () => {
+    const now = context.currentTime;
+    const horizon = options.lookahead ? now + PRACTICE_AUDIO_LOOKAHEAD_SECONDS : Infinity;
+    while (cursor < events.length) {
+      const event = events[cursor];
+      if (event.startQuarter + event.durationQuarter <= fromQuarter) { cursor++; continue; }
+      const originalStart = startedAt + (Math.max(event.startQuarter, fromQuarter) - fromQuarter) * secondsPerQuarter;
+      if (originalStart >= horizon) break;
+      cursor++;
+      const end = startedAt + (event.startQuarter + event.durationQuarter - fromQuarter) * secondsPerQuarter;
+      if (end <= now) { expiredCount++; continue; }
+      const start = Math.max(originalStart, now);
+      if (originalStart < now) lateStartCount++;
+      const duration = end - start;
+      const oscillator = context.createOscillator();
+      nodes.add(oscillator);
+      const envelope = context.createGain();
+      oscillator.setPeriodicWave(waves.get(event.trackId)!);
+      oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
+      const attack = Math.min(PRACTICE_AUDIO_ATTACK_SECONDS, duration / 4);
+      const release = Math.min(PRACTICE_AUDIO_RELEASE_SECONDS, duration / 2);
+      envelope.gain.setValueCurveAtTime(ATTACK_CURVE, start, attack);
+      envelope.gain.setValueAtTime(1, end - release);
+      envelope.gain.setValueCurveAtTime(RELEASE_CURVE, end - release, release);
+      oscillator.connect(envelope).connect(tracks.get(event.trackId)!);
+      oscillator.onended = () => { nodes.delete(oscillator); oscillator.disconnect(); envelope.disconnect(); };
+      oscillator.start(start);
+      oscillator.stop(end);
+      scheduledCount++;
+    }
+    if (cursor === events.length) stopScheduling();
+  };
   try {
     for (const id of plan.trackIds) {
       const bus = context.createGain();
@@ -115,29 +158,7 @@ export function schedulePracticeAudio(
       bus.connect(filter).connect(master);
       waves.set(id, context.createPeriodicWave(new Float32Array(tone.harmonics.length), new Float32Array(tone.harmonics)));
     }
-    for (const event of plan.events) {
-      if (event.startQuarter + event.durationQuarter <= fromQuarter) continue;
-      const start = startedAt + (Math.max(event.startQuarter, fromQuarter) - fromQuarter) * secondsPerQuarter;
-      const end = startedAt + (event.startQuarter + event.durationQuarter - fromQuarter) * secondsPerQuarter;
-      const duration = end - start;
-      const oscillator = context.createOscillator();
-      nodes.add(oscillator);
-      const envelope = context.createGain();
-      oscillator.setPeriodicWave(waves.get(event.trackId)!);
-      oscillator.frequency.value = 440 * 2 ** ((event.midi - 69) / 12);
-      // Short ramps remain inside the original audible range, including short
-      // notes. Explicit ties were already merged by the unchanged playback plan.
-      const attack = Math.min(PRACTICE_AUDIO_ATTACK_SECONDS, duration / 4);
-      const release = Math.min(PRACTICE_AUDIO_RELEASE_SECONDS, duration / 2);
-      envelope.gain.setValueCurveAtTime(ATTACK_CURVE, start, attack);
-      envelope.gain.setValueAtTime(1, end - release);
-      envelope.gain.setValueCurveAtTime(RELEASE_CURVE, end - release, release);
-      oscillator.connect(envelope).connect(tracks.get(event.trackId)!);
-      oscillator.onended = () => { nodes.delete(oscillator); oscillator.disconnect(); envelope.disconnect(); };
-      oscillator.start(start);
-      oscillator.stop(end);
-      scheduledCount += 1;
-    }
+    fill();
   } catch (error) {
     for (const node of nodes) { try { node.stop(); } catch { /* not started */ } node.disconnect(); }
     for (const bus of tracks.values()) bus.disconnect();
@@ -147,14 +168,22 @@ export function schedulePracticeAudio(
     output.disconnect();
     throw error;
   }
-  return { context, nodes, tracks, master, limiter, output, filters, startedAt,
-    endsAt: startedAt + (plan.totalQuarter - fromQuarter) * secondsPerQuarter, scheduledCount, released: false };
+  const graph: PracticeAudioGraph = { context, nodes, tracks, master, limiter, output, filters, startedAt,
+    endsAt: startedAt + (plan.totalQuarter - fromQuarter) * secondsPerQuarter,
+    get scheduledCount() { return scheduledCount; }, get lateStartCount() { return lateStartCount; }, get expiredCount() { return expiredCount; },
+    stopScheduling, released: false };
+  if (options.lookahead && cursor < events.length) timer = setInterval(() => {
+    if (graph.released) { stopScheduling(); return; }
+    try { fill(); } catch (error) { graph.schedulingError = error; stopScheduling(); }
+  }, PRACTICE_AUDIO_REFILL_MS);
+  return graph;
 }
 
 /** Ownership is released immediately; the audio clock applies the short tail. */
 export function releasePracticeAudio(graph: PracticeAudioGraph, context: AudioContext): void {
   if (graph.released) return;
   graph.released = true;
+  graph.stopScheduling();
   const tail = context.state === "running" && graph.nodes.size > 0 ? PRACTICE_AUDIO_RELEASE_SECONDS : 0;
   const stopAt = context.currentTime + tail;
   if (tail) rampGain(graph.master.gain, 0, context.currentTime);
