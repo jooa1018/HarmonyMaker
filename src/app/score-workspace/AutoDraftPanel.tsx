@@ -22,7 +22,7 @@ export function AutoDraftPanel({ workspace, busy, run, setStatus }: {
   const [assessment, setAssessment] = useState<AutoDraftAssessment>(), [error, setError] = useState("");
   const [confirmedAt, setConfirmedAt] = useState<string>();
   const options: AutoDraftOptions = {
-    ...(part ? { harmonyPart: part } : {}),
+    ...(part ? { harmonyParts: [part] } : {}),
     ...(carry ? { decisions: { unreadPrintedChords: "carry-previous" as const } } : {}),
     ...(rights && confirmedAt ? { rights: { basis: "user-confirmed-rights" as const, allowedUses: ["generation" as const], confirmedAt, sourceReference: "자동 초안 첨부 시 사용자 권리 확인" } } : {}),
   };

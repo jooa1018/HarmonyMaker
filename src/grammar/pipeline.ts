@@ -1,4 +1,4 @@
-import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
+import { wagVersions } from "./versions";
 import { loadAccompanimentConfig } from "../accompaniment/deterministic";
 import { buildArrangementCandidate, validateGenerationResultState, type CandidateOrdinalRegistry } from "../domain/generation/candidate";
 import type {
@@ -497,11 +497,11 @@ export async function assembleWagGeneration(
     presetProfileVersion: input.effectiveConfig.presetProfileVersion,
     presetProfileDigest: input.effectiveConfig.presetProfileDigest,
     locks: prepared.locks.solver,
-    solverVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.solverVersion,
-    assemblerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.assemblerVersion,
-    validatorVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion,
-    metricsVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.metricsVersion,
-    candidateProjectionVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.candidateProjectionVersion,
+    solverVersion: wagVersions(input.source, input.grammarVersion).solverVersion,
+    assemblerVersion: wagVersions(input.source, input.grammarVersion).assemblerVersion,
+    validatorVersion: wagVersions(input.source, input.grammarVersion).validatorVersion,
+    metricsVersion: wagVersions(input.source, input.grammarVersion).metricsVersion,
+    candidateProjectionVersion: wagVersions(input.source, input.grammarVersion).candidateProjectionVersion,
     solverConfigDigest: prepared.authority.wagOwnedConfigDigests.solverConfigDigest,
     assemblerConfigDigest: prepared.authority.wagOwnedConfigDigests.assemblerConfigDigest,
     validatorConfigDigest: prepared.authority.wagOwnedConfigDigests.validatorConfigDigest,
@@ -694,7 +694,7 @@ export async function assembleWagGeneration(
       accompanimentConfigDigest: accompanimentConfig.configDigest,
       diagnosticRegistryDigest: prepared.authority.diagnostics.registryDigest,
     },
-    versions: { ...APPLICATION_ALGORITHM_VERSION_REGISTRY },
+    versions: { ...wagVersions(input.source, input.grammarVersion) },
   };
   return {
     result,

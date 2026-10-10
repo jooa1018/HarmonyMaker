@@ -34,7 +34,10 @@ export function buildWagRenderDocument(
   ]));
   const generatedHarmonyTracks = Object.entries(candidate.generatedEventsByTrack)
     .sort(([left], [right]) => trackOrdinalById[left] - trackOrdinalById[right])
-    .map(([trackPlanId, events]) => ({ trackPlanId, events }));
+    .map(([trackPlanId, events]) => {
+      const track = input.trackPlans.find(t => t.id === trackPlanId);
+      return { trackPlanId, events, ...(track?.kind === "generated-harmony" && track.notationOctaveShift !== undefined ? { notationOctaveShift: track.notationOctaveShift } : {}) };
+    });
   const document: ArrangementRenderDocument = {
     measures: input.source.performanceSequence.occurrences,
     sourceLeadTrack: {

@@ -3,6 +3,8 @@ import { generateDeterministicAccompaniment } from "../accompaniment/determinist
 import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
 import { semanticDigest, type SemanticDigest } from "../domain/digest/canonical";
 import type { Diagnostic } from "../domain/diagnostics";
+import { wagVersions } from "../grammar/versions";
+import { quickHarmonyParts } from "../domain/quick-harmony-policy";
 import { SOURCE_LEAD_TRACK, type GeneratedHarmonyTrackPlan } from "../domain/performer";
 import { validateHarmonyProject, type ArrangementVariant, type HarmonyProject } from "../domain/project";
 import type { MusicXmlImportDraft } from "../import/musicxml/types";
@@ -31,8 +33,10 @@ export async function createProjectFromQuickReview(
   const authority = await loadFrozenWagAuthority();
   const performers = draft.performerSlots.slice(0, draft.singerCount).map((slot) => slot.profile).filter((profile): profile is NonNullable<typeof profile> => profile !== undefined);
   if (performers.length !== draft.singerCount) throw new RangeError("IMPORT_HANDOFF_NOT_READY");
+  const parts = quickHarmonyParts(analysis.source);
   const generatedTracks = Array.from({ length: draft.singerCount - 1 }, (_, index): GeneratedHarmonyTrackPlan => ({
     kind: "generated-harmony", id: `track:h${index + 1}`, displayLabel: index === 0 ? "Harmony 1" : "Harmony 2", canonicalOrdinal: (index + 1) as 1 | 2, enabled: true,
+    ...(parts?.[index] === "tenor" ? { notationOctaveShift: -1 } : {}),
   }));
   const trackPlans = [SOURCE_LEAD_TRACK, ...generatedTracks];
   const assignments = trackPlans.map((track, index) => ({ trackPlanId: track.id, performerId: performers[index].id }));
@@ -63,7 +67,9 @@ export async function wagInputFromProject(project: HarmonyProject, presetId: Arr
     mode: project.settings.mode, presetId, userCaps: project.settings.userCaps,
     assignedEnabledHarmonyTrackCount: enabledAssignedHarmonyTrackCount,
   });
+  const variant = project.variants[presetId];
   return {
+    grammarVersion: variant && variant.lifecycle !== "empty" ? variant.intentPlan.grammarVersion : wagVersions(project.source).grammarVersion,
     source: project.source,
     effectiveChordTimeline: project.chordTimelineState.timeline,
     sourceLeadAtomization: project.sourceLeadAtomizationState.atomization,

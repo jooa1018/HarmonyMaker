@@ -102,12 +102,12 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   }));
   const lead = document.sourceLeadTrack.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex }));
   const tracks = [
-    { id: "lead", label: "Lead", events: lead },
-    ...(document.sourceRhythmTracks?.map((track) => ({ id: `rhythm${track.voice}`, label: `Source Rhythm ${track.voice}`, events: track.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) })) ?? []),
+    { id: "lead", label: "Lead", notationOctaveShift: 0, events: lead },
+    ...(document.sourceRhythmTracks?.map((track) => ({ id: `rhythm${track.voice}`, label: `Source Rhythm ${track.voice}`, notationOctaveShift: 0, events: track.atoms.map((atom) => ({ ...eventFromAtom(atom, document.measures), measureIndex: atom.range.start.performanceMeasureIndex })) })) ?? []),
     ...document.generatedHarmonyTracks.map((track) => {
       const metadata = trackRoles.byTrackPlanId[track.trackPlanId];
       if (!metadata) throw new RangeError(`TRACK_ROLE_METADATA_UNAVAILABLE:${track.trackPlanId}`);
-      return { id: metadata.harmonyRole.toLowerCase(), label: metadata.label, events: track.events.map((event) => ({ ...eventFromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
+      return { id: metadata.harmonyRole.toLowerCase(), label: metadata.label, notationOctaveShift: track.notationOctaveShift ?? 0, events: track.events.map((event) => ({ ...eventFromGenerated(event, document.measures), measureIndex: event.range.start.performanceMeasureIndex })) };
     }),
   ];
   const rhythm = document.sourceRhythmTracks ?? [];
@@ -118,7 +118,7 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
     return `[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, rhythm.length > 0 && index < sourceCount)}`;
   }).join("\n");
   const score = rhythm.length ? `(${tracks.slice(0, sourceCount).map((track) => track.id).join(" ")}) ${tracks.slice(sourceCount).map((track) => track.id).join(" ")}` : tracks.map((track) => track.id).join(" ");
-  const declarations = tracks.map((track) => `V:${track.id} name="${encodeAbcFreeText(track.label)}" clef=treble`).join("\n");
+  const declarations = tracks.map((track) => `V:${track.id} name="${encodeAbcFreeText(track.label)}" clef=${track.notationOctaveShift === -1 ? "treble-8" : "treble"}`).join("\n");
   return `X:1\nT:${encodeAbcFreeText(input.title)}\nM:${document.measures[0]?.time.numerator ?? 4}/${document.measures[0]?.time.denominator ?? 4}\nL:1/16\nQ:${abcTempo(input.tempo)}\nK:${abcKey(input.key)}\n%%score ${score}\n${declarations}\n${voices}`;
 }
 

@@ -47,7 +47,7 @@ interface VoiceSound {
   readonly lyricTokenIds: readonly string[];
 }
 
-function voiceEvents(trackId: string, entries: readonly VoiceSound[], starts: readonly Fraction[], document: ArrangementRenderDocument): readonly PlaybackEvent[] {
+function voiceEvents(trackId: string, entries: readonly VoiceSound[], starts: readonly Fraction[], document: ArrangementRenderDocument, notationOctaveShift = 0): readonly PlaybackEvent[] {
   const sounds: VoiceSound[] = [];
   for (const entry of [...entries].sort((left, right) => comparePositions(left.range.start, right.range.start))) {
     const previous = sounds.at(-1);
@@ -63,7 +63,7 @@ function voiceEvents(trackId: string, entries: readonly VoiceSound[], starts: re
     eventId: sound.id, trackId, kind: "voice",
     startQuarter: absolute(starts, sound.range.start.performanceMeasureIndex, sound.range.start.offset),
     durationQuarter: value(canonicalRangeDuration(document.measures, sound.range)),
-    midi: pitchMidiNumber(sound.pitch), lyricOnset: sound.lyricTokenIds.length > 0 && !sound.tieStop,
+    midi: pitchMidiNumber(sound.pitch) + 12 * notationOctaveShift, lyricOnset: sound.lyricTokenIds.length > 0 && !sound.tieStop,
   }] : []);
 }
 
@@ -72,7 +72,7 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
   const starts = measureStarts(document);
   const voices = [
     ...voiceEvents("track:source-lead", document.sourceLeadTrack.atoms.map((atom) => ({ ...atom, tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious })), starts, document),
-    ...document.generatedHarmonyTracks.flatMap((track) => voiceEvents(track.trackPlanId, track.events.map((event): VoiceSound => event.kind === "note" ? event : { ...event, pitch: null, tieStart: false, tieStop: false, lyricTokenIds: [] }), starts, document)),
+    ...document.generatedHarmonyTracks.flatMap((track) => voiceEvents(track.trackPlanId, track.events.map((event): VoiceSound => event.kind === "note" ? event : { ...event, pitch: null, tieStart: false, tieStop: false, lyricTokenIds: [] }), starts, document, track.notationOctaveShift ?? 0)),
   ];
   // Slash rhythm drives generated band attacks; it never supplies a Source pitch.
   // Outside slash measures the existing sustained accompaniment stays unchanged.

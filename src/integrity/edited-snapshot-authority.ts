@@ -1,4 +1,4 @@
-import { APPLICATION_ALGORITHM_VERSION_REGISTRY } from "../app/algorithm-version-registry";
+import { algorithmVersionsForWag } from "../grammar/versions";
 import { semanticDigest } from "../domain/digest/canonical";
 import { createDiagnostics, type Diagnostic } from "../domain/diagnostics";
 import { digestAppliedOutputEditSet, isArrangementOutputEdit, validateOutputEdits, type ArrangementOutputEdit, type EditedArrangementSnapshot } from "../domain/edit/model";
@@ -131,6 +131,7 @@ export async function materializeEditedArrangement(input: {
   readonly edits: readonly ArrangementOutputEdit[];
 }): Promise<EditedArrangementMaterialization> {
   const { lifecycleInput, intentPlan, activityPlan, anchorPlan, candidate } = input;
+  const versions = algorithmVersionsForWag(intentPlan.grammarVersion);
   if (candidate.id !== `cand:${candidate.presetId}:${candidate.contentDigest}`
     || candidate.effectiveChordTimelineDigest !== lifecycleInput.effectiveChordTimeline.digest
     || candidate.sourceLeadAtomizationDigest !== lifecycleInput.sourceLeadAtomization.digest) return blocked("EDIT_BASE_CANDIDATE_STALE", "authority");
@@ -147,7 +148,7 @@ export async function materializeEditedArrangement(input: {
   const registry = ordinals(lifecycleInput, anchorPlan);
   const validation = await validateEditedSnapshot({ lifecycleInput, intentPlan, activityPlan, anchorPlan, tracks, realizedAnchors });
   const finalMetrics = validation.metrics;
-  const authority = await loadFrozenWagAuthority();
+  const authority = await loadFrozenWagAuthority(intentPlan.grammarVersion);
   const appliedEditSetDigest = await digestAppliedOutputEditSet(orderedEdits);
   const directiveOrdinal = registry.anchorDirectiveOrdinalById;
   const trackOrdinal = registry.trackOrdinalById;
@@ -158,10 +159,10 @@ export async function materializeEditedArrangement(input: {
     effectiveChordTimelineDigest: lifecycleInput.effectiveChordTimeline.digest,
     sourceLeadAtomizationDigest: lifecycleInput.sourceLeadAtomization.digest,
     appliedEditSetDigest,
-    editMaterializerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.editMaterializerVersion,
-    validatorVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion,
+    editMaterializerVersion: versions.editMaterializerVersion,
+    validatorVersion: versions.validatorVersion,
     validatorConfigDigest: authority.wagOwnedConfigDigests.validatorConfigDigest,
-    metricsVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.metricsVersion,
+    metricsVersion: versions.metricsVersion,
     metricConfigDigest: authority.wagOwnedConfigDigests.metricConfigDigest,
     diagnosticRegistryVersion: authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: authority.diagnostics.registryDigest,
@@ -172,10 +173,10 @@ export async function materializeEditedArrangement(input: {
   });
   const snapshot: EditedArrangementSnapshot = {
     id: `es:${candidate.presetId}:${contentDigest}`,
-    materializerVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.editMaterializerVersion,
-    validatorVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.validatorVersion,
+    materializerVersion: versions.editMaterializerVersion,
+    validatorVersion: versions.validatorVersion,
     validatorConfigDigest: authority.wagOwnedConfigDigests.validatorConfigDigest,
-    metricsVersion: APPLICATION_ALGORITHM_VERSION_REGISTRY.metricsVersion,
+    metricsVersion: versions.metricsVersion,
     metricConfigDigest: authority.wagOwnedConfigDigests.metricConfigDigest,
     diagnosticRegistryVersion: authority.diagnostics.registryVersion,
     diagnosticRegistryDigest: authority.diagnostics.registryDigest,

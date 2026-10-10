@@ -196,8 +196,8 @@ async function evaluateArrangement(state: WorkspaceState, evidenceDigest: string
   for (const [measureIndex,m] of inspected.entries()) {
     const mid=m.workspaceMeasureId!, scope: WorkspaceScope={kind:"measure",measureId:mid,...(state.request.lead?{voiceKey:state.request.lead}:{})};
     const t=m.time;
-    if (!((t.denominator===4 && [2,4].includes(t.numerator) && t.beatGroups.length===t.numerator && t.beatGroups.every(g=>g===1))
-      || t.numerator===6 && t.denominator===8 && canonicalJson(t.beatGroups)==="[3,3]")) add(`meter:${mid}`,`${m.number}마디 ${t.numerator}/${t.denominator}: 작업 공간에 보존할 수 있지만 현재 WAG 지원 밖입니다.`,scope);
+    if (!((t.denominator===4 && [2,3,4].includes(t.numerator) && t.beatGroups.length===t.numerator && t.beatGroups.every(g=>g===1))
+      || [6,12].includes(t.numerator) && t.denominator===8 && t.beatGroups.length===t.numerator/3 && t.beatGroups.every(g=>g===3))) add(`meter:${mid}`,`${m.number}마디 ${t.numerator}/${t.denominator}: 작업 공간에 보존할 수 있지만 현재 WAG 지원 밖입니다.`,scope);
     const selected = part ? new Set([state.request.lead!,...state.request.rhythmVoices]) : undefined;
     const events = m.leadEvents.filter(e=>!selected||selected.has(e.candidateKey));
     for (const e of events) {

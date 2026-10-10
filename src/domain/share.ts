@@ -21,7 +21,7 @@ export type CompactPlacementRole = "upper" | "lower";
 export type LegacyCompactTrack = { readonly kind: "source-lead" | "generated-harmony"; readonly label: string; readonly events: readonly CompactVocalEvent[] };
 export type CompactTrack =
   | { readonly kind: "source-lead"; readonly label: string; readonly events: readonly CompactVocalEvent[] }
-  | { readonly kind: "generated-harmony"; readonly label: string; readonly harmonyRole: CompactHarmonyRole; readonly placementRoles: readonly CompactPlacementRole[]; readonly events: readonly CompactVocalEvent[] };
+  | { readonly kind: "generated-harmony"; readonly label: string; readonly notationOctaveShift?: -1 | 0; readonly harmonyRole: CompactHarmonyRole; readonly placementRoles: readonly CompactPlacementRole[]; readonly events: readonly CompactVocalEvent[] };
 export type CompactChord =
   | { readonly kind: "chord"; readonly startOccurrenceIndex: number; readonly startOffset: CompactFraction; readonly endOccurrenceIndex: number; readonly endOffset: CompactFraction; readonly symbol: string }
   | { readonly kind: "no-chord"; readonly startOccurrenceIndex: number; readonly startOffset: CompactFraction; readonly endOccurrenceIndex: number; readonly endOffset: CompactFraction };
@@ -63,10 +63,10 @@ function isPositiveCompactFraction(value: unknown): value is CompactFraction {
 
 function isSupportedMeasureDuration(timeSignature: unknown, duration: unknown): duration is CompactFraction {
   if (!Array.isArray(timeSignature) || timeSignature.length !== 2 || !isPositiveCompactFraction(duration)) return false;
-  const nominalQuarterUnits = timeSignature[0] === 4 && timeSignature[1] === 4
-    ? BigInt(4)
-    : timeSignature[0] === 6 && timeSignature[1] === 8
-      ? BigInt(3)
+  const nominalQuarterUnits = [2, 3, 4].includes(timeSignature[0]) && timeSignature[1] === 4
+    ? BigInt(timeSignature[0])
+    : [6, 12].includes(timeSignature[0]) && timeSignature[1] === 8
+      ? BigInt(timeSignature[0] / 2)
       : undefined;
   if (nominalQuarterUnits === undefined) return false;
   return BigInt(duration[0]) <= nominalQuarterUnits * BigInt(duration[1]);
@@ -192,7 +192,8 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
     || !tracks.every((track) => isPlainRecord(track)
       && hasExactKeys(track, schemaVersion === 4 && track.kind === "generated-harmony"
         ? ["kind", "label", "harmonyRole", "placementRoles", "events"]
-        : ["kind", "label", "events"])
+        : ["kind", "label", "events"], schemaVersion === 4 && track.kind === "generated-harmony" ? ["notationOctaveShift"] : [])
+      && (track.notationOctaveShift === undefined || track.notationOctaveShift === 0 || track.notationOctaveShift === -1)
       && (track.kind === "source-lead" || track.kind === "generated-harmony")
       && typeof track.label === "string"
       && track.label.length > 0

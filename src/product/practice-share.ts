@@ -61,6 +61,7 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
         kind: "generated-harmony" as const,
         label: metadata.label,
         harmonyRole: metadata.harmonyRole,
+        ...(track.notationOctaveShift !== undefined ? { notationOctaveShift: track.notationOctaveShift } : {}),
         placementRoles: [...new Set(metadata.placements.map((placement) => placement.placementRole))].sort(),
         events: track.events.map((event) => generatedEvent(event, document, localLyrics.sourceToLocal)),
       };
