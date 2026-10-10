@@ -58,15 +58,17 @@ describe("quick harmony API draft", () => {
 
   it("preserves the existing default part and generation result", async () => {
     const prep = await prepareQuickHarmony(file());
-    const result = await generateQuickHarmony(prep, { ...choice, parts: "auto" });
+    const result = await generateQuickHarmony({...prep,summary:{...prep.summary!,measureCount:999,recommendedPart:prep.summary!.recommendedPart === "alto" ? "tenor" : "alto"}}, { ...choice, parts: "auto" });
     const existing = await autoDraft.generateAutoDraftProject(prep.workspace!, { rights: { basis: "user-confirmed-rights", allowedUses: ["generation"], confirmedAt: choice.confirmedAt } });
     if (result.status !== "complete" || existing.status !== "generated") throw new Error("generation failed");
+    expect(result.preparation.summary).toEqual(prep.summary);
     expect(await exportHarmonyProject(result.project)).toBe(await exportHarmonyProject(existing.project));
   }, 180_000);
 
   it("accepts an explicit lead answer without writing a review attestation", async () => {
     const prep = await prepareQuickHarmony(file(score({ voices: true })));
     expect(prep.status).toBe("needs-input");
+    expect(prep.summary).toBeUndefined();
     const candidates = prep.questions.find(q => q.id === "lead-selection")!.choices;
     expect(new Set(candidates.map(c => c.labelKo)).size).toBe(candidates.length);
     const lead = candidates[0].value;
@@ -74,6 +76,7 @@ describe("quick harmony API draft", () => {
     expect(result.status).toBe("complete");
     const state = await replayScoreWorkspace(result.preparation.workspace!);
     expect(state.request.lead).toBe(lead);
+    expect(result.preparation.summary?.measureCount).toBe(4);
     expect(state.attestations).toEqual([]);
     expect(result.preparation.details.assessment?.provenance.find(p => p.field === "lead")?.origin).toBe("user-edit");
     expect(prep.workspace!.revision).toBe(0);
@@ -96,6 +99,7 @@ describe("quick harmony API draft", () => {
     for (const input of [file("broken"), file('<!DOCTYPE score-partwise [<!ENTITY x SYSTEM "file:///unavailable">]><score-partwise/>'), file(score(), "score.pdf"), { bytes: new Uint8Array(4_000_001), fileName: "large.xml" }, { bytes: new Uint8Array([0x50, 0x4b, 0]), fileName: "bad.mxl" }]) {
       const prep = await prepareQuickHarmony(input);
       expect(prep.status).toBe("unsupported");
+      expect(prep.summary).toBeUndefined();
       expect(prep.reasons[0].actionKo).toContain("MuseScore");
       expect((await generateQuickHarmony(prep, choice)).status).toBe("unsupported");
     }

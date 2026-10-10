@@ -65,6 +65,7 @@ generateQuickHarmony(
 | `status: needs-input` | `questions`의 사용자 선택이나 악보 교정이 필요하다. |
 | `status: unsupported` | `reasons`의 지원 범위 또는 파일 읽기 문제로 생성할 수 없다. |
 | `workspace` | 검증한 불변 작업 공간. 파일을 읽을 수 없으면 없다. |
+| `summary` | 화면용 제목·조성·박자·마디·가사·추천 파트. 내부 `details`를 읽을 필요가 없다. 아래 형식 참고. |
 | `questions`, `reasons`, `notes` | `id`, `messageKo`, `actionKo`, `choices: { value, labelKo }[]` 목록. `notes`는 접힌 참고로 표시한다. |
 | `details.assessment` | 기존 내부 판정, 원시 finding 코드, provenance. 자세히에서만 표시한다. |
 | `details.importError` | 파일 읽기에 실패한 내부 오류. 일반 안내 문구 대신 노출하지 않는다. |
@@ -101,6 +102,27 @@ UI는 `complete`/`partial`을 명시적으로 분기한다. 기존 내부 `gener
 | `QUICK_HARMONY_LEAD_INVALID` | 존재하지 않거나 음표 없는 Lead 선택 |
 
 workspace 위조·증거/이력 불일치 등 기존 무결성 오류는 reject를 유지한다. 일반적인 파일 형식·크기·안전 검사 실패는 `unsupported` 판정으로 반환한다. 예상하지 않은 내부 오류를 생성 성공으로 바꾸지 않는다.
+
+## 화면용 판정 요약
+
+```ts
+summary?: {
+  title: string | null;
+  keyLabelKo: string; // "G장조", "E단조", 해석되지 않으면 "조성 확인 필요"
+  meters: readonly string[]; // 인쇄 순서의 중복 없는 박자, 예: ["3/4", "4/4"]
+  measureCount: number; // 선택된 멜로디 파트의 인쇄 마디 수, 반복 전
+  hasLyrics: boolean;
+  verseCount: number; // 선택된 멜로디에 실제 글자가 있는 서로 다른 절 번호 수
+  recommendedPart: "alto" | "tenor"; // auto와 같은 중앙 음높이 규칙
+}
+```
+
+파일을 읽지 못하거나, 멜로디가 아직 선택되지 않았거나, 멜로디 음표가 없으면 요약은 없다.
+성부 선택 후 재판정한 `preparation.summary`를 사용한다. 제목은 현재 가져오기/편집 값을
+쓰며, 가져오기의 기본 표기 `제목 없음`을 보존하고 빈 제목은 null이다. 조성은 선택된
+멜로디의 첫 마디에서 판정한 값이다. 여러 조성이 있는 경우 지원 판정은 `reasons`를 따른다.
+추천은 사용자의 명시적 파트 선택과 별개이며, 같은 악보·선택 상태에서 결정적이다.
+화면이 바꾼 summary는 생성 입력으로 신뢰하지 않고 현재 작업 공간에서 다시 계산한다.
 
 ## 화면 호출 예시
 
