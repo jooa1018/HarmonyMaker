@@ -129,6 +129,7 @@ it("requests the optional playback session only on Play/Resume and preserves sta
   await act(async()=>player.play());expect(writes).toEqual(["playback"]);
   const audio=Audio.instances[0];
   expect(audio.options).toEqual({latencyHint:"playback"});
+  expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2].lookahead).toBe(true);
   expect(audio.suspend.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(schedulePracticeAudio).mock.invocationCallOrder[0]);
   expect(vi.mocked(schedulePracticeAudio).mock.invocationCallOrder[0]).toBeLessThan(audio.resume.mock.invocationCallOrder[0]);
   await act(async()=>player.play());expect(writes).toHaveLength(1);
