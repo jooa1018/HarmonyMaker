@@ -26,7 +26,7 @@ function compactEvent(input: { readonly measureIndex: number; readonly offset: F
 }
 function atomEvent(atom: TimelineAtom, document: ArrangementRenderDocument, sourceToLocal: Readonly<Record<string, string>>): CompactVocalEvent {
   const event = compactEvent({ measureIndex: atom.range.start.performanceMeasureIndex, offset: atom.range.start.offset, duration: canonicalRangeDuration(document.measures, atom.range), ...(atom.pitch ? { pitch: atom.pitch } : {}), ...(atom.rhythmOnly ? { rhythmOnly: true } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds }, sourceToLocal);
-  return event.kind !== "rest" && atom.slurs?.length ? {...event,slurs:atom.slurs.map(mark=>({...mark}))} : event;
+  return {...event,...(event.kind !== "rest" && atom.slurs?.length ? {slurs:atom.slurs.map(mark=>({...mark}))} : {}),...(atom.tuplets ? {tuplets:atom.tuplets.map(mark=>({...mark}))} : {})};
 }
 function generatedEvent(event: GeneratedVoiceEvent, document: ArrangementRenderDocument, sourceToLocal: Readonly<Record<string, string>>): CompactVocalEvent { return compactEvent({ measureIndex: event.range.start.performanceMeasureIndex, offset: event.range.start.offset, duration: canonicalRangeDuration(document.measures, event.range), ...(event.kind === "note" ? { pitch: event.pitch, tieStart: event.tieStart, tieStop: event.tieStop, lyricTokenIds: event.lyricTokenIds } : { tieStart: false, tieStop: false, lyricTokenIds: [] }) }, sourceToLocal); }
 
@@ -54,7 +54,7 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
   }
   // V4 share has one Source voice. Refuse a lossy public payload until that schema expands.
   if (document.sourceRhythmTracks?.length) throw new RangeError("SHARE_SEPARATE_RHYTHM_VOICES_UNSUPPORTED");
-  const hasSlurs = document.sourceLeadTrack.atoms.some((atom) => atom.slurs?.length);
+  const hasNotation = document.sourceLeadTrack.atoms.some((atom) => atom.slurs?.length || atom.tuplets?.length);
   const localLyrics = lyricMap(document);
   const displayLyrics = displayLyricsByAtom(document);
   const tracks: CompactTrack[] = [
@@ -82,7 +82,7 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
       : { ...common, kind: "no-chord" };
   });
   const payload: PracticeSharePayload = {
-    schemaVersion: hasSlurs ? 5 : 4, title: input.project.source.title, tempo: input.project.source.defaultTempo,
+    schemaVersion: hasNotation ? 5 : 4, title: input.project.source.title, tempo: input.project.source.defaultTempo,
     key: input.project.source.defaultKey, presetId: input.presetId,
     arrangementArtifactDigest: input.materialized.artifactDigest,
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,

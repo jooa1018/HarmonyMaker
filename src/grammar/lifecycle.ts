@@ -197,7 +197,7 @@ export function primaryPulseAt(
   const measure = prepared.sourceMeasureById[occurrence.sourceMeasureId];
   if (!measure) throw new RangeError("UNSUPPORTED_METER");
   const time = measure.time;
-  const expanded = prepared.versions.grammarVersion === "grammar-v1.1";
+  const expanded = ["grammar-v1.1","grammar-v1.2"].includes(prepared.versions.grammarVersion);
   if ((time.numerator === 2 || (expanded && time.numerator === 3) || time.numerator === 4) && time.denominator === 4
     && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1)) {
     return fraction(1);
@@ -336,7 +336,8 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
 > {
   const { versions, parts } = prepareWagPolicy(input.source, input.grammarVersion);
   const authority = await loadFrozenWagAuthority(versions.grammarVersion);
-  if (parts && versions.grammarVersion !== "grammar-v1.1") throw new RangeError("WAG_POLICY_VERSION_MISMATCH");
+  if (parts && !["grammar-v1.1","grammar-v1.2"].includes(versions.grammarVersion)) throw new RangeError("WAG_POLICY_VERSION_MISMATCH");
+  if (input.source.sourceMeasures.some(m=>m.leadEvents.some(e=>e.tuplets)) && versions.grammarVersion !== "grammar-v1.2") throw new RangeError("WAG_TUPLET_VERSION_MISMATCH");
   const rawDiagnostics = structuralDiagnostics(input);
   if (input.effectiveConfig.presetProfileVersion !== authority.presetProfiles.presetProfileVersion
     || input.effectiveConfig.presetProfileDigest !== authority.presetProfiles.presetProfileDigest

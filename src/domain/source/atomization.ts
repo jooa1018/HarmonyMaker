@@ -11,6 +11,7 @@ import type { LyricToken, PhraseRegion, SectionOccurrence, SourceMeasure } from 
 import type { SourceSlurMark } from "./notation";
 
 export interface TimelineAtom {
+  readonly tuplets?: readonly import("./tuplets").SourceTuplet[];
   readonly slurs?: readonly SourceSlurMark[];
   /** No melodic pitch. This is a rhythmic instruction, not a rest. */
   readonly rhythmOnly?: true;
@@ -99,6 +100,7 @@ export async function atomizeSourceLead(input: {
         const range = musicalRange(boundaries[segmentIndex], boundaries[segmentIndex + 1]);
         const tokenProjection = segmentIndex === 0 ? selectedTokens.map((token) => ({ syllabic: token.syllabic, extend: token.extend, emphasis: resolveProductionLyricEmphasis(token) })) : [];
         const projection = {
+          ...(event.tuplets ? {tuplets:event.tuplets.map(({start,stop,...mark})=>({...mark,...(start && segmentIndex===0 ? {start:true as const}:{}),...(stop && segmentIndex===boundaries.length-2 ? {stop:true as const}:{})}))} : {}),
           occurrenceOrdinal: occurrence.performanceIndex,
           sourceMeasureOrdinal: entry.ordinal,
           sourceEventOrdinal: eventOrdinal,
@@ -111,7 +113,7 @@ export async function atomizeSourceLead(input: {
           lyricTokens: tokenProjection,
         };
         const id = timelineAtomId(occurrence.performanceIndex, eventOrdinal, range.start.offset, range.end.offset);
-        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}), tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [], ...(projection.slurs ? { slurs: projection.slurs } : {}) }, projection });
+        atomEntries.push({ atom: { id, sourceEventId: event.id, range, pitch: event.kind === "note" ? event.pitch : null, ...(event.kind === "rhythm" ? { rhythmOnly: true as const } : {}), tiedFromPrevious: projection.tiedFromPrevious, tiedToNext: projection.tiedToNext, lyricTokenIds: segmentIndex === 0 ? selectedTokens.map((token) => token.id) : [], ...(projection.slurs ? { slurs: projection.slurs } : {}), ...(projection.tuplets ? {tuplets:projection.tuplets} : {}) }, projection });
       }
     }
   }

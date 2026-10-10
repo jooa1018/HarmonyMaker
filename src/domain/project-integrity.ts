@@ -262,6 +262,7 @@ async function digestStoredAtomization(
         tiedFromPrevious: atom.tiedFromPrevious,
         tiedToNext: atom.tiedToNext,
         ...(atom.slurs ? { slurs: atom.slurs } : {}),
+        ...(atom.tuplets ? {tuplets:atom.tuplets} : {}),
         lyricTokens,
       },
     };
@@ -1047,7 +1048,8 @@ async function validateVariantIntegrity(
       ? expected.compatible[intent.grammarVersion] : undefined;
   requireIntegrity(installed !== undefined, `WAG_VERSION_UNSUPPORTED:${intent.grammarVersion}`, "ALGORITHM_CONFIG_MISMATCH");
   expected = installed;
-  requireIntegrity(!quickHarmonyParts(project.source) || intent.grammarVersion === "grammar-v1.1", "WAG_POLICY_VERSION_MISMATCH", "ALGORITHM_CONFIG_MISMATCH");
+  requireIntegrity(!quickHarmonyParts(project.source) || ["grammar-v1.1","grammar-v1.2"].includes(intent.grammarVersion), "WAG_POLICY_VERSION_MISMATCH", "ALGORITHM_CONFIG_MISMATCH");
+  requireIntegrity(!project.source.sourceMeasures.some(m=>m.leadEvents.some(e=>e.tuplets)) || intent.grammarVersion === "grammar-v1.2", "WAG_TUPLET_VERSION_MISMATCH", "ALGORITHM_CONFIG_MISMATCH");
   if (variant.lifecycle === "generation-attempted" && !isFresh(variant, "generation")) {
     await validateRetainedGenerationArtifacts(variant, project, expected, ordinals, effectiveConfig);
   }

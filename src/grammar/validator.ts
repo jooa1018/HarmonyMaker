@@ -106,7 +106,7 @@ function primaryPulse(context: ValidatorContext, position: MusicalPosition): Fra
   const occurrence = input.source.performanceSequence.occurrences[position.performanceMeasureIndex];
   if (!occurrence) throw new RangeError("UNSUPPORTED_METER");
   const groups = occurrence.time.beatGroups;
-  const expanded = context.versions.grammarVersion === "grammar-v1.1";
+  const expanded = ["grammar-v1.1","grammar-v1.2"].includes(context.versions.grammarVersion);
   if ((occurrence.time.numerator === 2 || (expanded && occurrence.time.numerator === 3) || occurrence.time.numerator === 4) && occurrence.time.denominator === 4
     && groups.length === occurrence.time.numerator && groups.every((group) => group === 1)) return fraction(1);
   if ((occurrence.time.numerator === 6 || (expanded && occurrence.time.numerator === 12)) && occurrence.time.denominator === 8

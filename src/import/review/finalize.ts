@@ -178,6 +178,7 @@ function materializeLead(
         sourceMeasureId: sourceMeasure,
         onset: event.onset,
         duration: event.duration,
+        ...(event.tuplets ? {tuplets:event.tuplets} : {}),
       }
     : {
         ...(event.kind === "note" ? { kind: "note" as const, pitch: event.pitch } : { kind: "rhythm" as const }),
@@ -189,6 +190,7 @@ function materializeLead(
         tieStop: event.tieStop,
         lyricTokenIds: tokenIdsByLead.get(eventOrdinal) ?? [],
         ...(event.slurs ? { slurs: event.slurs } : {}),
+        ...(event.tuplets ? {tuplets:event.tuplets} : {}),
       });
   return { leadEvents, lyricTokens };
 }
