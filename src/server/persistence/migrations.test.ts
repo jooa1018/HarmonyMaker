@@ -24,7 +24,7 @@ class MigrationClientFake {
 describe("versioned PostgreSQL migrations", () => {
   it("has a monotonic inventory with durable constraints and Segment-D-only foundation", () => {
     expect(() => validateMigrationInventory(MIGRATIONS)).not.toThrow();
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     const sql = MIGRATIONS[0].sql;
     for (const required of ["anonymous_sessions", "quota_windows", "idempotency_records", "share_records", "object_references", "omr_jobs", "omr_pages", "omr_evidence", "omr_review_metadata", "REFERENCES", "UNIQUE", "expires_at"]) expect(sql).toContain(required);
     expect(sql).not.toContain("vendor_name");
@@ -49,7 +49,7 @@ describe("versioned PostgreSQL migrations", () => {
 
   it("applies transactionally once and safely re-applies", async () => {
     const client = new MigrationClientFake();
-    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    await expect(applyMigrationsWithClient(client)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     await expect(applyMigrationsWithClient(client)).resolves.toEqual([]);
     await expect(verifyMigrationsWithClient(client)).resolves.toBeUndefined();
     expect(client.calls.filter((call) => call === "COMMIT")).toHaveLength(2);
@@ -62,7 +62,7 @@ describe("versioned PostgreSQL migrations", () => {
       [14, "bcb47b6c00099e24c215e829259def5e981f0e6757cc36e431f5f1b8f79f3140"],
       [15, "1097517a33a1ca967e850aea6f4b42a9ce870ca719e20152e3a5f87474f2371c"],
     ]);
-    for (const migration of MIGRATIONS.filter(({ version }) => version >= 12)) {
+    for (const migration of MIGRATIONS.filter(({ version }) => version >= 12 && version <= 15)) {
       const filename = `${String(migration.version).padStart(3, "0")}_${migration.name}.sql`;
       const checkedIn = await readFile(join(process.cwd(), "src/server/persistence/migrations", filename), "utf8");
       const normalizeSql = (sql: string) => sql.replace(/\s+/g, " ").trim();

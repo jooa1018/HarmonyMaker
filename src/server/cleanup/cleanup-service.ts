@@ -11,12 +11,12 @@ export interface CleanupRunResult extends CleanupResult {
 
 export class CleanupService {
   constructor(private readonly store: GovernanceStore, private readonly objects?: OwnedObjectStore) {}
-  async run(input: { readonly now?: Date; readonly batchSize?: number; readonly dryRun?: boolean; readonly requestContext?: ApiRequestContext } = {}): Promise<CleanupRunResult> {
+  async run(input: { readonly deadlineAt?: number; readonly now?: Date; readonly batchSize?: number; readonly dryRun?: boolean; readonly requestContext?: ApiRequestContext } = {}): Promise<CleanupRunResult> {
     const batchSize = input.batchSize ?? 100;
     if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 500) throw new RangeError("CLEANUP_BATCH_INVALID");
     const now = input.now ?? new Date();
     const dryRun = input.dryRun ?? false;
-    const result = await this.store.cleanup({ now: now.toISOString(), batchSize, dryRun });
+    const result = await this.store.cleanup({ now: now.toISOString(), batchSize, dryRun, ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}) });
     const failures: Array<{ readonly scope: string; readonly message: string }> = [];
     if (!dryRun && this.objects) {
       for (const record of result.pendingObjectReferences) {

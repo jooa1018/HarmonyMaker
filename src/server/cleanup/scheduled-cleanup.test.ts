@@ -25,8 +25,8 @@ describe("production scheduled cleanup entrypoint", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     const generic = { run: vi.fn(async () => ({ ...emptyGeneric, expiredSessionIds: ["1"], pendingObjectReferences: [{ id: "2" }], failures: [{ scope: "object:2", message: "retry" }] })) };
     const result = await runScheduledCleanup({ generic: generic as never, now: () => new Date("2026-01-01T00:00:00.000Z") });
-    expect(generic.run).toHaveBeenCalledWith({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: SCHEDULED_CLEANUP_BATCH_SIZE });
-    expect(result).toMatchObject({ ok: false, batchSize: 25, generic: { status: "fulfilled", expiredSessions: 1, attemptedItems: 1, completedItems: 0, failedItems: 1 } });
+    expect(generic.run).toHaveBeenCalledWith({ now: new Date("2026-01-01T00:00:00.000Z"), batchSize: SCHEDULED_CLEANUP_BATCH_SIZE, deadlineAt: expect.any(Number) });
+    expect(result).toMatchObject({ ok: false, batchSize: 50, generic: { status: "fulfilled", expiredSessions: 1, attemptedItems: 1, completedItems: 0, failedItems: 1 } });
     expect(result).not.toHaveProperty("omr");
     expect(scheduledCleanupHttpStatus(result)).toBe(207);
     expect(console.info).toHaveBeenCalledWith(expect.stringContaining('"event":"scheduled-cleanup"'));
@@ -68,4 +68,30 @@ describe("production scheduled cleanup entrypoint", () => {
     await expect(runScheduledCleanup({ generic, batchSize: 51 })).rejects.toThrow("CLEANUP_BATCH_INVALID");
     await expect(runScheduledCleanup({ generic, runtimeBudgetMs: 25_001 })).rejects.toThrow("CLEANUP_RUNTIME_BUDGET_INVALID");
   });
+});
+
+
+it("drains multiple batches, caps each kind at 5000, and does not loop on skipped objects", async () => {
+  vi.spyOn(console, "info").mockImplementation(() => undefined);
+  const run = vi.fn(async () => ({ ...emptyGeneric, removedQuotaCount: 50, removedIdempotencyCount: 50, skippedObjects: 1, pendingObjectReferences: [{ id: "object" }] }));
+  const result = await runScheduledCleanup({ generic: { run } as never });
+  expect(run).toHaveBeenCalledTimes(100);
+  expect(result.generic).toMatchObject({ batches: 100, removedQuota: 5000, removedIdempotency: 5000, skippedItems: 1 });
+  const empty = vi.fn(async () => ({ ...emptyGeneric, skippedObjects: 1, pendingObjectReferences: [{ id: "object" }] }));
+  await runScheduledCleanup({ generic: { run: empty } as never });
+  expect(empty).toHaveBeenCalledTimes(1);
+});
+
+it("does not dispatch another batch when an in-flight operation completes after timeout", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(console, "info").mockImplementation(() => undefined);
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  let finish!: (result: typeof emptyGeneric & { removedQuotaCount: number }) => void;
+  const run = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+  const scheduled = runScheduledCleanup({ generic: { run } as never, runtimeBudgetMs: 25 });
+  await vi.advanceTimersByTimeAsync(25);
+  expect((await scheduled).ok).toBe(false);
+  finish({ ...emptyGeneric, removedQuotaCount: 50 } as never);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(run).toHaveBeenCalledTimes(1);
 });

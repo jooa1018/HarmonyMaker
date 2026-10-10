@@ -132,7 +132,7 @@ export class ShareStoreService {
 
   async read(token: string, now = new Date()): Promise<PracticeSharePayload> {
     const record = await this.store.findShareByTokenHash(this.tokenHash(token));
-    if (!record || record.lifecycle !== "active" || record.expiresAt <= now.toISOString()) throw new RangeError(SHARE_UNAVAILABLE);
+    if (!record || !record.encryptedPayload || record.lifecycle !== "active" || record.expiresAt <= now.toISOString()) throw new RangeError(SHARE_UNAVAILABLE);
     try {
       const plaintext = decryptAeadV1(record.encryptedPayload, this.encryptionKey);
       if (plaintext.byteLength !== record.plaintextSize) throw new Error("size");

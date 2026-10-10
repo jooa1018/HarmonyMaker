@@ -449,6 +449,23 @@ CREATE INDEX IF NOT EXISTS omr_jobs_cleanup_fairness_idx
   WHERE state <> 'deleted';
 `;
 
+export const SHARE_RETENTION_SQL = String.raw`
+ALTER TABLE share_records ALTER COLUMN encrypted_payload DROP NOT NULL;
+ALTER TABLE share_records ADD CONSTRAINT share_active_payload_required
+  CHECK (lifecycle <> 'active' OR encrypted_payload IS NOT NULL);
+CREATE OR REPLACE FUNCTION erase_deleted_share_payload() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.lifecycle = 'deleted' THEN NEW.encrypted_payload := NULL; END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER erase_deleted_share_payload_before_write
+  BEFORE INSERT OR UPDATE ON share_records FOR EACH ROW EXECUTE FUNCTION erase_deleted_share_payload();
+UPDATE share_records SET encrypted_payload = NULL WHERE lifecycle = 'deleted';
+CREATE INDEX share_records_retention_idx ON share_records (lifecycle, disabled_at, expires_at, id)
+  WHERE lifecycle <> 'active';
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 1, name: "segment_c_foundation", sql: SEGMENT_C_FOUNDATION_SQL },
   { version: 2, name: "idempotency_recovery", sql: IDEMPOTENCY_RECOVERY_SQL },
@@ -465,6 +482,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { version: 13, name: "omr_provider_delete_authority", sql: OMR_PROVIDER_DELETE_AUTHORITY_SQL },
   { version: 14, name: "share_create_cross_session_recovery", sql: SHARE_CREATE_CROSS_SESSION_RECOVERY_SQL },
   { version: 15, name: "omr_cleanup_fairness", sql: OMR_CLEANUP_FAIRNESS_SQL },
+  { version: 16, name: "share_retention", sql: SHARE_RETENTION_SQL },
 ]);
 
 export function migrationChecksum(migration: Migration): string {

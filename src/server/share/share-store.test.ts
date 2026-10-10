@@ -152,6 +152,7 @@ describe("ShareStore and URL share", () => {
     await expect(service.takedown({ token: created.token, authorization: "wrong", now })).rejects.toThrow("INTERNAL_AUTHORITY_INVALID");
     await expect(service.read(created.token, new Date("2027-01-01T00:00:00.000Z"))).rejects.toThrow("SHARE_UNAVAILABLE");
     const record = [...store.shares.values()][0];
+    if (!record.encryptedPayload) throw new Error("fixture payload missing");
     const firstTagCharacter = record.encryptedPayload.authenticationTag[0];
     store.shares.set(record.id, { ...record, encryptedPayload: { ...record.encryptedPayload, authenticationTag: `${firstTagCharacter === "A" ? "B" : "A"}${record.encryptedPayload.authenticationTag.slice(1)}` } });
     await expect(service.read(created.token, now)).rejects.toThrow("SHARE_UNAVAILABLE");

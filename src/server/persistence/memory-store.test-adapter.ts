@@ -1,3 +1,4 @@
+import { RETENTION, retentionCutoff } from "../cleanup/retention";
 import type {
   AbuseReportInput, AbuseReportRecord, AbuseReportResolution, AbuseReportStatus, CleanupResult, DurableShareRecord, GovernanceStore,
   IdempotencyClaim, IdempotencyRecoveryLookup, ObjectPublicationGenerationRecord, ObjectReferenceRecord, PrivateRowId, QuotaConsumption, SessionRecord,
@@ -130,7 +131,13 @@ export class MemoryGovernanceStore implements GovernanceStore {
 
   async transitionShare(input: { readonly id: PrivateRowId; readonly lifecycle: "disabled" | "deleted" | "expired"; readonly at: string }): Promise<void> {
     const record = this.shares.get(input.id);
-    if (!record || record.lifecycle !== "active") return;
+    if (!record) return;
+    if (input.lifecycle === "deleted") {
+      this.shares.set(input.id, { ...record, encryptedPayload: null,
+        lifecycle: record.lifecycle === "active" ? "deleted" : record.lifecycle, deletedAt: record.deletedAt ?? input.at });
+      return;
+    }
+    if (record.lifecycle !== "active") return;
     this.shares.set(input.id, {
       ...record,
       lifecycle: input.lifecycle,
@@ -481,7 +488,7 @@ export class MemoryGovernanceStore implements GovernanceStore {
   }
 
   async cleanup(input: { readonly now: string; readonly batchSize: number; readonly dryRun: boolean }): Promise<CleanupResult> {
-    const expiredSessionIds = [...this.sessions.values()].filter((record) => record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
+    const expiredSessionIds = [...this.sessions.values()].filter((record) => record.expiresAt <= input.now && record.revokedAt === undefined).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
     const expiredShareIds = [...this.shares.values()].filter((record) => record.lifecycle === "active" && record.expiresAt <= input.now).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, input.batchSize).map((record) => record.id);
     const hasDueOldGeneration = (record: ObjectReferenceRecord): boolean => [...this.objectPublicationGenerations.values()].some((generation) =>
       generation.objectReferenceId === record.id
@@ -500,7 +507,7 @@ export class MemoryGovernanceStore implements GovernanceStore {
     const expiredIdempotency = [...this.idempotency.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
     const expiredQuota = [...this.quota.entries()].filter(([, record]) => record.expiresAt <= input.now).slice(0, input.batchSize);
     if (!input.dryRun) {
-      expiredSessionIds.forEach((id) => this.sessions.delete(id));
+      expiredSessionIds.forEach((id) => { const record = this.sessions.get(id)!; this.sessions.set(id, { ...record, revokedAt: input.now }); });
       expiredShareIds.forEach((id) => { const record = this.shares.get(id); if (record) this.shares.set(id, { ...record, lifecycle: "expired", deletedAt: input.now }); });
       expiredObjectIds.forEach((id) => {
         const record = this.objects.get(id);
@@ -513,6 +520,30 @@ export class MemoryGovernanceStore implements GovernanceStore {
       expiredIdempotency.forEach(([key]) => this.idempotency.delete(key));
       expiredQuota.forEach(([key]) => this.quota.delete(key));
     }
+    const oldShares = [...this.shares.values()].filter(r =>
+      r.lifecycle === "disabled" ? !!r.disabledAt && r.disabledAt <= retentionCutoff(input.now, RETENTION.shareDays)
+        : ["expired", "deleted"].includes(r.lifecycle) && r.expiresAt <= retentionCutoff(input.now, RETENTION.shareDays)).slice(0, input.batchSize);
+    const oldReports = this.reports.filter(r => r.createdAt <= retentionCutoff(input.now, RETENTION.reportDays)
+      && !(r.status === "claimed" && r.claimExpiresAt! > input.now)).slice(0, input.batchSize);
+    const oldAudits = this.audits.filter(r => String(r.createdAt) <= retentionCutoff(input.now, RETENTION.auditDays)).slice(0, input.batchSize);
+    if (!input.dryRun) {
+      for (const r of oldAudits) this.audits.splice(this.audits.indexOf(r), 1);
+      for (const r of oldReports) {
+        this.reports.splice(this.reports.indexOf(r), 1);
+        for (let i = 0; i < this.audits.length; i++) if (this.audits[i].abuseReportId === r.id) this.audits[i] = { ...this.audits[i], abuseReportId: undefined };
+      }
+      for (const r of oldShares) {
+        this.shares.delete(r.id);
+        for (let i = 0; i < this.reports.length; i++) if (this.reports[i].shareRecordId === r.id) this.reports[i] = { ...this.reports[i], shareRecordId: undefined };
+        for (let i = 0; i < this.audits.length; i++) if (this.audits[i].shareRecordId === r.id) this.audits[i] = { ...this.audits[i], shareRecordId: undefined };
+      }
+    }
+    const orphanSessions = [...this.sessions.values()].filter(r => r.expiresAt <= input.now
+      && ![...this.shares.values()].some(x => x.ownerSessionId === r.id)
+      && ![...this.objects.values()].some(x => x.ownerSessionId === r.id)
+      && ![...this.idempotency.values()].some(x => x.sessionId === r.id)
+      && !this.reports.some(x => x.reporterSessionId === r.id)).slice(0, input.batchSize);
+    if (!input.dryRun) for (const r of orphanSessions) this.sessions.delete(r.id);
     return {
       expiredSessionIds, expiredShareIds, expiredObjectIds,
       pendingObjectReferences: pendingObjectReferences.map((record) => {
@@ -524,6 +555,7 @@ export class MemoryGovernanceStore implements GovernanceStore {
         return record;
       }),
       removedIdempotencyCount: expiredIdempotency.length, removedQuotaCount: expiredQuota.length,
+      removedShareCount: oldShares.length, removedReportCount: oldReports.length, removedAuditCount: oldAudits.length, removedSessionCount: orphanSessions.length,
     };
   }
 }
