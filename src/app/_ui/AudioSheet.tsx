@@ -30,7 +30,6 @@ export function AudioSheet({ title, player, onClose, renderAudio = renderSilentP
   const label = snapshot.choices.find(choice => choice.id === selected)?.label ?? "전체";
   const file = useMemo(() => result ? new File([result.blob], audioFileName(title, label, settings.speed), { type: "audio/wav" }) : undefined, [result, title, label, settings.speed]);
   const shareAvailable = useSyncExternalStore(subscribe, () => canShareAudio(file), serverReady);
-  useEffect(() => { if (ready) heading.current?.focus({ preventScroll: true }); }, [phase, ready]);
   useEffect(() => {
     if (!ready) return;
     live.current = true;
@@ -50,6 +49,7 @@ export function AudioSheet({ title, player, onClose, renderAudio = renderSilentP
       previous?.focus({ preventScroll: true });
     };
   }, [ready, standalone]);
+  useEffect(() => { if (ready) heading.current?.focus({ preventScroll: true }); }, [phase, ready]);
   function close() { controller.current?.abort(); onClose(); }
   function cancel() { controller.current?.abort(); controller.current = undefined; setPhase("options"); }
   async function make() {

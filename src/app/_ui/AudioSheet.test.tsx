@@ -32,6 +32,14 @@ it("aborts pending rendering on unmount", async () => {
   await act(async () => button("음원 만들기").click()); await act(async () => root.render(null));
   expect(render.mock.calls[0][0].signal.aborted).toBe(true);
 });
+it("keeps the background inert and restores the opener after changing phases", async () => {
+  const background = document.createElement("div"); background.className = "hm-page";
+  const trigger = document.createElement("button"); background.append(trigger); document.body.append(background); trigger.focus();
+  await mount(); expect(background.inert).toBe(true); expect(background.getAttribute("aria-hidden")).toBe("true");
+  await act(async () => button("음원 만들기").click()); expect(document.activeElement).toBe(document.querySelector(".hm-sheet-title"));
+  await act(async () => root.render(null)); expect(background.inert).toBe(false); expect(background.hasAttribute("aria-hidden")).toBe(false); expect(document.activeElement).toBe(trigger);
+  background.remove();
+});
 it.each([true, false])("shows file sharing only when canShare(files) is %s", async available => {
   vi.mocked(navigator.canShare).mockReturnValue(available); await mount(); await act(async () => button("음원 만들기").click());
   expect(!!button("카카오톡 등으로 보내기")).toBe(available);
