@@ -6,11 +6,12 @@ import { usePracticePlayer } from "../../product/use-practice-player";
 import { PracticePanel, MiniPlayerBar, type PlayerController } from "../_ui/practice";
 import { stripAbcTitle, voiceColorVars } from "../_ui/score-colors";
 
-export function LivePractice({ view, title, actions, initialSettings }: {
+export function LivePractice({ view, title, actions, initialSettings, voiceRoles }: {
   view: Extract<ProjectPracticeView, { status: "available" }>;
   title: string;
   actions?: ReactNode;
   initialSettings?: PracticeSettings;
+  voiceRoles?: Readonly<Record<string, string>>;
 }) {
   const [measures, setMeasures] = useState(2);
   const [mini, setMini] = useState(false);
@@ -43,7 +44,7 @@ export function LivePractice({ view, title, actions, initialSettings }: {
     <div className="hm-result-side">{actions}<div ref={panel}><PracticePanel player={controls} /></div></div>
     <section className="hm-score" aria-label="악보"><div className="hm-score-head"><b>악보</b><span className="hm-small">한 줄에 {measures}마디</span></div>
       {!player.scoreReady && <p className="hm-score-fallback" role="status">악보를 그리는 중…</p>}
-      <div ref={scoreRef} className="hm-score-notation" style={voiceColorVars(view.abc) as CSSProperties} />
+      <div ref={scoreRef} className="hm-score-notation" style={voiceColorVars(view.abc, voiceRoles) as CSSProperties} />
       {view.abc.includes("clef=treble-8") && <p className="hm-score-legend">테너 보표의 &apos;8&apos;은 적힌 음보다 한 옥타브 낮게 부른다는 뜻이에요.</p>}
     </section>
     {player.error && <div className="hm-notice is-stop" role="alert"><p>예상하지 못한 문제가 생겼어요. 다시 시도해 주세요.</p><details><summary>자세히</summary>{player.error}</details></div>}

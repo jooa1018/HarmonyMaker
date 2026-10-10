@@ -1,9 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { IndexedDbProjectStore, type LocalProjectRecord } from "../../product/local-project-store";
 import { describeHarmonyProject, projectPracticeView, type ProjectPracticeView } from "../../product/project-view";
+import { materializeActiveArrangement } from "../../product/render";
+import { scoreVoiceRoles } from "../_ui/score-colors";
 import { generatedParts } from "../_quick/generate";
 import { QuickFlow } from "../_quick/QuickFlow";
 import { AppBar } from "../_ui/controls";
@@ -52,6 +54,11 @@ function SavedResult({ projectId }: { projectId: string }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setPreparing(false); }
   }
+  const voiceRoles = useMemo(() => {
+    if (!record || view?.status !== "available") return undefined;
+    try { return scoreVoiceRoles(materializeActiveArrangement(record.project, record.project.selectedPresetId ?? "standard").trackRoles); }
+    catch { return undefined; }
+  }, [record, view]);
   if (again) return <QuickFlow initial={again} />;
   if (loading && !record) return <ResultLoading />;
   const description = record ? describeHarmonyProject(record.project) : undefined;
@@ -71,7 +78,7 @@ function SavedResult({ projectId }: { projectId: string }) {
       {parts.filter(part => part.status === "partial" || part.status === "missing").map((part, index) => <div className="hm-banner" role="status" key={index}><Icon name="alert" /><div><p className="hm-banner-title">{partialTitle(part.label, part.missingMeasures ?? [])}</p>
         {generatedParts(projectId)?.find(item => item.part === part.part)?.reasonKo && <p className="hm-banner-text">{generatedParts(projectId)?.find(item => item.part === part.part)?.reasonKo}</p>}
         <div className="hm-chips">{parts.map((item, n) => <span className={`hm-chip ${item.status === "complete" ? "is-done" : "is-partial"}`} key={n}>{item.label} {item.status === "complete" ? "완료" : item.status === "missing" ? "없음" : "일부"}</span>)}</div></div></div>)}
-      {view?.status === "available" ? <LivePractice view={view} title={title} actions={actions} /> : <>{actions}<p role="status">{loading ? "악보를 그리는 중…" : "악보를 표시하지 못했어요. 고급 편집에서 확인해 주세요."}</p></>}
+      {view?.status === "available" ? <LivePractice view={view} voiceRoles={voiceRoles} title={title} actions={actions} /> : <>{actions}<p role="status">{loading ? "악보를 그리는 중…" : "악보를 표시하지 못했어요. 고급 편집에서 확인해 주세요."}</p></>}
       {notice && <p className="hm-notice is-ask" role="status">{notice}</p>}
       <details className="hm-fold"><summary>고급 편집</summary><ul><li><Link href={`/workspace?project=${encodeURIComponent(projectId)}`}>음 하나씩 고치기, 후보 비교<small>프로젝트 워크스페이스에서 열려요</small></Link></li></ul></details>
     </div>}

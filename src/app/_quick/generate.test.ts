@@ -5,6 +5,9 @@ import { prepareQuickHarmony, generateQuickHarmony, type QuickHarmonyPreparation
 import { IndexedDbProjectStore } from "../../product/local-project-store";
 import { generateAndSave, quickProjectId } from "./generate";
 import { reprepareProject } from "../_result/reprepare";
+import { scoreVoiceRoles, voiceColorVars } from "../_ui/score-colors";
+import { materializeActiveArrangement } from "../../product/render";
+import { projectPracticeView } from "../../product/project-view";
 import { projectMusicXml } from "../_result/download";
 
 let prep: QuickHarmonyPreparation;
@@ -53,4 +56,14 @@ it("reprepares the recorded workspace and exports real three-part MusicXML", asy
   expect(xml).toContain("알토");
   expect(xml).toContain("테너");
   expect(xml).toContain("<clef-octave-change>-1</clef-octave-change>");
+});
+
+it("colors the engine h1/h2 voices from public placement metadata", async () => {
+  const view = await projectPracticeView(result.project);
+  if (view.status !== "available") throw new Error(view.code);
+  const registry = materializeActiveArrangement(result.project, "standard").trackRoles;
+  const roles = scoreVoiceRoles(registry);
+  expect(voiceColorVars(view.abc, roles)).toEqual({ "--hm-v0": "var(--hm-melody)", "--hm-v1": "var(--hm-alto)", "--hm-v2": "var(--hm-tenor)" });
+  const mixed = { ...registry, generatedTracks: registry.generatedTracks.map(track => ({ ...track, placements: [{ phraseId: "one", placementRole: "upper" as const }, { phraseId: "two", placementRole: "lower" as const }] })) };
+  expect(voiceColorVars(view.abc, scoreVoiceRoles(mixed))["--hm-v1"]).toBe("currentColor");
 });
