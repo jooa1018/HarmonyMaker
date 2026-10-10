@@ -113,5 +113,3 @@ it("escapes ABC lyric controls and newlines without changing source text",()=>{
   expect(document.lyricTokens[0].text).toBe(text);
   expect(withoutLyrics(abc)).toBe(serialize({...document,lyricTokens:[]}));
 });
-
-
