@@ -1,6 +1,7 @@
 import { addFractions, compareFractions, fraction, subtractFractions, type Fraction } from "../domain/fraction";
 import { parseChord } from "../domain/chord/parser";
 import type { ArrangementRenderDocument, GeneratedVoiceEvent } from "../domain/generation/model";
+import { withTupletNotation } from "./tuplet-notation";
 import type { ParsedChord, ChordDegree } from "../domain/chord/model";
 import type { KeySignature, SpelledPitch } from "../domain/pitch";
 import type { TimelineAtom } from "../domain/source/atomization";
@@ -25,7 +26,7 @@ function fifths(key: KeySignature): number {
   return names[relativeMajor] ?? 0;
 }
 
-interface XmlEvent { readonly kind: "note" | "rest" | "rhythm"; readonly offset: Fraction; readonly duration: Fraction; readonly pitch?: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[]; readonly slurs?: TimelineAtom["slurs"] }
+interface XmlEvent { readonly kind: "note" | "rest" | "rhythm"; readonly offset: Fraction; readonly duration: Fraction; readonly pitch?: SpelledPitch; readonly tieStart: boolean; readonly tieStop: boolean; readonly lyricTokenIds: readonly string[]; readonly slurs?: TimelineAtom["slurs"]; readonly tuplets?: TimelineAtom["tuplets"] }
 function fromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration: canonicalRangeDuration(measures, atom.range), ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}) }; }
 function fromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): XmlEvent { return { kind: event.kind, offset: event.range.start.offset, duration: canonicalRangeDuration(measures, event.range), ...(event.kind === "note" ? { pitch: event.pitch } : {}), tieStart: event.kind === "note" && event.tieStart, tieStop: event.kind === "note" && event.tieStop, lyricTokenIds: event.kind === "note" ? event.lyricTokenIds : [] }; }
 
@@ -71,14 +72,16 @@ function notationForDuration(duration: Fraction): { readonly type: string; reado
 
 function noteXml(event: XmlEvent, divisions: number, lyricById: Readonly<Record<string, ArrangementRenderDocument["lyricTokens"][number]>>, voice = 1): string {
   const duration = scaledInteger(event.duration, divisions, "MUSICXML_DURATION_UNREPRESENTABLE");
-  const notation = notationForDuration(event.duration);
+  const group = event.tuplets?.[0];
+  const notation = notationForDuration(group ? fraction(event.duration.n*3,event.duration.d*2) : event.duration);
   const ties = `${event.tieStop ? '<tie type="stop"/>' : ""}${event.tieStart ? '<tie type="start"/>' : ""}`;
   const marks = `${event.tieStop ? '<tied type="stop"/>' : ""}${event.tieStart ? '<tied type="start"/>' : ""}${event.slurs?.map((mark) => `<slur number="${mark.number}" type="${mark.type}"/>`).join("") ?? ""}`;
-  const tied = marks ? `<notations>${marks}</notations>` : "";
+  const tupleMarks = group ? `${group.start ? `<tuplet number="${group.number}" type="start"/>` : ""}${group.stop ? `<tuplet number="${group.number}" type="stop"/>` : ""}` : "";
+  const tied = marks || tupleMarks ? `<notations>${marks}${tupleMarks}</notations>` : "";
   const lyric = event.lyricTokenIds.flatMap((id) => lyricById[id] ? [lyricById[id]] : [])[0];
   const lyricXml = lyric ? `<lyric number="${lyric.verse}"><syllabic>${lyric.syllabic}</syllabic><text>${xml(lyric.text)}</text>${lyric.extend ? "<extend/>" : ""}</lyric>` : "";
   const dots = "<dot/>".repeat(notation.dots);
-  const tuplet = notation.actualNotes === undefined ? "" : `<time-modification><actual-notes>${notation.actualNotes}</actual-notes><normal-notes>${notation.normalNotes}</normal-notes></time-modification>`;
+  const tuplet = group ? `<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes><normal-type>${group.normalType}</normal-type></time-modification>` : notation.actualNotes === undefined ? "" : `<time-modification><actual-notes>${notation.actualNotes}</actual-notes><normal-notes>${notation.normalNotes}</normal-notes></time-modification>`;
   const symbol = event.kind === "rhythm" ? "<unpitched><display-step>B</display-step><display-octave>4</display-octave></unpitched>" : event.kind === "note" && event.pitch ? pitchXml(event.pitch) : "<rest/>";
   return `<note>${symbol}<duration>${duration}</duration>${ties}<voice>${voice}</voice><type>${notation.type}</type>${dots}${tuplet}${event.kind === "rhythm" ? "<notehead>slash</notehead>" : ""}${tied}${lyricXml}</note>`;
 }
@@ -283,7 +286,9 @@ export function exportArrangementMusicXml(document: ArrangementRenderDocument, t
     }),
   ];
   const partList = tracks.map((track) => `<score-part id="${track.id}"><part-name>${xml(track.name)}</part-name></score-part>`).join("");
-  const parts = tracks.map((track, index) => partXml({ id: track.id, events: track.events, notationOctaveShift: track.notationOctaveShift, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
+  const parts = tracks.map((track, index) => partXml({ id: track.id,
+    events:withTupletNotation<XmlEvent & {measureIndex:number}>(track.events,document,(measureIndex,offset,duration)=>({kind:"rest",measureIndex,offset,duration,tieStart:false,tieStop:false,lyricTokenIds:[]})),
+    notationOctaveShift: track.notationOctaveShift, document, divisions, key: input.key, tempo: input.tempo, includeHarmony: index === 0, includeTempo: index === 0 })).join("");
   const projection=input.workspaceProjection;
   const workspaceField=projection?`<miscellaneous-field name="harmonymaker-workspace-projection">${xml(JSON.stringify({version:projection.version,originKind:projection.originKind,workspaceId:projection.workspaceId,workspaceRevision:projection.workspaceRevision,workspaceDigest:projection.workspaceDigest,requestDigest:projection.requestDigest,range:"whole-score",selectedVoices:projection.selectedVoices,excludedVoices:projection.excludedVoices,policy:"existing-wag-v1",...(projection.autoDraft?{sourceStatus:"auto-draft",humanSourceReview:projection.autoDraft.humanSourceReview,autoDraftPolicyVersion:projection.autoDraft.policyVersion,presetVersion:projection.autoDraft.presetVersion,autoDraftStatus:projection.autoDraft.status}:{})}))}</miscellaneous-field>`:"";
   const policyMetadata = policySpans.length ? {

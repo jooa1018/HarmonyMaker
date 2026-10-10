@@ -45,6 +45,7 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     tiedToNext: event.kind !== "rest" && event.tieStart === true,
     lyricTokenIds: event.kind !== "rest" ? event.lyricTokenIds ?? [] : [],
     ...(payload.schemaVersion === 5 && event.kind !== "rest" && event.slurs ? {slurs:event.slurs.map(mark=>({...mark}))} : {}),
+    ...(payload.schemaVersion === 5 && event.tuplets ? {tuplets:event.tuplets.map(mark=>({...mark}))} : {}),
   }));
   const trackRoles = practiceShareTrackRoles(payload.arrangement.tracks);
   const generatedHarmonyTracks = payload.arrangement.tracks.filter((track) => track.kind === "generated-harmony").map((track) => {

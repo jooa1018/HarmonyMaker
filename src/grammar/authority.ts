@@ -15,6 +15,7 @@ import baselinePayload from "./wag-v1-diagnostic-baseline.canonical.json";
 import extensionPayload from "./wag-v1-diagnostic-extension.canonical.json";
 import { algorithmVersionsForWag } from "./versions";
 import grammar11Payload from "./worship-arrangement-grammar-v1.1.canonical.json";
+import grammar12Payload from "./worship-arrangement-grammar-v1.2.canonical.json";
 import grammarPayload from "./worship-arrangement-grammar-v1.0.1.canonical.json";
 
 export const FROZEN_WAG_AUTHORITY = Object.freeze({
@@ -131,10 +132,12 @@ export async function loadFrozenWagAuthority(grammarVersion: string = FROZEN_WAG
   if (diagnostics.registryDigest !== FROZEN_WAG_AUTHORITY.diagnosticRegistryDigest) {
     fail("diagnostic-registry-digest");
   }
-  if (grammarVersion === "grammar-v1.1") {
-    const digest = await semanticDigest(grammar11Payload);
-    if (digest !== "59e61c6c0e7f1938f81bc58a375fa4e29ac2301233c46f7f09751926280ed94d") fail("grammar-v1.1-config-digest");
-    return { grammarConfig: grammar11Payload, grammarConfigDigest: digest, presetProfiles, diagnostics,
+  if (grammarVersion === "grammar-v1.1" || grammarVersion === "grammar-v1.2") {
+    const payload = grammarVersion === "grammar-v1.2" ? grammar12Payload : grammar11Payload;
+    const digest = await semanticDigest(payload);
+    const expected = grammarVersion === "grammar-v1.2" ? "be959d7e7f03fb4d593bf703289de14d5f54daab80a16c122ba040d89201e201" : "59e61c6c0e7f1938f81bc58a375fa4e29ac2301233c46f7f09751926280ed94d";
+    if (digest !== expected) fail(`${grammarVersion}-config-digest`);
+    return { grammarConfig: payload, grammarConfigDigest: digest, presetProfiles, diagnostics,
       wagOwnedConfigDigests: Object.fromEntries(Object.keys(WAG_OWNED_CONFIG_DIGEST_BINDINGS).map(key => [key, digest])) as typeof WAG_OWNED_CONFIG_DIGEST_BINDINGS };
   }
   return {

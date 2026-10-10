@@ -54,6 +54,7 @@ import {
 import { MusicXmlStructureError } from "./structure-error";
 import { parseArrangementChordPolicyMetadata } from "../../domain/harmony/arrangement-policy-metadata";
 import { slashNotationForVoice, updateSlashNotation, type SlashNotationState } from "./slash-notation";
+import { supportedMusicXmlTuplets } from "./tuplets";
 
 type RawChordDraft = Omit<ImportedChordDraft, "key">;
 
@@ -84,6 +85,7 @@ interface ParseScoreResult {
 }
 
 interface ParseContext {
+  readonly tuplets: ReturnType<typeof supportedMusicXmlTuplets>;
   readonly workspaceInspection?: boolean;
   readonly diagnostics: ImportDiagnosticInput[];
   readonly partOrdinal: number;
@@ -672,9 +674,10 @@ function parseMeasure(
         continue;
       }
       const keyForCandidate = candidateKey(context.partOrdinal, staff, voice);
+      const tuplets = context.tuplets.get(child);
       const unsupported = xmlChild(child, "grace") || xmlChild(child, "cue")
         || xmlDescendants(child, "ornaments").length > 0
-        || xmlChild(child, "time-modification");
+        || ((xmlChild(child, "time-modification") || xmlDescendants(child,"tuplet").length) && !tuplets);
       if (unsupported) {
         context.diagnostics.push({
           code: "IMPORT_UNSUPPORTED_ELEMENT",
@@ -706,7 +709,7 @@ function parseMeasure(
       const slurValues = xmlDescendants(child, "slur").map((mark) => ({ number: Number(mark.attributes.number ?? "1"), type: mark.attributes.type }));
       if (slurValues.length && !isSourceSlurMarks(slurValues)) throw new MusicXmlStructureError("Unsupported or duplicate slur markings");
       const slurs = isSourceSlurMarks(slurValues) ? slurValues : undefined;
-      const workspaceInfo = context.workspaceInspection ? { workspaceEventId, fermata: xmlDescendants(child, "fermata").length > 0 } : {};
+      const workspaceInfo = {...(context.workspaceInspection ? { workspaceEventId, fermata: xmlDescendants(child, "fermata").length > 0 } : {}), ...(tuplets ? {tuplets} : {})};
       const slashStyle = slashNotationForVoice(context.slashNotation, staff, voice);
       if (isRest) {
         leadEvents.push({ ...workspaceInfo, kind: "rest", candidateKey: keyForCandidate, onset, duration });
@@ -881,7 +884,7 @@ function parsePart(
   diagnostics: ImportDiagnosticInput[],
   workspaceInspection = false,
 ): ParsedPart {
-  const context: ParseContext = { diagnostics, partOrdinal, slashNotation: new Map(), workspaceInspection };
+  const context: ParseContext = { diagnostics, partOrdinal, slashNotation: new Map(), workspaceInspection, tuplets:supportedMusicXmlTuplets(part) };
   let inherited: {
     divisions: number;
     time?: TimeSignature;

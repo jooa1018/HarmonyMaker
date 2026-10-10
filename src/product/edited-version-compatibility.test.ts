@@ -9,8 +9,9 @@ import {loadFrozenWagAuthority} from '../grammar/authority';
 import { outputEditId } from '../domain/ids';
 import { validateHarmonyProject } from '../domain/project';
 import { loadProductExecutionRegistry } from './registry';
-it('WAG v1.1 edited snapshot must remain saveable',async()=>{
- const xml=readFileSync(new URL('./fixtures/wag11/4-4-1.musicxml',import.meta.url));
+import { tripletExercise } from './fixtures/triplet-exercise';
+it.each(['1.1','1.2'])('WAG v%s edited snapshot must remain saveable',async version=>{
+ const xml=version==='1.2' ? new TextEncoder().encode(tripletExercise('eighth')) : readFileSync(new URL('./fixtures/wag11/4-4-1.musicxml',import.meta.url));
  const result=await generateQuickHarmony(await prepareQuickHarmony({bytes:new Uint8Array(xml),fileName:'original.musicxml'}),{parts:['tenor'],rightsConfirmed:true,confirmedAt:'2026-10-10T00:00:00.000Z'});
  if(result.status!=='complete')throw new Error(result.status);
  const project=result.project,v=project.variants.standard;
@@ -23,7 +24,7 @@ it('WAG v1.1 edited snapshot must remain saveable',async()=>{
  if(materialized.status!=='complete')throw new Error(materialized.status);
  const next={...project,variants:{...project.variants,standard:{...v,outputEdits:edits,editedSnapshots:[materialized.snapshot],activeArrangement:{kind:'edited-snapshot' as const,snapshotId:materialized.snapshot.id}}}};
  expect(materialized.snapshot.status).toBe('valid');
- expect(materialized.snapshot.validatorVersion).toBe('validator-v2-wag1.1');
+ expect(materialized.snapshot.validatorVersion).toBe(`validator-v2-wag${version}`);
  const encoded=await exportHarmonyProject(next);
  expect(await exportHarmonyProject(await importHarmonyProject(encoded))).toBe(encoded);
  await expect(materializeEditedArrangement({lifecycleInput:await wagInputFromProject(project,'standard'),intentPlan:{...v.intentPlan,grammarVersion:'grammar-v99'},activityPlan:v.activityPlan,anchorPlan:v.anchorPlan,candidate:v.generationResult.candidates[0],edits:[]})).rejects.toThrow('WAG_VERSION_UNSUPPORTED');

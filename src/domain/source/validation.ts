@@ -29,6 +29,7 @@ import type {
 import { validateRights, validateSectionPartition } from "./model";
 import { hasCanonicalSongSourceOrder } from "./normalize";
 import { isSourceSlurMarks } from "./notation";
+import { isSourceTuplets, validTupletSequence } from "./tuplets";
 import { computeSourceProvenanceDigest } from "./provenance";
 import {
   isSourceRevisionRef, revisionRefsEqual, validateRevisionHistory, validateRevisionHistoryIntegrity,
@@ -207,13 +208,14 @@ function isLeadEvent(value: unknown, measureId: string): value is LeadEvent {
   if (!isPlainRecord(value) || !isCanonicalId(value.id) || value.sourceMeasureId !== measureId
     || !isCanonicalFraction(value.onset) || value.onset.n < 0
     || !isCanonicalFraction(value.duration) || !isPositiveFraction(value.duration)) return false;
-  if (value.kind === "rest") return hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration"]);
+  if (value.tuplets !== undefined && !isSourceTuplets(value.tuplets)) return false;
+  if (value.kind === "rest") return hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration"], ["tuplets"]);
   if (value.slurs !== undefined && !isSourceSlurMarks(value.slurs)) return false;
-  if (value.kind === "rhythm") return hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration", "tieStart", "tieStop", "lyricTokenIds"], ["slurs"])
+  if (value.kind === "rhythm") return hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration", "tieStart", "tieStop", "lyricTokenIds"], ["slurs", "tuplets"])
     && typeof value.tieStart === "boolean" && typeof value.tieStop === "boolean"
     && Array.isArray(value.lyricTokenIds) && value.lyricTokenIds.every(isCanonicalId) && hasUniqueStrings(value.lyricTokenIds);
   return value.kind === "note"
-    && hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration", "pitch", "tieStart", "tieStop", "lyricTokenIds"], ["slurs"])
+    && hasExactKeys(value, ["kind", "id", "sourceMeasureId", "onset", "duration", "pitch", "tieStart", "tieStop", "lyricTokenIds"], ["slurs", "tuplets"])
     && isCanonicalSpelledPitch(value.pitch)
     && typeof value.tieStart === "boolean"
     && typeof value.tieStop === "boolean"
@@ -276,7 +278,7 @@ function hasValidMonophonicLead(source: Pick<SongSourceDocument, "sourceMeasures
       || !next.event.tieStop
       || !compatibleTie(current.event, next.event))) return false;
   }
-  return slurs.size === 0;
+  return slurs.size === 0 && validTupletSequence(events.map(({start,event})=>({start,duration:event.duration,...(event.tuplets ? {tuplets:event.tuplets} : {})})));
 }
 
 export function hasCanonicalSourceIdGraph(source: SongSourceDocument): boolean {

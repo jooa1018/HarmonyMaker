@@ -4,6 +4,7 @@ import { canonicalJson, type SemanticDigest } from "./digest/canonical";
 import type { Alter, KeySignature, Step } from "./pitch";
 import type { RightsBasis, TempoSpec } from "./source/model";
 import { isSourceSlurMarks, type SourceSlurMark } from "./source/notation";
+import { isSourceTuplets, validTupletSequence, type SourceTuplet } from "./source/tuplets";
 import { addFractions, compareFractions, fraction } from "./fraction";
 import {
   hasExactKeys, hasUniqueStrings, isCanonicalId, isCanonicalKeySignature,
@@ -13,9 +14,9 @@ import {
 export type CompactFraction = readonly [n: number, d: number];
 export type CompactPitch = readonly [step: Step, alter: Alter, octave: number];
 export interface CompactMeasureOccurrence { readonly index: number; readonly sourceMeasureNumber?: number; readonly lyricVerseIndex: number; readonly timeSignature: readonly [numerator: number, denominator: 4 | 8]; readonly duration: CompactFraction }
-export interface CompactNoteEvent { readonly kind: "note"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly pitch: CompactPitch; readonly tieStart?: true; readonly tieStop?: true; readonly lyricTokenIds?: readonly string[]; readonly slurs?: readonly SourceSlurMark[] }
-export interface CompactRestEvent { readonly kind: "rest"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction }
-export interface CompactRhythmEvent { readonly kind: "rhythm"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly tieStart?: true; readonly tieStop?: true; readonly lyricTokenIds?: readonly string[]; readonly slurs?: readonly SourceSlurMark[] }
+export interface CompactNoteEvent { readonly kind: "note"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly pitch: CompactPitch; readonly tieStart?: true; readonly tieStop?: true; readonly lyricTokenIds?: readonly string[]; readonly slurs?: readonly SourceSlurMark[]; readonly tuplets?: readonly SourceTuplet[] }
+export interface CompactRestEvent { readonly kind: "rest"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly tuplets?: readonly SourceTuplet[] }
+export interface CompactRhythmEvent { readonly kind: "rhythm"; readonly occurrenceIndex: number; readonly offset: CompactFraction; readonly duration: CompactFraction; readonly tieStart?: true; readonly tieStop?: true; readonly lyricTokenIds?: readonly string[]; readonly slurs?: readonly SourceSlurMark[]; readonly tuplets?: readonly SourceTuplet[] }
 export type CompactVocalEvent = CompactNoteEvent | CompactRestEvent | CompactRhythmEvent;
 export type CompactHarmonyRole = "H1" | "H2";
 export type CompactPlacementRole = "upper" | "lower";
@@ -132,11 +133,12 @@ function isCompactEvent(value: unknown, measureCount: number, allowSlurs: boolea
     || !isCompactFraction(value.offset)
     || value.offset[0] < 0
     || !isPositiveCompactFraction(value.duration)) return false;
+  if (value.tuplets !== undefined && (!allowSlurs || !isSourceTuplets(value.tuplets))) return false;
   if (value.kind === "rest") {
-    return hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration"]);
+    return hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration"], allowSlurs ? ["tuplets"] : []);
   }
   return (value.kind === "note" || value.kind === "rhythm")
-    && hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration", ...(value.kind === "note" ? ["pitch"] : [])], ["tieStart", "tieStop", "lyricTokenIds", ...(allowSlurs ? ["slurs"] : [])])
+    && hasExactKeys(value, ["kind", "occurrenceIndex", "offset", "duration", ...(value.kind === "note" ? ["pitch"] : [])], ["tieStart", "tieStop", "lyricTokenIds", ...(allowSlurs ? ["slurs","tuplets"] : [])])
     && (value.slurs === undefined || isSourceSlurMarks(value.slurs))
     && (value.kind === "rhythm" || isCompactPitch(value.pitch))
     && (value.tieStart === undefined || value.tieStart === true)
@@ -228,6 +230,9 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
         else if (!activeSlurs.has(mark.number)) return false;
       }
       if (activeSlurs.size) return false;
+      const starts=[fraction(0)];
+      for (const measure of measures) starts.push(addFractions(starts.at(-1)!,compactFraction((measure as {duration:CompactFraction}).duration)));
+      if (!validTupletSequence(ordered.map(event=>({start:addFractions(starts[event.occurrenceIndex],compactFraction(event.offset)),duration:compactFraction(event.duration),...(event.tuplets ? {tuplets:event.tuplets}: {})})))) return false;
     }
     for (const event of events) {
       const measure = measures[event.occurrenceIndex] as Readonly<Record<string, unknown>>;

@@ -141,7 +141,7 @@ function dependencyProjection(state: WorkspaceState, dependency: WorkspaceIssueD
     measures: parts.flatMap(part => part.measures.filter(m => mids.has(m.workspaceMeasureId)).map(m => {
       const local = anchors.filter(a => a.measureId === m.workspaceMeasureId);
       const events = m.leadEvents.filter(e => !dependency.eventIds.length || !local.length || local.some(a => compareFractions(a.event.onset,e.onset) === 0));
-      const timing = (e: typeof events[number]) => ({id:e.workspaceEventId,voice:e.candidateKey,kind:e.kind,onset:e.onset,duration:e.duration});
+      const timing = (e: typeof events[number]) => ({id:e.workspaceEventId,voice:e.candidateKey,kind:e.kind,onset:e.onset,duration:e.duration,...(e.tuplets ? {tuplets:e.tuplets} : {})});
       switch (dependency.field) {
         case "lyrics": {
           const slurDependencies=connections.slurs(part,m.ordinal).filter(span=>{

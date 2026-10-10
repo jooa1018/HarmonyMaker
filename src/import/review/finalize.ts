@@ -78,10 +78,12 @@ function blockedInput(
 }
 
 function leadProjection(event: ImportedLeadEventDraft): object {
-  if (event.kind === "rhythm") return { kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
+  const tuplets = event.tuplets ? {tuplets:event.tuplets} : {};
+  if (event.kind === "rhythm") return { ...tuplets, kind: "rhythm", onset: event.onset, duration: event.duration, tieStart: event.tieStart, tieStop: event.tieStop };
   return event.kind === "rest"
-    ? { kind: "rest", onset: event.onset, duration: event.duration }
+    ? { ...tuplets, kind: "rest", onset: event.onset, duration: event.duration }
     : {
+        ...tuplets,
         kind: "note",
         onset: event.onset,
         duration: event.duration,
@@ -178,6 +180,7 @@ function materializeLead(
         sourceMeasureId: sourceMeasure,
         onset: event.onset,
         duration: event.duration,
+        ...(event.tuplets ? {tuplets:event.tuplets} : {}),
       }
     : {
         ...(event.kind === "note" ? { kind: "note" as const, pitch: event.pitch } : { kind: "rhythm" as const }),
@@ -189,6 +192,7 @@ function materializeLead(
         tieStop: event.tieStop,
         lyricTokenIds: tokenIdsByLead.get(eventOrdinal) ?? [],
         ...(event.slurs ? { slurs: event.slurs } : {}),
+        ...(event.tuplets ? {tuplets:event.tuplets} : {}),
       });
   return { leadEvents, lyricTokens };
 }
