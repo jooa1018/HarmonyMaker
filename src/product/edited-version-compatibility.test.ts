@@ -27,11 +27,13 @@ it('WAG v1.1 edited snapshot must remain saveable',async()=>{
  const encoded=await exportHarmonyProject(next);
  expect(await exportHarmonyProject(await importHarmonyProject(encoded))).toBe(encoded);
  await expect(materializeEditedArrangement({lifecycleInput:await wagInputFromProject(project,'standard'),intentPlan:{...v.intentPlan,grammarVersion:'grammar-v99'},activityPlan:v.activityPlan,anchorPlan:v.anchorPlan,candidate:v.generationResult.candidates[0],edits:[]})).rejects.toThrow('WAG_VERSION_UNSUPPORTED');
- const unknown=JSON.parse(encoded);unknown.variants.standard.intentPlan.grammarVersion='grammar-v99';
- const validation=await validateHarmonyProject(unknown,await loadProductExecutionRegistry());
- expect(validation.status).toBe('blocked');
- expect(validation.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({code:'ALGORITHM_CONFIG_MISMATCH',details:{reason:'WAG_VERSION_UNSUPPORTED:grammar-v99'}})]));
- await expect(importHarmonyProject(JSON.stringify(unknown))).rejects.toThrow('PROJECT_INTEGRITY_INVALID');
+ for(const grammarVersion of ['grammar-v99','constructor','__proto__','toString']) {
+  const unknown=JSON.parse(encoded);unknown.variants.standard.intentPlan.grammarVersion=grammarVersion;
+  const validation=await validateHarmonyProject(unknown,await loadProductExecutionRegistry());
+  expect(validation.status).toBe('blocked');
+  expect(validation.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({code:'ALGORITHM_CONFIG_MISMATCH',details:{reason:`WAG_VERSION_UNSUPPORTED:${grammarVersion}`}})]));
+  await expect(importHarmonyProject(JSON.stringify(unknown))).rejects.toThrow('PROJECT_INTEGRITY_INVALID');
+ }
 });
 
 it('legacy edit and save reproduce the independent pre-change bytes without a version upgrade',async()=>{

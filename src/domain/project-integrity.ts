@@ -1042,7 +1042,9 @@ async function validateVariantIntegrity(
     ?? { intent: [], activity: [], anchor: [], solver: [] };
   const intent = variant.intentPlan;
   // The installed registry is the version authority; unregistered versions fail closed.
-  const installed = expected.versions.grammarVersion === intent.grammarVersion ? expected : expected.compatible?.[intent.grammarVersion];
+  const installed = expected.versions.grammarVersion === intent.grammarVersion ? expected
+    : expected.compatible && Object.hasOwn(expected.compatible, intent.grammarVersion)
+      ? expected.compatible[intent.grammarVersion] : undefined;
   requireIntegrity(installed !== undefined, `WAG_VERSION_UNSUPPORTED:${intent.grammarVersion}`, "ALGORITHM_CONFIG_MISMATCH");
   expected = installed;
   requireIntegrity(!quickHarmonyParts(project.source) || intent.grammarVersion === "grammar-v1.1", "WAG_POLICY_VERSION_MISMATCH", "ALGORITHM_CONFIG_MISMATCH");
