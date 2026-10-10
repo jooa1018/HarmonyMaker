@@ -1,30 +1,31 @@
 @import "tailwindcss";
 
-:root { color-scheme: light; font-family: Arial, sans-serif; background: #f4f6fb; color: #172033; }
+:where(html:not(:has(.hm))) { color-scheme: light; font-family: Arial, sans-serif; background: #f4f6fb; color: #172033; }
 * { box-sizing: border-box; }
 body { margin: 0; }
-main { width: min(1100px, 100%); margin: auto; padding: 2rem 1rem 4rem; }
-header { margin-bottom: 1.25rem; }
-h1 { margin: .15rem 0; font-size: clamp(2rem, 7vw, 3.5rem); }
-.eyebrow { color: #6750a4; font-weight: 700; letter-spacing: .08em; }
-.panel { background: white; border: 1px solid #dbe0ea; border-radius: 16px; padding: 1rem; box-shadow: 0 8px 30px #27324a12; margin-top: 1rem; min-width: 0; overflow-wrap: anywhere; }
-.score-wrap { width: 100%; overflow-x: auto; min-height: 320px; }
-.score-wrap svg { max-width: 100%; height: auto; }
-.transport,.voices,.speed { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; align-items: center; }
-button { min-height: 44px; border: 1px solid #8a93a5; border-radius: 9px; background: #fff; padding: .65rem .9rem; font-weight: 650; cursor: pointer; }
-button:hover { background: #f1edff; }
-button[aria-pressed="true"], .primary { color: white; background: #6750a4; border-color: #6750a4; }
-button:disabled { opacity: .5; cursor: not-allowed; }
-.button-link { display: inline-flex; align-items: center; min-height: 44px; border-radius: 9px; padding: .65rem .9rem; text-decoration: none; font-weight: 700; }
-.panel select, .panel input { font: inherit; min-width: 0; max-width: 100%; }
-.panel select { min-height: 44px; border: 1px solid #8a93a5; border-radius: 8px; padding: .55rem; background: white; }
-.panel code { overflow-wrap: anywhere; }
-.practice-player { margin-top: .75rem; }
-.voice { border-top: 1px solid #e1e5ed; padding-top: .8rem; }
-.volume { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-top: .65rem; }
-.volume output { min-width: 3em; font-variant-numeric: tabular-nums; }
-input[type="range"] { width: min(330px, 65vw); }
-.status { margin: 1rem 0 0; padding: .75rem; background: #edf5ff; border-radius: 8px; }
-.error { color: #8b1a1a; background: #fff0f0; }
-.abcjs-highlight { fill: #d32f2f !important; stroke: #d32f2f !important; }
-@media (max-width: 600px) { main { padding: 1rem .65rem 3rem; } .panel { padding: .65rem; } .score-wrap { min-height: 250px; } }
+:where(body:not(:has(.hm))) main { width: min(1100px, 100%); margin: auto; padding: 2rem 1rem 4rem; }
+:where(body:not(:has(.hm))) header { margin-bottom: 1.25rem; }
+:where(body:not(:has(.hm))) h1 { margin: .15rem 0; font-size: clamp(2rem, 7vw, 3.5rem); }
+:where(body:not(:has(.hm))) .eyebrow { color: #6750a4; font-weight: 700; letter-spacing: .08em; }
+:where(body:not(:has(.hm))) .panel { background: white; border: 1px solid #dbe0ea; border-radius: 16px; padding: 1rem; box-shadow: 0 8px 30px #27324a12; margin-top: 1rem; min-width: 0; overflow-wrap: anywhere; }
+:where(body:not(:has(.hm))) .score-wrap { width: 100%; overflow-x: auto; min-height: 320px; }
+:where(body:not(:has(.hm))) .score-wrap svg { max-width: 100%; height: auto; }
+:where(body:not(:has(.hm))) .transport,:where(body:not(:has(.hm))) .voices,:where(body:not(:has(.hm))) .speed { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; align-items: center; }
+:where(body:not(:has(.hm))) button { min-height: 44px; border: 1px solid #8a93a5; border-radius: 9px; background: #fff; padding: .65rem .9rem; font-weight: 650; cursor: pointer; }
+:where(body:not(:has(.hm))) button:hover { background: #f1edff; }
+:where(body:not(:has(.hm))) button[aria-pressed="true"], :where(body:not(:has(.hm))) .primary { color: white; background: #6750a4; border-color: #6750a4; }
+:where(body:not(:has(.hm))) button:disabled { opacity: .5; cursor: not-allowed; }
+:where(body:not(:has(.hm))) .button-link { display: inline-flex; align-items: center; min-height: 44px; border-radius: 9px; padding: .65rem .9rem; text-decoration: none; font-weight: 700; }
+:where(body:not(:has(.hm))) .panel select, :where(body:not(:has(.hm))) .panel input { font: inherit; min-width: 0; max-width: 100%; }
+:where(body:not(:has(.hm))) .panel select { min-height: 44px; border: 1px solid #8a93a5; border-radius: 8px; padding: .55rem; background: white; }
+:where(body:not(:has(.hm))) .panel code { overflow-wrap: anywhere; }
+:where(body:not(:has(.hm))) .practice-player { margin-top: .75rem; }
+:where(body:not(:has(.hm))) .voice { border-top: 1px solid #e1e5ed; padding-top: .8rem; }
+:where(body:not(:has(.hm))) .volume { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-top: .65rem; }
+:where(body:not(:has(.hm))) .volume output { min-width: 3em; font-variant-numeric: tabular-nums; }
+:where(body:not(:has(.hm))) input[type="range"] { width: min(330px, 65vw); }
+:where(body:not(:has(.hm))) .status { margin: 1rem 0 0; padding: .75rem; background: #edf5ff; border-radius: 8px; }
+:where(body:not(:has(.hm))) .error { color: #8b1a1a; background: #fff0f0; }
+:where(body:not(:has(.hm))) .abcjs-highlight { fill: #d32f2f !important; stroke: #d32f2f !important; }
+@media (max-width: 600px) { :where(body:not(:has(.hm))) main { padding: 1rem .65rem 3rem; } :where(body:not(:has(.hm))) .panel { padding: .65rem; } :where(body:not(:has(.hm))) .score-wrap { min-height: 250px; } }
+html:has(.hm) { background: var(--hm-paper); }

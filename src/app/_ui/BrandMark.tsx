@@ -1,0 +1,1 @@
+export function BrandMark() { return <svg viewBox="0 0 26 18" aria-hidden="true"><path className="st" d="M0 2h26M0 6h26M0 10h26M0 14h26M0 18h26"></path><ellipse className="t" cx="7" cy="4" rx="3.2" ry="2.4"></ellipse><ellipse className="m" cx="13" cy="8" rx="3.2" ry="2.4"></ellipse><ellipse className="a" cx="19" cy="12" rx="3.2" ry="2.4"></ellipse></svg>; }
