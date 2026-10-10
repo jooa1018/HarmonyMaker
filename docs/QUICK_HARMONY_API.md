@@ -153,6 +153,44 @@ summary?: {
 추천은 사용자의 명시적 파트 선택과 별개이며, 같은 악보·선택 상태에서 결정적이다.
 화면이 바꾼 summary는 생성 입력으로 신뢰하지 않고 현재 작업 공간에서 다시 계산한다.
 
+## 연습 재생 훅 (1-7)
+
+`src/product/use-practice-player.ts`의 `usePracticePlayer`는 클라이언트 컴포넌트에서 호출한다.
+화면의 `<div ref={player.scoreRef} />`에 abcjs 악보를 그리며 버튼·믹서는 화면이 그린다.
+
+```ts
+const player = usePracticePlayer({
+  abc, plan, tempo, identity,
+  initialSettings, // 공유 데이터의 PracticeSettings. 해당 identity의 처음 상태
+  preferredMeasuresPerLine: narrow ? 2 : 4, // 기본 4
+});
+```
+
+반환형 `PracticePlayerController`:
+
+- `scoreRef`, `scoreReady`, `error`
+- `phase: ready | starting | playing | paused | finished`, `positionQuarter`, `totalQuarter`
+- `secondsPerQuarter`, `speed`, `tracks: { id, label, kind, role }[]`
+- `muted`, `solo`, `bandEnabled`, `levels`, `masterLevel`
+- `play()`, `pause()`, `restart()`, `setSpeed(speed)`
+- `toggleMute(trackId)`, `toggleSolo(trackId)`, `setBandEnabled(on)`
+- `setLevel(trackId, level)`, `setMasterLevel(level)`
+
+`play()`는 ready·finished에서 처음부터, paused에서 이어서 재생한다. starting·playing에서는
+중복 시작하지 않는다. `restart()`는 멈추고 처음으로, `setSpeed()`도 처음으로 돌아간다.
+속도는 `PracticeSpeed`의 50·75·100·125·150이다. 파트 음량은 0–2, 전체 음량은 0–1로 제한한다.
+솔로는 한 트랙만 켜지고 음소거는 여러 트랙에 적용할 수 있다. 믹서는 재생 중에도 적용된다.
+identity가 바뀌거나 컴포넌트가 사라지면 이전 오디오와 타이머를 해제한다.
+다른 identity는 새 초기 설정을 적용한다. 같은 identity에서 초기 설정 변경은 재생 상태를 덮어쓰지 않는다.
+
+트랙 역할은 실행 중 `PlaybackPlan.trackRoles`에서 읽는다. `buildPlaybackPlan`이 역할
+레지스트리에서 채우며 표시 이름으로 추측하지 않는다. `track:source-lead`는 lead,
+`track:band`는 band, 하나의 역할만 있으면 upper/lower, 혼합·정보 없음은 other다.
+이 선택 필드는 프로젝트·공유 데이터·digest에 저장하지 않는다. 반주가 없으면 tracks에도 없다.
+H3는 `tracks.some(t => t.kind === "band")`로 반주 스위치 표시 여부를 정한다.
+시간 표시는 `positionQuarter * secondsPerQuarter`, 전체 시간은 `totalQuarter * secondsPerQuarter`다.
+기존 ProductPracticePlayer도 같은 훅을 쓰며 기존 Play(처음부터)·Resume(이어서) 버튼을 유지한다.
+
 ## 화면 호출 예시
 
 ```ts
