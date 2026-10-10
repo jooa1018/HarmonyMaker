@@ -12,7 +12,7 @@ export interface ScheduledCleanupResult {
   readonly completedAt: string;
   readonly runtimeBudgetMs: number;
   readonly batchSize: number;
-  readonly generic: { readonly status: "fulfilled"; readonly expiredSessions: number; readonly expiredShares: number; readonly expiredObjects: number; readonly attemptedItems: number; readonly completedItems: number; readonly failedItems: number }
+  readonly generic: { readonly status: "fulfilled"; readonly expiredSessions: number; readonly expiredShares: number; readonly expiredObjects: number; readonly attemptedItems: number; readonly completedItems: number; readonly failedItems: number; readonly skippedItems: number }
     | { readonly status: "rejected"; readonly code: string };
 }
 
@@ -67,9 +67,10 @@ export async function runScheduledCleanup(input: {
       expiredSessions: generic.value.expiredSessionIds.length,
       expiredShares: generic.value.expiredShareIds.length,
       expiredObjects: generic.value.expiredObjectIds.length,
-      attemptedItems: generic.value.pendingObjectReferences.length,
-      completedItems: Math.max(0, generic.value.pendingObjectReferences.length - generic.value.failures.length),
+      attemptedItems: generic.value.pendingObjectReferences.length - (generic.value.skippedObjects ?? 0),
+      completedItems: Math.max(0, generic.value.pendingObjectReferences.length - (generic.value.skippedObjects ?? 0) - generic.value.failures.length),
       failedItems: generic.value.failures.length,
+      skippedItems: generic.value.skippedObjects ?? 0,
     }
     : { status: "rejected", code: errorCode(generic.reason) };
   const result: ScheduledCleanupResult = {
