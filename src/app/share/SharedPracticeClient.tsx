@@ -3,20 +3,19 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
+import type { SharedPracticeView } from "../../product/harmony-worker/client";
+import { useScreenWorker } from "../_worker/useScreenWorker";
 import type { PracticeSharePayload } from "../../domain/share";
 import { LivePractice } from "../_result/LivePractice";
 import { AppBar } from "../_ui/controls";
 import { scoreVoiceRoles } from "../_ui/score-colors";
 import { Icon } from "../_ui/Icon";
-import { buildPlaybackPlanSafely } from "../../product/playback-plan";
-import { arrangementRenderDocumentToAbcSafely } from "../../product/score-adapter";
 import { decodeProductUrlShare } from "../../product/share-url";
 import { displayedShareLocatorState, reduceShareLocatorLoad, resolveShareLocator } from "../../product/share-locator";
 import { submitStoredShareReport, type DisplayedStoredShareAuthority } from "../../product/share-report";
-import { materializeSharedPracticeSafely } from "../../product/shared-practice";
 
 export function SharedPracticeClient() {
+  const session = useScreenWorker();
   const search = useSearchParams();
   const token = search.get("token") ?? undefined;
   const [hashState, setHashState] = useState<{ readonly ready: boolean; readonly value: string }>({ ready: false, value: "" });
@@ -27,12 +26,10 @@ export function SharedPracticeClient() {
   const displayedLoadState = displayedShareLocatorState(loadState, locatorResult);
   const payload: PracticeSharePayload | undefined = displayedLoadState?.payload;
   const [message, setMessage] = useState("공유 payload를 검증하는 중…");
-  const materialization = useMemo(() => payload ? materializeSharedPracticeSafely(payload) : undefined, [payload]);
-  const materialized = materialization?.status === "available" ? materialization.value : undefined;
-  const document = materialized?.document;
-  const abcSerialization = useMemo(() => payload && materialized ? arrangementRenderDocumentToAbcSafely(materialized.document, materialized.trackRoles, { title: payload.title, tempo: payload.tempo, key: payload.key }) : undefined, [materialized, payload]);
-  const abc = abcSerialization?.status === "available" ? abcSerialization.value : undefined;
-  const [accompanimentState, setAccompanimentState] = useState<{ readonly digest: string; readonly value: Awaited<ReturnType<typeof generateDeterministicAccompaniment>> }>();
+  const [practiceState, setPracticeState] = useState<{ payload: PracticeSharePayload; view?: SharedPracticeView; error?: string }>();
+  const practice = practiceState && practiceState.payload === payload ? practiceState.view : undefined;
+  const practiceError = practiceState && practiceState.payload === payload ? practiceState.error : undefined;
+  const plan = practice?.plan;
 
   useEffect(() => {
     const refresh = () => setHashState({ ready: true, value: window.location.hash });
@@ -86,29 +83,14 @@ export function SharedPracticeClient() {
   }, [locatorResult]);
 
   useEffect(() => {
-    if (!document) return;
+    if (!payload) return;
     let active = true;
-    const digest = document.effectiveChordTimeline.digest;
-    void generateDeterministicAccompaniment(document.effectiveChordTimeline).then((value) => { if (active) setAccompanimentState({ digest, value }); }).catch(() => { if (active) setMessage("반주를 만들지 못했어요."); });
+    void session.run(client => client.openShare(payload)).then(view => {
+      if (active) setPracticeState({ payload, view });
+    }).catch(reason => { if (active) setPracticeState({ payload, error: reason instanceof Error ? reason.message : String(reason) }); });
     return () => { active = false; };
-  }, [document]);
-  const accompaniment = document && accompanimentState?.digest === document.effectiveChordTimeline.digest ? accompanimentState.value : undefined;
-
-  const playbackConstruction = useMemo(() => materialized
-    ? buildPlaybackPlanSafely(materialized.document, materialized.trackRoles, accompaniment)
-    : undefined, [accompaniment, materialized]);
-  const plan = playbackConstruction?.status === "available" ? playbackConstruction.value : undefined;
-  const presentedMessage = locatorResult?.status === "invalid"
-    ? locatorResult.code === "SHARE_LOCATOR_CONFLICT" ? "저장형 token과 inline payload를 동시에 사용할 수 없습니다." : "공유 위치 정보가 올바르지 않습니다."
-    : locatorLoading
-      ? "공유 payload를 검증하는 중…"
-      : payload && materialization?.status === "unavailable"
-      ? "이 공유의 연습 자료를 안전하게 구성할 수 없습니다."
-      : payload && abcSerialization?.status === "unavailable"
-      ? "이 공유의 ABC 악보를 안전하게 직렬화할 수 없습니다."
-      : payload && playbackConstruction?.status === "unavailable"
-      ? "이 공유의 재생 계획을 안전하게 구성할 수 없습니다."
-      : message;
+  }, [payload, session]);
+  const presentedMessage = locatorResult?.status === "invalid" ? locatorResult.code : practiceError ?? message;
 
   const report = async () => {
     if (!displayedLoadState || displayedLoadState.locator.kind !== "stored") return;
@@ -124,8 +106,8 @@ export function SharedPracticeClient() {
     } else if (outcome === "failed") setMessage("신고를 접수하지 못했습니다.");
   };
 
-  const ready = payload && abc && plan && accompaniment && displayedLoadState;
-  const waiting = !locatorResult || locatorLoading || Boolean(payload && materialized && abc && !accompaniment && message !== "반주를 만들지 못했어요.");
+  const ready = payload && practice && plan && displayedLoadState;
+  const waiting = !locatorResult || locatorLoading || Boolean(payload && !practice && !practiceError);
   const failed = !waiting && !ready;
   return <div className="hm"><div className="hm-page">
     <AppBar shared />
@@ -134,7 +116,8 @@ export function SharedPracticeClient() {
     </section>
     {waiting && <p role="status">악보를 그리는 중…</p>}
     {failed && <div className="hm-notice is-stop" role="alert"><p>공유 악보를 열 수 없어요. 보낸 분에게 링크를 다시 확인해 주세요.</p></div>}
-    {ready && <LivePractice voiceRoles={materialized ? scoreVoiceRoles(materialized.trackRoles) : undefined} key={displayedLoadState.key} view={{ status: "available", abc, plan, tempo: payload.tempo, identity: displayedLoadState.key }} title={payload.title} initialSettings={payload.playbackDefaults} />}
+    {ready && <LivePractice voiceRoles={scoreVoiceRoles(practice.trackRoles)} key={displayedLoadState.key} view={practice} title={payload.title} initialSettings={payload.playbackDefaults} />}
+
     <Link className="hm-linkcard" href="/"><span className="hm-linkcard-icon"><Icon name="music" /></span><span className="hm-linkcard-text"><b>내 악보로도 화음을 만들어 보세요</b><span>MusicXML만 있으면 바로 만들어요</span></span><Icon name="right" /></Link>
     <div className="hm-footer"><span>HarmonyMaker로 만든 연습 악보</span>{ready && displayedLoadState.locator.kind === "stored" && <button className="hm-btn hm-btn-text hm-btn-sm" type="button" disabled={displayedLoadState.reported} onClick={() => void report()}><Icon name="flag" />{displayedLoadState.reported ? "접수됨" : "문제 신고"}</button>}</div>
     {displayedLoadState?.reported && <p role="status">신고를 접수했어요.</p>}

@@ -1,6 +1,8 @@
+import type { WorkerStage } from "../../product/harmony-worker/client";
+import { stageLabel } from "../_worker/presentation";
 import { AppBar } from "../_ui/controls";
 import { partsLabelKo } from "../_ui/format";
-export function MakingState({ title, measureCount, parts }: { title: string; measureCount?: number; parts: readonly ("alto" | "tenor")[] }) { return (
+export function MakingState({ title, measureCount, parts, stage, onCancel }: { title: string; measureCount?: number; parts: readonly ("alto" | "tenor")[]; stage?: WorkerStage; onCancel?: () => void }) { return (
 <div className="hm">
 <div className="hm-page">
 <AppBar shared={false} library={false} />
@@ -15,9 +17,10 @@ export function MakingState({ title, measureCount, parts }: { title: string; mea
 <ellipse className="nh" cx="242" cy="28" rx="6" ry="4.4" transform="rotate(-18 242 28)"></ellipse>
 <g className="playhead"><path className="head" d="M16 2v52"></path></g>
 </svg>
-<h2>화음 만드는 중</h2>
+<h2>{stage ? stageLabel(stage) : "화음 만드는 중"}</h2>
 <p>{title}{measureCount !== undefined && ` · ${measureCount}마디`} · {partsLabelKo(parts)}</p>
 <p>잠시만 기다려 주세요. 이 화면을 닫지 마세요.</p>
+{onCancel && <button className="hm-btn hm-btn-secondary" type="button" disabled={stage === "committing"} onClick={onCancel}>취소</button>}
 </div>
 </div>
 </div>

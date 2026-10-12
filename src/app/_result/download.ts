@@ -10,9 +10,9 @@ export function projectMusicXml(project: HarmonyProject) {
     ...(project.source.importInfo?.sourceKind === "score-workspace" ? { workspaceProjection: project.source.importInfo.workspaceMetadata } : {}),
   });
 }
-export function downloadMusicXml(project: HarmonyProject) {
-  const url = URL.createObjectURL(new Blob([projectMusicXml(project)], { type: "application/vnd.recordare.musicxml+xml" }));
+export function downloadMusicXml(xml: string, title: string) {
+  const url = URL.createObjectURL(new Blob([xml], { type: "application/vnd.recordare.musicxml+xml" }));
   const link = document.createElement("a");
-  link.href = url; link.download = `${(project.source.title || "화음 악보").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")}.musicxml`;
+  link.href = url; link.download = `${(title || "화음 악보").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")}.musicxml`;
   document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
