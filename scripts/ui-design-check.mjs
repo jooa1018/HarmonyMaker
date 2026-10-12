@@ -10,7 +10,7 @@ import { join } from "node:path";
 const base = process.env.HM_UI_BASE_URL ?? "http://127.0.0.1:3133";
 const out = process.env.HM_UI_EVIDENCE_DIR ?? "runtime-browser-evidence/h3";
 const channel = process.env.HM_UI_BROWSER_CHANNEL;
-const names = ["01-start", "02-parts", "03-lead", "04-fix", "05-unsupported", "06-making", "07-result", "08-partial", "09-share", "10-library", "11-guide", "12-shared", "A-reading", "B-dragover", "C-unreadable", "D-share-before", "E-library-empty", "F-minibar"];
+const names = ["01-start", "02-parts", "03-lead", "04-fix", "05-unsupported", "06-making", "07-result", "08-partial", "09-share", "10-library", "11-guide", "12-shared", "A-reading", "B-dragover", "C-unreadable", "D-share-before", "E-library-empty", "F-minibar", "I-seek-drag", "J-tenor-octave"];
 const cases = [...names.map(name => ({ name, width: 390, height: 844 })), ...["07-result", "10-library"].map(name => ({ name, width: 360, height: 780 })), { name: "desktop-result", width: 1280, height: 800 }, ...["13-audio", "G-audio-making", "H-audio-done"].map(name => ({ name, width: 390, height: 880 }))];
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch({ ...(channel ? { channel } : {}) });
@@ -33,7 +33,7 @@ try {
       await page.evaluate(() => document.fonts.ready);
       if (await page.locator(".hm-score-notation").count()) await expect(page.locator(".hm-score-notation svg").first()).toBeVisible();
       const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
-      const smallTargets = await page.locator(".hm").evaluateAll(roots => roots.flatMap(root => [...root.querySelectorAll("button,a,input,summary")]).flatMap(el => {
+      const smallTargets = await page.locator(".hm").evaluateAll(roots => roots.flatMap(root => [...root.querySelectorAll('button,a,input,summary,[role="slider"]')]).flatMap(el => {
         if (!el.getClientRects().length || el.closest("[hidden], [inert]")) return [];
         // Approved inline-text exception from the design review (screen 11 only).
         if (el.matches('.hm-gstep a[href="https://musescore.org"]')) return [];
@@ -84,7 +84,7 @@ try {
     await page.getByRole("button", { name: "테너 화음 만들기", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("화음 만드는 중");
   });
-  await check("solo is exclusive; mutes are independent; speed restarts", async () => {
+  await check("solo is exclusive; mutes are independent; speed preserves position", async () => {
     await page.goto(`${base}/ui-preview/07-result`);
     await page.getByRole("button", { name: "테너만 듣기" }).click();
     await expect(page.getByRole("button", { name: "알토만 듣기" })).toHaveAttribute("aria-pressed", "false");
@@ -93,8 +93,44 @@ try {
     await expect(page.getByRole("button", { name: "알토 끄기", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("button", { name: "테너 끄기", exact: true })).toHaveAttribute("aria-pressed", "true");
     await page.locator(".hm-seg label").filter({ has: page.getByRole("radio", { name: "75%", exact: true }) }).click();
-    await expect(page.locator(".hm-time")).toContainText("0:00");
-    await expect(page.getByRole("button", { name: "재생", exact: true })).toBeVisible();
+    await expect(page.locator(".hm-time")).toContainText("0:30");
+    await expect(page.locator(".hm-bpm")).toContainText("60");
+    await expect(page.getByRole("button", { name: "일시정지", exact: true }).first()).toBeVisible();
+  });
+  await check("seek gestures preserve phase and keep tips inside the player", async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${base}/ui-preview/07-result`);
+    const slider = page.getByRole("slider", { name: "재생 위치" });
+    const box = await slider.boundingBox();
+    expect(box.height).toBe(44);
+    const value = await slider.getAttribute("aria-valuenow");
+    for (const fraction of [0, 1]) {
+      await page.mouse.move(box.x + box.width / 2, box.y + 22); await page.mouse.down();
+      await page.mouse.move(box.x + box.width * fraction, box.y + 22);
+      await expect(page.locator(".hm-seek-tip")).toBeVisible();
+      const tip = await page.locator(".hm-seek-tip").boundingBox(), panel = await page.locator(".hm-player").boundingBox();
+      expect(tip.x).toBeGreaterThanOrEqual(panel.x); expect(tip.x + tip.width).toBeLessThanOrEqual(panel.x + panel.width);
+      await page.mouse.up(); await expect(page.locator(".hm-seek-tip")).toBeHidden();
+      await expect(page.getByRole("button", { name: "일시정지", exact: true }).first()).toBeVisible();
+    }
+    expect(await slider.getAttribute("aria-valuenow")).not.toBe(value);
+    await page.getByRole("button", { name: "일시정지", exact: true }).first().click();
+    await slider.press("Home"); await expect(slider).toHaveAttribute("aria-valuenow", "0");
+    await slider.press("ArrowRight"); await expect(slider).toHaveAttribute("aria-valuenow", "3");
+    await expect(page.getByRole("button", { name: "이어서 재생", exact: true }).first()).toBeVisible();
+  });
+  await check("octave switch updates lead hint and snapshots into audio sheet", async () => {
+    for (const screen of ["07-result", "12-shared"]) {
+      await page.goto(`${base}/ui-preview/${screen}`);
+      const octave = page.getByRole("switch", { name: "멜로디 한 옥타브 낮게" });
+      await expect(octave).not.toBeChecked(); await octave.click();
+      await expect(page.locator(".hm-mix-row").first()).toContainText("원래 악보 · 한 옥타브 낮게");
+      await page.getByRole("button", { name: "연습 음원 받기", exact: true }).click();
+      await expect(page.getByRole("dialog").getByRole("switch", { name: "멜로디 한 옥타브 낮게" })).toBeChecked();
+      await page.keyboard.press("Escape"); await expect(octave).toBeChecked();
+    }
+    await page.goto(`${base}/ui-preview/J-tenor-octave`);
+    await expect(page.getByRole("switch", { name: "멜로디 한 옥타브 낮게" })).toBeChecked();
   });
   await check("share focus trap, rights gate, Escape and return focus", async () => {
     await page.goto(`${base}/ui-preview/07-result`);
