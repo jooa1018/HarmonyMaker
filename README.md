@@ -94,7 +94,7 @@ API 응답의 `x-request-id`를 오류 문의에 포함하세요. 예상하지 �
 `vercel.json`은 `/api/internal/cleanup`을 매일 00:00 UTC에 호출하도록 선언합니다. CRON_SECRET이 맞아야 실행됩니다. S3 없이도 DB 정리는 수행하지만 과거 객체 참조는 보존하고 `skippedItems`로 보고합니다. 실제 객체 삭제가 완료됐다고 기록하지 않습니다. 기존 OMR 테이블·외래키도 보존합니다.
 
 ```sh
-node --test scripts/check-private-paths.test.mjs
+node --test scripts/check-private-paths.node-check.mjs
 node scripts/check-private-paths.mjs
 npm run typecheck
 npm run lint
