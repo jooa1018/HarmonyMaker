@@ -64,10 +64,19 @@ async function setup(rate = 1) {
   page.on("console", message => { if (["error", "warning"].includes(message.type())) log.push({ kind: message.type(), message: message.text() }); });
   page.on("framenavigated", frame => { if (frame === page.mainFrame()) log.push({ kind: "navigation", url: frame.url() }); });
   await page.route("**/api/**", route => { api.push(route.request().url()); return route.abort(); });
-  await page.route("**/*", async route => {
-    if (route.request().resourceType() !== "document") return route.fallback();
-    const response = await route.fetch();
-    await route.fulfill({ response, headers: { ...response.headers(), "content-security-policy": "worker-src 'self'" } });
+  // A meta policy enforces file-only Workers without replacing the document response.
+  // route.fulfill(document) changes Chromium's address-space classification and breaks dev HMR.
+  await context.addInitScript(() => {
+    function enforceWorkerPolicy() {
+      if (!document.head) return false;
+      const policy = document.createElement("meta");
+      policy.httpEquiv = "Content-Security-Policy"; policy.content = "worker-src 'self'";
+      document.head.append(policy); return true;
+    }
+    if (!enforceWorkerPolicy()) {
+      const observer = new MutationObserver(() => { if (enforceWorkerPolicy()) observer.disconnect(); });
+      observer.observe(document, { childList: true, subtree: true });
+    }
   });
   const cdp = await context.newCDPSession(page); await cdp.send("Emulation.setCPUThrottlingRate", { rate });
   await page.goto(base, { timeout: 120000, waitUntil: "networkidle" }); await page.getByRole("button", { name: "파일 고르기" }).waitFor();
