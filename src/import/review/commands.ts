@@ -1,4 +1,4 @@
-import { parseChord } from "../../domain/chord/parser";
+import { parseDirectChordInput } from "./chord-input";
 import { fraction, type Fraction } from "../../domain/fraction";
 import { performerId } from "../../domain/ids";
 import type { KeySignature, PitchRange } from "../../domain/pitch";
@@ -76,7 +76,7 @@ export function replaceChord(
   return updateChord(draft, chordKey, (chord) => ({
     ...chord,
     sourceText,
-    parseResult: parseChord(sourceText),
+    parseResult: parseDirectChordInput(sourceText),
     source: "manual",
     confirmation: "unconfirmed",
   }));
@@ -99,7 +99,7 @@ export function addChord(
     measureOrdinal,
     onset: fraction(onset.n, onset.d),
     sourceText,
-    parseResult: parseChord(sourceText),
+    parseResult: parseDirectChordInput(sourceText),
     source: "manual",
     confirmation: "unconfirmed",
   };

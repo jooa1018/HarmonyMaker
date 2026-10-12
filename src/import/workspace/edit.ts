@@ -12,6 +12,20 @@ import { buildCandidates } from "../musicxml/parser-core";
 import type { ImportedLeadEventDraft, ImportedMeasureDraft } from "../musicxml/types";
 import type { WorkspaceEdit, WorkspaceState, WorkspaceOrigin } from "./model";
 import { removeWorkspaceNotation, synchronizeWorkspaceNotation } from "./notation";
+import { parseDirectChordInput } from "../review/chord-input";
+import { isChordParseResult } from "../../domain/chord/parser";
+import type { WorkspaceCommand } from "./model";
+
+/** Record canonical text for new input only. Replaying old commands must retain
+ * the old parser output and its digest. The caller records the original in note. */
+export function normalizeNewWorkspaceChord(command: WorkspaceCommand): WorkspaceCommand {
+  if (!command || command.kind !== "chord" || typeof command.text !== "string" || command.text.length > 128) return command;
+  const original = parseChord(command.text);
+  if (original.status !== "ok" || isChordParseResult(original)) return command;
+  const normalized = parseDirectChordInput(command.text);
+  return normalized.status === "ok" && isChordParseResult(normalized)
+    ? { ...command, text: normalized.chord.canonicalSymbol } : command;
+}
 
 export const clean = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const invalid = (): never => { throw new RangeError("WORKSPACE_EDIT_INVALID"); };

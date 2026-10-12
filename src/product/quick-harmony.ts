@@ -18,6 +18,10 @@ export type { QuickHarmonySummary } from "./quick-harmony-summary";
 export type { QuickHarmonyNotice } from "./quick-harmony-notices";
 import type { ProductGenerationOutcome } from "./workspace";
 
+/** Same inclusive integer range as the existing import/workspace tempo editor. */
+export const QUICK_HARMONY_TEMPO_MIN = 20;
+export const QUICK_HARMONY_TEMPO_MAX = 300;
+
 export interface QuickHarmonyPreparation {
   readonly summary?: QuickHarmonySummary;
   readonly status: "ready" | "needs-input" | "unsupported";
@@ -34,8 +38,10 @@ export interface QuickHarmonyPreparation {
 export interface QuickHarmonyChoice {
   readonly parts?: "auto" | readonly [HarmonyPartPreset] | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
   readonly rightsConfirmed: true;
-  /** Canonical ISO UTC time of the whole choice; reused for rights and Lead journal entries. */
+  /** Canonical ISO UTC time of the whole choice; reused for rights, Lead and tempo journal entries. */
   readonly confirmedAt: string;
+  /** BPM in the currently effective beat unit (including its dot). */
+  readonly tempo?: { readonly bpm: number };
   readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous" };
 }
 
@@ -81,7 +87,7 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const questions = findings.filter(f => f.category === "question").map(describe);
   const reasons = findings.filter(f => f.category === "unsupported").map(describe);
   const notes = findings.filter(f => f.category === "warning").map(describe);
-  if (assessment.provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred")) notes.push(
+  if (assessment.provenance.some(p => p.field !== "tempo" && (p.origin === "policy-default" || p.origin === "source-inferred"))) notes.push(
     quickHarmonyNotice({id:"automatic-values",code:"AUTOMATIC_VALUES",category:"warning"}, "악보 설정"));
   for (const part of state.music?.parts ?? []) for (const measure of part.measures) {
     for (const chord of measure.chords) if (chord.interpretation === "kind-text" && chord.source === "musicxml") {
@@ -91,7 +97,7 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   }
   const request = assessment.request;
   const summary = state.music && request?.lead
-    ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}) : undefined;
+    ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}, assessment.provenance.find(p => p.field === "tempo")?.origin === "policy-default" ? "auto" : "score") : undefined;
   return { status: reasons.length ? "unsupported" : questions.length ? "needs-input" : "ready", workspace, questions, reasons, notes,
     ...(summary ? {summary} : {}), details: { assessment } };
 }
@@ -142,16 +148,19 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
   if (!choice || choice.rightsConfirmed !== true) throw new QuickHarmonyInputError("QUICK_HARMONY_RIGHTS_REQUIRED", "화음을 만들 권리가 있는지 확인해 주세요.");
   const c = structuredClone(choice);
   const answers = c.answers;
-  if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers"].includes(k))
+  if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers", "tempo"].includes(k))
     || typeof c.confirmedAt !== "string" || !Number.isFinite(Date.parse(c.confirmedAt))
     || new Date(c.confirmedAt).toISOString() !== c.confirmedAt
+    || (c.tempo !== undefined && (!c.tempo || typeof c.tempo !== "object" || Array.isArray(c.tempo)
+      || Object.keys(c.tempo).some(k => k !== "bpm") || !Number.isSafeInteger(c.tempo.bpm)
+      || c.tempo.bpm < QUICK_HARMONY_TEMPO_MIN || c.tempo.bpm > QUICK_HARMONY_TEMPO_MAX))
     || (c.parts !== undefined && c.parts !== "auto" && (!Array.isArray(c.parts) || c.parts.length < 1 || c.parts.length > 2
       || !Array.from(c.parts).every(part => part === "alto" || part === "tenor") || new Set(c.parts).size !== c.parts.length))
     || (answers !== undefined && (!answers || typeof answers !== "object" || Array.isArray(answers)
       || Object.keys(answers).some(k => !["lead", "unreadPrintedChords"].includes(k))
       || (answers.lead !== undefined && typeof answers.lead !== "string")
       || (answers.unreadPrintedChords !== undefined && answers.unreadPrintedChords !== "carry-previous")))) {
-    throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "성부 선택과 권리 확인 시각을 다시 확인해 주세요.");
+    throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "성부 선택, 빠르기와 권리 확인 시각을 다시 확인해 주세요.");
   }
   if (!prep.workspace) return { status: "unsupported", preparation: rejectedFile("QUICK_HARMONY_WORKSPACE_REQUIRED") };
   let workspace = await createImmutableWorkspace(prep.workspace);
@@ -163,6 +172,12 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
     if (state.request.lead !== answers.lead) workspace = await applyWorkspaceCommand(workspace, workspace,
       { kind: "lead", lead: answers.lead, rhythmVoices: [] },
       { id: `quick-lead:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 멜로디 성부를 선택함", actor: "user", at: c.confirmedAt });
+  }
+  if (c.tempo !== undefined) {
+    const effective = (await assessAutoDraft(workspace)).request?.tempo;
+    if (!effective) throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "악보의 박자와 빠르기를 먼저 확인해 주세요.");
+    workspace = await applyWorkspaceCommand(workspace, workspace, { kind: "tempo", tempo: { ...effective, bpm: c.tempo.bpm } },
+      { id: `quick-tempo:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 빠르기를 선택함", actor: "user", at: c.confirmedAt });
   }
   const options = normalizeAutoDraftOptions({
     ...(Array.isArray(c.parts) ? { harmonyParts: c.parts } : {}),
