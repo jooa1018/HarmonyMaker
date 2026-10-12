@@ -26,6 +26,36 @@ export interface PlaybackPlan {
   readonly trackLabels: Readonly<Record<string, string>>;
   /** Runtime presentation metadata only; never part of a saved project or digest. */
   readonly trackRoles?: Readonly<Record<string, "lead" | "upper" | "lower" | "band" | "other">>;
+  /** Runtime navigation metadata, in performance order (repeat numbers recur). */
+  readonly measures?: readonly PlaybackMeasure[];
+}
+
+export interface PlaybackMeasure {
+  readonly number: number;
+  readonly startQuarter: number;
+  readonly durationQuarter: number;
+  /** Absolute beat starts, including a partial first beat in a pickup. */
+  readonly beatStarts: readonly number[];
+}
+
+export type LeadOctave = 0 | -1;
+export function defaultLeadOctave(plan: PlaybackPlan): LeadOctave {
+  const roles = plan.trackIds.map(id => plan.trackRoles?.[id]);
+  const lead = plan.events.filter(event => event.trackId === "track:source-lead");
+  return roles.includes("upper") && !roles.includes("lower") && lead.length > 0
+    && lead.every(event => event.midi - 12 >= 40) ? -1 : 0;
+}
+
+function boundedPosition(plan: PlaybackPlan, quarter: number): number {
+  return Math.max(0, Math.min(Number.isNaN(quarter) ? 0 : quarter, Math.max(0, plan.totalQuarter - 1e-9)));
+}
+export function practiceMeasureAt(plan: PlaybackPlan, quarter: number): PlaybackMeasure | undefined {
+  const position = boundedPosition(plan, quarter);
+  return plan.measures?.find(measure => position >= measure.startQuarter && position < measure.startQuarter + measure.durationQuarter);
+}
+export function practiceSeekQuarter(plan: PlaybackPlan, quarter: number): number {
+  const position = boundedPosition(plan, quarter), measure = practiceMeasureAt(plan, position);
+  return measure?.beatStarts.findLast(start => start <= position) ?? Math.floor(position);
 }
 
 export type PlaybackPlanConstructionOutcome =
@@ -136,6 +166,15 @@ export function buildPlaybackPlan(document: ArrangementRenderDocument, trackRole
     totalQuarter: document.measures.reduce((sum, measure) => sum + value(measure.duration), 0),
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,
     trackLabels,
+    measures: document.measures.map((measure, index) => {
+      const startQuarter = value(starts[index]), durationQuarter = value(measure.duration);
+      const beat = measure.time.denominator === 8 && measure.time.numerator % 3 === 0 ? 1.5 : 4 / measure.time.denominator;
+      const fullDuration = measure.time.numerator * 4 / measure.time.denominator;
+      const pickupOffset = Math.max(0, fullDuration - durationQuarter);
+      const beatStarts = [startQuarter];
+      for (let offset = beat - pickupOffset % beat; offset < durationQuarter - 1e-9; offset += beat) beatStarts.push(startQuarter + offset);
+      return { number: measure.sourceMeasureNumber, startQuarter, durationQuarter, beatStarts };
+    }),
     trackRoles: {
       "track:source-lead": "lead",
       ...Object.fromEntries(document.generatedHarmonyTracks.map(track => {
