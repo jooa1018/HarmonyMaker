@@ -59,8 +59,8 @@ export type WorkerMessage =
   | { readonly kind: "stage"; readonly generation: number; readonly id: number; readonly stage: WorkerStage }
   | { readonly kind: "commit-ready"; readonly generation: number; readonly id: number }
   | { readonly kind: "result"; readonly generation: number; readonly id: number; readonly value: unknown }
-  | { readonly kind: "error"; readonly generation: number; readonly id: number; readonly code: string; readonly messageKo: string };
+  | { readonly kind: "error"; readonly generation: number; readonly id: number; readonly code: string; readonly messageKo: string; readonly projectId?: string };
 
 export class HarmonyWorkerError extends Error {
-  constructor(readonly code: string, messageKo: string) { super(messageKo); this.name = "HarmonyWorkerError"; }
+  constructor(readonly code: string, messageKo: string, readonly projectId?: string) { super(messageKo); this.name = "HarmonyWorkerError"; }
 }

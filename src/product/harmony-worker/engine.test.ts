@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { IDBFactory } from "fake-indexeddb";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import * as views from "../project-view";
 import { createWorkerEngine, type WorkerExecution } from "./engine";
 import type { Operation, Request, WorkerOperations } from "./protocol";
 import { IndexedDbProjectStore } from "../local-project-store";
@@ -17,6 +18,7 @@ import { readVerifiedWorkspace } from "../../import/workspace/journal";
 const xml = readFileSync(new URL("../fixtures/wag11/4-4-1.musicxml", import.meta.url), "utf8");
 const file = (score = xml) => ({ bytes: new TextEncoder().encode(score), fileName: "worker.musicxml" });
 const choice = { parts: ["alto", "tenor"], rightsConfirmed: true, confirmedAt: "2026-10-10T00:00:00.000Z" } as const;
+afterEach(() => vi.restoreAllMocks());
 function harness() {
   const factory = new IDBFactory(), store = new IndexedDbProjectStore(factory), engine = createWorkerEngine(store);
   const stages: string[] = [], commits: string[] = [];
@@ -118,4 +120,55 @@ it("keeps another tab's duplicate record and deletes only after granting commit"
   expect(h.commits).toHaveLength(2);
   await h.call("release", { handle: prep.handle });
   await expect(h.call("generate", { handle: prep.handle, choice })).rejects.toMatchObject({ code: "WORKER_HANDLE_EXPIRED" });
+});
+
+it("evicts the least recently used preparation and project handles without stopping the session", async () => {
+  const h = harness(), preps = [];
+  for (let i = 0; i < 32; i++) preps.push(await h.call("prepare", file()));
+  await h.call("answer", { handle: preps[0].handle, answer: { confirmedAt: choice.confirmedAt } });
+  await h.call("prepare", file());
+  await expect(h.call("answer", { handle: preps[1].handle, answer: { confirmedAt: choice.confirmedAt } })).rejects.toMatchObject({ code: "WORKER_HANDLE_EXPIRED" });
+  const saved = await h.call("generate", { handle: preps[0].handle, choice });
+  if (saved.status !== "saved") throw Error(saved.status);
+  const handles = [saved.project.handle];
+  for (let i = 1; i < 32; i++) handles.push((await h.call("open", { projectId: saved.project.projectId! }))!.handle);
+  await h.call("exportMusicXml", { handle: handles[0] });
+  await h.call("open", { projectId: saved.project.projectId! });
+  await expect(h.call("exportMusicXml", { handle: handles[1] })).rejects.toMatchObject({ code: "WORKER_HANDLE_EXPIRED" });
+  expect(await h.call("exportMusicXml", { handle: handles[0] })).toContain("<score-partwise");
+}, 30_000);
+
+it.each(["generate", "saveProject"] as const)("reports quota only after confirming no record was saved: %s", async operation => {
+  const h = harness(), prep = await h.call("prepare", file());
+  const encoded = readFileSync(new URL("../fixtures/auto-draft-v1-auto.json", import.meta.url), "utf8");
+  const imported = await h.call("importProject", { encoded });
+  vi.spyOn(h.store, "saveNew").mockRejectedValue(new DOMException("full", "QuotaExceededError"));
+  const result = operation === "generate" ? h.call(operation, { handle: prep.handle, choice })
+    : h.call(operation, { handle: imported.handle, projectId: "quota", updatedAt: choice.confirmedAt });
+  await expect(result).rejects.toMatchObject({ code: "STORAGE_QUOTA_EXCEEDED",
+    message: "기기 저장 공간이 부족해 저장하지 못했어요. 공간을 비운 뒤 다시 시도해 주세요." });
+  expect(await h.store.list()).toEqual([]);
+});
+
+it.each(["generate", "saveProject"] as const)("returns the committed projectId when view construction fails: %s", async operation => {
+  const h = harness(), prep = await h.call("prepare", file());
+  const encoded = readFileSync(new URL("../fixtures/auto-draft-v1-auto.json", import.meta.url), "utf8");
+  const imported = await h.call("importProject", { encoded });
+  vi.spyOn(views, "projectPracticeView").mockRejectedValueOnce(Error("view failed"));
+  const result = operation === "generate" ? h.call(operation, { handle: prep.handle, choice })
+    : h.call(operation, { handle: imported.handle, projectId: "saved-view", updatedAt: choice.confirmedAt });
+  const error = await result.catch(e => e);
+  expect(error).toMatchObject({ code: "WORKER_SAVED_VIEW_FAILED", projectId: expect.any(String) });
+  expect(await h.store.load(error.projectId)).not.toBeNull();
+  expect((await h.call("open", { projectId: error.projectId }))?.practice.status).toBe("available");
+});
+
+it("returns the winning saved project rather than a quota error after another tab commits", async () => {
+  const h = harness(), prep = await h.call("prepare", file()), save = h.store.saveNew.bind(h.store);
+  vi.spyOn(h.store, "saveNew").mockImplementation(async (record, beforeCommit) => {
+    await save(record, beforeCommit);
+    throw new DOMException("other tab won", "QuotaExceededError");
+  });
+  expect((await h.call("generate", { handle: prep.handle, choice })).status).toBe("saved");
+  expect(await h.store.list()).toHaveLength(1);
 });

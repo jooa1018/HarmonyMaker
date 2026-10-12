@@ -413,7 +413,9 @@ type ShareConfirmation = {
 달라도 최종 선택의 journal은 생성 시 한 번만 기록된다. `tempo`를 생략한 생성은
 기존 결과 바이트를 유지한다. 범위는 기존 `QUICK_HARMONY_TEMPO_MIN/MAX`를 사용한다.
 
-생성 저장 id는 현재 H3 정책과 같은 `quick-` + semanticDigest다. 준비 workspace digest,
+생성 저장 id는 `src/product/quick-harmony-identity.ts`의
+`quickHarmonyProjectId(preparation: QuickHarmonyPreparation, choice: QuickHarmonyChoice): Promise<string>`로 계산한다.
+Worker가 이 함수를 쓰며 현재 H3 정책과 같은 `quick-` + semanticDigest다. 준비 workspace digest,
 정렬한 parts(auto이면 추천 파트), confirmedAt, answers를 사용하고, 명시적으로 빠르기를
 선택한 경우만 tempo를 더한다. 같은 선택의 재시도는 기존 항목을 검증해 반환한다.
 다른 탭이 먼저 저장한 경우에도 그 항목을 다시 읽고 덮어쓰지 않는다.
@@ -436,7 +438,14 @@ handle과 대기 명령도 무효가 된다. 취소된 Promise는 AbortError로 
 실패하고 라이브러리를 다시 확인한다. 취소 성공이나 저장 성공으로 추정하지 않는다.
 
 Worker 시작·메시지 오류는 `HarmonyWorkerError`의 code와 한국어 message로 끝난다.
-사용이 끝난 handle은 release한다(준비/프로젝트 각각 최대 32개).
+사용이 끝난 handle은 release한다. 준비/프로젝트 각각 최근 사용한 32개를 보관하며,
+한도를 넘으면 가장 오래 사용하지 않은 handle을 비운다(LRU). 비워진 handle은
+`WORKER_HANDLE_EXPIRED`로 끝나므로 다시 prepare/open한다.
+저장 공간 부족으로 아무것도 저장되지 않은 경우 `STORAGE_QUOTA_EXCEEDED`와
+“기기 저장 공간이 부족해 저장하지 못했어요. 공간을 비운 뒤 다시 시도해 주세요.”를 반환한다.
+commit 성공 뒤 표시 준비가 실패하면 `WORKER_SAVED_VIEW_FAILED`와
+`HarmonyWorkerError.projectId: string`을 반환한다. 해당 id는 이미 저장된 항목이므로
+다시 생성하는 대신 내 악보에서 열 수 있다.
 Worker가 재시작되면 모든 검증을 기존 파일·IndexedDB 바이트에서 다시 수행한다.
 
-H3 참고: 화면에서 같은 생성을 재시도해도 라이브러리에 중복 항목이 생기지 않도록 저장 id를 정하는 방법은 H3에서 정한다.
+H3 참고: 재시도의 저장 id는 위 공통 함수로 정한다. H3의 기존 계산 사본은 3-8 Worker 연결 때 제거한다.

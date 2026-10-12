@@ -26,6 +26,7 @@ export function runWorker(port: WorkerPort, engine: ReturnType<typeof createWork
       const code = known ? error.code
         : error instanceof Error && /^[A-Z][A-Z0-9_:-]{0,120}$/u.test(error.message) ? error.message : "WORKER_OPERATION_FAILED";
       port.postMessage({ kind: "error", ...identity, code,
+        ...(error instanceof HarmonyWorkerError && error.projectId ? { projectId: error.projectId } : {}),
         messageKo: known ? error.message : "악보 처리에 실패했어요. 입력이나 저장된 프로젝트를 확인해 주세요." });
     } finally { grant = undefined; }
   };

@@ -1,4 +1,4 @@
-import { semanticDigest } from "../../domain/digest/canonical";
+import { quickHarmonyProjectId } from "../quick-harmony-identity";
 import type { HarmonyProject } from "../../domain/project";
 import { isPracticeSharePayload } from "../../domain/share";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
@@ -27,25 +27,36 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
   const preparations = new Map<string, QuickHarmonyPreparation>();
   const projects = new Map<string, HarmonyProject>();
   function allocate<T extends string>(map: Map<string, unknown>, value: unknown): T {
-    if (map.size >= MAX_HANDLES) failure("WORKER_HANDLE_LIMIT");
+    if (map.size >= MAX_HANDLES) map.delete(map.keys().next().value!);
     const handle = crypto.randomUUID() as T;
     map.set(handle, value);
     return handle;
   }
-  function get<T>(map: ReadonlyMap<string, T>, handle: string): T {
+  function get<T>(map: Map<string, T>, handle: string): T {
     const value = map.get(handle);
     if (!value) failure("WORKER_HANDLE_EXPIRED");
+    map.delete(handle); map.set(handle, value);
     return value;
   }
   function preparationView(prep: QuickHarmonyPreparation, handle?: PreparationHandle): PreparationView {
     return { handle: handle ?? allocate<PreparationHandle>(preparations, prep), status: prep.status,
       ...(prep.summary ? { summary: prep.summary } : {}), questions: prep.questions, reasons: prep.reasons, notes: prep.notes };
   }
-  function availableProjectSlot() { if (projects.size >= MAX_HANDLES) failure("WORKER_HANDLE_LIMIT"); }
   async function projectView(project: HarmonyProject, projectId: string | null, updatedAt: string | null, execution: WorkerExecution): Promise<ProjectView> {
     execution.stage("view");
     const description = describeHarmonyProject(project), practice = await projectPracticeView(project);
     return { handle: allocate<ProjectHandle>(projects, project), projectId, updatedAt, rightsBasis: project.source.rights.basis, description, practice };
+  }
+  async function savedProjectView(project: HarmonyProject, projectId: string, updatedAt: string, execution: WorkerExecution): Promise<ProjectView> {
+    try { return await projectView(project, projectId, updatedAt, execution); }
+    catch {
+      throw new HarmonyWorkerError("WORKER_SAVED_VIEW_FAILED", "악보는 저장했지만 화면을 준비하지 못했어요. 내 악보에서 다시 열어 주세요.", projectId);
+    }
+  }
+  function unsavedFailure(error: unknown): never {
+    if (error instanceof Error && error.name === "QuotaExceededError")
+      throw new HarmonyWorkerError("STORAGE_QUOTA_EXCEEDED", "기기 저장 공간이 부족해 저장하지 못했어요. 공간을 비운 뒤 다시 시도해 주세요.");
+    throw error;
   }
   return {
     async execute(request: Request, execution: WorkerExecution): Promise<unknown> {
@@ -62,12 +73,9 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
           return preparationView(await answerQuickHarmony(get(preparations, request.input.handle), request.input.answer), request.input.handle);
         }
         case "generate": {
-          availableProjectSlot();
           const prep = get(preparations, request.input.handle), choice = validateQuickHarmonyChoice(request.input.choice);
           if (!prep.workspace) return { status: "unsupported", preparation: preparationView(prep, request.input.handle), parts: [] };
-          // Existing H3 identity policy; optional tempo only affects new tempo choices.
-          const parts = Array.isArray(choice.parts) ? [...new Set(choice.parts)].sort() : [prep.summary?.recommendedPart ?? "alto"];
-          const projectId = `quick-${await semanticDigest({ workspaceDigest: prep.workspace.digest, parts, confirmedAt: choice.confirmedAt, answers: choice.answers ?? {}, ...(choice.tempo ? { tempo: choice.tempo } : {}) })}`;
+          const projectId = await quickHarmonyProjectId(prep, choice);
           execution.stage("verifying");
           const existing = await store.load(projectId);
           if (existing) return { status: "saved", project: await projectView(existing.project, projectId, existing.updatedAt, execution) };
@@ -83,10 +91,10 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
             // Another tab can have committed this same choice. Read and verify
             // the winning record, never replace it or display a different graph.
             const winner = await store.load(projectId);
-            if (!winner) throw error;
+            if (!winner) unsavedFailure(error);
             project = winner.project; updatedAt = winner.updatedAt;
           }
-          return { status: "saved", project: await projectView(project, projectId, updatedAt, execution) };
+          return { status: "saved", project: await savedProjectView(project, projectId, updatedAt, execution) };
         }
         case "open": {
           execution.stage("verifying");
@@ -103,15 +111,18 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
           return projectView(await importHarmonyProject(request.input.encoded), null, null, execution);
         }
         case "saveProject": {
-          availableProjectSlot();
           const { handle, projectId, updatedAt } = request.input;
           if (typeof projectId !== "string" || !projectId.trim() || projectId.length > 512 || typeof updatedAt !== "string"
             || !Number.isFinite(Date.parse(updatedAt)) || new Date(updatedAt).toISOString() !== updatedAt) failure("WORKER_REQUEST_INVALID");
           const project = get(projects, handle);
           execution.stage("verifying");
           // Import saves are add-only, using an explicit UI library identity.
-          await store.saveNew({ projectId, updatedAt, project }, execution.beforeCommit);
-          return projectView(project, projectId, updatedAt, execution);
+          try { await store.saveNew({ projectId, updatedAt, project }, execution.beforeCommit); }
+          catch (error) {
+            if (!await store.load(projectId)) unsavedFailure(error);
+            throw error;
+          }
+          return savedProjectView(project, projectId, updatedAt, execution);
         }
         case "exportProject": {
           execution.stage("verifying");

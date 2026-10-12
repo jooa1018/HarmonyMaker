@@ -22,6 +22,13 @@ function setup(timeout = 60_000) {
   return { client, workers };
 }
 afterEach(() => vi.useRealTimers());
+it("delivers the saved project identity to the client on a view failure", async () => {
+  const { client, workers } = setup(), result = client.request("saveProject", { handle: "h" as never, projectId: "saved", updatedAt: "now" });
+  workers[0].ready(); workers[0].commit(); const r = workers[0].request();
+  workers[0].emit({ kind: "error", generation: r.generation, id: r.id, code: "WORKER_SAVED_VIEW_FAILED", messageKo: "저장됨", projectId: "saved" });
+  await expect(result).rejects.toMatchObject({ code: "WORKER_SAVED_VIEW_FAILED", projectId: "saved" });
+  await client.dispose();
+});
 
 it("loads lazily, serializes jobs, snapshots inputs and ignores reordered old responses", async () => {
   const { client, workers } = setup();

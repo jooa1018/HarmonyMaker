@@ -74,8 +74,9 @@ export function createWorkerTransport(factory: () => WorkerLike, loadTimeoutMs =
       try { worker?.postMessage({ kind: "commit", generation, id: p.id }); }
       catch { fail("WORKER_COMMIT_OUTCOME_UNKNOWN"); }
     } else if (data.kind === "result" && validResult(p.operation, data.value)) finish(undefined, data.value);
-    else if (data.kind === "error" && typeof data.code === "string" && typeof data.messageKo === "string")
-      finish(new HarmonyWorkerError(data.code, data.messageKo));
+    else if (data.kind === "error" && typeof data.code === "string" && typeof data.messageKo === "string"
+      && (data.projectId === undefined || typeof data.projectId === "string"))
+      finish(new HarmonyWorkerError(data.code, data.messageKo, data.projectId));
     else fail(committing ? "WORKER_COMMIT_OUTCOME_UNKNOWN" : "WORKER_RESPONSE_INVALID");
   }
   function pump() {

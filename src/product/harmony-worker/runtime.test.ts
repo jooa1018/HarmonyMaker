@@ -1,8 +1,18 @@
 import { expect, it } from "vitest";
 import { runWorker, type WorkerPort } from "./runtime";
-import type { ClientMessage, WorkerMessage } from "./protocol";
+import { HarmonyWorkerError, type ClientMessage, type WorkerMessage } from "./protocol";
 
 const flush = async () => { for (let n = 0; n < 8; n++) await Promise.resolve(); };
+it("preserves the saved identity in a view failure message", async () => {
+  const messages: WorkerMessage[] = [];
+  let receive!: (event: { data: ClientMessage }) => void;
+  runWorker({ postMessage: m => messages.push(m), addEventListener: (_, fn) => { receive = fn; } }, {
+    async execute() { throw new HarmonyWorkerError("WORKER_SAVED_VIEW_FAILED", "저장됨", "quick-saved"); },
+  });
+  receive({ data: { kind: "request", generation: 1, id: 1, operation: "ping", input: null } });
+  await flush();
+  expect(messages).toContainEqual(expect.objectContaining({ kind: "error", code: "WORKER_SAVED_VIEW_FAILED", projectId: "quick-saved" }));
+});
 it("executes serially and accepts only the active request's commit grant", async () => {
   const messages: WorkerMessage[] = [], ran: number[] = [];
   let receive!: (event: { data: ClientMessage }) => void;
