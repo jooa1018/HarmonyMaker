@@ -13,12 +13,37 @@ import { quickHarmonyProjectId } from "../quick-harmony-identity";
 import { materializeActiveArrangement } from "../render";
 import { materializePracticeShare } from "../practice-share";
 import { tripletExercise } from "../fixtures/triplet-exercise";
+import { pickupRepeatExercise } from "../fixtures/pickup-repeat-exercise";
 import { readVerifiedWorkspace } from "../../import/workspace/journal";
 
 const xml = readFileSync(new URL("../fixtures/wag11/4-4-1.musicxml", import.meta.url), "utf8");
 const file = (score = xml) => ({ bytes: new TextEncoder().encode(score), fileName: "worker.musicxml" });
 const choice = { parts: ["alto", "tenor"], rightsConfirmed: true, confirmedAt: "2026-10-10T00:00:00.000Z" } as const;
 afterEach(() => vi.restoreAllMocks());
+
+it("previews and generates an explicit pickup answer without duplicating its journal or granting preview rights", async () => {
+  const h = harness(), prep = await h.call("prepare", file(pickupRepeatExercise("outside", true)));
+  expect(prep.status).toBe("needs-input");
+  expect((await h.call("generate", { handle: prep.handle, choice })).status).toBe("needs-input");
+  expect(await h.store.list()).toEqual([]);
+  const answers = { pickupChord: "use-following-first-chord" } as const;
+  for (let i = 0; i < 2; i++) {
+    const preview = await h.call("answer", { handle: prep.handle, answer: { confirmedAt: choice.confirmedAt, answers } });
+    expect(preview.status).toBe("ready"); expect(preview.handle).toBe(prep.handle);
+  }
+  // The base still requires the answer, even after previews.
+  expect((await h.call("generate", { handle: prep.handle, choice })).status).toBe("needs-input");
+  const generated = await h.call("generate", { handle: prep.handle, choice: { ...choice, answers } });
+  if (generated.status !== "saved") throw Error(generated.status);
+  const saved = (await h.store.load(generated.project.projectId!))!.project;
+  expect(saved.source.importInfo?.sourceKind).toBe("score-workspace");
+  if (saved.source.importInfo?.sourceKind !== "score-workspace") throw Error("missing proof");
+  const { parseScoreWorkspace } = await import("../../import/workspace/journal");
+  const workspace = await parseScoreWorkspace(saved.source.importInfo.workspaceMetadata.proof);
+  expect(workspace.operations.filter(o => o.command.kind === "chord")).toHaveLength(1);
+  expect((await h.call("generate", { handle: prep.handle, choice: { ...choice, answers } })).status).toBe("saved");
+  expect(h.commits).toHaveLength(1);
+});
 
 // Captured from H3 quickProjectId at a53944b before removing the UI import.
 // Keep these literal expectations independent of the public identity function.
