@@ -51,6 +51,7 @@ it("clamps taps and held buttons to supplied limits, supports keyboard tapping, 
   await pointer(tap(), "pointerdown"); now += 100; await pointer(tap(), "pointerdown");
   expect(bpm()).toBe(200); expect(button("1 빠르게").disabled).toBe(true);
   const minus = button("1 느리게"); await pointer(minus, "pointerdown"); await tick(20000); expect(bpm()).toBe(30); expect(minus.disabled).toBe(true);
+  changes.mockClear(); await tick(1000); expect(changes).not.toHaveBeenCalled();
   await pointer(minus, "pointerup"); now += 2001;
   for (const key of ["Enter", " "]) { await act(async () => tap().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))); now += 1000; }
   expect(bpm()).toBe(60);

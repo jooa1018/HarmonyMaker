@@ -83,7 +83,20 @@ try {
       page.on("pageerror", error => errors.push(error.message));
       page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url()); });
       await upload(page, await fixture(`wag11/${name}.musicxml`));
+      let changedTempo;
+      if (index === 0 && viewport.width === 390) {
+        const value = page.locator(".hm-tempo-value > span:nth-child(2)");
+        const originalTempo = Number(await value.innerText());
+        await page.getByRole("button", { name: "1 빠르게", exact: true }).click();
+        await expect(value).toHaveText(String(originalTempo + 1));
+        await page.getByRole("button", { name: "다른 파일", exact: true }).click();
+        await page.locator('input[type="file"]').setInputFiles({ name: "new.musicxml", mimeType: "application/xml", buffer: Buffer.from(await fixture(`wag11/${name}.musicxml`)) });
+        await expect(value).toHaveText(String(originalTempo), { timeout: 90000 });
+        await expect(page.locator(".hm-tempo-badge")).toBeVisible();
+        await page.getByRole("button", { name: "1 빠르게", exact: true }).click(); changedTempo = originalTempo + 1;
+      }
       await generate(page);
+      if (changedTempo !== undefined) await expect(page.locator(".hm-bpm")).toContainText(String(changedTempo));
       for (const label of ["멜로디", "알토", "테너"]) await expect(page.getByRole("button", { name: `${label}만 듣기` })).toBeVisible();
       expect(await page.locator(".hm-score-notation").evaluate(el => getComputedStyle(el).getPropertyValue("--hm-v1").trim() === getComputedStyle(el).getPropertyValue("--hm-alto").trim())).toBe(true);
       await page.getByRole("button", { name: "테너만 듣기" }).click();
@@ -96,6 +109,7 @@ try {
       const xml = await readFile(await (await downloaded).path(), "utf8");
       expect(xml).toContain("<clef-octave-change>-1</clef-octave-change>");
       expect(xml).toContain("알토"); expect(xml).toContain("테너");
+      if (changedTempo !== undefined) expect(xml).toContain(`<per-minute>${changedTempo}</per-minute>`);
       const violations = (await new AxeBuilder({ page }).include(".hm").analyze()).violations.filter(item => ["critical", "serious"].includes(item.impact));
       expect(violations).toEqual([]); expect(await widthFits(page)).toBe(true);
       if (viewport.width === 390) {

@@ -20,6 +20,7 @@ export function TempoRow({ tempo, value, onChange, min, max }: {
   function set(next: number) {
     current.current = Math.max(min, Math.min(max, Math.round(next)));
     onChange(current.current === tempo.bpm ? undefined : current.current);
+    if (current.current === min || current.current === max) stopHold();
   }
   function tap() {
     const now = performance.now(), previous = taps.current.at(-1);
@@ -32,6 +33,7 @@ export function TempoRow({ tempo, value, onChange, min, max }: {
   function startStep(event: PointerEvent<HTMLButtonElement>, delta: -1 | 1) {
     if (!event.isPrimary || event.button !== 0) return;
     stopHold(); set(current.current + delta);
+    if (current.current === min || current.current === max) return;
     hold.current = setTimeout(() => { repeat.current = setInterval(() => set(current.current + delta), 80); }, 400);
   }
   return <div className="hm-tempo">

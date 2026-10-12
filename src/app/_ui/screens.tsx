@@ -2,6 +2,7 @@
 import Link from "next/link";
 // Screen markup transcribed from the approved mockup. The preview controller supplies fixture state.
 import { AppBar, PartPicker, CtaBar, FileDrop, LeadQuestionChoices, CopyPromptButton, LibraryList, NotesFold } from "./controls";
+import { QUICK_HARMONY_TEMPO_MIN, QUICK_HARMONY_TEMPO_MAX } from "../../product/quick-harmony";
 import { TempoRow } from "./TempoRow";
 import { PracticePanel, PracticeMixer, PlayButton, ScoreNotation, MiniPlayerBar } from "./practice";
 import { SeekBar } from "./SeekBar";
@@ -55,7 +56,7 @@ export function Screen02parts({ ui }: { ui: PreviewController }) { return (
 <button className="hm-song-change" type="button" onClick={ui.reset}>다른 파일</button>
 </div>
 <div className="hm-chips"><span className="hm-chip">G장조</span><span className="hm-chip">4/4</span><span className="hm-chip">24마디</span><span className="hm-chip">가사 1절</span></div>
-<TempoRow tempo={{ bpm: 80, beatUnit: 4, dotted: false, origin: "auto" }} value={ui.tempoOverride} onChange={ui.setTempoOverride} min={30} max={200} />
+<TempoRow tempo={{ bpm: 80, beatUnit: 4, dotted: false, origin: "auto" }} value={ui.tempoOverride} onChange={ui.setTempoOverride} min={QUICK_HARMONY_TEMPO_MIN} max={QUICK_HARMONY_TEMPO_MAX} />
 </section>
 <h2 className="hm-section-title" id="parts-s2">화음 파트를 고르세요</h2>
 <PartPicker value={ui.part} onChange={ui.setPart} recommended={ui.screen === "02-parts" ? "alto" : undefined} />

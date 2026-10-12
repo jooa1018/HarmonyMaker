@@ -24,7 +24,7 @@ it("normalizes part order and reopens an existing choice without generating or s
   expect(await quickProjectId(prep, choice)).toBe(await quickProjectId(prep, { ...choice, parts: ["tenor", "alto"] }));
   expect(await quickProjectId(prep, choice)).not.toBe(await quickProjectId(prep, { ...choice, parts: ["alto"] }));
   const store = new IndexedDbProjectStore(new IDBFactory());
-  const generate = vi.fn(async () => result);
+  const generate = vi.fn<typeof generateQuickHarmony>(async () => result);
   const first = await generateAndSave(prep, choice, { store, generate });
   expect(await generateAndSave(prep, choice, { store, generate })).toEqual(first);
   expect(generate).toHaveBeenCalledTimes(1);
@@ -68,4 +68,18 @@ it("colors the engine h1/h2 voices from public placement metadata", async () => 
   expect(voiceColorVars(view.abc, roles)).toEqual({ "--hm-v0": "var(--hm-melody)", "--hm-v1": "var(--hm-alto)", "--hm-v2": "var(--hm-tenor)" });
   const mixed = { ...registry, generatedTracks: registry.generatedTracks.map(track => ({ ...track, placements: [{ phraseId: "one", placementRole: "upper" as const }, { phraseId: "two", placementRole: "lower" as const }] })) };
   expect(voiceColorVars(view.abc, scoreVoiceRoles(mixed))["--hm-v1"]).toBe("currentColor");
+});
+it("keeps the legacy ID when tempo is omitted, but separates edited tempos", async () => {
+  const { semanticDigest } = await import("../../domain/digest/canonical");
+  const legacy = `quick-${await semanticDigest({ workspaceDigest: prep.workspace!.digest, parts: ["alto", "tenor"], confirmedAt: choice.confirmedAt, answers: {} })}`;
+  expect(await quickProjectId(prep, choice)).toBe(legacy);
+  expect(await quickProjectId(prep, { ...choice, tempo: undefined })).toBe(legacy);
+  const store = new IndexedDbProjectStore(new IDBFactory()), generate = vi.fn<typeof generateQuickHarmony>(async () => result);
+  const original = await generateAndSave(prep, choice, { store, generate });
+  const edited = await generateAndSave(prep, { ...choice, tempo: { bpm: 72 } }, { store, generate });
+  expect(edited).not.toEqual(original);
+  expect(await generateAndSave(prep, { ...choice, tempo: { bpm: 72 } }, { store, generate })).toEqual(edited);
+  expect(await quickProjectId(prep, { ...choice, tempo: { bpm: 73 } })).not.toBe(await quickProjectId(prep, { ...choice, tempo: { bpm: 72 } }));
+  expect(generate).toHaveBeenCalledTimes(2); expect(generate.mock.calls[1][1]).toMatchObject({ tempo: { bpm: 72 } });
+  expect(await store.list()).toHaveLength(2);
 });
