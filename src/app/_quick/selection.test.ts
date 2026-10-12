@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QuickHarmonyPreparation } from "../../product/quick-harmony";
 import { prepareQuickHarmony } from "../../product/quick-harmony";
-import { confirmRights, emptySelection, harmonyChoice, preparedSelection, questionKind, unansweredQuestions } from "./selection";
+import { confirmRights, emptySelection, harmonyChoice, preparedSelection, questionKind, selectQuestionAnswer, unansweredQuestions } from "./selection";
 const now = "2026-10-10T00:00:00.000Z";
 const xml = `<?xml version="1.0"?><score-partwise version="4.0"><work><work-title>화면 시험</work-title></work><part-list><score-part id="P1"><part-name>멜로디</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes><harmony><root><root-step>C</root-step></root><kind>major</kind></harmony><note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note></measure></part></score-partwise>`;
 const load = () => prepareQuickHarmony({ bytes: new TextEncoder().encode(xml), fileName: "화면 시험.musicxml" });
@@ -45,4 +45,19 @@ it("sends tempo only after an edit and clears it for a newly prepared file", asy
   expect(harmonyChoice(prep, { ...selected, tempoOverride: 72 })).toMatchObject({ tempo: { bpm: 72 }, confirmedAt: now });
   expect(harmonyChoice(prep, { ...selected, tempoOverride: undefined })).not.toHaveProperty("tempo");
   expect(preparedSelection(prep).tempoOverride).toBeUndefined();
+});
+
+it("requires an offered pickup answer in its own answer field and forwards future offered values", async () => {
+  const prep = await load();
+  const question = { id: "pickup-chord", messageKo: "엔진 질문", actionKo: "엔진 안내", choices: [{ value: "use-following-first-chord", labelKo: "추천 코드" }] };
+  const pending = { ...prep, status: "needs-input" as const, questions: [question] };
+  const selection = confirmRights({ ...preparedSelection(pending), part: "alto", answers: { lead: question.choices[0].value } }, true, () => now);
+  expect(questionKind(question)).toBe("pickup");
+  expect(harmonyChoice(pending, selection)).toBeUndefined();
+  expect(selectQuestionAnswer(selection, question, "not-offered")).toBeUndefined();
+  const answered = selectQuestionAnswer(selection, question, question.choices[0].value)!;
+  expect(harmonyChoice(pending, answered)?.answers).toMatchObject({ pickupChord: question.choices[0].value });
+  const future = { ...question, choices: [{ value: "future-engine-value", labelKo: "새 추천 답" }] };
+  expect(selectQuestionAnswer(selection, future, future.choices[0].value)?.answers.pickupChord).toBe("future-engine-value");
+  expect(preparedSelection(pending).answers).toEqual({});
 });

@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { PreparationView, WorkerStage } from "../../product/harmony-worker/client";
+import type { QuickHarmonyNotice } from "../../product/quick-harmony";
 import type { PartChoice } from "../_ui/format";
 import type { ScreenWorkerSession } from "../_worker/session";
 import { useWorkerHandle } from "../_worker/useWorkerHandle";
 import { isAbort } from "../_worker/presentation";
-import { confirmRights, emptySelection, preparedSelection, type QuickSelection } from "./selection";
+import { confirmRights, emptySelection, preparedSelection, selectQuestionAnswer, type QuickSelection } from "./selection";
 
 export type InitialPreparation = { preparation: PreparationView; fileName: string };
 export function useQuickPreparation(session: ScreenWorkerSession, initial?: InitialPreparation, onInvalidate?: (error?: unknown) => void) {
@@ -54,8 +55,11 @@ export function useQuickPreparation(session: ScreenWorkerSession, initial?: Init
     setTempo(tempoOverride: number | undefined) { setSelection(previous => ({ ...previous, tempoOverride })); },
     setPart(part: PartChoice) { setSelection(previous => ({ ...previous, part })); },
     setRights(checked: boolean) { const at = selection.confirmedAt ?? new Date().toISOString(); setSelection(previous => confirmRights(previous, checked, () => at)); },
-    setLead(lead: string) { void answer({ ...selection, answers: { ...selection.answers, lead } }); },
-    setCarry() { void answer({ ...selection, answers: { ...selection.answers, unreadPrintedChords: "carry-previous" } }); },
+    answerQuestion(question: QuickHarmonyNotice, value: string) {
+      const offered = preparation?.questions.find(item => item.id === question.id);
+      const next = offered && selectQuestionAnswer(selection, offered, value);
+      if (next) void answer(next);
+    },
   };
 }
 export type QuickPreparationController = ReturnType<typeof useQuickPreparation>;
