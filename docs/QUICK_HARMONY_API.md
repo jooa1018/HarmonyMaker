@@ -344,4 +344,108 @@ signal 취소는 AbortError로 끝나고 파일을 반환하지 않는다. Offli
 
 `/score-workspace`는 분수 시간을 보존하고 음높이 편집이 가능하다. 묶음 시간을 깨뜨리는 편집은 `WORKSPACE_TUPLET_EDIT_UNSUPPORTED`로 거부한다. 가져오기 복구(`recovery.ts`)도 원래 셋잇단 음가를 유지하는 음높이·쉼표 수정을 지원한다. 고정 64 격자를 쓰는 예전 구조 복구 편집기는 “셋잇단음표가 있는 악보는 구조 복구 편집을 아직 지원하지 않아요.”로 명시적으로 거부한다. 그 편집기의 저장 형식은 확장하지 않는다.
 
-H3 참고: 화면에서 같은 생성을 재시도해도 라이브러리에 중복 항목이 생기지 않도록 저장 id를 정하는 방법은 H3에서 정한다.
+## Worker 클라이언트 초안 (1-11, A등급 검토 대상)
+
+`src/product/harmony-worker/client.ts`에서 `createHarmonyWorkerClient()`를 가져온다.
+호출만으로 Worker를 시작하지 않는다. 첫 명령이나 `start()`에서 같은 출처의 정적 파일을
+로드한다. Next.js 16 빌드와 `worker-src 'self'` 환경을 대상으로 하며 blob Worker나
+메인 스레드 실행으로의 자동 대체는 없다. 기존 화면 전환은 H3 3-8에서 따로 한다.
+
+```ts
+type WorkerRequestOptions = {
+  signal?: AbortSignal;
+  onStage?: (stage: "loading" | "preparing" | "generating" |
+    "verifying" | "committing" | "view") => void;
+};
+type PreparationView = {
+  handle: PreparationHandle; // Worker 세대 안에서만 유효한 불투명 문자열
+  status: "ready" | "needs-input" | "unsupported";
+  summary?: QuickHarmonySummary; // summary.tempo 포함
+  questions: readonly QuickHarmonyNotice[];
+  reasons: readonly QuickHarmonyNotice[];
+  notes: readonly QuickHarmonyNotice[];
+};
+type ProjectView = {
+  handle: ProjectHandle;
+  projectId: string | null; // 파일 import 직후에는 null
+  updatedAt: string | null;
+  rightsBasis: RightsBasis; // 기존 공유 네트워크 요청용
+  description: HarmonyProjectDescription;
+  practice: ProjectPracticeView; // available이면 abc, plan, tempo, identity
+};
+type GenerationView =
+  | { status: "saved"; project: ProjectView }
+  | { status: "needs-input" | "unsupported" | "blocked";
+      preparation: PreparationView; parts: readonly QuickHarmonyPartResult[] };
+type QuickHarmonyAnswer = Pick<QuickHarmonyChoice, "answers" | "tempo" | "confirmedAt">;
+type ShareConfirmation = {
+  rightsConfirmed: true;
+  confirmedAt: string;
+  playbackDefaults?: PracticeSettings;
+};
+```
+
+모든 메서드는 Promise를 반환한다(`cancel` 제외). 아래의 `options?`는 같은
+`WorkerRequestOptions`이며, 타입 원본은 `harmony-worker/protocol.ts`다.
+
+| 메서드 | 반환 |
+|---|---|
+| `start(options?)` | `{ startupMs: number }`: Worker 엔진 모듈 로드부터 준비 완료까지 |
+| `prepare({ bytes: Uint8Array, fileName: string }, options?)` | `PreparationView` |
+| `answer(handle, answer: QuickHarmonyAnswer, options?)` | `PreparationView` |
+| `generate(handle, choice: QuickHarmonyChoice, options?)` | `GenerationView` |
+| `open(projectId: string, options?)` | `ProjectView \| null` |
+| `list(options?)` | `readonly { projectId: string; updatedAt: string }[]` |
+| `delete(projectId: string, options?)` | `null` |
+| `importProject(encoded: string, options?)` | 검증한 파일의 `ProjectView`; 아직 저장하지 않음 |
+| `saveProject(handle, { projectId, updatedAt }, options?)` | `ProjectView`; 기존 id를 덮어쓰지 않는 add-only 저장 |
+| `exportProject(handle, options?)` | 기존 프로젝트 파일 문자열 |
+| `exportMusicXml(handle, options?)` | 기존 MusicXML 문자열 |
+| `sharePayload(handle, confirmation: ShareConfirmation, options?)` | `PracticeSharePayload`; 전송은 하지 않음 |
+| `openShare(payload: unknown, options?)` | 검증한 공유의 `ProjectPracticeView` |
+| `release(handle, options?)` | `null`; 더 쓰지 않는 준비/프로젝트 handle 해제 |
+| `cancel()` | `"cancelled" \| "committing" \| "idle"` |
+| `dispose()` | `void`; 저장 시작 후에는 실제 결과를 기다린 뒤 종료 |
+
+`answer`는 미리보기다. 매번 답변 전체를 보내며 같은 handle을 반환한다. 원래 준비
+상태나 저장 기록을 바꾸지 않는다. `generate`에는 최종 answers·tempo·confirmedAt과
+명시적인 권리 확인을 모두 보내야 한다. 미리보기에서 사용한 시각과 최종 확정 시각이
+달라도 최종 선택의 journal은 생성 시 한 번만 기록된다. `tempo`를 생략한 생성은
+기존 결과 바이트를 유지한다. 범위는 기존 `QUICK_HARMONY_TEMPO_MIN/MAX`를 사용한다.
+
+생성 저장 id는 `src/product/quick-harmony-identity.ts`의
+`quickHarmonyProjectId(preparation: QuickHarmonyPreparation, choice: QuickHarmonyChoice): Promise<string>`로 계산한다.
+Worker가 이 함수를 쓰며 현재 H3 정책과 같은 `quick-` + semanticDigest다. 준비 workspace digest,
+정렬한 parts(auto이면 추천 파트), confirmedAt, answers를 사용하고, 명시적으로 빠르기를
+선택한 경우만 tempo를 더한다. 같은 선택의 재시도는 기존 항목을 검증해 반환한다.
+다른 탭이 먼저 저장한 경우에도 그 항목을 다시 읽고 덮어쓰지 않는다.
+부분 결과의 파트별 상태·사유는 `project.description.parts`에 있다.
+
+DTO는 표시·재생용이다. 프로젝트 그래프·workspace·검증 표식은 반환하지 않으며, DTO를
+저장 입력으로 받지 않는다. `exportProject` 파일을 다시 쓰려면 `importProject`로 검증해야
+한다. 파일을 열거나 저장하는 것으로 WAG 버전이 바뀌지 않는다. `renderPracticeAudio`는
+메인 스레드에 두고 `practice.plan/tempo`와 현재 `speed/leadOctave`를 전달한다.
+
+명령은 순차 실행한다. 계산 중 취소는 Worker 종료·재생성으로 처리하며 해당 세대의
+handle과 대기 명령도 무효가 된다. 취소된 Promise는 AbortError로 끝나므로 파일을
+다시 prepare하거나 저장 항목을 open한다. 대기 중인 개별 요청의 signal만 취소하면
+현재 실행 중인 명령에는 영향이 없다. 이전 요청 id·세대의 응답은 무시한다.
+
+`committing`에서는 “저장 마무리”를 표시한다. 이 단계는 실제 write transaction을
+시작하기 직전에 클라이언트가 승인한 뒤 전달된다. 이후 signal 취소는 저장 결과를
+기다리며, `cancel()`도 `committing`을 반환한다. 저장 후 화면 DTO 준비까지 이 상태를
+유지한다. Worker 오류로 결과를 잃으면 `WORKER_COMMIT_OUTCOME_UNKNOWN`으로
+실패하고 라이브러리를 다시 확인한다. 취소 성공이나 저장 성공으로 추정하지 않는다.
+
+Worker 시작·메시지 오류는 `HarmonyWorkerError`의 code와 한국어 message로 끝난다.
+사용이 끝난 handle은 release한다. 준비/프로젝트 각각 최근 사용한 32개를 보관하며,
+한도를 넘으면 가장 오래 사용하지 않은 handle을 비운다(LRU). 비워진 handle은
+`WORKER_HANDLE_EXPIRED`로 끝나므로 다시 prepare/open한다.
+저장 공간 부족으로 아무것도 저장되지 않은 경우 `STORAGE_QUOTA_EXCEEDED`와
+“기기 저장 공간이 부족해 저장하지 못했어요. 공간을 비운 뒤 다시 시도해 주세요.”를 반환한다.
+commit 성공 뒤 표시 준비가 실패하면 `WORKER_SAVED_VIEW_FAILED`와
+`HarmonyWorkerError.projectId: string`을 반환한다. 해당 id는 이미 저장된 항목이므로
+다시 생성하는 대신 내 악보에서 열 수 있다.
+Worker가 재시작되면 모든 검증을 기존 파일·IndexedDB 바이트에서 다시 수행한다.
+
+H3 참고: 재시도의 저장 id는 위 공통 함수로 정한다. H3의 기존 계산 사본은 3-8 Worker 연결 때 제거한다.
