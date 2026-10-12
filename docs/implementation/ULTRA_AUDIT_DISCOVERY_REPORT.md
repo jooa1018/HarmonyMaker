@@ -1648,7 +1648,7 @@ EXTERNAL_NETWORK_OR_PROVIDER_CALLS = 0
 
 ```powershell
 @'<inline ESM using createServer({server:{middlewareMode:true},appType:"custom",logLevel:"silent"})>'@ |
-  & 'C:\Users\eccto\AppData\Local\OpenAI\Codex\runtimes\cua_node\2fb562745e6d66f0\bin\node.exe' --input-type=module -
+  & '%USERPROFILE%\AppData\Local\OpenAI\Codex\runtimes\cua_node\2fb562745e6d66f0\bin\node.exe' --input-type=module -
 ```
 
 ```text
