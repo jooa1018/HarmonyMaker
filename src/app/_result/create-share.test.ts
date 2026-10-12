@@ -58,3 +58,14 @@ it("reconciles a completed share after session change and requires explicit fres
   expect((await recoveryStore.load(record.projectId))?.idempotencyKey).not.toBe(firstKey);
   expect((await recoveryStore.load(record.projectId))?.completedAuthorities).toHaveLength(1);
 });
+it.each(["2027-06-01T00:00:00.000Z", undefined, "invalid-date"])("displays a reconciled expiry only when valid (%s), without persisting it", async expiresAt => {
+  const recoveryStore = new MemoryShareCreateRecoveryStore();
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(session()).mockResolvedValueOnce(completed())
+    .mockResolvedValueOnce(session("session-two-" + "b".repeat(32))).mockResolvedValueOnce(Response.json({ ok: true, state: "active", expiresAt }));
+  const dependencies = { origin: "https://example.test", fetcher, recoveryStore, fits: () => false };
+  await createResultShare(record, false, dependencies);
+  const before = await recoveryStore.load(record.projectId);
+  expect(await createResultShare(record, false, dependencies)).toEqual({ status: "created", stored: true, url: "https://example.test/share?token=test_token_123", ...(expiresAt?.startsWith("2027") ? { expiresAt } : {}) });
+  expect(fetcher.mock.calls[3][0]).toBe("/api/shares/test_token_123/reconcile");
+  expect(await recoveryStore.load(record.projectId)).toEqual(before);
+});

@@ -119,8 +119,11 @@ try {
   await expect(page.locator(".hm-banner").first()).toBeVisible();
   await expect(page.getByRole("region", { name: "연습 플레이어" })).toBeVisible();
   expect(await widthFits(page)).toBe(true);
+  const partialReasons = await page.locator(".hm-banner-text").allTextContents();
+  expect(partialReasons.length).toBeGreaterThan(0);
   await page.reload();
   await expect(page.locator(".hm-banner").first()).toBeVisible({ timeout: 60000 });
+  await expect(page.locator(".hm-banner-text")).toHaveText(partialReasons);
   await page.screenshot({ path: `${evidence}/360-partial-dark.png`, fullPage: true, caret: "initial" });
   const legacy = await fixture("auto-draft-v1-auto.json");
   await page.evaluate(async encoded => {
