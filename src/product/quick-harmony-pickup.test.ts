@@ -94,18 +94,6 @@ it.each([["none", false], ["outside", true]] as const)("preserves pre-change pro
   expect(await serializeScoreWorkspace(prep.workspace!)).toEqual(before);
 });
 
-it.each(["outside", "none"] as const)("documents the unchanged limitation for a printed chord after a leading rest: %s", async mode => {
-  const xml = pickupRepeatExercise(mode, true, true).replace(/(<harmony>[\s\S]*?<\/harmony>)(<note><rest\/>[\s\S]*?<\/note>)/u, "$2$1");
-  const prep = await prepare(xml), result = await generateQuickHarmony(prep, choice);
-  expect(prep.questions.some(q => q.id === "pickup-chord")).toBe(false);
-  expect(result.status).toBe("blocked");
-  if (result.status === "blocked") {
-    expect(result.diagnostics).toContainEqual(expect.objectContaining({ details: { issue: "initial-pickup-policy-ineligible", reason: mode === "outside" ? "repeated-pickup-or-anchor" : "pickup-has-explicit-chord" } }));
-    expect(result.parts.map(p => p.reasonKo)).not.toContain("악보 판정에서 생성이 중단됐어요.");
-    expect(result.parts.every(p => p.actionKo?.includes("MuseScore"))).toBe(true);
-  }
-});
-
 it("does not silently answer from an arbitrary explicit chord", async () => {
   const prep = await prepare(), { state } = await readVerifiedWorkspace(prep.workspace!);
   const workspace = await applyWorkspaceCommand(prep.workspace!, prep.workspace!, { kind: "chord", measureId: state.music!.parts[0].measures[0].workspaceMeasureId!, text: "F", onset: fraction(0) }, { id: "manual", actor: "user", at, note: "manual" });

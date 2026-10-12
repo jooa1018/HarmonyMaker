@@ -11,3 +11,8 @@ export function pickupRepeatExercise(mode: "outside" | "inside" | "volta" | "non
   return `<?xml version="1.0"?><score-partwise version="4.0"><work><work-title>Original pickup ${mode}${rest ? " rest" : ""} exercise</work-title></work><part-list><score-part id="P1"><part-name>Melody</part-name></score-part></part-list><part id="P1">${pickup}${bars}</part></score-partwise>`;
 }
 
+/** Same original melody, with its one pickup chord printed after the leading rest. */
+export function printedPickupExercise(mode: "outside" | "inside" | "volta" | "none" = "outside"): string {
+  return pickupRepeatExercise(mode, true, true)
+    .replace(/(<harmony>[\s\S]*?<\/harmony>)(<note><rest\/>[\s\S]*?<\/note>)/u, "$2$1");
+}
