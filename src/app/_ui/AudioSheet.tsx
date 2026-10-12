@@ -2,6 +2,7 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { PRACTICE_SPEEDS } from "../../product/playback-plan";
+import { LeadOctaveSwitch, PracticeTempo } from "./PracticeTempo";
 import { Icon } from "./Icon";
 import { audioChoices, audioDuration, audioFileName, audioSize, canShareAudio, initialAudioSettings, renderSilentPreview, type AudioPlayer, type AudioRenderer, type AudioResult } from "./audio-export";
 
@@ -15,7 +16,7 @@ export function AudioSheet({ title, player, onClose, renderAudio = renderSilentP
   standalone?: boolean; initialResult?: AudioResult; previewMaking?: boolean;
 }) {
   const ready = useSyncExternalStore(subscribe, clientReady, serverReady);
-  const [snapshot] = useState(() => ({ choices: audioChoices(player.tracks), secondsAt100: player.totalSeconds * player.speed / 100, hasBand: player.hasBand !== false }));
+  const [snapshot] = useState(() => ({ choices: audioChoices(player.tracks), tempo: player.tempo, hasTenor: player.tracks.some(track => track.role === "upper"), secondsAt100: player.totalSeconds * player.speed / 100, hasBand: player.hasBand !== false }));
   const [settings, setSettings] = useState(() => initialAudioSettings(player));
   const [phase, setPhase] = useState<"options" | "making" | "done">(initialResult ? "done" : previewMaking ? "making" : "options");
   const [result, setResult] = useState(initialResult);
@@ -90,7 +91,8 @@ export function AudioSheet({ title, player, onClose, renderAudio = renderSilentP
         <input type="radio" name={mixId} checked={selected === choice.id} onChange={() => setSettings(value => ({ ...value, mix: choice.id ? { kind: "emphasize", trackId: choice.id } : { kind: "full" } }))} />
         <span><b>{choice.id && <span className={`hm-dot ${choice.role === "lower" ? "is-alto" : choice.role === "upper" ? "is-tenor" : choice.role === "lead" ? "is-melody" : ""}`} />}{choice.label}</b><small>{choice.description}</small></span>
       </label>)}</div></div>
-      <div className="hm-field"><div className="hm-field-label" id={speedId}>빠르기</div><div className="hm-seg" role="radiogroup" aria-labelledby={speedId}>{PRACTICE_SPEEDS.map(speed => <label className={`${settings.speed === speed ? "is-selected" : ""}${focused === speed ? " is-focused" : ""}`} key={speed}><input type="radio" name={speedId} checked={settings.speed === speed} onChange={() => setSettings(value => ({ ...value, speed }))} onFocus={() => setFocused(speed)} onBlur={() => setFocused(undefined)} />{speed}%</label>)}</div></div>
+      <div className="hm-field"><div className="hm-field-head"><span className="hm-field-label" id={speedId}>빠르기</span>{snapshot.tempo && <PracticeTempo tempo={snapshot.tempo} speed={settings.speed} />}</div><div className="hm-seg" role="radiogroup" aria-labelledby={speedId}>{PRACTICE_SPEEDS.map(speed => <label className={`${settings.speed === speed ? "is-selected" : ""}${focused === speed ? " is-focused" : ""}`} key={speed}><input type="radio" name={speedId} checked={settings.speed === speed} onChange={() => setSettings(value => ({ ...value, speed }))} onFocus={() => setFocused(speed)} onBlur={() => setFocused(undefined)} />{speed}%</label>)}</div></div>
+      {snapshot.hasTenor && settings.leadOctave !== undefined && <LeadOctaveSwitch value={settings.leadOctave} onChange={leadOctave => setSettings(value => ({ ...value, leadOctave }))} />}
       {snapshot.hasBand && <div className="hm-switch-row"><span><b>코드 반주 넣기</b><small>악보의 코드로 반주를 깔아요</small></span><button className="hm-switch" type="button" role="switch" aria-checked={settings.bandEnabled} aria-label="코드 반주 넣기" onClick={() => setSettings(value => ({ ...value, bandEnabled: !value.bandEnabled }))} /></div>}
       <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={() => void make()}><Icon name="headphones" />음원 만들기</button>
       <p className="hm-small">이 기기에서 만들어요. 서버로 보내지 않아요.</p>

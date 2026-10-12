@@ -62,3 +62,14 @@ it("keeps raw rendering errors in collapsed details and permits retry", async ()
   expect(document.querySelector('[role="alert"] > p')?.textContent).toBe("예상하지 못한 문제가 생겼어요. 다시 시도해 주세요.");
   expect(document.querySelector("details")?.open).toBe(false); expect(button("음원 만들기")).toBeDefined();
 });
+it.each([true, false])("shows the octave switch only with a tenor track (%s), and snapshots it for rendering", async tenor => {
+  const render = vi.fn<AudioRenderer>(async () => silentAudio());
+  const source: AudioPlayer = { ...player, leadOctave: -1, tempo: { bpm: 80, beatUnit: 4, dotted: false }, tracks: [...player.tracks, ...(tenor ? [{ id: "tenor", label: "테너", role: "upper" as const }] : [])] };
+  await mount(render, source);
+  const octave = document.querySelector<HTMLButtonElement>('[aria-label="멜로디 한 옥타브 낮게"]');
+  expect(!!octave).toBe(tenor); expect(document.querySelector(".hm-bpm")?.textContent).toContain("60");
+  if (octave) { expect(octave.getAttribute("aria-checked")).toBe("true"); await act(async () => octave.click()); }
+  await act(async () => button("음원 만들기").click());
+  expect(render.mock.calls[0][0].leadOctave).toBe(tenor ? 0 : -1);
+  expect(source.leadOctave).toBe(-1);
+});
