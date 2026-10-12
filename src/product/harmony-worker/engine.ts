@@ -115,7 +115,7 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore(), w
             try {
               const record = await store.load(row.projectId);
               if (!record) continue; // Another tab deleted it after the list read.
-              entries.push({ ...row, description: describeHarmonyProject(record.project) });
+              entries.push({ projectId: record.projectId, updatedAt: record.updatedAt, description: describeHarmonyProject(record.project) });
             } catch (error) {
               const code = error instanceof Error && /^[A-Z][A-Z0-9_:-]{0,120}$/u.test(error.message) ? error.message : "WORKER_PROJECT_LOAD_FAILED";
               entries.push({ ...row, error: { code, messageKo: "저장된 악보를 확인하지 못했어요. 다시 열거나 원본을 올려 주세요." } });

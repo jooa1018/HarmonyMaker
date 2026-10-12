@@ -99,7 +99,8 @@ it("creates no editable record until commit grant, and leaves none after rejecti
 
 it("lists descriptions and per-record errors without practice rendering or consuming handles", async () => {
   const h = harness(), opened = await h.call("importProject", { encoded: data.encoded });
-  await h.projects.saveNew({ projectId: "good", project: data.project, updatedAt: choice.confirmedAt });
+  const latest = "2026-10-12T00:00:00.000Z";
+  await h.projects.saveNew({ projectId: "good", project: data.project, updatedAt: latest });
   const originalLoad = h.projects.load.bind(h.projects);
   vi.spyOn(h.projects, "list").mockResolvedValue(["good","corrupt","deleted"].map(projectId => ({ projectId, updatedAt: choice.confirmedAt })));
   vi.spyOn(h.projects, "load").mockImplementation(async id => { if (id === "corrupt") throw Error("PROJECT_AUTHORITY_STALE"); return originalLoad(id); });
@@ -107,7 +108,7 @@ it("lists descriptions and per-record errors without practice rendering or consu
   for (let i = 0; i < 34; i++) {
     const rows = await h.call("listSummaries", null);
     expect(rows).toEqual([
-      { projectId: "good", updatedAt: choice.confirmedAt, description: describeHarmonyProject(data.project) },
+      { projectId: "good", updatedAt: latest, description: describeHarmonyProject(data.project) },
       { projectId: "corrupt", updatedAt: choice.confirmedAt, error: { code: "PROJECT_AUTHORITY_STALE", messageKo: expect.any(String) } },
     ]);
     expect(rows.every(row => !("handle" in row) && !("abc" in row) && !("plan" in row))).toBe(true);
