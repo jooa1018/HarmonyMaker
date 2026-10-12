@@ -2,6 +2,7 @@ import { defaultHarmonyPart, type HarmonyPartPreset } from "../domain/part-prese
 import { pitchMidiNumber } from "../domain/pitch";
 import type { MusicXmlImportDraft } from "../import/musicxml/types";
 import type { ArrangementRequest } from "../import/workspace/model";
+import type { TempoSpec } from "../domain/source/model";
 
 export interface QuickHarmonySummary {
   readonly title: string | null;
@@ -11,10 +12,12 @@ export interface QuickHarmonySummary {
   readonly hasLyrics: boolean;
   readonly verseCount: number;
   readonly recommendedPart: HarmonyPartPreset;
+  readonly tempo: TempoSpec & { readonly origin: "score" | "auto" };
 }
 
 /** The selected printed melody, before repeat expansion or verse selection. */
-export function summarizeQuickHarmonyMelody(music: MusicXmlImportDraft, request: ArrangementRequest & {readonly lead: string}): QuickHarmonySummary {
+export function summarizeQuickHarmonyMelody(music: MusicXmlImportDraft, request: ArrangementRequest & {readonly lead: string}, tempoOrigin: "score" | "auto" = music.defaultTempo ? "score" : "auto"): QuickHarmonySummary {
+  if (!request.tempo) throw new RangeError("QUICK_HARMONY_SUMMARY_TEMPO_REQUIRED");
   const candidate = music.leadCandidates.find(candidate => candidate.key === request.lead);
   const part = music.parts.find(part => part.partOrdinal === candidate?.partOrdinal);
   if(!part)throw new RangeError("QUICK_HARMONY_SUMMARY_LEAD_REQUIRED");
@@ -33,5 +36,6 @@ export function summarizeQuickHarmonyMelody(music: MusicXmlImportDraft, request:
     hasLyrics: verses.size > 0,
     verseCount: verses.size,
     recommendedPart: defaultHarmonyPart(pitches[Math.floor(pitches.length / 2)]),
+    tempo: { ...request.tempo, origin: tempoOrigin },
   };
 }

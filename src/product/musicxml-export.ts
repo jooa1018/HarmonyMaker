@@ -205,7 +205,8 @@ function timeXml(measure: ArrangementRenderDocument["measures"][number]): string
 
 function tempoXml(tempo: TempoSpec): string {
   const beatUnit = tempo.beatUnit === 4 ? "quarter" : "eighth";
-  return `<direction placement="above"><direction-type><metronome><beat-unit>${beatUnit}</beat-unit>${tempo.dotted ? "<beat-unit-dot/>" : ""}<per-minute>${tempo.bpm}</per-minute></metronome></direction-type></direction>`;
+  const quarterBpm = tempo.bpm * (4 / tempo.beatUnit) * (tempo.dotted ? 1.5 : 1);
+  return `<direction placement="above"><direction-type><metronome><beat-unit>${beatUnit}</beat-unit>${tempo.dotted ? "<beat-unit-dot/>" : ""}<per-minute>${tempo.bpm}</per-minute></metronome></direction-type><sound tempo="${quarterBpm}"/></direction>`;
 }
 
 function partXml(input: { readonly id: string; readonly events: readonly (XmlEvent & { readonly measureIndex: number })[]; readonly document: ArrangementRenderDocument; readonly divisions: number; readonly key: KeySignature; readonly tempo: TempoSpec; readonly includeHarmony: boolean; readonly includeTempo: boolean; readonly notationOctaveShift?: -1 | 0 }): string {

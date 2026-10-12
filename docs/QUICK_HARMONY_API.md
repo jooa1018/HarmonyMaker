@@ -42,6 +42,7 @@ generateQuickHarmony(
       | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
     rightsConfirmed: true;
     confirmedAt: string;
+    tempo?: { bpm: number }; // 현재 유효 박 단위·점은 유지
     answers?: {
       lead?: string;
       unreadPrintedChords?: "carry-previous";
@@ -52,6 +53,7 @@ generateQuickHarmony(
 
 - 파일 확장자는 `.musicxml`, `.xml`, `.mxl`이다. 기존 XML·MXL 보안 검사와 크기 제한을 재사용한다. 파일을 서버로 전송하지 않는다.
 - `parts` 생략 또는 `auto`는 기존 Lead 중앙 음높이 기준 기본 파트를 사용한다.
+- `tempo` 생략은 기존 생성 바이트를 유지한다. 지정하면 기존 작업 공간 tempo 편집으로 기록하며 `user-edit` 출처와 `confirmedAt`을 쓴다. `QUICK_HARMONY_TEMPO_MIN = 20`, `QUICK_HARMONY_TEMPO_MAX = 300`을 `quick-harmony.ts`에서 내보내며, 범위 안 정수 BPM만 받는다. 잘못된 값은 `QUICK_HARMONY_CHOICE_INVALID`다. 6/8의 점4분음표 등 현재 유효 박 단위는 바꾸지 않는다.
 - `confirmedAt`은 **선택 전체의 확정 시각**이다. 권리 확인 기록과 Lead 선택 journal 기록에 함께 쓰인다. `new Date(x).toISOString() === x`인 정규 ISO UTC 문자열만 받는다(예: `2026-10-09T10:00:00.000Z`). 날짜만 쓰거나 오프셋 등 다른 표기를 쓰면 `QUICK_HARMONY_CHOICE_INVALID`로 거부한다. 같은 선택을 재시도할 때는 같은 값을 유지한다. 엔진 내부에서 현재 시각을 생성하지 않는다.
 - `lead`에는 판정 질문의 `choices[].value`를 전달한다. 존재하며 음표가 있는 성부인지 재검증하고, 명시적 사용자 선택으로 journal에 기록한다. 사람의 악보 대조 기록은 만들지 않는다.
 - `unreadPrintedChords`는 기존 자동 초안의 판독 불가 코드 질문에 대한 답이다. 순수 MusicXML에는 보통 나타나지 않는다. 기본값으로 이전 코드를 유지하지 않는다.
@@ -145,6 +147,7 @@ summary?: {
   hasLyrics: boolean;
   verseCount: number; // 선택된 멜로디에 실제 글자가 있는 서로 다른 절 번호 수
   recommendedPart: "alto" | "tenor"; // auto와 같은 중앙 음높이 규칙
+  tempo: { bpm: number; beatUnit: 4 | 8; dotted: boolean; origin: "score" | "auto" };
 }
 ```
 
@@ -154,6 +157,14 @@ summary?: {
 멜로디의 첫 마디에서 판정한 값이다. 여러 조성이 있는 경우 지원 판정은 `reasons`를 따른다.
 추천은 사용자의 명시적 파트 선택과 별개이며, 같은 악보·선택 상태에서 결정적이다.
 화면이 바꾼 summary는 생성 입력으로 신뢰하지 않고 현재 작업 공간에서 다시 계산한다.
+tempo.origin의 auto는 제품 기본값(policy-default), score는 악보에서 읽었거나 명시적으로 편집한 유효값이다.
+원본의 정확한 출처는 기존 assessment provenance에 남는다. 기존 자동 빠르기(일반 박자 ♩=80)는 유지한다.
+자동값이 빠르기뿐이면 AUTOMATIC_VALUES 참고를 생략하고, 다른 자동값이 있으면 참고를 유지한다.
+
+H3 3-10은 이 tempo로 확인 화면을 채우고 바꾼 BPM을 choice.tempo에 전달한다. 재시도 저장 ID는 tempo가 있을 때만
+그 선택도 포함해야 한다(생략된 기존 선택의 ID는 유지). 향후 Worker의 prepare/answer DTO와 generate 선택도 같은 필드를 사용한다.
+MusicXML 내보내기는 기존 metronome과 함께 `<sound tempo>`에 4분음표 기준 BPM을 쓴다.
+예: 점4분음표=60 → sound tempo=90. 기존 가져오기 파서는 sound를 우선하므로 재가져오기 시 박 표기가 정규화될 수 있으나 재생 시간은 같다.
 
 ## 저장된 프로젝트 읽기 (1-8)
 
