@@ -17,7 +17,7 @@ import { quickHarmonyNotice, quickHarmonyPartReason, quickHarmonyBlockedNotices,
 export type { QuickHarmonySummary } from "./quick-harmony-summary";
 export type { QuickHarmonyNotice } from "./quick-harmony-notices";
 import type { ProductGenerationOutcome } from "./workspace";
-import { quickPickupChord } from "./quick-harmony-pickup";
+import { quickPickupChord, type PickupChordAnswer } from "./quick-harmony-pickup";
 import { fraction } from "../domain/fraction";
 
 /** Same inclusive integer range as the existing import/workspace tempo editor. */
@@ -44,7 +44,7 @@ export interface QuickHarmonyChoice {
   readonly confirmedAt: string;
   /** BPM in the currently effective beat unit (including its dot). */
   readonly tempo?: { readonly bpm: number };
-  readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous"; readonly pickupChord?: "use-following-first-chord" };
+  readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous"; readonly pickupChord?: PickupChordAnswer };
 }
 
 export interface QuickHarmonyPartResult {
@@ -172,7 +172,7 @@ function validateQuickHarmonyFields(c: Omit<QuickHarmonyChoice, "rightsConfirmed
       || Object.keys(answers).some(k => !["lead", "unreadPrintedChords", "pickupChord"].includes(k))
       || (answers.lead !== undefined && typeof answers.lead !== "string")
       || (answers.unreadPrintedChords !== undefined && answers.unreadPrintedChords !== "carry-previous")
-      || (answers.pickupChord !== undefined && answers.pickupChord !== "use-following-first-chord")))) {
+      || (answers.pickupChord !== undefined && answers.pickupChord !== "use-following-first-chord" && answers.pickupChord !== "move-printed-to-start")))) {
     throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "성부 선택, 빠르기와 권리 확인 시각을 다시 확인해 주세요.");
   }
 }
@@ -207,7 +207,12 @@ async function choiceWorkspace(source: ScoreWorkspace, c: QuickHarmonyAnswer): P
     const assessment = await assessAutoDraft(workspace);
     const pickup = quickPickupChord(state, assessment, workspace.algorithmVersions.performanceExpanderVersion);
     if (pickup.kind === "question") {
-      workspace = await applyWorkspaceCommand(workspace, workspace,
+      if (pickup.answer !== answers.pickupChord) throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "현재 못갖춘마디 질문에 맞는 답을 선택해 주세요.");
+      workspace = pickup.answer === "move-printed-to-start"
+        ? await applyWorkspaceCommand(workspace, workspace,
+          { kind: "move-chord", chordId: pickup.chordId, measureId: pickup.measureId, onset: fraction(0) },
+          { id: `quick-pickup-move:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 쉼표 뒤 인쇄 코드를 못갖춘마디 시작으로 옮기기로 확인함", actor: "user", at: c.confirmedAt })
+        : await applyWorkspaceCommand(workspace, workspace,
         { kind: "chord", measureId: pickup.measureId, text: pickup.chord, onset: fraction(0) },
         { id: `quick-pickup-chord:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 다음 마디 첫 코드를 못갖춘마디 시작에도 사용하기로 확인함", actor: "user", at: c.confirmedAt });
       if (state.request.initialPickup) workspace = await applyWorkspaceCommand(workspace, workspace,
@@ -219,6 +224,9 @@ async function choiceWorkspace(source: ScoreWorkspace, c: QuickHarmonyAnswer): P
       const first = state.music?.parts.find(p => p.partOrdinal === lead?.partOrdinal)?.measures[0];
       const recorded = workspace.operations.some(o => {
         const command = o.command;
+        if (answers.pickupChord === "move-printed-to-start") return o.id.startsWith("quick-pickup-move:") && o.actor === "user"
+          && command.kind === "move-chord" && command.measureId === first?.workspaceMeasureId && command.onset.n === 0
+          && first?.chords.length === 1 && first.chords[0].key === command.chordId && first.chords[0].onset.n === 0;
         return o.id.startsWith("quick-pickup-chord:") && o.actor === "user"
           && command.kind === "chord" && command.measureId === first?.workspaceMeasureId
           && first?.chords.some(ch => ch.key === `inserted:${o.id}` && ch.onset.n === 0 && ch.sourceText === command.text);
