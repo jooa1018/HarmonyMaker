@@ -449,3 +449,38 @@ commit 성공 뒤 표시 준비가 실패하면 `WORKER_SAVED_VIEW_FAILED`와
 Worker가 재시작되면 모든 검증을 기존 파일·IndexedDB 바이트에서 다시 수행한다.
 
 H3 참고: 재시도의 저장 id는 위 공통 함수로 정한다. H3의 기존 계산 사본은 3-8 Worker 연결 때 제거한다.
+
+### 화면 연결 추가 API (1-11b)
+
+기존 명령에 다음을 추가한다. 모두 같은 클라이언트의 `options?: WorkerRequestOptions`를
+마지막 인자로 받는다. 표시 DTO의 역할 정보는 색을 정하는 용도이며 저장 권위가 아니다.
+
+```ts
+// ProductTrackRoleRegistry: src/product/track-roles.ts의 기존 타입
+// practice.status === "available"인 ProjectView에 trackRoles가 있다.
+type ProjectViewRoles = { readonly trackRoles?: ProductTrackRoleRegistry };
+type SharedPracticeView = Extract<ProjectPracticeView, { status: "available" }>
+  & { readonly trackRoles: ProductTrackRoleRegistry };
+type ProjectListEntry = {
+  readonly projectId: string;
+  readonly updatedAt: string;
+  readonly description?: HarmonyProjectDescription;
+  readonly error?: { readonly code: string; readonly messageKo: string };
+};
+
+prepareFromProject(handle: ProjectHandle, options?): Promise<PreparationView | null>;
+saveEditableWorkspace(handle: PreparationHandle, options?): Promise<{ workspaceId: string }>;
+listSummaries(options?): Promise<readonly ProjectListEntry[]>;
+openShare(payload: unknown, options?): Promise<SharedPracticeView>;
+```
+
+`open`·`generate`·`importProject` 등의 ProjectView와 `openShare`의 trackRoles를
+기존 `scoreVoiceRoles`에 넘길 수 있다. 표시 이름으로 역할을 추측하지 않는다.
+프로젝트 재준비는 저장된 workspace proof를 다시 검증한다. workspace 출처가
+없으면 null이며, 있으면 새 준비 handle을 반환한다. 원본 프로젝트는 바뀌지 않는다.
+
+편집 사본은 매번 새 UUID로 만들고 기존 고급 편집 열기와 같은 command·id·note·actor·at
+journal 복사 규칙을 쓴다. quick:<digest> 원본은 저장하거나 바꾸지 않는다.
+저장 직전 commit 승인을 기다리며, 이후 취소는 기존 저장 명령과 같이 완료를 기다린다.
+목록 요약은 항목별 기존 검증을 거쳐 설명 또는 오류를 반환하고 handle·ABC·plan을 만들지 않는다.
+다른 탭에서 이미 삭제한 항목은 생략한다. 기존 `list()`도 그대로 사용할 수 있다.

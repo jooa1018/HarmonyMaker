@@ -22,6 +22,19 @@ function setup(timeout = 60_000) {
   return { client, workers };
 }
 afterEach(() => vi.useRealTimers());
+it("waits for editable workspace commit and accepts the new screen DTOs", async () => {
+  const { client, workers } = setup(), result = client.request("saveEditableWorkspace", { handle: "prep" as never });
+  workers[0].ready(); workers[0].commit();
+  expect(client.cancel()).toBe("committing");
+  workers[0].result({ workspaceId: "new-uuid" });
+  await expect(result).resolves.toEqual({ workspaceId: "new-uuid" });
+  const legacy = client.request("prepareFromProject", { handle: "legacy" as never });
+  workers[0].result(null); await expect(legacy).resolves.toBeNull();
+  const list = client.request("listSummaries", null);
+  workers[0].result([{ projectId: "one", updatedAt: "now", description: {} }]);
+  await expect(list).resolves.toHaveLength(1);
+  await client.dispose();
+});
 it("delivers the saved project identity to the client on a view failure", async () => {
   const { client, workers } = setup(), result = client.request("saveProject", { handle: "h" as never, projectId: "saved", updatedAt: "now" });
   workers[0].ready(); workers[0].commit(); const r = workers[0].request();
