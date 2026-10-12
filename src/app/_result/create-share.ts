@@ -1,28 +1,23 @@
-import type { LocalProjectRecord } from "../../product/local-project-store";
-import { confirmShareRights, materializePracticeShare } from "../../product/practice-share";
-import { materializeActiveArrangement } from "../../product/render";
+import type { PracticeSharePayload } from "../../domain/share";
+import type { RightsBasis } from "../../domain/source/model";
 import { encodeProductUrlShare, urlShareFits } from "../../product/share-url";
 import { allowShareCreateFreshIntent, bindShareCreateSession, completeShareCreateRecovery, IndexedDbShareCreateRecoveryStore, prepareShareCreateRecovery, type ShareCreateRecoveryStore } from "../../product/share-create-recovery";
 import { completedShareRecoveryTransport, dispatchShareCreateReadOnlyRecovery, dispatchShareCreateRecovery, dispatchShareOwnerReconciliation, pendingShareRecoveryTransport } from "../../product/share-create-api";
 
 export type CreatedLink = { status: "created"; url: string; stored: boolean; expiresAt?: string };
 export type CreateLinkOutcome = CreatedLink | { status: "retry" | "fresh"; code: string };
-export async function createResultShare(record: LocalProjectRecord, explicitFreshIntent: boolean, dependencies: {
+export async function createResultShare(record: { projectId: string; rightsBasis: RightsBasis; payload: PracticeSharePayload }, explicitFreshIntent: boolean, dependencies: {
   origin: string;
   fetcher?: typeof fetch;
   recoveryStore?: ShareCreateRecoveryStore;
   fits?: typeof urlShareFits;
 }): Promise<CreateLinkOutcome> {
-  const source = record.project;
-  const workspace = source.source.importInfo?.sourceKind === "score-workspace";
-  const project = workspace ? source : confirmShareRights(source, new Date().toISOString());
-  const presetId = project.selectedPresetId ?? "standard";
-  const payload = materializePracticeShare({ project, presetId, materialized: materializeActiveArrangement(project, presetId), playbackDefaults: { speedPercent: 100, accompanimentEnabled: true }, ...(workspace ? { workspaceShareConfirmedForThisExport: true as const } : {}) });
+  const { payload } = record;
   const encoded = encodeProductUrlShare(payload);
   if ((dependencies.fits ?? urlShareFits)(encoded)) return { status: "created", stored: false, url: `${dependencies.origin}/share#p=${encoded}` };
   const store = dependencies.recoveryStore ?? new IndexedDbShareCreateRecoveryStore();
   const fetcher = dependencies.fetcher ?? fetch;
-  let envelope = await prepareShareCreateRecovery({ store, projectId: record.projectId, canonicalRequest: { payload, rightsBasis: project.source.rights.basis }, explicitFreshIntent, generateId: () => crypto.randomUUID(), now: new Date() });
+  let envelope = await prepareShareCreateRecovery({ store, projectId: record.projectId, canonicalRequest: { payload, rightsBasis: record.rightsBasis }, explicitFreshIntent, generateId: () => crypto.randomUUID(), now: new Date() });
   const response = await fetcher("/api/session", { method: "POST" });
   const session = await response.json() as { csrfToken?: string; sessionAuthority?: string; expiresAt?: string };
   if (!response.ok || !session.csrfToken || !session.sessionAuthority || !session.expiresAt) throw new Error("SHARE_SESSION_UNAVAILABLE");
