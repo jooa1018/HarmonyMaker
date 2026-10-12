@@ -67,7 +67,8 @@ function SavedResult({ projectId }: { projectId: string }) {
   if (again) return <QuickFlow initial={again} />;
   if (loading && !record) return <ResultLoading />;
   const title = description?.title ?? "제목 없는 악보";
-  const parts = description?.parts ?? [];
+  const freshParts = generatedParts(projectId);
+  const parts = (description?.parts ?? []).map(part => ({ ...part, reasonKo: part.reasonKo ?? freshParts?.find(item => item.part === part.part)?.reasonKo }));
   const details = error || (view?.status === "unavailable" ? view.code : "");
   const actions = (openAudio?: () => void) => <div className="hm-actions">
     <button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={() => setSharing(true)}><Icon name="share" />팀원과 공유</button>
@@ -79,7 +80,7 @@ function SavedResult({ projectId }: { projectId: string }) {
         <div className="hm-chips"><span className="hm-chip"><span className="hm-dot is-melody" />멜로디</span>{parts.map((part, index) => <span className="hm-chip" key={index}><span className={`hm-dot ${part.role === "lower" ? "is-alto" : part.role === "upper" ? "is-tenor" : ""}`} />{part.label}</span>)}</div>
       </section>
       {parts.filter(part => part.status === "partial" || part.status === "missing").map((part, index) => <div className="hm-banner" role="status" key={index}><Icon name="alert" /><div><p className="hm-banner-title">{partialTitle(part.label, part.missingMeasures ?? [])}</p>
-        {generatedParts(projectId)?.find(item => item.part === part.part)?.reasonKo && <p className="hm-banner-text">{generatedParts(projectId)?.find(item => item.part === part.part)?.reasonKo}</p>}
+        {part.reasonKo && <p className="hm-banner-text">{part.reasonKo}</p>}
         <div className="hm-chips">{parts.map((item, n) => <span className={`hm-chip ${item.status === "complete" ? "is-done" : "is-partial"}`} key={n}>{item.label} {item.status === "complete" ? "완료" : item.status === "missing" ? "없음" : "일부"}</span>)}</div></div></div>)}
       {view?.status === "available" ? <LivePractice view={view} voiceRoles={voiceRoles} title={title} actions={actions} /> : <>{actions()}<p role="status">{loading ? "악보를 그리는 중…" : "악보를 표시하지 못했어요. 고급 편집에서 확인해 주세요."}</p></>}
       {notice && <p className="hm-notice is-ask" role="status">{notice}</p>}
