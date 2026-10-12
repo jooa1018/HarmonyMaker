@@ -54,6 +54,15 @@ const plan: PlaybackPlan = {
 const options = { fromQuarter: 0, secondsPerQuarter: 0.5, startedAt: 10.05, audible: new Set(plan.trackIds), levels: {}, masterLevel: 1 };
 
 describe("practice audio signal and scheduling contract", () => {
+  it("lowers only Lead audio by one octave and leaves plan bytes and timing unchanged", () => {
+    const f=fakeContext(), before=JSON.stringify(plan);
+    schedulePracticeAudio(f.audio,plan,{...options,leadOctave:-1});
+    for (const [i,event] of plan.events.entries()) {
+      expect(f.oscillators[i].frequency.value).toBe(440*2**((event.midi-69)/12)/(event.trackId==="track:source-lead"?2:1));
+      expect(f.oscillators[i].stop).toHaveBeenCalledWith(options.startedAt+(event.startQuarter+event.durationQuarter)*options.secondsPerQuarter);
+    }
+    expect(JSON.stringify(plan)).toBe(before);
+  });
   it.each([[0,0.5],[3.5,1],[1,0.4]])("lookahead matches full scheduling within 1ms (from %s at %s seconds/quarter)", (fromQuarter,secondsPerQuarter) => {
     vi.useFakeTimers();
     try {
@@ -189,6 +198,21 @@ describe("practice audio signal and scheduling contract", () => {
       expect(f.limiter.disconnect).toHaveBeenCalledOnce();
       for (const filter of f.filters) expect(filter.disconnect).toHaveBeenCalledOnce();
     } finally { vi.useRealTimers(); }
+  });
+
+  it("closes every replaced playing context after rapid seeks and cancels every refill", () => {
+    vi.useFakeTimers();
+    try {
+      const sessions=Array.from({length:20},()=>fakeContext());
+      for(const f of sessions){
+        const graph=schedulePracticeAudio(f.audio,{...plan,totalQuarter:32,events:plan.events.map(e=>({...e,startQuarter:e.startQuarter+8}))},{...options,lookahead:true});
+        f.context.currentTime=13;vi.advanceTimersByTime(250);f.context.state="running";
+        releasePracticeAudio(graph,f.audio);
+      }
+      vi.advanceTimersByTime(101);
+      for(const f of sessions)expect(f.context.close).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {vi.useRealTimers();}
   });
 
   it("uses harmonic waves through per-track lowpass filters and one post-master limiter", () => {

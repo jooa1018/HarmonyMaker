@@ -213,14 +213,28 @@ const player = usePracticePlayer({
 - `secondsPerQuarter`, `speed`, `tracks: { id, label, kind, role }[]`
 - `muted`, `solo`, `bandEnabled`, `levels`, `masterLevel`
 - `play()`, `pause()`, `restart()`, `setSpeed(speed)`
+- `seek(quarter: number): void`, `measureAt(quarter: number): { number: number; startQuarter: number } | undefined`
+- `leadOctave: 0 | -1`, `setLeadOctave(octave: 0 | -1): void`
 - `toggleMute(trackId)`, `toggleSolo(trackId)`, `setBandEnabled(on)`
 - `setLevel(trackId, level)`, `setMasterLevel(level)`
 
 `play()`는 ready·finished에서 처음부터, paused에서 이어서 재생한다. starting·playing에서는
-중복 시작하지 않는다. `restart()`는 멈추고 처음으로, `setSpeed()`도 처음으로 돌아간다.
+중복 시작하지 않는다. `restart()`는 멈추고 처음으로 돌아간다. `setSpeed()`는 현재 위치를 유지하고,
+재생·시작 중이면 같은 위치에서 새 속도로 이어서 재생한다.
+`seek(quarter)`는 [0, totalQuarter) 범위의 그 위치가 속한 박 시작으로 맞춘다(6/8·12/8은 점4분음표).
+재생·시작 중이면 그곳부터 이어 재생하고, ready·paused·finished에서는 위치만 바꾸며 paused가 된다.
+끌기는 손을 뗄 때 한 번 호출한다. `measureAt`은 악보에 인쇄된 마디 번호와 해당 연주 구간 시작을 반환한다.
+반복의 두 번째도 같은 번호이며, 번호를 알 수 없는 예전 수동 plan에는 undefined를 반환한다.
+`PlaybackPlan.measures`는 `buildPlaybackPlan`이 만드는 선택적 실행 중 탐색 정보이며 저장·공유·digest에는 들어가지 않는다.
+
+`defaultLeadOctave(plan): 0 | -1`은 `src/product/playback-plan.ts`의 순수 함수다.
+upper가 있고 lower가 없으며 Lead를 내린 최저음이 E2 이상이면 -1, 그 외는 0이다(음이 없거나 역할 정보가 없으면 0).
+훅은 이를 처음 값으로 쓰고 공유 화면도 같은 함수를 쓸 수 있다. `setLeadOctave`는 소리에서만 Lead를 옮기며,
+재생 중에는 현재 위치부터 이어 재생한다. 악보·plan·프로젝트·공유 payload는 바뀌지 않는다.
 지원되는 브라우저에서는 재생 버튼으로 시작할 때만 `navigator.audioSession.type = "playback"`을 요청한다.
 페이지를 열 때는 설정하지 않는다. 기존 suspend → 음 예약 → resume 순서를 유지한다.
 resume 거부 또는 3초 시간 초과 시 ready로 돌아가고 “소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요.”를 표시한다.
+실기기 점검: iPhone에서 재생 중 막대를 탭한 직후 소리가 나는지, 연속 탭·빠르기 변경·멜로디 옥타브 변경 후에도 이어지는지 확인한다.
 
 속도는 `PracticeSpeed`의 50·75·100·125·150이다. 파트 음량은 0–2, 전체 음량은 0–1로 제한한다.
 솔로는 한 트랙만 켜지고 음소거는 여러 트랙에 적용할 수 있다. 믹서는 재생 중에도 적용된다.
@@ -302,7 +316,7 @@ C2·G2는 Cadd2·Gadd2로, C2/G는 Cadd2/G로 정규화되어 major + degree add
 
 ## 연습 음원 파일 (1-20)
 
-`src/product/render-practice-audio.ts`의 `renderPracticeAudio({ plan, tempo, speed, mix, bandEnabled, signal? })`는 `{ blob, seconds, bytes }`를 비동기로 반환한다. `projectPracticeView`의 plan·tempo와 플레이어의 speed를 그대로 전달한다. mix는 `{ kind: "full" }` 또는 `{ kind: "emphasize", trackId }`이며, 강조할 성부는 기본 크기, 다른 성부는 0.35배다. 반주는 bandEnabled일 때만 기본 크기로 들어간다. 없는 트랙이나 반주를 강조 대상으로 주면 `PRACTICE_AUDIO_MIX_INVALID`로 거부한다.
+`src/product/render-practice-audio.ts`의 `renderPracticeAudio({ plan, tempo, speed, mix, bandEnabled, leadOctave?, signal? })`는 `{ blob, seconds, bytes }`를 비동기로 반환한다. `projectPracticeView`의 plan·tempo와 플레이어의 speed를 그대로 전달한다. `leadOctave`는 0(기본) 또는 -1이며 플레이어의 값을 전달하면 WAV도 같은 Lead 높이를 쓴다. mix는 `{ kind: "full" }` 또는 `{ kind: "emphasize", trackId }`이며, 강조할 성부는 기본 크기, 다른 성부는 0.35배다. 반주는 bandEnabled일 때만 기본 크기로 들어간다. 없는 트랙이나 반주를 강조 대상으로 주면 `PRACTICE_AUDIO_MIX_INVALID`로 거부한다.
 
 실시간 재생과 같은 음색·엔벨로프·리미터를 OfflineAudioContext로 렌더한다. WAV는 PCM 16-bit 모노 22,050 Hz이고 최대값을 -1 dBFS로 맞춘다(전부 무음이면 무음 유지). 길이는 곡 끝까지이며 프레임 단위로 올림한다. Blob의 MIME은 audio/wav다. 서버 전송과 저장은 하지 않으며 파일 이름과 다운로드 UI는 호출자가 정한다.
 

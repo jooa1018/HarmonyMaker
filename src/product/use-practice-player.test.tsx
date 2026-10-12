@@ -61,13 +61,50 @@ it("plays, pauses, resumes from the exact paused position and finishes",async()=
   await act(async()=>player.play());expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2].fromQuarter).toBe(0);
 });
 
-it("resets on speed change and supports restart then play in one event",async()=>{
+it("retains position on speed change and supports restart then play in one event",async()=>{
   await mount();await act(async()=>player.play());await advance(1);
   await act(async()=>player.setSpeed(50));
-  expect(player.phase).toBe("ready");expect(player.positionQuarter).toBe(0);expect(player.secondsPerQuarter).toBe(1);
-  await act(async()=>player.play());await advance(2);await act(async()=>player.pause());
+  expect(player.phase).toBe("playing");expect(player.positionQuarter).toBe(1);expect(player.secondsPerQuarter).toBe(1);
+  expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2]).toMatchObject({fromQuarter:1,secondsPerQuarter:1});
+  await advance(2);await act(async()=>player.pause());
+  const position=player.positionQuarter;
+  await act(async()=>player.setSpeed(75));expect(player.phase).toBe("paused");expect(player.positionQuarter).toBe(position);
   await act(async()=>{player.restart();player.play();});
   expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2].fromQuarter).toBe(0);
+});
+
+it("seeks in ready, paused, playing and finished phases, using printed measure numbers",async()=>{
+  await mount({...input,plan:{...plan,measures:[{number:7,startQuarter:0,durationQuarter:4,beatStarts:[0,1,2,3]}]}});
+  await act(async()=>player.seek(1.9));expect(player.phase).toBe("paused");expect(player.positionQuarter).toBe(1);
+  expect(Audio.instances).toHaveLength(0);expect(player.measureAt(2.5)).toEqual({number:7,startQuarter:0});
+  await act(async()=>player.seek(2.7));expect(player.positionQuarter).toBe(2);
+  await act(async()=>player.play());expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2].fromQuarter).toBe(2);
+  await act(async()=>player.seek(0.8));expect(player.phase).toBe("playing");expect(player.positionQuarter).toBe(0);
+  expect(releasePracticeAudio).toHaveBeenCalledTimes(1);
+  await advance(4);expect(player.phase).toBe("finished");
+  await act(async()=>player.seek(99));expect(player.phase).toBe("paused");expect(player.positionQuarter).toBe(3);
+});
+
+it("releases every superseded context during rapid seeks while starting",async()=>{
+  const resolves:(()=>void)[]=[];
+  vi.stubGlobal("AudioContext",class extends Audio {suspend=vi.fn(()=>new Promise<void>(done=>resolves.push(done)));});
+  await mount();await act(async()=>player.play());
+  for(let i=0;i<20;i++)await act(async()=>player.seek(i%4+0.4));
+  expect(player.phase).toBe("starting");expect(Audio.instances).toHaveLength(21);
+  for(const audio of Audio.instances.slice(0,-1))expect(audio.close).toHaveBeenCalledOnce();
+  expect(Audio.instances.at(-1)!.close).not.toHaveBeenCalled();
+  await act(async()=>resolves.forEach(done=>done()));
+  expect(schedulePracticeAudio).toHaveBeenCalledOnce();expect(player.phase).toBe("playing");
+  expect(vi.mocked(schedulePracticeAudio).mock.calls[0][2].fromQuarter).toBe(3);
+});
+
+it("changes octave at the audio-clock position and keeps settings synchronous between callbacks",async()=>{
+  await mount();await act(async()=>player.play());await advance(1.25);
+  await act(async()=>{player.setLeadOctave(-1);player.setSpeed(75);});
+  expect(player.leadOctave).toBe(-1);expect(player.phase).toBe("playing");expect(player.positionQuarter).toBe(1.25);
+  expect(vi.mocked(schedulePracticeAudio).mock.calls.at(-1)![2]).toMatchObject({fromQuarter:1.25,leadOctave:-1,secondsPerQuarter:2/3});
+  await act(async()=>player.pause());const count=Audio.instances.length;
+  await act(async()=>player.setLeadOctave(0));expect(Audio.instances).toHaveLength(count);expect(player.positionQuarter).toBe(1.25);
 });
 
 it("keeps one solo, independent mutes, live levels and no fabricated band track",async()=>{
