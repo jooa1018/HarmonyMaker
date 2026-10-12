@@ -13,6 +13,7 @@ const xml = original.replace(/<measure\b[\s\S]*<\/measure>/u, Array.from({ lengt
 }).join(""));
 const browser = await chromium.launch({ ...(process.env.HM_UI_BROWSER_CHANNEL ? { channel: process.env.HM_UI_BROWSER_CHANNEL } : {}) });
 const results = [];
+const diagnostics = new WeakMap();
 async function setup(rate = 1) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await context.addInitScript(() => {
@@ -57,7 +58,11 @@ async function setup(rate = 1) {
     }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
   });
   const page = await context.newPage(), errors = [], api = [];
-  page.on("pageerror", error => errors.push(error.message));
+  const log = [];
+  diagnostics.set(page, log);
+  page.on("pageerror", error => { errors.push(error.message); log.push({ kind: "error", message: error.message }); });
+  page.on("console", message => { if (["error", "warning"].includes(message.type())) log.push({ kind: message.type(), message: message.text() }); });
+  page.on("framenavigated", frame => { if (frame === page.mainFrame()) log.push({ kind: "navigation", url: frame.url() }); });
   await page.route("**/api/**", route => { api.push(route.request().url()); return route.abort(); });
   await page.route("**/*", async route => {
     if (route.request().resourceType() !== "document") return route.fallback();
@@ -71,7 +76,7 @@ async function setup(rate = 1) {
 async function upload(page, score = original) {
   await page.locator('input[type="file"]').setInputFiles({ name: "worker-test.musicxml", mimeType: "application/xml", buffer: Buffer.from(score) });
   try { await expect(page.getByRole("heading", { name: "화음 파트를 고르세요" })).toBeVisible({ timeout: 120000 }); }
-  catch (error) { console.log(JSON.stringify(await page.evaluate(() => globalThis.hmWorkerEvidence))); throw error; }
+  catch (error) { console.log(JSON.stringify({ diagnostics: diagnostics.get(page), evidence: await page.evaluate(() => { const { events, scores, ui } = globalThis.hmWorkerEvidence; return { events, scores, ui }; }) })); throw error; }
 }
 async function begin(page) {
   await page.locator(".hm-part").filter({ has: page.getByRole("radio", { name: /둘 다/ }) }).click();

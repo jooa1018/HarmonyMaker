@@ -8,3 +8,13 @@ export function uniqueNotices<T extends { messageKo: string; actionKo: string }>
     return true;
   });
 }
+
+/** Blocked part cards show only the reason, so equal reasons share one card. */
+export function uniquePartReasons<T extends { reasonKo: string }>(parts: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return parts.filter(part => {
+    if (seen.has(part.reasonKo)) return false;
+    seen.add(part.reasonKo);
+    return true;
+  });
+}
