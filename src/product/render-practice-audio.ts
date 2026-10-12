@@ -10,6 +10,7 @@ export interface RenderPracticeAudioInput {
   readonly speed: PracticeSpeed;
   readonly mix: { readonly kind: "full" } | { readonly kind: "emphasize"; readonly trackId: string };
   readonly bandEnabled: boolean;
+  readonly leadOctave?: 0 | -1;
   readonly signal?: AbortSignal;
 }
 const abortError = () => new DOMException("연습 음원 만들기를 취소했어요.", "AbortError");
@@ -75,7 +76,7 @@ export async function renderPracticeAudio(input: RenderPracticeAudioInput): Prom
   if (!Number.isSafeInteger(length) || length <= 0 || length * 2 + 36 > 0xffffffff) throw new RangeError("PLAYBACK_TIMING_INVALID");
   const mix = practiceExportMix(plan, input.mix, input.bandEnabled);
   const context = new OfflineAudioContext(1, length, PRACTICE_WAV_SAMPLE_RATE);
-  const graph = schedulePracticeAudio(context, plan, { ...mix, fromQuarter: 0, secondsPerQuarter, startedAt: 0 });
+  const graph = schedulePracticeAudio(context, plan, { ...mix, fromQuarter: 0, secondsPerQuarter, startedAt: 0, leadOctave: input.leadOctave ?? 0 });
   let onAbort: (() => void) | undefined;
   let stopped = false;
   // OfflineAudioContext has no close/cancel API. Prearranged checkpoints let
