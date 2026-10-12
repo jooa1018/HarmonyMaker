@@ -124,15 +124,24 @@ export function schedulePracticeAudio(
       cursor++;
       const end = startedAt + (event.startQuarter + event.durationQuarter - fromQuarter) * secondsPerQuarter;
       if (end <= now) { expiredCount++; continue; }
-      const start = Math.max(originalStart, now);
+      const midi = event.midi + (event.trackId === "track:source-lead" ? 12 * (options.leadOctave ?? 0) : 0);
+      const frequency = 440 * 2 ** ((midi - 69) / 12);
+      // Whole cycles from one graph clock keep unisons and octave harmonics
+      // in phase, even when their musical attacks happen at different times.
+      const aligned = startedAt + Math.floor((originalStart - startedAt) * frequency) / frequency;
+      const oscillatorStart = aligned >= now ? aligned
+        : startedAt + Math.ceil((now - startedAt) * frequency) / frequency;
+      const start = Math.max(originalStart, oscillatorStart);
+      if (start >= end) { expiredCount++; continue; }
       if (originalStart < now) lateStartCount++;
       const duration = end - start;
       const oscillator = context.createOscillator();
       nodes.add(oscillator);
       const envelope = context.createGain();
       oscillator.setPeriodicWave(waves.get(event.trackId)!);
-      const midi = event.midi + (event.trackId === "track:source-lead" ? 12 * (options.leadOctave ?? 0) : 0);
-      oscillator.frequency.value = 440 * 2 ** ((midi - 69) / 12);
+      oscillator.frequency.value = frequency;
+      // GainNode defaults to 1: silence the pre-roll before opening the attack.
+      envelope.gain.value = 0;
       const attack = Math.min(PRACTICE_AUDIO_ATTACK_SECONDS, duration / 4);
       const release = Math.min(PRACTICE_AUDIO_RELEASE_SECONDS, duration / 2);
       envelope.gain.setValueCurveAtTime(ATTACK_CURVE, start, attack);
@@ -140,7 +149,7 @@ export function schedulePracticeAudio(
       envelope.gain.setValueCurveAtTime(RELEASE_CURVE, end - release, release);
       oscillator.connect(envelope).connect(tracks.get(event.trackId)!);
       oscillator.onended = () => { nodes.delete(oscillator); oscillator.disconnect(); envelope.disconnect(); };
-      oscillator.start(start);
+      oscillator.start(oscillatorStart);
       oscillator.stop(end);
       scheduledCount++;
     }
