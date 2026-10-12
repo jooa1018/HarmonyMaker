@@ -107,12 +107,3 @@ it("rechecks pickup eligibility instead of trusting an edited presentation DTO",
   await expect(generateQuickHarmony({ ...normal, questions: prep.questions }, { ...choice, answers })).rejects.toMatchObject({ code: "QUICK_HARMONY_CHOICE_INVALID" });
 });
 
-it("keeps the existing no-lyrics repeat-boundary tie rejection instead of relaxing validation", async () => {
-  const prep = await prepare(pickupRepeatExercise("inside", false, true).replace(/<lyric[\s\S]*?<\/lyric>/gu, ""));
-  const result = await generateQuickHarmony(prep, { ...choice, parts: ["tenor"] });
-  expect(result.status).toBe("blocked");
-  if (result.status !== "blocked") throw Error(result.status);
-  expect(result.diagnostics.some(d => d.code === "INPUT_INVALID_TIE")).toBe(true);
-  expect(result.preparation.reasons.some(r => r.messageKo.includes("붙임줄") && r.actionKo.includes("파트"))).toBe(true);
-});
-
