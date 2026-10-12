@@ -8,8 +8,8 @@ import { IndexedDbProjectStore } from "../local-project-store";
 import { answerQuickHarmony, generateQuickHarmony, prepareQuickHarmony } from "../quick-harmony";
 import { exportHarmonyProject, importHarmonyProject } from "../project-transfer";
 import { projectPracticeView } from "../project-view";
-import { projectMusicXml } from "../../app/_result/download";
-import { quickProjectId } from "../../app/_quick/generate";
+import { exportArrangementMusicXml } from "../musicxml-export";
+import { quickHarmonyProjectId } from "../quick-harmony-identity";
 import { materializeActiveArrangement } from "../render";
 import { materializePracticeShare } from "../practice-share";
 import { tripletExercise } from "../fixtures/triplet-exercise";
@@ -19,6 +19,31 @@ const xml = readFileSync(new URL("../fixtures/wag11/4-4-1.musicxml", import.meta
 const file = (score = xml) => ({ bytes: new TextEncoder().encode(score), fileName: "worker.musicxml" });
 const choice = { parts: ["alto", "tenor"], rightsConfirmed: true, confirmedAt: "2026-10-10T00:00:00.000Z" } as const;
 afterEach(() => vi.restoreAllMocks());
+
+// Captured from H3 quickProjectId at a53944b before removing the UI import.
+// Keep these literal expectations independent of the public identity function.
+it.each([
+  ["v1.1", xml, [
+    "quick-720f3f0354900e58e842220f0561fbf60cdb103ce30b9e98a8e7d78da1a6c099",
+    "quick-634f5a12f8af7c9233781187cd7d5b73998171c671f5a77598bc057ccb9fa14b",
+    "quick-0ddd9e7d99daf201e9db147b567d73eef91ed9bef0767bbf393e16726195ade0",
+    "quick-07ec2a0d4a23a0390e6820034e9d53cbad80fa08a4fc47ad3074e070bc66a864",
+  ]],
+  ["v1.2", tripletExercise("eighth"), [
+    "quick-e405eda4bd95355169b2fcc4bb17c23d70b4e4d657baa471d7fd885f47d65827",
+    "quick-c203091751f9aec15daae6de1daceeac9abf9bfce6e48e3c59413a2142db236a",
+    "quick-1a61213ecb8ad87eb4863795aa67dde7ace1fb9f85b80d7967815994c80e6f91",
+    "quick-135f249a186dffd2afdebd44f6b9956871445fe89f6f362956792915275e248c",
+  ]],
+] as const)("preserves %s H3 library identity goldens with auto, part order and tempo", async (_, score, expected) => {
+  const preparation = await prepareQuickHarmony(file(score));
+  for (const parts of [["alto", "tenor"], ["tenor", "alto"], "auto"] as const) {
+    const index = parts === "auto" ? 2 : 0;
+    expect(await quickHarmonyProjectId(preparation, { ...choice, parts })).toBe(expected[index]);
+    expect(await quickHarmonyProjectId(preparation, { ...choice, parts, tempo: { bpm: 100 } })).toBe(expected[index + 1]);
+  }
+});
+
 function harness() {
   const factory = new IDBFactory(), store = new IndexedDbProjectStore(factory), engine = createWorkerEngine(store);
   const stages: string[] = [], commits: string[] = [];
@@ -40,10 +65,16 @@ it.each([["v1.1", xml], ["v1.2", tripletExercise("eighth")]])("%s generates iden
   const generated = await h.call("generate", { handle: prep.handle, choice });
   if (generated.status !== "saved") throw Error(generated.status);
   const { project } = generated;
-  expect(project.projectId).toBe(await quickProjectId(directPrep, choice));
+  expect(project.projectId).toBe(await quickHarmonyProjectId(directPrep, choice));
   expect(project.practice).toEqual(await projectPracticeView(direct.project));
   expect(await h.call("exportProject", { handle: project.handle })).toBe(await exportHarmonyProject(direct.project));
-  expect(await h.call("exportMusicXml", { handle: project.handle })).toBe(projectMusicXml(direct.project));
+  const materialized = materializeActiveArrangement(direct.project, direct.project.selectedPresetId ?? "standard");
+  expect(materialized.validity).toBe("valid");
+  expect(await h.call("exportMusicXml", { handle: project.handle })).toBe(exportArrangementMusicXml(materialized.document, materialized.trackRoles, {
+    title: direct.project.source.title, key: direct.project.source.defaultKey, tempo: direct.project.source.defaultTempo,
+    ...(direct.project.source.composer ? { composer: direct.project.source.composer } : {}),
+    ...(direct.project.source.importInfo?.sourceKind === "score-workspace" ? { workspaceProjection: direct.project.source.importInfo.workspaceMetadata } : {}),
+  }));
   expect(await h.call("sharePayload", { handle: project.handle, confirmation: { rightsConfirmed: true, confirmedAt: choice.confirmedAt } })).toEqual(
     materializePracticeShare({ project: direct.project, presetId: "standard", materialized: materializeActiveArrangement(direct.project, "standard"), workspaceShareConfirmedForThisExport: true }));
   const duplicate = await h.call("generate", { handle: prep.handle, choice: { ...choice, parts: ["tenor","alto"] } });
@@ -63,7 +94,7 @@ it("answer previews do not grant rights, mutate the base or duplicate tempo jour
     const c = { ...choice, ...(tempo ? { tempo } : {}) }, generated = await h.call("generate", { handle: prep.handle, choice: c });
     const direct = await generateQuickHarmony(directPrep, c);
     if (generated.status !== "saved" || (direct.status !== "complete" && direct.status !== "partial")) throw Error("generation failed");
-    expect(generated.project.projectId).toBe(await quickProjectId(directPrep, c));
+    expect(generated.project.projectId).toBe(await quickHarmonyProjectId(directPrep, c));
     expect(await h.call("exportProject", { handle: generated.project.handle })).toBe(await exportHarmonyProject(direct.project));
   }
   expect(await h.call("list", null)).toHaveLength(2);
