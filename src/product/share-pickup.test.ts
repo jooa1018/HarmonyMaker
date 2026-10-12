@@ -76,6 +76,23 @@ it("does not extend the engine's initial exception to repeated pickups",async()=
   expect(["needs-input","unsupported","blocked"]).toContain(r.status);
 });
 
+it("blocks a code-free pickup outside a repeat beginning at the following first full measure",async()=>{
+  // Printed order: pickup 0, |: 1 2 3 4 :|. The pickup itself is not repeated.
+  const xml=score().replace('<measure number="1">','<measure number="1"><barline location="left"><repeat direction="forward"/></barline>')
+    .replace("</measure></part>",'<barline location="right"><repeat direction="backward"/></barline></measure></part>');
+  const prep=await prepareQuickHarmony({bytes:new TextEncoder().encode(xml),fileName:"pickup-before-repeat.musicxml"});
+  expect(prep.workspace).toBeDefined();
+  expect(prep.details.assessment?.request?.initialPickup).toBe("anticipate-first-chord");
+  const result=await generateQuickHarmony(prep,{parts:["alto","tenor"],rightsConfirmed:true,confirmedAt:"2026-10-10T00:00:00.000Z"});
+  expect(result.status).toBe("blocked");
+  if(result.status!=="blocked")throw Error(result.status);
+  expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
+    code:"SOURCE_CHORD_GAP",
+    details:expect.objectContaining({issue:"initial-pickup-policy-ineligible",reason:"repeated-pickup-or-anchor"}),
+  })]));
+  expect(result.project).toBeUndefined(); // No generated artifact reaches the share encoder.
+});
+
 it("preserves lyric verse indices without applying the pickup policy to a later occurrence",()=>{
   const payload=structuredClone(fixture.payload);
   if (payload.schemaVersion !== 5) throw Error("V5 fixture");
