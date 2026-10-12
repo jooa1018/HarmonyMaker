@@ -1,0 +1,38 @@
+{
+  "v1-auto": {
+    "status": "complete",
+    "sha256": "4ed1c00bd698834d4c448953da9b38df362ee968249dea449c4f7959ab4337fd"
+  },
+  "v1-alto": {
+    "status": "complete",
+    "sha256": "f402a43b4e282d53b541db58a5977d7460bd2bd45897f601fb1d703da1579b0d"
+  },
+  "v1-tenor": {
+    "status": "complete",
+    "sha256": "9799ecdc6b9da3cab6833da5d165597ecd12019dffa93bb120f34cb4cff56fe1"
+  },
+  "v1-edited": {
+    "status": "complete",
+    "sha256": "0b4062bd2e27d1d6c12fd8bf119edb4fac46cc489296accdaf1197987764d2de"
+  },
+  "v1.1": {
+    "status": "complete",
+    "sha256": "b301fbf6f0bfe5d4e4ed69e4d99c56835fe312b864730f85495822507f8ab4a3"
+  },
+  "v1.2-triplet": {
+    "status": "complete",
+    "sha256": "9ea9bffc1e06f4b996de4e4376b3caaa8f1e41a18df2100c692a8ac1cb6e53b5"
+  },
+  "v1.1-edited": {
+    "status": "complete",
+    "sha256": "076aac1e212807e7ec6698f2ee5ba3eb0056acb7dc65e3b52a1421baf0d08d65"
+  },
+  "v1.2-edited": {
+    "status": "complete",
+    "sha256": "e3e766d13d656997ade90baf7c3364e7b7fae4f95663f3aecfecd50c693d896c"
+  },
+  "pickup": {
+    "status": "complete",
+    "sha256": "45778c04136cf844c1a38168b1770908b255aabee2dcb5b7de6df8ed020ef537"
+  }
+}
