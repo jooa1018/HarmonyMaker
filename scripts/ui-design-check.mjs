@@ -84,6 +84,22 @@ try {
     await page.getByRole("button", { name: "테너 화음 만들기", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("화음 만드는 중");
   });
+  await check("tempo row changes by one and resets with a newly selected file", async () => {
+    await page.goto(`${base}/ui-preview/02-parts`);
+    const value = page.locator(".hm-tempo-value");
+    await expect(value).toContainText("80");
+    await page.getByRole("button", { name: "1 빠르게", exact: true }).click(); await expect(value).toContainText("81");
+    await expect(page.locator(".hm-tempo-badge")).toBeHidden();
+    await page.getByRole("button", { name: "1 느리게", exact: true }).focus(); await page.keyboard.press("Enter");
+    await expect(value).toContainText("80"); await expect(page.locator(".hm-tempo-badge")).toBeVisible();
+    await page.getByRole("button", { name: "1 빠르게", exact: true }).click();
+    await page.getByRole("button", { name: "다른 파일", exact: true }).click();
+    await page.getByLabel("MusicXML 악보 파일").setInputFiles({ name: "tempo.musicxml", mimeType: "application/xml", buffer: Buffer.from("fixture") });
+    await expect(value).toContainText("80");
+    await page.goto(`${base}/guide`);
+    await expect(page.locator(".hm-prompt")).toContainText("빠르기 숫자 표시");
+    await expect(page.locator(".hm-prompt")).toContainText("beat-unit-dot");
+  });
   await check("solo is exclusive; mutes are independent; speed restarts", async () => {
     await page.goto(`${base}/ui-preview/07-result`);
     await page.getByRole("button", { name: "테너만 듣기" }).click();

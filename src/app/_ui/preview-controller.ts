@@ -5,6 +5,7 @@ import { usePreviewPlayer } from "./practice";
 import type { PartChoice } from "./format";
 
 export function usePreviewController(screen: string, navigate: (screen: string) => void) {
+  const [tempoOverride, setTempoOverride] = useState<number>();
   const [part, setPart] = useState<PartChoice>(screen === "03-lead" ? "both" : "alto");
   const [rights, setRights] = useState(screen === "03-lead");
   const [audioOpen, setAudioOpen] = useState(false);
@@ -15,7 +16,7 @@ export function usePreviewController(screen: string, navigate: (screen: string) 
   const player = usePreviewPlayer(screen);
   return {
     notes: [{ messageKo: "악보에 빠르기 표시가 없어서 연습용 빠르기 ♩=80을 썼어요." }],
-    screen, part, setPart, rights, setRights, player, shareOpen, audioOpen, message,
+    screen, tempoOverride, setTempoOverride, part, setPart, rights, setRights, player, shareOpen, audioOpen, message,
     openAudio() { setAudioOpen(true); },
     closeAudio() { if (audioOpen) setAudioOpen(false); else navigate("07-result"); },
     chooseFile(file: File) { navigate(/\.(musicxml|mxl|xml)$/i.test(file.name) ? "02-parts" : "C-unreadable"); },
