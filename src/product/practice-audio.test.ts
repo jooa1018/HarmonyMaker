@@ -83,7 +83,11 @@ describe("practice audio signal and scheduling contract", () => {
       expect(f.oscillators).toHaveLength(1);
       f.context.currentTime=14;vi.advanceTimersByTime(250);
       expect(f.oscillators).toHaveLength(2);
-      expect(f.oscillators[1].start).toHaveBeenCalledWith(14);
+      const oscillator = f.oscillators[1];
+      const start = oscillator.start.mock.calls[0][0];
+      expect(start).toBeGreaterThanOrEqual(14);
+      expect(start - 14).toBeLessThan(1 / oscillator.frequency.value);
+      expect((start - options.startedAt) * oscillator.frequency.value).toBeCloseTo(Math.round((start - options.startedAt) * oscillator.frequency.value), 8);
       expect(f.oscillators[1].stop).toHaveBeenCalledWith(15.05);
       expect(graph.lateStartCount).toBe(1);expect(graph.expiredCount).toBe(1);
     } finally {vi.useRealTimers();}
@@ -143,6 +147,25 @@ describe("practice audio signal and scheduling contract", () => {
     expect(f.oscillators[0].start).toHaveBeenCalledWith(10.05);
     expect(f.oscillators[0].stop).toHaveBeenCalledWith(10.3);
     expect(f.oscillators[1].stop).toHaveBeenCalledWith(11.3);
+  });
+
+  it.each([0.075, 0.15, 0.225, 0.3, 0.375, 0.45, 0.525, 0.6, 0.675, 0.75])("aligns staggered unisons and octaves at %ss without moving their envelopes", delay => {
+    const f = fakeContext();
+    const events = [72, 72, 60].map((midi, i) => ({ ...plan.events[0], eventId: String(i), midi,
+      startQuarter: i ? delay / options.secondsPerQuarter : 0, durationQuarter: 1 }));
+    const input = { ...plan, events }, before = JSON.stringify(input);
+    schedulePracticeAudio(f.audio, input, options);
+    for (const [i, oscillator] of f.oscillators.entries()) {
+      const start = oscillator.start.mock.calls[0][0], frequency = oscillator.frequency.value;
+      const onset = options.startedAt + events[i].startQuarter * options.secondsPerQuarter;
+      expect(start).toBeLessThanOrEqual(onset);
+      expect(onset - start).toBeLessThan(1 / frequency);
+      const cycles = (start - options.startedAt) * frequency;
+      expect(cycles).toBeCloseTo(Math.round(cycles), 8);
+      expect(f.gains[5 + i].gain.value).toBe(0);
+      expect(f.gains[5 + i].gain.events[0].time).toBe(onset);
+    }
+    expect(JSON.stringify(input)).toBe(before);
   });
 
   it("uses separate track and master buses; live mix never restarts or duplicates sources", () => {
