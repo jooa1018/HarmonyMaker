@@ -13,10 +13,12 @@ import { applyWorkspaceCommand, createImmutableWorkspace, createScoreWorkspace, 
 import type { ScoreWorkspace } from "../import/workspace/model";
 import { generateAutoDraftProject } from "./auto-draft";
 import { summarizeQuickHarmonyMelody, type QuickHarmonySummary } from "./quick-harmony-summary";
-import { quickHarmonyNotice, quickHarmonyPartReason, type QuickHarmonyNotice } from "./quick-harmony-notices";
+import { quickHarmonyNotice, quickHarmonyPartReason, quickHarmonyBlockedNotices, type QuickHarmonyNotice } from "./quick-harmony-notices";
 export type { QuickHarmonySummary } from "./quick-harmony-summary";
 export type { QuickHarmonyNotice } from "./quick-harmony-notices";
 import type { ProductGenerationOutcome } from "./workspace";
+import { quickPickupChord } from "./quick-harmony-pickup";
+import { fraction } from "../domain/fraction";
 
 /** Same inclusive integer range as the existing import/workspace tempo editor. */
 export const QUICK_HARMONY_TEMPO_MIN = 20;
@@ -42,7 +44,7 @@ export interface QuickHarmonyChoice {
   readonly confirmedAt: string;
   /** BPM in the currently effective beat unit (including its dot). */
   readonly tempo?: { readonly bpm: number };
-  readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous" };
+  readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous"; readonly pickupChord?: "use-following-first-chord" };
 }
 
 export interface QuickHarmonyPartResult {
@@ -51,6 +53,7 @@ export interface QuickHarmonyPartResult {
   /** Printed Source measure numbers, sorted and deduplicated (including repeats). */
   readonly missingMeasures: readonly number[];
   readonly reasonKo: string;
+  readonly actionKo?: string;
 }
 
 export type QuickHarmonyResult =
@@ -87,6 +90,9 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const questions = findings.filter(f => f.category === "question").map(describe);
   const reasons = findings.filter(f => f.category === "unsupported").map(describe);
   const notes = findings.filter(f => f.category === "warning").map(describe);
+  const pickup = quickPickupChord(state, assessment, workspace.algorithmVersions.performanceExpanderVersion);
+  if (pickup.kind === "question") questions.push(pickup.notice);
+  if (pickup.kind === "unavailable") reasons.push(pickup.notice);
   if (assessment.provenance.some(p => p.field !== "tempo" && (p.origin === "policy-default" || p.origin === "source-inferred"))) notes.push(
     quickHarmonyNotice({id:"automatic-values",code:"AUTOMATIC_VALUES",category:"warning"}, "악보 설정"));
   for (const part of state.music?.parts ?? []) for (const measure of part.measures) {
@@ -144,6 +150,14 @@ function partResults(project: HarmonyProject, generation: ProductGenerationOutco
   });
 }
 
+function blockedGuidance(preparation: QuickHarmonyPreparation, parts: readonly QuickHarmonyPartResult[], diagnostics: readonly Diagnostic[]) {
+  const notices = quickHarmonyBlockedNotices(diagnostics);
+  return { preparation: { ...preparation, reasons: [...preparation.reasons, ...notices] },
+    parts: parts.map(part => ({ ...part, ...(notices[0] ? {
+      reasonKo: `${part.part === "alto" ? "알토" : "테너"}: ${notices[0].messageKo}`, actionKo: notices[0].actionKo,
+    } : {}) })) };
+}
+
 function validateQuickHarmonyFields(c: Omit<QuickHarmonyChoice, "rightsConfirmed">): void {
   const answers = c.answers;
   if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers", "tempo"].includes(k))
@@ -155,9 +169,10 @@ function validateQuickHarmonyFields(c: Omit<QuickHarmonyChoice, "rightsConfirmed
     || (c.parts !== undefined && c.parts !== "auto" && (!Array.isArray(c.parts) || c.parts.length < 1 || c.parts.length > 2
       || !Array.from(c.parts).every(part => part === "alto" || part === "tenor") || new Set(c.parts).size !== c.parts.length))
     || (answers !== undefined && (!answers || typeof answers !== "object" || Array.isArray(answers)
-      || Object.keys(answers).some(k => !["lead", "unreadPrintedChords"].includes(k))
+      || Object.keys(answers).some(k => !["lead", "unreadPrintedChords", "pickupChord"].includes(k))
       || (answers.lead !== undefined && typeof answers.lead !== "string")
-      || (answers.unreadPrintedChords !== undefined && answers.unreadPrintedChords !== "carry-previous")))) {
+      || (answers.unreadPrintedChords !== undefined && answers.unreadPrintedChords !== "carry-previous")
+      || (answers.pickupChord !== undefined && answers.pickupChord !== "use-following-first-chord")))) {
     throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "성부 선택, 빠르기와 권리 확인 시각을 다시 확인해 주세요.");
   }
 }
@@ -187,6 +202,30 @@ async function choiceWorkspace(source: ScoreWorkspace, c: QuickHarmonyAnswer): P
     workspace = await applyWorkspaceCommand(workspace, workspace, { kind: "tempo", tempo: { ...effective, bpm: c.tempo.bpm } },
       { id: `quick-tempo:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 빠르기를 선택함", actor: "user", at: c.confirmedAt });
   }
+  if (answers?.pickupChord !== undefined) {
+    const { state } = await readVerifiedWorkspace(workspace);
+    const assessment = await assessAutoDraft(workspace);
+    const pickup = quickPickupChord(state, assessment, workspace.algorithmVersions.performanceExpanderVersion);
+    if (pickup.kind === "question") {
+      workspace = await applyWorkspaceCommand(workspace, workspace,
+        { kind: "chord", measureId: pickup.measureId, text: pickup.chord, onset: fraction(0) },
+        { id: `quick-pickup-chord:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 다음 마디 첫 코드를 못갖춘마디 시작에도 사용하기로 확인함", actor: "user", at: c.confirmedAt });
+      if (state.request.initialPickup) workspace = await applyWorkspaceCommand(workspace, workspace,
+        { kind: "pickup-policy", value: "none" }, { id: `quick-pickup-explicit:${workspace.revision}:${workspace.historyDigest}`, note: "명시 코드를 사용하므로 선행 정책 해제", actor: "user", at: c.confirmedAt });
+    } else {
+      // A direct caller may generate from the answer preview. Its verified journal
+      // already holds this edit; do not insert the chord twice.
+      const lead = state.music?.leadCandidates.find(v => v.key === assessment.request?.lead);
+      const first = state.music?.parts.find(p => p.partOrdinal === lead?.partOrdinal)?.measures[0];
+      const recorded = workspace.operations.some(o => {
+        const command = o.command;
+        return o.id.startsWith("quick-pickup-chord:") && o.actor === "user"
+          && command.kind === "chord" && command.measureId === first?.workspaceMeasureId
+          && first?.chords.some(ch => ch.key === `inserted:${o.id}` && ch.onset.n === 0 && ch.sourceText === command.text);
+      });
+      if (!recorded) throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "확인할 못갖춘마디 코드가 없어요. 악보를 다시 판정해 주세요.");
+    }
+  }
   return workspace;
 }
 
@@ -215,15 +254,21 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
     ...(answers?.unreadPrintedChords ? { decisions: { unreadPrintedChords: answers.unreadPrintedChords } } : {}),
     rights: { basis: "user-confirmed-rights", allowedUses: ["generation"], confirmedAt: c.confirmedAt },
   });
+  const checked = await preparation(workspace, await assessAutoDraft(workspace, options));
+  if (checked.questions.some(q => q.id === "pickup-chord") || checked.reasons.some(r => r.id === "pickup-chord-unavailable"))
+    return { status: checked.status === "unsupported" ? "unsupported" : "needs-input", preparation: checked };
   // The supplied status, questions and details are intentionally never read.
   const result = await generateAutoDraftProject(workspace, options);
   const fresh = await preparation(workspace, result.assessment);
   if (result.status === "not-generated") return { status: fresh.status === "unsupported" ? "unsupported" : "needs-input", preparation: fresh };
-  if (result.status === "source-blocked") return { status: "blocked", preparation: fresh, parts: (options.harmonyParts ?? []).map(part => ({ part, status: "missing", missingMeasures: [], reasonKo: "악보 판정에서 생성이 중단됐어요." })), diagnostics: result.diagnostics };
+  if (result.status === "source-blocked") {
+    return { status: "blocked", ...blockedGuidance(fresh, (options.harmonyParts ?? []).map(part => ({ part, status: "missing", missingMeasures: [],
+      reasonKo: quickHarmonyPartReason(part, "missing", []) })), result.diagnostics), diagnostics: result.diagnostics };
+  }
   const parts = partResults(result.project, result.generation);
-  if (result.generation.status === "blocked") return { status: "blocked", preparation: fresh, project: result.project, parts, diagnostics: result.generation.diagnostics };
+  if (result.generation.status === "blocked") return { status: "blocked", ...blockedGuidance(fresh, parts, result.generation.diagnostics), project: result.project, diagnostics: result.generation.diagnostics };
   if (options.harmonyParts && parts.every(p => p.status === "missing")) return {
-    status: "blocked", preparation: fresh, project: result.project, parts, diagnostics: result.generation.execution.generation.result.diagnostics,
+    status: "blocked", ...blockedGuidance(fresh, parts, result.generation.execution.generation.result.diagnostics), project: result.project, diagnostics: result.generation.execution.generation.result.diagnostics,
   };
   const status = options.harmonyParts && parts.some(p => p.status !== "complete") ? "partial" : result.generation.status;
   return { status, preparation: fresh, project: result.project, parts, generation: result.generation };

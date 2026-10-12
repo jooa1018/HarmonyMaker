@@ -14,6 +14,7 @@ import { decodeProductUrlShare, encodeProductUrlShare } from "./share-url";
 import { exportHarmonyProject } from "./project-transfer";
 import type { ArrangementRenderDocument } from "../domain/generation/model";
 import { fraction } from "../domain/fraction";
+import { generateAutoDraftProject } from "./auto-draft";
 
 const original = readFileSync(new URL("./fixtures/wag11/4-4-1.musicxml",import.meta.url),"utf8");
 const attributes = /<attributes>[\s\S]*?<\/attributes>/u.exec(original)![0];
@@ -83,14 +84,17 @@ it("blocks a code-free pickup outside a repeat beginning at the following first 
   const prep=await prepareQuickHarmony({bytes:new TextEncoder().encode(xml),fileName:"pickup-before-repeat.musicxml"});
   expect(prep.workspace).toBeDefined();
   expect(prep.details.assessment?.request?.initialPickup).toBe("anticipate-first-chord");
-  const result=await generateQuickHarmony(prep,{parts:["alto","tenor"],rightsConfirmed:true,confirmedAt:"2026-10-10T00:00:00.000Z"});
-  expect(result.status).toBe("blocked");
-  if(result.status!=="blocked")throw Error(result.status);
+  expect(prep.status).toBe("needs-input");
+  expect((await generateQuickHarmony(prep,{parts:["alto","tenor"],rightsConfirmed:true,confirmedAt:"2026-10-10T00:00:00.000Z"})).status).toBe("needs-input");
+  // The new question does not relax the underlying resolver or V5 policy gate.
+  const result=await generateAutoDraftProject(prep.workspace!,{harmonyParts:["alto","tenor"],rights:{basis:"user-confirmed-rights",allowedUses:["generation"],confirmedAt:"2026-10-10T00:00:00.000Z"}});
+  expect(result.status).toBe("source-blocked");
+  if(result.status!=="source-blocked")throw Error(result.status);
   expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
     code:"SOURCE_CHORD_GAP",
     details:expect.objectContaining({issue:"initial-pickup-policy-ineligible",reason:"repeated-pickup-or-anchor"}),
   })]));
-  expect(result.project).toBeUndefined(); // No generated artifact reaches the share encoder.
+  expect("project" in result).toBe(false); // No generated artifact reaches the share encoder.
 });
 
 it("preserves lyric verse indices without applying the pickup policy to a later occurrence",()=>{

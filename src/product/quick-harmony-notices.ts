@@ -1,4 +1,5 @@
 import type { AutoDraftFinding } from "../import/workspace/auto-draft";
+import type { Diagnostic } from "../domain/diagnostics";
 
 /** Shared presentation for fresh results and recoverable saved diagnostics. */
 export function quickHarmonyPartReason(part: "alto" | "tenor", status: "complete" | "partial" | "missing", missingMeasures: readonly number[]): string {
@@ -12,6 +13,37 @@ export interface QuickHarmonyNotice {
   readonly messageKo: string;
   readonly actionKo: string;
   readonly choices: readonly { readonly value: string; readonly labelKo: string }[];
+}
+
+/** One actionable notice per blocking cause, shared across requested parts. */
+export function quickHarmonyBlockedNotices(diagnostics: readonly Diagnostic[]): readonly QuickHarmonyNotice[] {
+  const byCode = new Map<string, QuickHarmonyNotice>();
+  for (const d of diagnostics) {
+    if (d.severity !== "blocking" && d.severity !== "error") continue;
+    let messageKo = "악보의 음표·코드 조건을 확인해야 해요.";
+    let actionKo = "MuseScore에서 해당 마디의 코드·음표·악보 설정을 확인하고 MusicXML로 다시 내보내 주세요.";
+    if (d.code === "SOURCE_CHORD_GAP" || d.code === "SOURCE_CHORD_CARRY_WITHOUT_PREVIOUS") messageKo = "멜로디에 적용할 코드가 없거나 못갖춘마디 코드 조건이 맞지 않아요.";
+    else if (d.code === "SOURCE_CHORD_PARSE_FAILED" || d.code === "SOURCE_CHORD_UNCONFIRMED") messageKo = "읽거나 확인하지 못한 코드가 있어요.";
+    else if (d.code === "SOURCE_NO_CHORD_REGION") messageKo = "코드가 없는 구간에서는 화음을 만들 수 없어요.";
+    else if (d.code.startsWith("PERFORMANCE_")) {
+      messageKo = "반복 기호와 1·2번 끝의 연주 순서를 정할 수 없어요.";
+      actionKo = "MuseScore에서 반복 기호와 1·2번 끝을 확인한 뒤 다시 올려 주세요.";
+    } else if (d.code === "INPUT_INVALID_TIE") {
+      messageKo = "붙임줄로 연결된 음의 길이나 연결 조건이 맞지 않아요.";
+      actionKo = "원본의 붙임줄을 확인해 주세요. 원본이 맞으면 문제가 난 마디와 선택 파트를 알려 주세요.";
+    } else if (d.code.startsWith("GEN_") || d.code.startsWith("GENERATED_") || d.code === "NO_ELIGIBLE_TEXTURE" || d.code === "PERFORMER_RANGE_INVALID") {
+      messageKo = "설정한 음역과 화음 규칙을 만족하는 결과를 찾지 못했어요.";
+      actionKo = "다른 파트를 선택해 보거나 멜로디 음역과 코드가 원본과 맞는지 확인해 주세요.";
+    } else if (d.code.includes("VERSION") || d.code === "ALGORITHM_CONFIG_MISMATCH" || d.code.includes("STALE") || d.code === "SOURCE_REVISION_INVALID") {
+      messageKo = "악보와 저장된 생성 정보가 일치하지 않아요.";
+      actionKo = "원본 파일을 다시 올려 주세요. 같은 문제가 나면 오류를 알려 주세요.";
+    } else if (d.code === "INPUT_LIMIT_EXCEEDED") {
+      messageKo = "이 악보가 처리할 수 있는 크기를 넘었어요.";
+      actionKo = "악보를 짧은 구간으로 나누어 다시 올려 주세요.";
+    }
+    byCode.set(d.code, { id: `generation-blocked:${d.code}`, messageKo, actionKo, choices: [] });
+  }
+  return [...byCode.values()];
 }
 
 interface NoticeCopy {

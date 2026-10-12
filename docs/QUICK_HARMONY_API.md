@@ -46,6 +46,7 @@ generateQuickHarmony(
     answers?: {
       lead?: string;
       unreadPrintedChords?: "carry-previous";
+      pickupChord?: "use-following-first-chord";
     };
   },
 ): Promise<QuickHarmonyResult>
@@ -57,6 +58,12 @@ generateQuickHarmony(
 - `confirmedAt`은 **선택 전체의 확정 시각**이다. 권리 확인 기록과 Lead·빠르기 선택 journal 기록에 함께 쓰인다. `new Date(x).toISOString() === x`인 정규 ISO UTC 문자열만 받는다(예: `2026-10-09T10:00:00.000Z`). 날짜만 쓰거나 오프셋 등 다른 표기를 쓰면 `QUICK_HARMONY_CHOICE_INVALID`로 거부한다. 같은 선택을 재시도할 때는 같은 값을 유지한다. 엔진 내부에서 현재 시각을 생성하지 않는다.
 - `lead`에는 판정 질문의 `choices[].value`를 전달한다. 존재하며 음표가 있는 성부인지 재검증하고, 명시적 사용자 선택으로 journal에 기록한다. 사람의 악보 대조 기록은 만들지 않는다.
 - `unreadPrintedChords`는 기존 자동 초안의 판독 불가 코드 질문에 대한 답이다. 순수 MusicXML에는 보통 나타나지 않는다. 기본값으로 이전 코드를 유지하지 않는다.
+- `pickupChord`는 `questions`의 `id: "pickup-chord"` 질문에 대한 확인이다. 코드 없는 첫 못갖춘마디 또는 다음 온마디가 반복될 때, 바로 다음 마디 시작의 유효한 첫 코드 하나를 제안한다. 질문의 유일한 선택 값은 `use-following-first-chord`이며 임의 코드 문자열은 받지 않는다. 없거나 N.C.·%·미해석·미확인·중복·늦은 코드이면 `pickup-chord-unavailable` 사유와 MuseScore 안내를 돌려준다.
+- 확인하면 기존 `chord` 편집 명령으로 **못갖춘마디 offset 0**에 canonical 코드 이름을 기록한다(`actor: user`, `at: confirmedAt`). 코드가 악보·MusicXML에 일반 코드로 표시되고, 반복되는 모든 pickup에도 같은 코드가 적용된다. 쉼표로 시작하면 쉼표 위에 코드가 표시되며 반주가 먼저 울릴 수 있다. 명시 코드를 쓰므로 공유는 기존 경로를 따르고 resolver·WAG·V5 규칙은 바뀌지 않는다.
+- `answerQuickHarmony(preparation, { answers: { pickupChord: "use-following-first-chord" }, confirmedAt })`는 권리 확인 없이 미리 판정한다. Worker `answer({ handle, answer })`도 같은 형식이며 원래 handle의 workspace를 바꾸지 않는다. 최종 Worker `generate({ handle, choice })`에 답을 다시 전달한다. 공통 `quickHarmonyProjectId`는 답을 저장 id에 포함한다. 답이 없으면 새 journal을 만들지 않으며, 기존 비반복 선행 정책·명시 코드 악보의 프로젝트 바이트는 그대로다.
+- 자동 초안은 기존 규칙대로 판독 가능한 workspace 코드를 confirmed Source 코드로 투영한다. 이는 사람의 원본 대조 확인을 뜻하지 않는다. 미해결 판독 질문이 있는 anchor는 추천하지 않는다.
+- 생성 차단의 구체 안내는 중복 제거한 `preparation.reasons[].messageKo/actionKo`로 제공하며, 해당 `parts[]`에는 파트별 `reasonKo`와 선택적 `actionKo`가 있다. 화면은 공통 사유를 한 번 보여 준다.
+- 알려진 기존 제한: pickup의 인쇄 코드가 쉼표 뒤(offset > 0)에만 있으면 자동 초안이 선행 정책을 선택해 거부할 수 있다(반복이 없어도 해당). 이미 코드가 있는 악보에는 위 새 질문을 적용하거나 코드를 옮기지 않는다. 향후 개선안은 “pickup에 코드가 하나라도 있으면 자동 선행 정책을 넣지 않음”이다. 과거 auto-draft proof를 재생할 때 결과가 달라지므로 기존 policy v1/v2의 동작을 보존하는 새 정책 버전 검토가 필요하다. 이번에는 수정하지 않는다.
 - 마디 길이·음표 등의 교정은 기존 workspace 편집 API로 수행하고, `prepareQuickHarmonyWorkspace(editedWorkspace)`로 다시 판정한다. `edit-in-workspace` 선택지는 편집 화면으로 이동하는 행동이며 `answers` 값이 아니다.
 
 ## 판정 결과
