@@ -113,3 +113,4 @@ PostgreSQL 시험은 TEST_DATABASE_URL로 지정한 일회용 PostgreSQL 17 DB�
 - [Quick Harmony API와 호환성](docs/QUICK_HARMONY_API.md)
 - [서버 정리 전 진행 기록](docs/implementation/README_PRE_SERVER_CLEANUP.md)
 - [서버 정리 완료 보고](docs/implementation/H2_FINAL_REPORT.md)
+- [로컬 빌드 폴더 목록·용량](docs/implementation/H2_LOCAL_BUILD_INVENTORY.md)
