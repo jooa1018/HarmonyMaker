@@ -1,9 +1,10 @@
 "use client";
+import { stageLabel } from "../_worker/presentation";
 import Link from "next/link";
 import { AppBar, FileDrop } from "../_ui/controls";
 import { Icon } from "../_ui/Icon";
 import type { QuickPreparationController } from "./useQuickPreparation";
-export function QuickStart({ ui }: { ui: Pick<QuickPreparationController, "chooseFile" | "reading" | "fileName"> }) { return (
+export function QuickStart({ ui }: { ui: Pick<QuickPreparationController, "chooseFile" | "reading" | "fileName" | "stage" | "cancel"> }) { return (
 <div className="hm">
 <div className="hm-page">
 <AppBar shared={false} library={false} />
@@ -11,6 +12,7 @@ export function QuickStart({ ui }: { ui: Pick<QuickPreparationController, "choos
 <h1 className="hm-title">내 악보로 화음 만들기</h1>
 <p className="hm-lede">MusicXML 악보를 올리고 화음 파트를 고르면 바로 만들어 드려요.</p>
 <FileDrop state={ui.reading ? "reading" : "ready"} fileName={ui.fileName} onFile={ui.chooseFile} />
+{ui.reading && <div role="status"><p>{stageLabel(ui.stage)}</p><button className="hm-btn hm-btn-secondary" type="button" disabled={ui.stage === "committing"} onClick={ui.cancel}>취소</button></div>}
 <p className="hm-privacy"><Icon name="lock" />파일은 서버로 보내지 않고 이 기기에서만 처리돼요.</p>
 <Link className="hm-linkcard" href="/guide">
 <span className="hm-linkcard-icon"><Icon name="camera" /></span>

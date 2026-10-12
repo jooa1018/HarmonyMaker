@@ -2,11 +2,16 @@ import { readFileSync } from "node:fs";
 import { beforeAll, expect, it, vi } from "vitest";
 import { importHarmonyProject } from "../../product/project-transfer";
 import { MemoryShareCreateRecoveryStore } from "../../product/share-create-recovery";
-import type { LocalProjectRecord } from "../../product/local-project-store";
+import { materializePracticeShare } from "../../product/practice-share";
+import { materializeActiveArrangement } from "../../product/render";
 import { createResultShare } from "./create-share";
 
-let record: LocalProjectRecord;
-beforeAll(async () => { record = { projectId: "fixture", updatedAt: "2026-10-10T00:00:00.000Z", project: await importHarmonyProject(readFileSync(new URL("../../product/fixtures/auto-draft-v1-auto.json", import.meta.url), "utf8")) }; });
+let record: Parameters<typeof createResultShare>[0];
+beforeAll(async () => {
+  const project = await importHarmonyProject(readFileSync(new URL("../../product/fixtures/auto-draft-v1-auto.json", import.meta.url), "utf8"));
+  const presetId = project.selectedPresetId ?? "standard";
+  record = { projectId: "fixture", rightsBasis: project.source.rights.basis, payload: materializePracticeShare({ project, presetId, materialized: materializeActiveArrangement(project, presetId), workspaceShareConfirmedForThisExport: true }) };
+});
 const session = (authority = "session-one-" + "a".repeat(32)) => Response.json({ csrfToken: "csrf", sessionAuthority: authority, expiresAt: "2027-01-01T00:00:00.000Z" });
 const completed = () => Response.json({ ok: true, share: { kind: "store", token: "test_token_123", ownerDeleteSecret: "owner_secret_123", expiresAt: "2027-04-08T00:00:00.000Z" } }, { status: 201 });
 it("creates a compact inline link without sending anything to the server", async () => {
