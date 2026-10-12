@@ -2,8 +2,10 @@
 import Link from "next/link";
 // Screen markup transcribed from the approved mockup. The preview controller supplies fixture state.
 import { AppBar, PartPicker, CtaBar, FileDrop, LeadQuestionChoices, CopyPromptButton, LibraryList, NotesFold } from "./controls";
-import { PracticePanel, ScoreNotation, MiniPlayerBar } from "./practice";
 import { TempoRow } from "./TempoRow";
+import { PracticePanel, PracticeMixer, PlayButton, ScoreNotation, MiniPlayerBar } from "./practice";
+import { SeekBar } from "./SeekBar";
+import { formatClock } from "./format";
 import { AudioSheet } from "./AudioSheet";
 import { ActionTiles } from "./ActionTiles";
 import { silentAudio } from "./audio-export";
@@ -360,7 +362,11 @@ export function Screendesktopresult({ ui }: { ui: PreviewController }) { return 
 export function Screen13audio({ ui }: { ui: PreviewController }) { return <div className="hm"><div className="hm-page" aria-hidden="true" inert><header className="hm-appbar"><span className="hm-brand"><BrandMark />HarmonyMaker</span></header><section className="hm-result-head"><h1 className="hm-result-title">시냇가에 심은 나무</h1><p className="hm-result-meta">G장조 · 4/4 · 24마디</p></section></div><AudioSheet title="시냇가에 심은 나무" player={ui.player} onClose={ui.closeAudio} /></div>; }
 export function ScreenGaudio({ ui }: { ui: PreviewController }) { return <div className="hm"><div className="hm-page"><AudioSheet title="시냇가에 심은 나무" player={ui.player} onClose={ui.closeAudio} standalone previewMaking /></div></div>; }
 export function ScreenHaudio({ ui }: { ui: PreviewController }) { return <div className="hm"><div className="hm-page"><AudioSheet title="시냇가에 심은 나무" player={ui.player} onClose={ui.closeAudio} standalone initialResult={silentAudio(96)} /></div></div>; }
+export function ScreenIseek({ ui }: { ui: PreviewController }) { return <div className="hm" style={{ padding: "16px" }}><section className="hm-player" aria-label="연습 플레이어" style={{ paddingTop: "40px" }}><div className="hm-transport"><PlayButton player={ui.player} /><div className="hm-timeline"><SeekBar seconds={ui.player.seconds} totalSeconds={ui.player.totalSeconds} controller={ui.player.navigation!} previewDrag={26} /><div className="hm-time"><span>{formatClock(ui.player.seconds)}</span><span>{formatClock(ui.player.totalSeconds)}</span></div></div></div></section></div>; }
+export function ScreenJoctave({ ui }: { ui: PreviewController }) { return <div className="hm" style={{ padding: "16px" }}><section className="hm-player" aria-label="연습 플레이어"><PracticeMixer player={ui.player} standalone /></section></div>; }
 export const screens = {
+"I-seek-drag": ScreenIseek,
+"J-tenor-octave": ScreenJoctave,
 "13-audio": Screen13audio,
 "G-audio-making": ScreenGaudio,
 "H-audio-done": ScreenHaudio,
