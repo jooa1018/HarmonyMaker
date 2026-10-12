@@ -248,3 +248,6 @@ try {
   await writeFile(`${evidence}/flow-results.json`, JSON.stringify(results, null, 2));
   await browser.close();
 }
+
+// Actual Worker cancellation and expired-handle recovery use isolated browser storage.
+await import("./ui-flow-worker-check.mjs");

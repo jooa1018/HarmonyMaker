@@ -3,7 +3,7 @@ import { chromium, expect } from "@playwright/test";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 const base = process.env.HM_UI_BASE_URL ?? "http://127.0.0.1:3133";
-const output = process.env.HM_UI_EVIDENCE_DIR ?? "runtime-browser-evidence/h3-worker";
+const output = `${process.env.HM_UI_EVIDENCE_DIR ?? "runtime-browser-evidence/h3-flow"}/worker`;
 await mkdir(output, { recursive: true });
 const original = await readFile(new URL("../src/product/fixtures/wag11/4-4-1.musicxml", import.meta.url), "utf8");
 const bars = [...original.matchAll(/<measure\b[\s\S]*?<\/measure>/gu)].map(m => m[0]);
@@ -99,10 +99,11 @@ try {
     await page.getByRole("button", { name: "일시정지", exact: true }).first().click();
     await page.evaluate(() => { globalThis.hmWorkerFault = "exportMusicXml"; });
     await page.getByRole("button", { name: "MusicXML 받기" }).click();
+    await page.waitForFunction(() => globalThis.hmWorkerEvidence.events.filter(e => e.kind === "request" && e.operation === "open").length >= 2);
     await ready(page); expect(page.url()).toBe(savedUrl);
     const events = await page.evaluate(() => globalThis.hmWorkerEvidence.events);
     expect(events.filter(e => e.kind === "request" && e.operation === "open").length).toBeGreaterThanOrEqual(2);
-    await page.getByRole("button", { name: "다른 파트로", exact: true }).click();
+    await page.getByRole("button", { name: "다른 파트로 다시 만들기", exact: true }).click();
     await expect(page.getByRole("heading", { name: "화음 파트를 고르세요" })).toBeVisible();
     await begin(page); await ready(page);
     await page.getByRole("button", { name: "팀원과 공유", exact: true }).click();
@@ -126,7 +127,8 @@ try {
     };
     const prepare = range("prepare"), generate = range("generate"), open = range("open"), score = evidence.scores.at(-1);
     const computing = e => [[prepare.start, prepare.end], [generate.start, generate.end], [open.start, open.end]].some(([start, end]) => e.at >= start && e.at < end);
-    const metric = { rate, trial, prepareMs: prepare.ms, generateSaveViewMs: generate.ms, reopenViewMs: open.ms,
+    const workerStart = evidence.events.find(e => e.kind === "worker")?.at, workerReady = evidence.events.find(e => e.kind === "ready")?.at;
+    const metric = { rate, trial, startupMs: workerReady - workerStart, prepareMs: prepare.ms, generateSaveViewMs: generate.ms, reopenViewMs: open.ms,
       svgObservedMs: score.end - score.start, generateToSvgMs: score.end - generate.start,
       engineLongestTaskMs: Math.max(0, ...evidence.tasks.filter(computing).map(e => e.ms)),
       engineMaxTimerGapMs: Math.max(0, ...evidence.gaps.filter(computing).map(e => e.ms)),
