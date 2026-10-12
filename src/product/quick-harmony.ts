@@ -38,7 +38,7 @@ export interface QuickHarmonyPreparation {
 export interface QuickHarmonyChoice {
   readonly parts?: "auto" | readonly [HarmonyPartPreset] | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
   readonly rightsConfirmed: true;
-  /** Canonical ISO UTC time of the whole choice; reused for rights and Lead journal entries. */
+  /** Canonical ISO UTC time of the whole choice; reused for rights, Lead and tempo journal entries. */
   readonly confirmedAt: string;
   /** BPM in the currently effective beat unit (including its dot). */
   readonly tempo?: { readonly bpm: number };

@@ -43,12 +43,11 @@ it.each(["simple","compound"])("records %s tempo as a user edit and round-trips 
   expect(await exportHarmonyProject(await importHarmonyProject(saved))).toBe(saved);
   const m=materializeActiveArrangement(result.project,"standard"), notation={title:result.project.source.title,key:result.project.source.defaultKey,tempo};
   const exported=exportArrangementMusicXml(m.document,m.trackRoles,notation);
-  expect(exported).toContain(`<sound tempo="${kind==="compound"?90:60}"/>`);
+  expect(exported).toContain(`<per-minute>60</per-minute>`);
+  expect(exported).not.toContain("<sound tempo=");
   const reopened=await prepare(exported);
   const importedTempo=(await readVerifiedWorkspace(reopened.workspace!)).state.music!.defaultTempo!;
-  // The existing importer prioritizes sound tempo (quarter units); playback
-  // must remain exact even when dotted-quarter notation is normalized.
-  expect(quarterSeconds(importedTempo,100)).toBe(quarterSeconds(tempo,100));
+  expect(importedTempo).toEqual(tempo);
   const share=materializePracticeShare({project:result.project,presetId:"standard",materialized:m,workspaceShareConfirmedForThisExport:true});
   const decoded=decodePracticeShare(encodePracticeShare(share)),shared=materializeSharedPractice(decoded);
   expect(decoded.tempo).toEqual(tempo);
@@ -70,10 +69,11 @@ it("exports the same inclusive integer limits as the existing tempo editor",()=>
   expect(()=>tempoSpec(4,false,QUICK_HARMONY_TEMPO_MAX+1)).toThrow();
 });
 
-it("keeps the exported maximum dotted tempo readable",async()=>{
-  const score=xml.replace("</attributes>",'</attributes><direction><direction-type><metronome><beat-unit>quarter</beat-unit><beat-unit-dot/><per-minute>300</per-minute></metronome></direction-type><sound tempo="450"/></direction>');
+it("keeps the existing metronome-only maximum dotted tempo readable",async()=>{
+  const score=xml.replace("</attributes>",'</attributes><direction><direction-type><metronome><beat-unit>quarter</beat-unit><beat-unit-dot/><per-minute>300</per-minute></metronome></direction-type></direction>');
   const prep=await prepare(score);
   expect(prep.status).toBe("ready");
+  expect(prep.summary?.tempo).toEqual({beatUnit:4,dotted:true,bpm:300,origin:"score"});
 });
 
 it("omits only a tempo-only AUTOMATIC_VALUES note and retains other automatic findings",async()=>{
