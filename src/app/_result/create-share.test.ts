@@ -2,11 +2,16 @@ import { readFileSync } from "node:fs";
 import { beforeAll, expect, it, vi } from "vitest";
 import { importHarmonyProject } from "../../product/project-transfer";
 import { MemoryShareCreateRecoveryStore } from "../../product/share-create-recovery";
-import type { LocalProjectRecord } from "../../product/local-project-store";
+import { materializePracticeShare } from "../../product/practice-share";
+import { materializeActiveArrangement } from "../../product/render";
 import { createResultShare } from "./create-share";
 
-let record: LocalProjectRecord;
-beforeAll(async () => { record = { projectId: "fixture", updatedAt: "2026-10-10T00:00:00.000Z", project: await importHarmonyProject(readFileSync(new URL("../../product/fixtures/auto-draft-v1-auto.json", import.meta.url), "utf8")) }; });
+let record: Parameters<typeof createResultShare>[0];
+beforeAll(async () => {
+  const project = await importHarmonyProject(readFileSync(new URL("../../product/fixtures/auto-draft-v1-auto.json", import.meta.url), "utf8"));
+  const presetId = project.selectedPresetId ?? "standard";
+  record = { projectId: "fixture", rightsBasis: project.source.rights.basis, payload: materializePracticeShare({ project, presetId, materialized: materializeActiveArrangement(project, presetId), workspaceShareConfirmedForThisExport: true }) };
+});
 const session = (authority = "session-one-" + "a".repeat(32)) => Response.json({ csrfToken: "csrf", sessionAuthority: authority, expiresAt: "2027-01-01T00:00:00.000Z" });
 const completed = () => Response.json({ ok: true, share: { kind: "store", token: "test_token_123", ownerDeleteSecret: "owner_secret_123", expiresAt: "2027-04-08T00:00:00.000Z" } }, { status: 201 });
 it("creates a compact inline link without sending anything to the server", async () => {
@@ -57,4 +62,15 @@ it("reconciles a completed share after session change and requires explicit fres
   await createResultShare(record, true, dependencies);
   expect((await recoveryStore.load(record.projectId))?.idempotencyKey).not.toBe(firstKey);
   expect((await recoveryStore.load(record.projectId))?.completedAuthorities).toHaveLength(1);
+});
+it.each(["2027-06-01T00:00:00.000Z", undefined, "invalid-date"])("displays a reconciled expiry only when valid (%s), without persisting it", async expiresAt => {
+  const recoveryStore = new MemoryShareCreateRecoveryStore();
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(session()).mockResolvedValueOnce(completed())
+    .mockResolvedValueOnce(session("session-two-" + "b".repeat(32))).mockResolvedValueOnce(Response.json({ ok: true, state: "active", expiresAt }));
+  const dependencies = { origin: "https://example.test", fetcher, recoveryStore, fits: () => false };
+  await createResultShare(record, false, dependencies);
+  const before = await recoveryStore.load(record.projectId);
+  expect(await createResultShare(record, false, dependencies)).toEqual({ status: "created", stored: true, url: "https://example.test/share?token=test_token_123", ...(expiresAt?.startsWith("2027") ? { expiresAt } : {}) });
+  expect(fetcher.mock.calls[3][0]).toBe("/api/shares/test_token_123/reconcile");
+  expect(await recoveryStore.load(record.projectId)).toEqual(before);
 });

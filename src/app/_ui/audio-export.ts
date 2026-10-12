@@ -2,10 +2,10 @@ import type { PracticeSpeed } from "../../product/playback-plan";
 import type { PlayerController } from "./practice";
 
 export type AudioMix = { kind: "full" } | { kind: "emphasize"; trackId: string };
-export type AudioSettings = { speed: PracticeSpeed; mix: AudioMix; bandEnabled: boolean };
+export type AudioSettings = { speed: PracticeSpeed; mix: AudioMix; bandEnabled: boolean; leadOctave?: 0 | -1 };
 export type AudioResult = { blob: Blob; seconds: number; bytes: number };
 export type AudioRenderer = (input: AudioSettings & { signal: AbortSignal }) => Promise<AudioResult>;
-export type AudioPlayer = Pick<PlayerController, "tracks" | "solo" | "speed" | "bandEnabled" | "hasBand" | "totalSeconds">;
+export type AudioPlayer = Pick<PlayerController, "tracks" | "solo" | "speed" | "bandEnabled" | "hasBand" | "totalSeconds" | "tempo" | "leadOctave">;
 export function audioChoices(tracks: AudioPlayer["tracks"]) {
   const voices = tracks.filter(track => track.role !== "band");
   const order = { lower: 0, upper: 1, other: 2, lead: 3, band: 4 };
@@ -14,7 +14,7 @@ export function audioChoices(tracks: AudioPlayer["tracks"]) {
 }
 export function initialAudioSettings(player: AudioPlayer): AudioSettings {
   const solo = player.tracks.find(track => track.id === player.solo && track.role !== "band");
-  return { mix: solo ? { kind: "emphasize", trackId: solo.id } : { kind: "full" }, speed: player.speed as PracticeSpeed, bandEnabled: player.hasBand !== false && player.bandEnabled };
+  return { ...(player.leadOctave === undefined ? {} : { leadOctave: player.leadOctave }), mix: solo ? { kind: "emphasize", trackId: solo.id } : { kind: "full" }, speed: player.speed as PracticeSpeed, bandEnabled: player.hasBand !== false && player.bandEnabled };
 }
 function clean(value: string) { return value.replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/gu, "").trim().replace(/[. ]+$/u, ""); }
 function limit(value: string, length: number) { let result = ""; for (const char of value) { if (result.length + char.length > length) break; result += char; } return result; }

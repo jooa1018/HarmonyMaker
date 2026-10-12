@@ -13,10 +13,16 @@ import { applyWorkspaceCommand, createImmutableWorkspace, createScoreWorkspace, 
 import type { ScoreWorkspace } from "../import/workspace/model";
 import { generateAutoDraftProject } from "./auto-draft";
 import { summarizeQuickHarmonyMelody, type QuickHarmonySummary } from "./quick-harmony-summary";
-import { quickHarmonyNotice, quickHarmonyPartReason, type QuickHarmonyNotice } from "./quick-harmony-notices";
+import { quickHarmonyNotice, quickHarmonyPartReason, quickHarmonyBlockedNotices, type QuickHarmonyNotice } from "./quick-harmony-notices";
 export type { QuickHarmonySummary } from "./quick-harmony-summary";
 export type { QuickHarmonyNotice } from "./quick-harmony-notices";
 import type { ProductGenerationOutcome } from "./workspace";
+import { quickPickupChord, type PickupChordAnswer } from "./quick-harmony-pickup";
+import { fraction } from "../domain/fraction";
+
+/** Same inclusive integer range as the existing import/workspace tempo editor. */
+export const QUICK_HARMONY_TEMPO_MIN = 20;
+export const QUICK_HARMONY_TEMPO_MAX = 300;
 
 export interface QuickHarmonyPreparation {
   readonly summary?: QuickHarmonySummary;
@@ -34,9 +40,11 @@ export interface QuickHarmonyPreparation {
 export interface QuickHarmonyChoice {
   readonly parts?: "auto" | readonly [HarmonyPartPreset] | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
   readonly rightsConfirmed: true;
-  /** Canonical ISO UTC time of the whole choice; reused for rights and Lead journal entries. */
+  /** Canonical ISO UTC time of the whole choice; reused for rights, Lead and tempo journal entries. */
   readonly confirmedAt: string;
-  readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous" };
+  /** BPM in the currently effective beat unit (including its dot). */
+  readonly tempo?: { readonly bpm: number };
+  readonly answers?: { readonly lead?: string; readonly unreadPrintedChords?: "carry-previous"; readonly pickupChord?: PickupChordAnswer };
 }
 
 export interface QuickHarmonyPartResult {
@@ -45,6 +53,7 @@ export interface QuickHarmonyPartResult {
   /** Printed Source measure numbers, sorted and deduplicated (including repeats). */
   readonly missingMeasures: readonly number[];
   readonly reasonKo: string;
+  readonly actionKo?: string;
 }
 
 export type QuickHarmonyResult =
@@ -81,7 +90,10 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   const questions = findings.filter(f => f.category === "question").map(describe);
   const reasons = findings.filter(f => f.category === "unsupported").map(describe);
   const notes = findings.filter(f => f.category === "warning").map(describe);
-  if (assessment.provenance.some(p => p.origin === "policy-default" || p.origin === "source-inferred")) notes.push(
+  const pickup = quickPickupChord(state, assessment, workspace.algorithmVersions.performanceExpanderVersion);
+  if (pickup.kind === "question") questions.push(pickup.notice);
+  if (pickup.kind === "unavailable") reasons.push(pickup.notice);
+  if (assessment.provenance.some(p => p.field !== "tempo" && (p.origin === "policy-default" || p.origin === "source-inferred"))) notes.push(
     quickHarmonyNotice({id:"automatic-values",code:"AUTOMATIC_VALUES",category:"warning"}, "악보 설정"));
   for (const part of state.music?.parts ?? []) for (const measure of part.measures) {
     for (const chord of measure.chords) if (chord.interpretation === "kind-text" && chord.source === "musicxml") {
@@ -91,7 +103,7 @@ async function preparation(workspace: ScoreWorkspace, assessment: AutoDraftAsses
   }
   const request = assessment.request;
   const summary = state.music && request?.lead
-    ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}) : undefined;
+    ? summarizeQuickHarmonyMelody(state.music, {...request, lead:request.lead}, assessment.provenance.find(p => p.field === "tempo")?.origin === "policy-default" ? "auto" : "score") : undefined;
   return { status: reasons.length ? "unsupported" : questions.length ? "needs-input" : "ready", workspace, questions, reasons, notes,
     ...(summary ? {summary} : {}), details: { assessment } };
 }
@@ -138,23 +150,43 @@ function partResults(project: HarmonyProject, generation: ProductGenerationOutco
   });
 }
 
-export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice: QuickHarmonyChoice): Promise<QuickHarmonyResult> {
-  if (!choice || choice.rightsConfirmed !== true) throw new QuickHarmonyInputError("QUICK_HARMONY_RIGHTS_REQUIRED", "화음을 만들 권리가 있는지 확인해 주세요.");
-  const c = structuredClone(choice);
+function blockedGuidance(preparation: QuickHarmonyPreparation, parts: readonly QuickHarmonyPartResult[], diagnostics: readonly Diagnostic[]) {
+  const notices = quickHarmonyBlockedNotices(diagnostics);
+  return { preparation: { ...preparation, reasons: [...preparation.reasons, ...notices] },
+    parts: parts.map(part => ({ ...part, ...(notices[0] ? {
+      reasonKo: `${part.part === "alto" ? "알토" : "테너"}: ${notices[0].messageKo}`, actionKo: notices[0].actionKo,
+    } : {}) })) };
+}
+
+function validateQuickHarmonyFields(c: Omit<QuickHarmonyChoice, "rightsConfirmed">): void {
   const answers = c.answers;
-  if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers"].includes(k))
+  if (Object.keys(c).some(k => !["parts", "rightsConfirmed", "confirmedAt", "answers", "tempo"].includes(k))
     || typeof c.confirmedAt !== "string" || !Number.isFinite(Date.parse(c.confirmedAt))
     || new Date(c.confirmedAt).toISOString() !== c.confirmedAt
+    || (c.tempo !== undefined && (!c.tempo || typeof c.tempo !== "object" || Array.isArray(c.tempo)
+      || Object.keys(c.tempo).some(k => k !== "bpm") || !Number.isSafeInteger(c.tempo.bpm)
+      || c.tempo.bpm < QUICK_HARMONY_TEMPO_MIN || c.tempo.bpm > QUICK_HARMONY_TEMPO_MAX))
     || (c.parts !== undefined && c.parts !== "auto" && (!Array.isArray(c.parts) || c.parts.length < 1 || c.parts.length > 2
       || !Array.from(c.parts).every(part => part === "alto" || part === "tenor") || new Set(c.parts).size !== c.parts.length))
     || (answers !== undefined && (!answers || typeof answers !== "object" || Array.isArray(answers)
-      || Object.keys(answers).some(k => !["lead", "unreadPrintedChords"].includes(k))
+      || Object.keys(answers).some(k => !["lead", "unreadPrintedChords", "pickupChord"].includes(k))
       || (answers.lead !== undefined && typeof answers.lead !== "string")
-      || (answers.unreadPrintedChords !== undefined && answers.unreadPrintedChords !== "carry-previous")))) {
-    throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "성부 선택과 권리 확인 시각을 다시 확인해 주세요.");
+      || (answers.unreadPrintedChords !== undefined && answers.unreadPrintedChords !== "carry-previous")
+      || (answers.pickupChord !== undefined && answers.pickupChord !== "use-following-first-chord" && answers.pickupChord !== "move-printed-to-start")))) {
+    throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "성부 선택, 빠르기와 권리 확인 시각을 다시 확인해 주세요.");
   }
-  if (!prep.workspace) return { status: "unsupported", preparation: rejectedFile("QUICK_HARMONY_WORKSPACE_REQUIRED") };
-  let workspace = await createImmutableWorkspace(prep.workspace);
+}
+
+export function validateQuickHarmonyChoice(choice: QuickHarmonyChoice): QuickHarmonyChoice {
+  if (!choice || choice.rightsConfirmed !== true) throw new QuickHarmonyInputError("QUICK_HARMONY_RIGHTS_REQUIRED", "화음을 만들 권리가 있는지 확인해 주세요.");
+  const c = structuredClone(choice);
+  validateQuickHarmonyFields(c);
+  return c;
+}
+
+async function choiceWorkspace(source: ScoreWorkspace, c: QuickHarmonyAnswer): Promise<ScoreWorkspace> {
+  const answers = c.answers;
+  let workspace = await createImmutableWorkspace(source);
   if (answers?.lead !== undefined) {
     const { state } = await readVerifiedWorkspace(workspace);
     if (!state.music?.leadCandidates.some(candidate => candidate.key === answers.lead && candidate.noteCount > 0)) {
@@ -164,20 +196,87 @@ export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice
       { kind: "lead", lead: answers.lead, rhythmVoices: [] },
       { id: `quick-lead:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 멜로디 성부를 선택함", actor: "user", at: c.confirmedAt });
   }
+  if (c.tempo !== undefined) {
+    const effective = (await assessAutoDraft(workspace)).request?.tempo;
+    if (!effective) throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "악보의 박자와 빠르기를 먼저 확인해 주세요.");
+    workspace = await applyWorkspaceCommand(workspace, workspace, { kind: "tempo", tempo: { ...effective, bpm: c.tempo.bpm } },
+      { id: `quick-tempo:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 빠르기를 선택함", actor: "user", at: c.confirmedAt });
+  }
+  if (answers?.pickupChord !== undefined) {
+    const { state } = await readVerifiedWorkspace(workspace);
+    const assessment = await assessAutoDraft(workspace);
+    const pickup = quickPickupChord(state, assessment, workspace.algorithmVersions.performanceExpanderVersion);
+    if (pickup.kind === "question") {
+      if (pickup.answer !== answers.pickupChord) throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "현재 못갖춘마디 질문에 맞는 답을 선택해 주세요.");
+      workspace = pickup.answer === "move-printed-to-start"
+        ? await applyWorkspaceCommand(workspace, workspace,
+          { kind: "move-chord", chordId: pickup.chordId, measureId: pickup.measureId, onset: fraction(0) },
+          { id: `quick-pickup-move:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 쉼표 뒤 인쇄 코드를 못갖춘마디 시작으로 옮기기로 확인함", actor: "user", at: c.confirmedAt })
+        : await applyWorkspaceCommand(workspace, workspace,
+        { kind: "chord", measureId: pickup.measureId, text: pickup.chord, onset: fraction(0) },
+        { id: `quick-pickup-chord:${workspace.revision}:${workspace.historyDigest}`, note: "사용자가 다음 마디 첫 코드를 못갖춘마디 시작에도 사용하기로 확인함", actor: "user", at: c.confirmedAt });
+      if (state.request.initialPickup) workspace = await applyWorkspaceCommand(workspace, workspace,
+        { kind: "pickup-policy", value: "none" }, { id: `quick-pickup-explicit:${workspace.revision}:${workspace.historyDigest}`, note: "명시 코드를 사용하므로 선행 정책 해제", actor: "user", at: c.confirmedAt });
+    } else {
+      // A direct caller may generate from the answer preview. Its verified journal
+      // already holds this edit; do not insert the chord twice.
+      const lead = state.music?.leadCandidates.find(v => v.key === assessment.request?.lead);
+      const first = state.music?.parts.find(p => p.partOrdinal === lead?.partOrdinal)?.measures[0];
+      const recorded = workspace.operations.some(o => {
+        const command = o.command;
+        if (answers.pickupChord === "move-printed-to-start") return o.id.startsWith("quick-pickup-move:") && o.actor === "user"
+          && command.kind === "move-chord" && command.measureId === first?.workspaceMeasureId && command.onset.n === 0
+          && first?.chords.length === 1 && first.chords[0].key === command.chordId && first.chords[0].onset.n === 0;
+        return o.id.startsWith("quick-pickup-chord:") && o.actor === "user"
+          && command.kind === "chord" && command.measureId === first?.workspaceMeasureId
+          && first?.chords.some(ch => ch.key === `inserted:${o.id}` && ch.onset.n === 0 && ch.sourceText === command.text);
+      });
+      if (!recorded) throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "확인할 못갖춘마디 코드가 없어요. 악보를 다시 판정해 주세요.");
+    }
+  }
+  return workspace;
+}
+
+export type QuickHarmonyAnswer = Pick<QuickHarmonyChoice, "answers" | "tempo" | "confirmedAt">;
+
+/** Preview answers only. No rights attestation or project is created here. */
+export async function answerQuickHarmony(prep: QuickHarmonyPreparation, answer: QuickHarmonyAnswer): Promise<QuickHarmonyPreparation> {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)
+    || Object.keys(answer).some(key => !["answers", "tempo", "confirmedAt"].includes(key)))
+    throw new QuickHarmonyInputError("QUICK_HARMONY_CHOICE_INVALID", "선택 내용을 다시 확인해 주세요.");
+  const c = structuredClone(answer);
+  validateQuickHarmonyFields(c);
+  if (!prep.workspace) return rejectedFile("QUICK_HARMONY_WORKSPACE_REQUIRED");
+  const workspace = await choiceWorkspace(prep.workspace, c);
+  return preparation(workspace, await assessAutoDraft(workspace, {
+    ...(c.answers?.unreadPrintedChords ? { decisions: { unreadPrintedChords: c.answers.unreadPrintedChords } } : {}),
+  }));
+}
+
+export async function generateQuickHarmony(prep: QuickHarmonyPreparation, choice: QuickHarmonyChoice): Promise<QuickHarmonyResult> {
+  const c = validateQuickHarmonyChoice(choice), answers = c.answers;
+  if (!prep.workspace) return { status: "unsupported", preparation: rejectedFile("QUICK_HARMONY_WORKSPACE_REQUIRED") };
+  const workspace = await choiceWorkspace(prep.workspace, c);
   const options = normalizeAutoDraftOptions({
     ...(Array.isArray(c.parts) ? { harmonyParts: c.parts } : {}),
     ...(answers?.unreadPrintedChords ? { decisions: { unreadPrintedChords: answers.unreadPrintedChords } } : {}),
     rights: { basis: "user-confirmed-rights", allowedUses: ["generation"], confirmedAt: c.confirmedAt },
   });
+  const checked = await preparation(workspace, await assessAutoDraft(workspace, options));
+  if (checked.questions.some(q => q.id === "pickup-chord") || checked.reasons.some(r => r.id === "pickup-chord-unavailable"))
+    return { status: checked.status === "unsupported" ? "unsupported" : "needs-input", preparation: checked };
   // The supplied status, questions and details are intentionally never read.
   const result = await generateAutoDraftProject(workspace, options);
   const fresh = await preparation(workspace, result.assessment);
   if (result.status === "not-generated") return { status: fresh.status === "unsupported" ? "unsupported" : "needs-input", preparation: fresh };
-  if (result.status === "source-blocked") return { status: "blocked", preparation: fresh, parts: (options.harmonyParts ?? []).map(part => ({ part, status: "missing", missingMeasures: [], reasonKo: "악보 판정에서 생성이 중단됐어요." })), diagnostics: result.diagnostics };
+  if (result.status === "source-blocked") {
+    return { status: "blocked", ...blockedGuidance(fresh, (options.harmonyParts ?? []).map(part => ({ part, status: "missing", missingMeasures: [],
+      reasonKo: quickHarmonyPartReason(part, "missing", []) })), result.diagnostics), diagnostics: result.diagnostics };
+  }
   const parts = partResults(result.project, result.generation);
-  if (result.generation.status === "blocked") return { status: "blocked", preparation: fresh, project: result.project, parts, diagnostics: result.generation.diagnostics };
+  if (result.generation.status === "blocked") return { status: "blocked", ...blockedGuidance(fresh, parts, result.generation.diagnostics), project: result.project, diagnostics: result.generation.diagnostics };
   if (options.harmonyParts && parts.every(p => p.status === "missing")) return {
-    status: "blocked", preparation: fresh, project: result.project, parts, diagnostics: result.generation.execution.generation.result.diagnostics,
+    status: "blocked", ...blockedGuidance(fresh, parts, result.generation.execution.generation.result.diagnostics), project: result.project, diagnostics: result.generation.execution.generation.result.diagnostics,
   };
   const status = options.harmonyParts && parts.some(p => p.status !== "complete") ? "partial" : result.generation.status;
   return { status, preparation: fresh, project: result.project, parts, generation: result.generation };

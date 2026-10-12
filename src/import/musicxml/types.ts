@@ -49,6 +49,7 @@ export interface ImportedLyricDraft {
 }
 
 export interface ImportedWorkspaceEventInfo {
+  readonly tuplets?: readonly import("../../domain/source/tuplets").SourceTuplet[];
   /** Stable input identity. It is not a canonical Source event ID. */
   readonly workspaceEventId?: string;
   readonly fermata?: boolean;

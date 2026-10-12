@@ -3,6 +3,7 @@ import type { Diagnostic } from "../../domain/diagnostics";
 import { recoveryXmlRoot, serializeRecoveryXml } from "../review/recovery";
 import { xmlChild, xmlChildren, xmlDescendants, xmlText, type XmlElement } from "../musicxml/xml";
 import type { WorkspaceOrigin, WorkspaceState } from "./model";
+import { supportedMusicXmlTuplets } from "../musicxml/tuplets";
 
 export interface WorkspaceNotationFeature {
   readonly eventId: string;
@@ -32,6 +33,7 @@ function originalNotes(origin: WorkspaceOrigin): readonly OriginalNote[] {
   if (inventoryCache?.xml === origin.xml) return inventoryCache.notes;
   const notes: OriginalNote[] = [];
   for (const [partOrdinal, part] of xmlChildren(recoveryXmlRoot(origin.xml), "part").entries()) {
+    const tuplets = supportedMusicXmlTuplets(part);
     for (const [measureOrdinal, measure] of xmlChildren(part, "measure").entries()) {
       for (const [noteOrdinal, note] of xmlChildren(measure, "note").entries()) {
         const staff = Number(xmlText(xmlChild(note, "staff")) ?? "1"), voice = (xmlText(xmlChild(note, "voice")) ?? "1").normalize("NFC");
@@ -41,6 +43,7 @@ function originalNotes(origin: WorkspaceOrigin): readonly OriginalNote[] {
         const features: WorkspaceNotationFeature[] = [];
         const append = (feature: string, node: XmlElement) => features.push({ ...identity, feature, xml: serializeRecoveryXml(node) });
         for (const name of ["grace", "cue", "time-modification"]) {
+          if (name === "time-modification" && tuplets.has(note)) continue;
           for (const [index, node] of xmlChildren(note, name).entries()) append(`${name}:${index}`, node);
         }
         const counts = new Map<string, number>();

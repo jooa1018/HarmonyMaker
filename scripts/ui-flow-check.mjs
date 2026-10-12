@@ -29,10 +29,35 @@ async function share(page) {
   await expect(page.getByText("공유 링크를 만들었어요")).toBeVisible({ timeout: 60000 });
   return page.locator(".hm-linkbox-text").innerText();
 }
+async function checkNavigation(page) {
+  const slider = page.getByRole("slider", { name: "재생 위치" });
+  await expect(slider).toBeVisible();
+  const box = await slider.boundingBox();
+  await page.mouse.move(box.x + box.width * .2, box.y + 22); await page.mouse.down();
+  await page.mouse.move(box.x + box.width * .4, box.y + 22);
+  await expect(page.locator(".hm-seek-tip")).toBeVisible(); await page.mouse.up();
+  await expect(page.getByRole("button", { name: "일시정지", exact: true }).first()).toBeVisible();
+  expect(Number(await slider.getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "일시정지", exact: true }).first().click();
+  await slider.press("Home"); await expect(slider).toHaveAttribute("aria-valuenow", "0");
+  await slider.press("ArrowRight");
+  const seconds = Number(await slider.getAttribute("aria-valuenow")); expect(seconds).toBeGreaterThan(0);
+  await page.locator(".hm-seg label").filter({ has: page.getByRole("radio", { name: "75%", exact: true }) }).click();
+  expect(Number(await slider.getAttribute("aria-valuenow"))).toBeCloseTo(seconds * 100 / 75, 5);
+  await expect(page.getByRole("button", { name: "이어서 재생", exact: true }).first()).toBeVisible();
+  await page.locator(".hm-seg label").filter({ has: page.getByRole("radio", { name: "100%", exact: true }) }).click();
+  const octave = page.getByRole("switch", { name: "멜로디 한 옥타브 낮게" });
+  await expect(octave).not.toBeChecked(); await octave.click();
+  await expect(page.locator(".hm-mix-row").first()).toContainText("원래 악보 · 한 옥타브 낮게");
+  expect(Number(await slider.getAttribute("aria-valuenow"))).toBeCloseTo(seconds, 5);
+  await slider.press("End"); expect(Number(await slider.getAttribute("aria-valuenow"))).toBeLessThan(Number(await slider.getAttribute("aria-valuemax")));
+}
 async function practiceAudioDownload(page) {
+  const octave = await page.getByRole("switch", { name: "멜로디 한 옥타브 낮게" }).getAttribute("aria-checked");
   await page.getByRole("button", { name: "연습 음원 받기", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("radio", { name: /테너 강조/ })).toBeChecked();
+  await expect(dialog.getByRole("switch", { name: "멜로디 한 옥타브 낮게" })).toHaveAttribute("aria-checked", octave);
   await dialog.getByRole("button", { name: "음원 만들기", exact: true }).click();
   await expect(dialog.getByText("음원을 만들었어요")).toBeVisible({ timeout: 60000 });
   const downloaded = page.waitForEvent("download");
@@ -58,19 +83,33 @@ try {
       page.on("pageerror", error => errors.push(error.message));
       page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url()); });
       await upload(page, await fixture(`wag11/${name}.musicxml`));
+      let changedTempo;
+      if (index === 0 && viewport.width === 390) {
+        const value = page.locator(".hm-tempo-value > span:nth-child(2)");
+        const originalTempo = Number(await value.innerText());
+        await page.getByRole("button", { name: "1 빠르게", exact: true }).click();
+        await expect(value).toHaveText(String(originalTempo + 1));
+        await page.getByRole("button", { name: "다른 파일", exact: true }).click();
+        await page.locator('input[type="file"]').setInputFiles({ name: "new.musicxml", mimeType: "application/xml", buffer: Buffer.from(await fixture(`wag11/${name}.musicxml`)) });
+        await expect(value).toHaveText(String(originalTempo), { timeout: 90000 });
+        await expect(page.locator(".hm-tempo-badge")).toBeVisible();
+        await page.getByRole("button", { name: "1 빠르게", exact: true }).click(); changedTempo = originalTempo + 1;
+      }
       await generate(page);
+      if (changedTempo !== undefined) await expect(page.locator(".hm-bpm")).toContainText(String(changedTempo));
       for (const label of ["멜로디", "알토", "테너"]) await expect(page.getByRole("button", { name: `${label}만 듣기` })).toBeVisible();
       expect(await page.locator(".hm-score-notation").evaluate(el => getComputedStyle(el).getPropertyValue("--hm-v1").trim() === getComputedStyle(el).getPropertyValue("--hm-alto").trim())).toBe(true);
       await page.getByRole("button", { name: "테너만 듣기" }).click();
       await expect(page.getByRole("button", { name: "테너만 듣기" })).toHaveAttribute("aria-pressed", "true");
       await page.getByRole("button", { name: "재생", exact: true }).first().click();
       await expect(page.getByRole("button", { name: "일시정지", exact: true }).first()).toBeVisible({ timeout: 30000 });
-      await page.getByRole("button", { name: "일시정지", exact: true }).first().click();
+      await checkNavigation(page);
       const downloaded = page.waitForEvent("download");
       await page.getByRole("button", { name: "MusicXML 받기" }).click();
       const xml = await readFile(await (await downloaded).path(), "utf8");
       expect(xml).toContain("<clef-octave-change>-1</clef-octave-change>");
       expect(xml).toContain("알토"); expect(xml).toContain("테너");
+      if (changedTempo !== undefined) expect(xml).toContain(`<per-minute>${changedTempo}</per-minute>`);
       const violations = (await new AxeBuilder({ page }).include(".hm").analyze()).violations.filter(item => ["critical", "serious"].includes(item.impact));
       expect(violations).toEqual([]); expect(await widthFits(page)).toBe(true);
       if (viewport.width === 390) {
@@ -91,6 +130,9 @@ try {
       await expect(page.locator(".hm-score-notation svg").first()).toBeVisible();
       expect(await widthFits(page)).toBe(true);
       if (index === 0) {
+        await page.getByRole("button", { name: "재생", exact: true }).first().click();
+        await expect(page.getByRole("button", { name: "일시정지", exact: true }).first()).toBeVisible();
+        await checkNavigation(page);
         await page.getByRole("button", { name: "테너만 듣기" }).click();
         await practiceAudioDownload(page);
       }
@@ -119,8 +161,11 @@ try {
   await expect(page.locator(".hm-banner").first()).toBeVisible();
   await expect(page.getByRole("region", { name: "연습 플레이어" })).toBeVisible();
   expect(await widthFits(page)).toBe(true);
+  const partialReasons = await page.locator(".hm-banner-text").allTextContents();
+  expect(partialReasons.length).toBeGreaterThan(0);
   await page.reload();
   await expect(page.locator(".hm-banner").first()).toBeVisible({ timeout: 60000 });
+  await expect(page.locator(".hm-banner-text")).toHaveText(partialReasons);
   await page.screenshot({ path: `${evidence}/360-partial-dark.png`, fullPage: true, caret: "initial" });
   const legacy = await fixture("auto-draft-v1-auto.json");
   await page.evaluate(async encoded => {
@@ -203,3 +248,6 @@ try {
   await writeFile(`${evidence}/flow-results.json`, JSON.stringify(results, null, 2));
   await browser.close();
 }
+
+// Actual Worker cancellation and expired-handle recovery use isolated browser storage.
+await import("./ui-flow-worker-check.mjs");

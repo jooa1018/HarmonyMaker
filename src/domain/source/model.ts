@@ -64,6 +64,7 @@ export interface SourceTextEvent {
   readonly text: string;
 }
 export interface LeadNoteEvent {
+  readonly tuplets?: readonly import("./tuplets").SourceTuplet[];
   readonly slurs?: readonly SourceSlurMark[];
   readonly kind: "note";
   readonly id: string;
@@ -76,6 +77,7 @@ export interface LeadNoteEvent {
   readonly lyricTokenIds: readonly string[];
 }
 export interface LeadRestEvent {
+  readonly tuplets?: readonly import("./tuplets").SourceTuplet[];
   readonly kind: "rest";
   readonly id: string;
   readonly sourceMeasureId: string;
@@ -84,6 +86,7 @@ export interface LeadRestEvent {
 }
 /** Rhythmic slash instruction; deliberately has no pitch and is not silence. */
 export interface LeadRhythmEvent {
+  readonly tuplets?: readonly import("./tuplets").SourceTuplet[];
   readonly slurs?: readonly SourceSlurMark[];
   readonly kind: "rhythm";
   readonly id: string;

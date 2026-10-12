@@ -25,3 +25,7 @@ export function hasWag11Meter(source: SongSourceDocument): boolean {
   return source.sourceMeasures.some(m =>
     (m.time.numerator === 3 && m.time.denominator === 4) || (m.time.numerator === 12 && m.time.denominator === 8));
 }
+
+export function hasSourceTuplets(source: SongSourceDocument): boolean {
+  return source.sourceMeasures.some(measure=>measure.leadEvents.some(event=>event.tuplets?.length));
+}

@@ -1,8 +1,18 @@
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { expect, it } from "vitest";
-import { QUICK_HARMONY_NOTICE_CATALOG, quickHarmonyNotice } from "./quick-harmony-notices";
+import { QUICK_HARMONY_NOTICE_CATALOG, quickHarmonyNotice, quickHarmonyBlockedNotices } from "./quick-harmony-notices";
+import type { Diagnostic } from "../domain/diagnostics";
 import { prepareQuickHarmony } from "./quick-harmony";
+
+it("deduplicates blocked causes across parts and gives concrete safe actions", () => {
+  const make = (code: Diagnostic["code"], id: string): Diagnostic => ({ code, id, severity: "blocking", messageKo: code });
+  const notices = quickHarmonyBlockedNotices([make("SOURCE_CHORD_GAP", "alto"), make("SOURCE_CHORD_GAP", "tenor"), make("INPUT_INVALID_TIE", "tie")]);
+  expect(notices).toHaveLength(2);
+  expect(notices[0].messageKo).toContain("코드"); expect(notices[0].actionKo).toContain("MuseScore");
+  expect(notices[1].messageKo).toContain("붙임줄"); expect(notices[1].actionKo).toContain("파트");
+  expect(notices.every(n => !n.messageKo.includes("INPUT_") && !n.messageKo.includes("SOURCE_"))).toBe(true);
+});
 
 function source(path: string) {
   return ts.createSourceFile(path,readFileSync(new URL(path,import.meta.url),"utf8"),ts.ScriptTarget.Latest,true);

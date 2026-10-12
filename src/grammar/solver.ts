@@ -3,6 +3,7 @@ import { createDiagnostics, type Diagnostic } from "../domain/diagnostics";
 import { compareFractions } from "../domain/fraction";
 import type { AnchorLock, PitchLock } from "../domain/locks";
 import { findPitchAnchorConflicts } from "../domain/locks";
+import { partitionEventsByPhrase } from "./phrase-partition";
 import type {
   ArrangementActivityPlan,
   ArrangementAnchorPlan,
@@ -306,7 +307,7 @@ export async function solveWagLocally(
         previous = selected.pitch;
         continuity = "continuous";
       }
-      eventPayloads.push(...withTies(phraseEvents));
+      eventPayloads.push(...phraseEvents);
     }
     const conflicts = findPitchAnchorConflicts(prepared.locks.anchor, prepared.locks.solver, realizedPitchByAnchorLockId);
     if (conflicts.length > 0) {
@@ -320,7 +321,7 @@ export async function solveWagLocally(
       trackOrdinal: assigned.trackPlan.canonicalOrdinal,
       selectedByIntent,
       decisions: solvedDecisions.sort((left, right) => compareRanges(left.range, right.range)),
-      eventPayloads,
+      eventPayloads: partitionEventsByPhrase(prepared.phrases, eventPayloads).flatMap(group => withTies(group.events)),
       realizedAnchors: realizedAnchors.sort((left, right) => comparePositions(left.position, right.position)),
       perceptible,
       fullRequiredCoverage,

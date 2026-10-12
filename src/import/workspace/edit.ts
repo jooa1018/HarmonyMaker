@@ -3,6 +3,7 @@ import { canonicalJson } from "../../domain/digest/canonical";
 import { fraction, addFractions, subtractFractions, compareFractions, type Fraction } from "../../domain/fraction";
 import { hasExactKeys, isPlainRecord, isCanonicalFraction, isCanonicalKeySignature, isCanonicalSpelledPitch, isCanonicalTimeSignature } from "../../domain/validation";
 import { isSourceSlurMarks } from "../../domain/source/notation";
+import { validTupletSequence, type SourceTuplet } from "../../domain/source/tuplets";
 import { tempoSpec, validateRights } from "../../domain/source/model";
 import { validatePerformer } from "../../domain/performer";
 import { performerId } from "../../domain/ids";
@@ -11,6 +12,20 @@ import { buildCandidates } from "../musicxml/parser-core";
 import type { ImportedLeadEventDraft, ImportedMeasureDraft } from "../musicxml/types";
 import type { WorkspaceEdit, WorkspaceState, WorkspaceOrigin } from "./model";
 import { removeWorkspaceNotation, synchronizeWorkspaceNotation } from "./notation";
+import { parseDirectChordInput } from "../review/chord-input";
+import { isChordParseResult } from "../../domain/chord/parser";
+import type { WorkspaceCommand } from "./model";
+
+/** Record canonical text for new input only. Replaying old commands must retain
+ * the old parser output and its digest. The caller records the original in note. */
+export function normalizeNewWorkspaceChord(command: WorkspaceCommand): WorkspaceCommand {
+  if (!command || command.kind !== "chord" || typeof command.text !== "string" || command.text.length > 128) return command;
+  const original = parseChord(command.text);
+  if (original.status !== "ok" || isChordParseResult(original)) return command;
+  const normalized = parseDirectChordInput(command.text);
+  return normalized.status === "ok" && isChordParseResult(normalized)
+    ? { ...command, text: normalized.chord.canonicalSymbol } : command;
+}
 
 export const clean = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const invalid = (): never => { throw new RangeError("WORKSPACE_EDIT_INVALID"); };
@@ -49,6 +64,20 @@ function refreshEditorOccurrences(state: WorkspaceState): WorkspaceState {
  * New tracking fields are absent from old seeds and old operation outputs. */
 export function reduceWorkspaceEdit(state: WorkspaceState, edit: WorkspaceEdit, opId: string, origin?: WorkspaceOrigin, seed?: WorkspaceState, reviewDependencyVersion: 1 | 2 | 3 = 1): WorkspaceState {
   let next = reduceWorkspaceEditCore(state, edit, opId, origin, reviewDependencyVersion);
+  for (const part of next.music?.parts ?? []) {
+    if (!part.measures.some(m => m.leadEvents.some(e => e.tuplets))) continue;
+    const voices = new Map<string, { start: Fraction; duration: Fraction; tuplets?: readonly SourceTuplet[] }[]>();
+    let start = fraction(0);
+    for (const measure of part.measures) {
+      for (const event of measure.leadEvents) {
+        const events = voices.get(event.candidateKey) ?? [];
+        events.push({start:addFractions(start,event.onset),duration:event.duration,...(event.tuplets ? {tuplets:event.tuplets} : {})});
+        voices.set(event.candidateKey,events);
+      }
+      start = addFractions(start,measure.duration);
+    }
+    if ([...voices.values()].some(events => !validTupletSequence(events.sort((a,b)=>compareFractions(a.start,b.start))))) throw new RangeError("WORKSPACE_TUPLET_EDIT_UNSUPPORTED");
+  }
   if (["remove-notation", "event-voice", "remove-event", "move-event"].includes(edit.kind) && origin?.kind !== "legacy-recovery") next = { ...next, notationTracking: true };
   if (next.notationTracking) {
     if (!origin || !seed) throw new RangeError("WORKSPACE_NOTATION_ORIGIN_REQUIRED");
@@ -111,7 +140,9 @@ function reduceWorkspaceEditCore(state: WorkspaceState, edit: WorkspaceEdit, opI
         const old = m.leadEvents.find(e => e.workspaceEventId === edit.eventId);
         const unknown = m.unresolvedEvents?.find(e => e.id === edit.eventId);
         if (!old && !unknown) return m; found = true;
+        if (old?.tuplets && v.kind === "rhythm") return invalid();
         const common = { workspaceEventId: edit.eventId, candidateKey: (old ?? unknown)!.candidateKey, onset: v.onset, duration: v.duration,
+          ...(old?.tuplets ? {tuplets:old.tuplets} : {}),
           ...(old?.musicXmlEventOrdinal !== undefined ? { musicXmlEventOrdinal: old.musicXmlEventOrdinal } : {}), ...(old?.fermata !== undefined ? { fermata: old.fermata } : {}) };
         const event: ImportedLeadEventDraft = v.kind === "rest" ? { ...common, kind: "rest" } : {
           ...common, ...(v.kind === "note" ? { kind: "note" as const, pitch: v.pitch! } : { kind: "rhythm" as const }),

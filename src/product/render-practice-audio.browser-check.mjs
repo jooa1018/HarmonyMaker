@@ -42,6 +42,21 @@ try {
   });
   assert.equal(cancellation,"AbortError");
   console.log(JSON.stringify({cancellation}));
+  const octave = await page.evaluate(async()=>{
+    const {renderPracticeAudio}=await import("/src/product/render-practice-audio.ts");
+    const plan={totalQuarter:4,trackIds:["track:source-lead"],trackLabels:{},effectiveChordTimelineDigest:"test",events:[{eventId:"lead",trackId:"track:source-lead",kind:"voice",midi:69,startQuarter:0,durationQuarter:4,lyricOnset:false}]};
+    const before=JSON.stringify(plan),rows=[];
+    for(const leadOctave of [0,-1]){
+      const rendered=await renderPracticeAudio({plan,tempo:{beatUnit:4,bpm:120,dotted:false},speed:100,mix:{kind:"full"},bandEnabled:false,leadOctave});
+      const wav=new DataView(await rendered.blob.arrayBuffer()),rate=wav.getUint32(24,true);
+      const energy=hz=>{let real=0,imag=0;for(let i=rate/2;i<rate;i++){const x=wav.getInt16(44+i*2,true)/32767;real+=x*Math.cos(2*Math.PI*hz*i/rate);imag+=x*Math.sin(2*Math.PI*hz*i/rate);}return Math.hypot(real,imag);};
+      const fundamental=leadOctave===0?440:220;
+      rows.push({leadOctave,seconds:rendered.seconds,bytes:rendered.bytes,expectedDominates:energy(fundamental)>energy(leadOctave===0?220:440),unchanged:before===JSON.stringify(plan)});
+    }
+    return rows;
+  });
+  for(const row of octave){assert.equal(row.seconds,2);assert.equal(row.bytes,88244);assert.equal(row.expectedDominates,true);assert.equal(row.unchanged,true);}
+  console.log(JSON.stringify({octave}));
   if(process.env.AUDIO_BENCHMARK){
     const cdp=await page.context().newCDPSession(page);
     for(const rate of [1,4]){

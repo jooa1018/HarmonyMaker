@@ -15,6 +15,7 @@ import type { SourceLeadAtomizationState } from "./source/atomization";
 import type { SongSourceDocument } from "./source/model";
 import { isSongSourceDocument } from "./source/validation";
 import { isSourceSlurMarks } from "./source/notation";
+import { isSourceTuplets } from "./source/tuplets";
 import type { AlgorithmExecutionRegistry } from "./registries";
 import { validateCoreInputLimits } from "./limits";
 import {
@@ -684,12 +685,13 @@ function isAtomization(value: unknown): boolean {
     || !hasDigestFields(value, ["musicalSourceDigest", "effectiveChordTimelineDigest", "digest"])
     || !Array.isArray(value.atoms)
     || !value.atoms.every((atom) => isPlainRecord(atom)
-      && hasExactKeys(atom, ["id", "sourceEventId", "range", "pitch", "tiedFromPrevious", "tiedToNext", "lyricTokenIds"], ["rhythmOnly", "slurs"])
+      && hasExactKeys(atom, ["id", "sourceEventId", "range", "pitch", "tiedFromPrevious", "tiedToNext", "lyricTokenIds"], ["rhythmOnly", "slurs", "tuplets"])
       && isCanonicalId(atom.id) && isCanonicalId(atom.sourceEventId)
       && isMusicalRange(atom.range)
       && (atom.pitch === null || isCanonicalSpelledPitch(atom.pitch))
       && (atom.rhythmOnly === undefined || (atom.rhythmOnly === true && atom.pitch === null))
       && (atom.slurs === undefined || isSourceSlurMarks(atom.slurs))
+      && (atom.tuplets === undefined || isSourceTuplets(atom.tuplets))
       && typeof atom.tiedFromPrevious === "boolean"
       && typeof atom.tiedToNext === "boolean"
       && isCanonicalIdArray(atom.lyricTokenIds))) return false;

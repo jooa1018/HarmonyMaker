@@ -43,10 +43,13 @@ export class IndexedDbProjectStore implements LocalProjectStore {
     } finally { database.close(); }
   }
   /** File import and first projection must never replace a saved project. */
-  async saveNew(record: LocalProjectRecord): Promise<void> {
+  async saveNew(record: LocalProjectRecord, beforeCommit?: () => Promise<void>): Promise<void> {
     const encoded = await exportHarmonyProject(record.project);
     const database = await this.database();
     try {
+      // Worker cancellation remains possible during export/verification. The
+      // caller grants commit before we create the write transaction.
+      if (beforeCommit) await beforeCommit();
       const transaction = database.transaction(STORE_NAME, "readwrite");
       transaction.objectStore(STORE_NAME).add({ projectId: record.projectId, updatedAt: record.updatedAt, encoded });
       await transactionDone(transaction);
@@ -101,9 +104,10 @@ export class IndexedDbProjectStore implements LocalProjectStore {
       return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.projectId.localeCompare(b.projectId));
     } finally { database.close(); }
   }
-  async delete(projectId: string): Promise<void> {
+  async delete(projectId: string, beforeCommit?: () => Promise<void>): Promise<void> {
     const database = await this.database();
     try {
+      if (beforeCommit) await beforeCommit();
       const transaction = database.transaction(STORE_NAME, "readwrite");
       transaction.objectStore(STORE_NAME).delete(projectId);
       await transactionDone(transaction);

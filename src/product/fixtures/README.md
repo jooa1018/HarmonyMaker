@@ -24,3 +24,14 @@ must retain the v1.0.1 validator, metrics and config digests.
 `wag11/` contains nine original exercises: three each in 4/4, 3/4 and 12/8.
 The third exercise in each meter has an explicitly marked pickup with a printed
 chord. No private score or external composition was used.
+
+`pre-triplet-bytes.json` records project/share/ABC/MusicXML digests from the
+pre-triplet develop implementation (`911cacc`). The nine wag11 inputs use the
+exact LF bytes stored in Git. The same inputs were run through the triplet
+implementation and all four outputs matched. These are not hashes regenerated
+from the new implementation alone.
+
+`.gitattributes` marks fixture paths `-text`: raw source bytes, opaque workspace
+proofs, frozen exports, and their hashes must not change with core.autocrlf.
+The legacy project/snapshot JSON fixtures are single-line exports and are kept
+byte-identical. Frozen WAG authority files already have their own `-text` rules.

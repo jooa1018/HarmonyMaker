@@ -1,52 +1,64 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { QuickHarmonyChoice, QuickHarmonyPreparation, QuickHarmonyPartResult } from "../../product/quick-harmony";
+import type { QuickHarmonyChoice, QuickHarmonyPartResult } from "../../product/quick-harmony";
+import type { WorkerStage } from "../../product/harmony-worker/client";
 import { AppBar } from "../_ui/controls";
-import { Icon } from "../_ui/Icon";
 import { titleFromFileName } from "../_ui/format";
+import { useScreenWorker } from "../_worker/useScreenWorker";
+import type { ScreenWorkerSession } from "../_worker/session";
+import { WorkerFailure, isAbort, stageLabel } from "../_worker/presentation";
 import { QuickStart } from "./QuickStart";
 import { PreparationScreen } from "./PreparationScreen";
 import { MakingState } from "./MakingState";
-import { useQuickPreparation } from "./useQuickPreparation";
+import { useQuickPreparation, type InitialPreparation } from "./useQuickPreparation";
 
-export function QuickFlow({ initial }: { initial?: { preparation: QuickHarmonyPreparation; fileName: string } }) {
-  const ui = useQuickPreparation(initial);
-  const router = useRouter();
+export function QuickFlow({ initial, session: supplied, onInvalidate }: { initial?: InitialPreparation; session?: ScreenWorkerSession; onInvalidate?: (error?: unknown) => void }) {
+  const owned = useScreenWorker(), session = supplied ?? owned;
+  const ui = useQuickPreparation(session, initial, onInvalidate), router = useRouter();
   const [requested, setRequested] = useState<QuickHarmonyChoice>();
-  const [blocked, setBlocked] = useState<{ preparation: QuickHarmonyPreparation; parts: readonly QuickHarmonyPartResult[] }>();
-  const generation = useRef(0);
-  const busy = useRef(false);
+  const [blocked, setBlocked] = useState<readonly QuickHarmonyPartResult[]>();
+  const [stage, setStage] = useState<WorkerStage>("loading"), [editing, setEditing] = useState(false);
+  const generation = useRef(0), busy = useRef(false);
   useEffect(() => () => { generation.current++; }, []);
+  function failed(reason: unknown) {
+    ui.fail(reason); setRequested(undefined);
+  }
   async function generate(choice: QuickHarmonyChoice) {
     if (busy.current || !ui.preparation) return;
     busy.current = true;
     const current = ++generation.current;
-    setRequested(choice); setBlocked(undefined);
+    setRequested(choice); setBlocked(undefined); setStage("loading");
     try {
-      // Paint the progress state before loading and running the local engine.
-      await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-      const { generateAndSave } = await import("./generate");
-      const outcome = await generateAndSave(ui.preparation, choice, { isCurrent: () => current === generation.current });
-      if (outcome.status === "saved") router.push(`/result?project=${encodeURIComponent(outcome.projectId)}`);
-      else if (outcome.status === "returned") {
-        ui.setPreparation(outcome.result.preparation);
-        if (outcome.result.status === "blocked") setBlocked({ preparation: outcome.result.preparation, parts: outcome.result.parts });
-        setRequested(undefined);
+      const outcome = await session.run(client => client.generate(ui.preparation!.handle, choice, { onStage: setStage }));
+      if (current !== generation.current) return;
+      if (outcome.status === "saved") {
+        router.push(`/result?project=${encodeURIComponent(outcome.project.projectId!)}`);
+        // Result routes reopen by id; no handle crosses route ownership.
+        session.release(outcome.project.handle);
+        if (initial) onInvalidate?.();
+      } else {
+        ui.setPreparation(outcome.preparation); setBlocked(outcome.parts); setRequested(undefined);
       }
-    } catch (reason) {
-      if (current === generation.current) { ui.setError(reason instanceof Error ? reason.message : String(reason)); setRequested(undefined); }
-    } finally { if (current === generation.current) busy.current = false; }
+    } catch (reason) { if (current === generation.current) failed(reason); }
+    finally { if (current === generation.current) busy.current = false; }
+  }
+  function cancel() {
+    if (session.cancel() === "committing") return;
+    generation.current++; busy.current = false; setRequested(undefined); ui.reset(); onInvalidate?.();
   }
   async function openEditor() {
-    if (!ui.preparation?.workspace) return;
+    if (!ui.preparation || busy.current) return;
+    busy.current = true; setEditing(true);
+    const current = ++generation.current;
     try {
-      const { saveEditableWorkspace } = await import("./edit-workspace");
-      const id = await saveEditableWorkspace(ui.preparation.workspace);
-      router.push(`/score-workspace?id=${encodeURIComponent(id)}`);
-    } catch (reason) { ui.setError(reason instanceof Error ? reason.message : String(reason)); }
+      const result = await session.run(client => client.saveEditableWorkspace(ui.preparation!.handle, { onStage: setStage }));
+      if (current === generation.current) router.push(`/score-workspace?id=${encodeURIComponent(result.workspaceId)}`);
+    } catch (reason) { if (current === generation.current) failed(reason); }
+    finally { if (current === generation.current) { busy.current = false; setEditing(false); } }
   }
-  if (ui.error) return <div className="hm"><div className="hm-page"><AppBar /><div className="hm-notice is-stop" role="alert"><div className="hm-notice-head"><Icon name="stop" /><h1 className="hm-notice-title">예상하지 못한 문제가 생겼어요. 다시 시도해 주세요.</h1></div></div><button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={ui.reset}>다른 파일 올리기</button><details className="hm-fold"><summary>자세히</summary><div className="hm-prompt"><pre tabIndex={0}>{ui.error}</pre></div></details></div></div>;
-  if (requested) return <MakingState title={ui.preparation?.summary?.title ?? titleFromFileName(ui.fileName)} measureCount={ui.preparation?.summary?.measureCount} parts={Array.isArray(requested.parts) ? requested.parts : []} />;
-  return ui.preparation ? <PreparationScreen ui={ui} blocked={blocked?.preparation === ui.preparation ? blocked?.parts : undefined} onGenerate={choice => void generate(choice)} onEdit={() => void openEditor()} /> : <QuickStart ui={ui} />;
+  if (ui.error && !isAbort(ui.error)) return <div className="hm"><div className="hm-page"><AppBar /><WorkerFailure error={ui.error} /><button className="hm-btn hm-btn-primary hm-btn-block" type="button" onClick={ui.reset}>다른 파일 올리기</button></div></div>;
+  if (editing) return <div className="hm"><div className="hm-page"><AppBar /><p role="status">{stageLabel(stage)}</p></div></div>;
+  if (requested) return <MakingState title={ui.preparation?.summary?.title ?? titleFromFileName(ui.fileName)} measureCount={ui.preparation?.summary?.measureCount} parts={Array.isArray(requested.parts) ? requested.parts : []} stage={stage} onCancel={cancel} />;
+  return ui.preparation ? <PreparationScreen ui={{ ...ui, cancel }} blocked={blocked} onGenerate={choice => void generate(choice)} onEdit={() => void openEditor()} /> : <QuickStart ui={{ ...ui, cancel }} />;
 }

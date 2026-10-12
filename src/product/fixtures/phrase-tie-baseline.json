@@ -1,0 +1,71 @@
+[
+  {
+    "boundary": "repeat",
+    "lyrics": true,
+    "part": "alto",
+    "status": "complete",
+    "phraseCount": 2,
+    "projectSha256": "4c6ac31a3d3c2282f1d9e1bd17409b70e352d998463b58103e03b2a96b8ff285",
+    "solverSha256": "ae47450dad6d28fab7642cff2e8e8f62fac8f9c2d7c7844ed954698b7134a8c6"
+  },
+  {
+    "boundary": "repeat",
+    "lyrics": true,
+    "part": "tenor",
+    "status": "complete",
+    "phraseCount": 2,
+    "projectSha256": "7bd11d659dc9f17d3fabeab4bc6c556a0f3d0f4dd27810683eb9ae225c6a55b6",
+    "solverSha256": "a3a22f16e2f336c51409e94fac545bf16fef55c78626d074eb9c885845412604"
+  },
+  {
+    "boundary": "repeat",
+    "lyrics": false,
+    "part": "alto",
+    "status": "complete",
+    "phraseCount": 2,
+    "projectSha256": "1cac0ad5a6e1fe4d34161c4c9b2f8df51c722170f8a3c8bd979b456af947e8ba",
+    "solverSha256": "fb8ae788f04e5f95c27ada45feda1beec037a6afde0561051ecfd074736e6f2d"
+  },
+  {
+    "boundary": "repeat",
+    "lyrics": false,
+    "part": "tenor",
+    "status": "blocked",
+    "phraseCount": 2,
+    "solverSha256": "da0b9d23d8747f4aa2bd6a156ff7ce43636d08da1e4264a396e2b86dad81f9de"
+  },
+  {
+    "boundary": "ordinary",
+    "lyrics": true,
+    "part": "alto",
+    "status": "complete",
+    "phraseCount": 2,
+    "projectSha256": "2b31faac6c29a68cd45c4d41d2fa32d76d9bd9103acdf8f34c3e37bc6e76d280",
+    "solverSha256": "373f229b2d2d42ddfa499998c129ede6049de86e1e84c6aa6423b12881b9b1da"
+  },
+  {
+    "boundary": "ordinary",
+    "lyrics": true,
+    "part": "tenor",
+    "status": "complete",
+    "phraseCount": 2,
+    "projectSha256": "bcf5df2c32a27777f2477740c83e09ec8e51ada5dcc257f9b547d6514f14ff1b",
+    "solverSha256": "f7b53c335f65d63333cfa32e7660e9c4cb010443e934315a415e95b8321ad57c"
+  },
+  {
+    "boundary": "ordinary",
+    "lyrics": false,
+    "part": "alto",
+    "status": "blocked",
+    "phraseCount": 2,
+    "solverSha256": "7cd81f4acc2fec0f851bc4c106bce1fcf0cb9786cd7d7bbd8aaac7d2d965101b"
+  },
+  {
+    "boundary": "ordinary",
+    "lyrics": false,
+    "part": "tenor",
+    "status": "blocked",
+    "phraseCount": 2,
+    "solverSha256": "b0d735167541f833edc1382c18a730bd098d141ace0ac89a5747e646f709c925"
+  }
+]

@@ -8,6 +8,7 @@ import { extractMusicXmlFromMxl } from "../mxl/archive";
 import { DEFAULT_IMPORT_SECURITY_LIMITS } from "../musicxml/types";
 import { parseSafeXml, xmlChild, xmlChildren, xmlText, type XmlChild, type XmlElement } from "../musicxml/xml";
 import { slashNotationForVoice, updateSlashNotation, type SlashNotationState } from "../musicxml/slash-notation";
+import { supportedMusicXmlTuplets } from "../musicxml/tuplets";
 
 export type RecoveryEdit =
   | { readonly kind: "note"; readonly part: number; readonly measure: number; readonly event: number; readonly value: {
@@ -202,15 +203,17 @@ export function applyRecoveryXmlEdit(xml: string, edit: RecoveryEdit): string {
   } else {
     if (edit.kind !== "note" || !Number.isSafeInteger(edit.event) || edit.event < 0) throw new RangeError("RECOVERY_TARGET_INVALID");
     const note = xmlChildren(measure, "note")[edit.event];
-    if (!note || xmlChild(note, "grace") || xmlChild(note, "time-modification")) throw new RangeError("RECOVERY_NOTE_UNSUPPORTED");
+    const tuplet = note && supportedMusicXmlTuplets(part).get(note);
+    if (!note || xmlChild(note, "grace") || xmlChild(note, "time-modification") && !tuplet) throw new RangeError("RECOVERY_NOTE_UNSUPPORTED");
     const v = edit.value;
+    if (tuplet && (v.type !== xmlText(xmlChild(note,"type")) || v.dots !== 0 || v.kind === "rhythm")) throw new RangeError("RECOVERY_TUPLET_EDIT_UNSUPPORTED");
     const target = inspectRecoveryXml(xml).find((m) => m.part === edit.part && m.measure === edit.measure)?.notes[edit.event];
     if (target?.rhythmicSlashStyle && v.kind === "note") throw new RangeError("RECOVERY_RHYTHM_STYLE_ACTIVE");
     if (!["note", "rest", "rhythm"].includes(v.kind) || !(v.type in typeQuarters) || ![0, 1, 2].includes(v.dots)
       || typeof v.tieStart !== "boolean" || typeof v.tieStop !== "boolean"
       || (v.kind === "note" ? !isCanonicalSpelledPitch(v.pitch) : v.pitch !== undefined)
       || (v.kind === "rest" && (v.tieStart || v.tieStop))) throw new RangeError("RECOVERY_NOTE_INVALID");
-    const duration = typeQuarters[v.type] * [1, 1.5, 1.75][v.dots] * divisionsAt(part, edit.measure);
+    const duration = typeQuarters[v.type] * [1, 1.5, 1.75][v.dots] * divisionsAt(part, edit.measure) * (tuplet ? 2/3 : 1);
     // Never round duration to fit the existing divisions or the measure.
     if (!Number.isSafeInteger(duration) || duration <= 0) throw new RangeError("RECOVERY_DURATION_UNREPRESENTABLE");
     const body: XmlElement[] = [];
@@ -223,6 +226,7 @@ export function applyRecoveryXmlEdit(xml: string, edit: RecoveryEdit): string {
     if (v.tieStart) body.push(el("tie", undefined, { type: "start" }));
     const voice = xmlChild(note, "voice"); if (voice) body.push(voice);
     body.push(el("type", v.type), ...Array.from({ length: v.dots }, () => el("dot")));
+    if (tuplet) body.push(...xmlChildren(note,"time-modification"));
     if (v.kind === "rhythm") body.push(el("notehead", "slash"));
     const staff = xmlChild(note, "staff"); if (staff) body.push(staff);
     const notations = xmlChildren(note, "notations").flatMap((n) => n.children.filter((child) => child.kind !== "element" || child.name !== "tied"));
@@ -232,6 +236,7 @@ export function applyRecoveryXmlEdit(xml: string, edit: RecoveryEdit): string {
     if (v.kind !== "rest") body.push(...xmlChildren(note, "lyric"));
     // Refuse an edit if it would silently drop a musical element outside this editor.
     const supported = new Set(["chord", "pitch", "rest", "unpitched", "duration", "tie", "voice", "type", "dot", "accidental", "stem", "notehead", "staff", "beam", "notations", "lyric"]);
+    if (tuplet) supported.add("time-modification");
     if (note.children.some((child) => child.kind === "element" && !supported.has(child.name))) throw new RangeError("RECOVERY_NOTE_UNSUPPORTED");
     if (v.kind === "rest" && xmlChildren(note, "lyric").length) throw new RangeError("RECOVERY_LYRICS_WOULD_BE_LOST");
     nextMeasure = replaceChild(measure, note, { ...note, children: body });

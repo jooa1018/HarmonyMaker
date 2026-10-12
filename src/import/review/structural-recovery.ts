@@ -113,7 +113,8 @@ async function seedState(documents: StructuralRecovery["documents"]): Promise<St
           timed = true; const delta = f(number(node, "duration"), divisions); cursor = node.name === "backup" ? sub(cursor, delta) : add(cursor, delta); checkFraction(cursor);
         } else if (node.name === "note") {
           timed = true;
-          if (child(node, "grace") || child(node, "time-modification") || number(node, "staff", 1) !== 1) throw new RangeError("RECOVERY_NOTE_STRUCTURE_UNSUPPORTED");
+          if (child(node, "time-modification")) throw new RangeError("셋잇단음표가 있는 악보는 구조 복구 편집을 아직 지원하지 않아요.");
+          if (child(node, "grace") || number(node, "staff", 1) !== 1) throw new RangeError("RECOVERY_NOTE_STRUCTURE_UNSUPPORTED");
           const onset = child(node, "chord") ? previous : cursor;
           const value = gridNode(node, divisions);
           const event: StructuralEvent = { id: `${id}:n${notes.length}`, origin: `${id}:n${notes.length}`, onset, node: value };

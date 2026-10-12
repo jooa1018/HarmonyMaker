@@ -1,0 +1,276 @@
+[
+  {
+    "cancellation": {
+      "cancelled": "AbortError",
+      "afterCancel": 0,
+      "expired": "WORKER_HANDLE_EXPIRED",
+      "duringCommit": "committing",
+      "saved": "saved",
+      "afterCommit": 1
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 1,
+    "trial": 1,
+    "worker": {
+      "startupMs": 256.19999998807907,
+      "prepareMs": 310.19999998807907,
+      "generateSaveViewMs": 4409.5,
+      "stages": [
+        {
+          "stage": "verifying",
+          "ms": 1.100000023841858
+        },
+        {
+          "stage": "generating",
+          "ms": 11
+        },
+        {
+          "stage": "verifying",
+          "ms": 2370.100000023842
+        },
+        {
+          "stage": "committing",
+          "ms": 4238.700000047684
+        }
+      ],
+      "engineLongestTaskMs": 0,
+      "engineMaxTimerGapMs": 18.100000023841858,
+      "renderMs": 664.8999999761581,
+      "totalToSvgMs": 5804.199999988079,
+      "longestTaskMs": 665,
+      "events": 1920
+    },
+    "reopened": {
+      "startupMs": 329,
+      "openViewMs": 2636.699999988079,
+      "status": "available"
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 1,
+    "trial": 2,
+    "worker": {
+      "startupMs": 240.29999995231628,
+      "prepareMs": 271,
+      "generateSaveViewMs": 4280.200000047684,
+      "stages": [
+        {
+          "stage": "verifying",
+          "ms": 0.800000011920929
+        },
+        {
+          "stage": "generating",
+          "ms": 16.600000023841858
+        },
+        {
+          "stage": "verifying",
+          "ms": 2122.2000000476837
+        },
+        {
+          "stage": "committing",
+          "ms": 4121.100000023842
+        }
+      ],
+      "engineLongestTaskMs": 0,
+      "engineMaxTimerGapMs": 17.69999998807907,
+      "renderMs": 718.5999999642372,
+      "totalToSvgMs": 5652.200000047684,
+      "longestTaskMs": 718,
+      "events": 1920
+    },
+    "reopened": {
+      "startupMs": 264.5,
+      "openViewMs": 2288.199999988079,
+      "status": "available"
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 1,
+    "trial": 3,
+    "worker": {
+      "startupMs": 246.60000002384186,
+      "prepareMs": 341,
+      "generateSaveViewMs": 4990.299999952316,
+      "stages": [
+        {
+          "stage": "verifying",
+          "ms": 1.5999999642372131
+        },
+        {
+          "stage": "generating",
+          "ms": 12.699999988079071
+        },
+        {
+          "stage": "verifying",
+          "ms": 2903.599999964237
+        },
+        {
+          "stage": "committing",
+          "ms": 4792.799999952316
+        }
+      ],
+      "engineLongestTaskMs": 0,
+      "engineMaxTimerGapMs": 17.899999976158142,
+      "renderMs": 721.1999999880791,
+      "totalToSvgMs": 6683.800000011921,
+      "longestTaskMs": 721,
+      "events": 1920
+    },
+    "reopened": {
+      "startupMs": 589.2999999523163,
+      "openViewMs": 2643.099999964237,
+      "status": "available"
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 4,
+    "trial": 1,
+    "worker": {
+      "startupMs": 288.30000001192093,
+      "prepareMs": 352.5,
+      "generateSaveViewMs": 6086,
+      "stages": [
+        {
+          "stage": "verifying",
+          "ms": 2.899999976158142
+        },
+        {
+          "stage": "generating",
+          "ms": 13.799999952316284
+        },
+        {
+          "stage": "verifying",
+          "ms": 3896.2999999523163
+        },
+        {
+          "stage": "committing",
+          "ms": 5831.699999988079
+        }
+      ],
+      "engineLongestTaskMs": 0,
+      "engineMaxTimerGapMs": 114.5,
+      "renderMs": 8131.400000035763,
+      "totalToSvgMs": 17176.099999964237,
+      "longestTaskMs": 8132,
+      "events": 1920
+    },
+    "reopened": {
+      "startupMs": 368.39999997615814,
+      "openViewMs": 2280,
+      "status": "available"
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 4,
+    "trial": 2,
+    "worker": {
+      "startupMs": 223.5,
+      "prepareMs": 264.39999997615814,
+      "generateSaveViewMs": 5987.600000023842,
+      "stages": [
+        {
+          "stage": "verifying",
+          "ms": 1.800000011920929
+        },
+        {
+          "stage": "generating",
+          "ms": 11.400000035762787
+        },
+        {
+          "stage": "verifying",
+          "ms": 3773.7000000476837
+        },
+        {
+          "stage": "committing",
+          "ms": 5771.700000047684
+        }
+      ],
+      "engineLongestTaskMs": 0,
+      "engineMaxTimerGapMs": 135.29999995231628,
+      "renderMs": 7666.900000035763,
+      "totalToSvgMs": 16076,
+      "longestTaskMs": 7667,
+      "events": 1920
+    },
+    "reopened": {
+      "startupMs": 313,
+      "openViewMs": 2403.300000011921,
+      "status": "available"
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 4,
+    "trial": 3,
+    "worker": {
+      "startupMs": 257.39999997615814,
+      "prepareMs": 267.30000001192093,
+      "generateSaveViewMs": 6001.100000023842,
+      "stages": [
+        {
+          "stage": "verifying",
+          "ms": 2.100000023841858
+        },
+        {
+          "stage": "generating",
+          "ms": 15.900000035762787
+        },
+        {
+          "stage": "verifying",
+          "ms": 3623.800000011921
+        },
+        {
+          "stage": "committing",
+          "ms": 5749.600000023842
+        }
+      ],
+      "engineLongestTaskMs": 0,
+      "engineMaxTimerGapMs": 112,
+      "renderMs": 8283.699999988079,
+      "totalToSvgMs": 17056.600000023842,
+      "longestTaskMs": 8284,
+      "events": 1920
+    },
+    "reopened": {
+      "startupMs": 284.19999998807907,
+      "openViewMs": 2346.2000000476837,
+      "status": "available"
+    },
+    "sameOriginFileWorkers": 2,
+    "errors": []
+  },
+  {
+    "rate": 1,
+    "baseline": {
+      "prepare": 247.69999998807907,
+      "generate": 2044.699999988079,
+      "save": 1617.1000000238419,
+      "view": 98.79999995231628,
+      "renderMs": 616.6000000238419,
+      "longestTaskMs": 3881
+    }
+  },
+  {
+    "rate": 4,
+    "baseline": {
+      "prepare": 1132.1000000238419,
+      "generate": 30645.80000001192,
+      "save": 14012.199999988079,
+      "view": 891.8999999761581,
+      "renderMs": 8424.5,
+      "longestTaskMs": 45669
+    }
+  }
+]

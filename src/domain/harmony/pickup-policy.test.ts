@@ -120,6 +120,20 @@ describe("explicit initial pickup arrangement policy", () => {
     expect(result).toMatchObject({ status: "blocked", diagnostics: [{ code: "SOURCE_CHORD_GAP", id: "dg:SOURCE_CHORD_GAP:2:0/1:0" }] });
   });
 
+  it("rejects a nonrepeating pickup whose following first full measure is repeated", async () => {
+    const measures = fixture();
+    measures[1] = { ...measures[1], repeat: { startRepeat: true, endRepeat: { totalPasses: 2 } } };
+    const performance = sequence(measures);
+    expect(performance.occurrences.map(o => o.sourceMeasureId)).toEqual(["m1", "m2", "m2"]);
+    expect(performance.occurrences.map(o => o.occurrenceIndexForSource)).toEqual([0, 0, 1]);
+    expect(await resolve(measures, policy, performance)).toMatchObject({
+      status: "blocked",
+      diagnostics: [{ code: "SOURCE_CHORD_GAP", details: {
+        issue: "initial-pickup-policy-ineligible", reason: "repeated-pickup-or-anchor",
+      } }],
+    });
+  });
+
   it("binds both policy and following Source chord provenance into the digest", async () => {
     const measures = fixture(), result = await resolve(measures);
     expect(result.status).toBe("resolved"); if (result.status !== "resolved") return;

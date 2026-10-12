@@ -1,4 +1,5 @@
 import { prepareWagPolicy } from "./versions";
+import { canonicalSections, canonicalPhrases, canonicalAtoms, canonicalChordSpans } from "../domain/digest/plan-order";
 import { resolveEffectiveArrangementConfig, type EffectiveArrangementConfig, type UserArrangementCaps } from "../domain/config";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
 import {
@@ -197,7 +198,7 @@ export function primaryPulseAt(
   const measure = prepared.sourceMeasureById[occurrence.sourceMeasureId];
   if (!measure) throw new RangeError("UNSUPPORTED_METER");
   const time = measure.time;
-  const expanded = prepared.versions.grammarVersion === "grammar-v1.1";
+  const expanded = ["grammar-v1.1","grammar-v1.2"].includes(prepared.versions.grammarVersion);
   if ((time.numerator === 2 || (expanded && time.numerator === 3) || time.numerator === 4) && time.denominator === 4
     && time.beatGroups.length === time.numerator && time.beatGroups.every((group) => group === 1)) {
     return fraction(1);
@@ -207,25 +208,6 @@ export function primaryPulseAt(
     return fraction(3, 2);
   }
   throw new RangeError("UNSUPPORTED_BEAT_GROUPING");
-}
-
-function canonicalSections(source: SongSourceDocument): readonly SectionOccurrence[] {
-  return [...source.sectionOccurrences].sort((left, right) =>
-    left.startPerformanceMeasureIndex - right.startPerformanceMeasureIndex
-    || left.endPerformanceMeasureIndexExclusive - right.endPerformanceMeasureIndexExclusive
-    || left.occurrenceIndex - right.occurrenceIndex);
-}
-
-function canonicalPhrases(source: SongSourceDocument): readonly PhraseRegion[] {
-  return [...source.phraseRegions].sort((left, right) => compareRanges(left.range, right.range));
-}
-
-function canonicalAtoms(atomization: SourceLeadAtomization): readonly TimelineAtom[] {
-  return [...atomization.atoms].sort((left, right) => compareRanges(left.range, right.range));
-}
-
-function canonicalChordSpans(timeline: EffectiveChordTimeline): readonly PerformanceChordSpan[] {
-  return [...timeline.spans].sort((left, right) => compareRanges(left.range, right.range));
 }
 
 function createOrdinals(input: WagLifecycleInput): PlanOrdinalRegistry {
@@ -336,7 +318,8 @@ export async function prepareWagLifecycle(input: WagLifecycleInput): Promise<
 > {
   const { versions, parts } = prepareWagPolicy(input.source, input.grammarVersion);
   const authority = await loadFrozenWagAuthority(versions.grammarVersion);
-  if (parts && versions.grammarVersion !== "grammar-v1.1") throw new RangeError("WAG_POLICY_VERSION_MISMATCH");
+  if (parts && !["grammar-v1.1","grammar-v1.2"].includes(versions.grammarVersion)) throw new RangeError("WAG_POLICY_VERSION_MISMATCH");
+  if (input.source.sourceMeasures.some(m=>m.leadEvents.some(e=>e.tuplets)) && versions.grammarVersion !== "grammar-v1.2") throw new RangeError("WAG_TUPLET_VERSION_MISMATCH");
   const rawDiagnostics = structuralDiagnostics(input);
   if (input.effectiveConfig.presetProfileVersion !== authority.presetProfiles.presetProfileVersion
     || input.effectiveConfig.presetProfileDigest !== authority.presetProfiles.presetProfileDigest

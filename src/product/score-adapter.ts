@@ -8,8 +8,11 @@ import type { PerformanceMeasureOccurrence } from "../domain/performance/repeat"
 import { canonicalRangeDuration } from "./timing";
 import type { ProductTrackRoleRegistry } from "./track-roles";
 import { displayLyricsByAtom } from "./display-lyrics";
+import { withTupletNotation } from "./tuplet-notation";
 
 interface AdapterEvent {
+  readonly tuplets?: TimelineAtom["tuplets"];
+  readonly tupletCount?: number;
   readonly slurs?: TimelineAtom["slurs"];
   readonly kind: "note" | "rest" | "rhythm";
   readonly offset: Fraction;
@@ -44,7 +47,7 @@ function abcLength(duration: Fraction): string {
 
 function eventFromAtom(atom: TimelineAtom, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
   const duration = canonicalRangeDuration(measures, atom.range);
-  return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}) };
+  return { kind: atom.rhythmOnly ? "rhythm" : atom.pitch ? "note" : "rest", offset: atom.range.start.offset, duration, ...(atom.pitch ? { pitch: atom.pitch } : {}), tieStart: atom.tiedToNext, tieStop: atom.tiedFromPrevious, lyricTokenIds: atom.lyricTokenIds, ...(atom.slurs ? { slurs: atom.slurs } : {}), ...(atom.tuplets ? {tuplets:atom.tuplets} : {}) };
 }
 
 function eventFromGenerated(event: GeneratedVoiceEvent, measures: readonly PerformanceMeasureOccurrence[]): AdapterEvent {
@@ -90,7 +93,9 @@ function voiceMeasures(events: readonly AdapterEvent[], measuresAuthority: Arran
       // pitch-free domain atom, never this engraving placeholder.
       const glyph = event.kind === "rhythm" ? "!style=rhythm!B" : event.kind === "note" && event.pitch ? abcPitch(event.pitch, keyAlter, barAlter, event.tieStop) : "z";
       const openSlurs = "(".repeat(event.slurs?.filter((mark) => mark.type === "start").length ?? 0), closeSlurs = ")".repeat(event.slurs?.filter((mark) => mark.type === "stop").length ?? 0);
-      tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${openSlurs}${glyph}${abcLength(event.duration)}${event.tieStart ? "-" : ""}${closeSlurs}`);
+      const tuplet = event.tuplets?.[0];
+      const duration = tuplet ? fraction(event.duration.n*3,event.duration.d*2) : event.duration;
+      tokens.push(`${chord ? `"${encodeAbcFreeText(chord)}"` : ""}${openSlurs}${tuplet?.start ? `(3:2:${event.tupletCount ?? 3}` : ""}${glyph}${abcLength(duration)}${event.tieStart ? "-" : ""}${closeSlurs}`);
       cursor = addFractions(event.offset, event.duration);
     }
     if (compareFractions(cursor, durations[measureIndex]) < 0) tokens.push(`${invisibleGaps ? "x" : "z"}${abcLength(subtractFractions(durations[measureIndex], cursor))}`);
@@ -127,7 +132,8 @@ export function arrangementRenderDocumentToAbc(document: ArrangementRenderDocume
   const chordOwner = (measureIndex: number) => { const index = rhythm.findIndex((track) => track.atoms.some((atom) => atom.range.start.performanceMeasureIndex === measureIndex)); return index < 0 ? 0 : index + 1; };
   const voices = tracks.map((track, index) => {
     const ownedChords = Object.fromEntries(Object.entries(chordAt).filter(([key]) => chordOwner(Number(key.split(":")[0])) === index));
-    const voice=`[V:${track.id}] ${voiceMeasures(track.events, document.measures, durations, ownedChords, index < sourceCount, input.key, rhythm.length > 0 && index < sourceCount)}`;
+    const events=withTupletNotation<AdapterEvent & {measureIndex:number}>(track.events,document,(measureIndex,offset,duration)=>({kind:"rest",measureIndex,offset,duration,tieStart:false,tieStop:false,lyricTokenIds:[]}),true);
+    const voice=`[V:${track.id}] ${voiceMeasures(events, document.measures, durations, ownedChords, index < sourceCount, input.key, rhythm.length > 0 && index < sourceCount)}`;
     return index===0 ? voice+melodyLyricLines(document) : voice;
   }).join("\n");
   const score = rhythm.length ? `(${tracks.slice(0, sourceCount).map((track) => track.id).join(" ")}) ${tracks.slice(sourceCount).map((track) => track.id).join(" ")}` : tracks.map((track) => track.id).join(" ");

@@ -42,9 +42,11 @@ generateQuickHarmony(
       | readonly ["alto", "tenor"] | readonly ["tenor", "alto"];
     rightsConfirmed: true;
     confirmedAt: string;
+    tempo?: { bpm: number }; // 현재 유효 박 단위·점은 유지
     answers?: {
       lead?: string;
       unreadPrintedChords?: "carry-previous";
+      pickupChord?: "use-following-first-chord" | "move-printed-to-start";
     };
   },
 ): Promise<QuickHarmonyResult>
@@ -52,9 +54,17 @@ generateQuickHarmony(
 
 - 파일 확장자는 `.musicxml`, `.xml`, `.mxl`이다. 기존 XML·MXL 보안 검사와 크기 제한을 재사용한다. 파일을 서버로 전송하지 않는다.
 - `parts` 생략 또는 `auto`는 기존 Lead 중앙 음높이 기준 기본 파트를 사용한다.
-- `confirmedAt`은 **선택 전체의 확정 시각**이다. 권리 확인 기록과 Lead 선택 journal 기록에 함께 쓰인다. `new Date(x).toISOString() === x`인 정규 ISO UTC 문자열만 받는다(예: `2026-10-09T10:00:00.000Z`). 날짜만 쓰거나 오프셋 등 다른 표기를 쓰면 `QUICK_HARMONY_CHOICE_INVALID`로 거부한다. 같은 선택을 재시도할 때는 같은 값을 유지한다. 엔진 내부에서 현재 시각을 생성하지 않는다.
+- `tempo` 생략은 기존 생성 바이트를 유지한다. 지정하면 기존 작업 공간 tempo 편집으로 기록하며 `user-edit` 출처와 `confirmedAt`을 쓴다. `QUICK_HARMONY_TEMPO_MIN = 20`, `QUICK_HARMONY_TEMPO_MAX = 300`을 `quick-harmony.ts`에서 내보내며, 범위 안 정수 BPM만 받는다. 잘못된 값은 `QUICK_HARMONY_CHOICE_INVALID`다. 6/8의 점4분음표 등 현재 유효 박 단위는 바꾸지 않는다.
+- `confirmedAt`은 **선택 전체의 확정 시각**이다. 권리 확인 기록과 Lead·빠르기 선택 journal 기록에 함께 쓰인다. `new Date(x).toISOString() === x`인 정규 ISO UTC 문자열만 받는다(예: `2026-10-09T10:00:00.000Z`). 날짜만 쓰거나 오프셋 등 다른 표기를 쓰면 `QUICK_HARMONY_CHOICE_INVALID`로 거부한다. 같은 선택을 재시도할 때는 같은 값을 유지한다. 엔진 내부에서 현재 시각을 생성하지 않는다.
 - `lead`에는 판정 질문의 `choices[].value`를 전달한다. 존재하며 음표가 있는 성부인지 재검증하고, 명시적 사용자 선택으로 journal에 기록한다. 사람의 악보 대조 기록은 만들지 않는다.
 - `unreadPrintedChords`는 기존 자동 초안의 판독 불가 코드 질문에 대한 답이다. 순수 MusicXML에는 보통 나타나지 않는다. 기본값으로 이전 코드를 유지하지 않는다.
+- `pickupChord`는 `questions`의 `id: "pickup-chord"` 질문에 대한 확인이다. 코드 없는 첫 못갖춘마디 또는 다음 온마디가 반복될 때, 바로 다음 마디 시작의 유효한 첫 코드 하나를 제안한다. 이 경우 선택 값은 `use-following-first-chord`이며 임의 코드 문자열은 받지 않는다. 없거나 N.C.·%·미해석·미확인·중복·늦은 코드이면 `pickup-chord-unavailable` 사유와 MuseScore 안내를 돌려준다.
+- 확인하면 기존 `chord` 편집 명령으로 **못갖춘마디 offset 0**에 canonical 코드 이름을 기록한다(`actor: user`, `at: confirmedAt`). 코드가 악보·MusicXML에 일반 코드로 표시되고, 반복되는 모든 pickup에도 같은 코드가 적용된다. 쉼표로 시작하면 쉼표 위에 코드가 표시되며 반주가 먼저 울릴 수 있다. 명시 코드를 쓰므로 공유는 기존 경로를 따르고 resolver·WAG·V5 규칙은 바뀌지 않는다.
+- `answerQuickHarmony(preparation, { answers: { pickupChord: "use-following-first-chord" }, confirmedAt })`는 권리 확인 없이 미리 판정한다. Worker `answer({ handle, answer })`도 같은 형식이며 원래 handle의 workspace를 바꾸지 않는다. 최종 Worker `generate({ handle, choice })`에 답을 다시 전달한다. 공통 `quickHarmonyProjectId`는 답을 저장 id에 포함한다. 답이 없으면 새 journal을 만들지 않으며, 기존 비반복 선행 정책·명시 코드 악보의 프로젝트 바이트는 그대로다.
+- 자동 초안은 기존 규칙대로 판독 가능한 workspace 코드를 confirmed Source 코드로 투영한다. 이는 사람의 원본 대조 확인을 뜻하지 않는다. 미해결 판독 질문이 있는 anchor는 추천하지 않는다.
+- 생성 차단의 구체 안내는 중복 제거한 `preparation.reasons[].messageKo/actionKo`로 제공하며, 해당 `parts[]`에는 파트별 `reasonKo`와 선택적 `actionKo`가 있다. 화면은 공통 사유를 한 번 보여 준다.
+- 쉼표 뒤 첫 음(offset > 0)에 인쇄 코드가 하나 있는 못갖춘마디는 비반복·반복·volta 모두 같은 `id: "pickup-chord"` 질문으로 이동 확인을 받는다. 이 경우 유일한 선택 값은 **`move-printed-to-start`**다. H3는 질문 id를 Lead 선택과 구분하고, `choices[0].value`를 `answers.pickupChord`로 전달한다. 현재 질문과 다른 pickup 답은 `QUICK_HARMONY_CHOICE_INVALID`로 거부한다.
+- 이동 확인은 기존 `move-chord` journal 명령 한 건으로 같은 마디의 offset 0에 기록한다(`actor: user`, `at: confirmedAt`). 코드의 식별자·글자·해석과 음표·쉼표는 보존한다. 코드 표시가 쉼표 위로 옮겨지고 반주가 먼저 울릴 수 있다. 코드가 둘 이상이거나 N.C.·%·미해석·미해결 질문이 있으면 이동을 제안하지 않고 MuseScore 수정을 안내한다. 권리 확인 없이 `answerQuickHarmony`/Worker `answer`로 미리 판정할 수 있고 최종 `generate`에도 같은 답을 전달한다. 답 없이 원본을 바꾸지 않으며 자동 초안 정책·resolver·WAG·공유 버전도 바꾸지 않는다.
 - 마디 길이·음표 등의 교정은 기존 workspace 편집 API로 수행하고, `prepareQuickHarmonyWorkspace(editedWorkspace)`로 다시 판정한다. `edit-in-workspace` 선택지는 편집 화면으로 이동하는 행동이며 `answers` 값이 아니다.
 
 ## 판정 결과
@@ -145,6 +155,7 @@ summary?: {
   hasLyrics: boolean;
   verseCount: number; // 선택된 멜로디에 실제 글자가 있는 서로 다른 절 번호 수
   recommendedPart: "alto" | "tenor"; // auto와 같은 중앙 음높이 규칙
+  tempo: { bpm: number; beatUnit: 4 | 8; dotted: boolean; origin: "score" | "auto" };
 }
 ```
 
@@ -154,6 +165,15 @@ summary?: {
 멜로디의 첫 마디에서 판정한 값이다. 여러 조성이 있는 경우 지원 판정은 `reasons`를 따른다.
 추천은 사용자의 명시적 파트 선택과 별개이며, 같은 악보·선택 상태에서 결정적이다.
 화면이 바꾼 summary는 생성 입력으로 신뢰하지 않고 현재 작업 공간에서 다시 계산한다.
+tempo.origin의 auto는 제품 기본값(policy-default), score는 악보에서 읽었거나 명시적으로 편집한 유효값이다.
+원본의 정확한 출처는 기존 assessment provenance에 남는다. 기존 자동 빠르기(일반 박자 ♩=80)는 유지한다.
+자동값이 빠르기뿐이면 AUTOMATIC_VALUES 참고를 생략하고, 다른 자동값이 있으면 참고를 유지한다.
+
+H3 3-10은 이 tempo로 확인 화면을 채우고 바꾼 BPM을 choice.tempo에 전달한다. 재시도 저장 ID는 tempo가 있을 때만
+그 선택도 포함해야 한다(생략된 기존 선택의 ID는 유지). 향후 Worker의 prepare/answer DTO와 generate 선택도 같은 필드를 사용한다.
+MusicXML 내보내기는 기존처럼 `<metronome>`만 쓰고, 내보내기 바이트와 파서는 바꾸지 않는다.
+알려진 제한: MuseScore가 내보낸 6/8·12/8 파일에 `<sound tempo>`가 함께 있으면 점4분음표=60이 ♩=90으로 읽힐 수 있다.
+실제 속도는 같다. 이 가져오기 표기 개선은 이번 범위에 넣지 않는다(2026-10-12 판정).
 
 ## 저장된 프로젝트 읽기 (1-8)
 
@@ -213,14 +233,28 @@ const player = usePracticePlayer({
 - `secondsPerQuarter`, `speed`, `tracks: { id, label, kind, role }[]`
 - `muted`, `solo`, `bandEnabled`, `levels`, `masterLevel`
 - `play()`, `pause()`, `restart()`, `setSpeed(speed)`
+- `seek(quarter: number): void`, `measureAt(quarter: number): { number: number; startQuarter: number } | undefined`
+- `leadOctave: 0 | -1`, `setLeadOctave(octave: 0 | -1): void`
 - `toggleMute(trackId)`, `toggleSolo(trackId)`, `setBandEnabled(on)`
 - `setLevel(trackId, level)`, `setMasterLevel(level)`
 
 `play()`는 ready·finished에서 처음부터, paused에서 이어서 재생한다. starting·playing에서는
-중복 시작하지 않는다. `restart()`는 멈추고 처음으로, `setSpeed()`도 처음으로 돌아간다.
+중복 시작하지 않는다. `restart()`는 멈추고 처음으로 돌아간다. `setSpeed()`는 현재 위치를 유지하고,
+재생·시작 중이면 같은 위치에서 새 속도로 이어서 재생한다.
+`seek(quarter)`는 [0, totalQuarter) 범위의 그 위치가 속한 박 시작으로 맞춘다(6/8·12/8은 점4분음표).
+재생·시작 중이면 그곳부터 이어 재생하고, ready·paused·finished에서는 위치만 바꾸며 paused가 된다.
+끌기는 손을 뗄 때 한 번 호출한다. `measureAt`은 악보에 인쇄된 마디 번호와 해당 연주 구간 시작을 반환한다.
+반복의 두 번째도 같은 번호이며, 번호를 알 수 없는 예전 수동 plan에는 undefined를 반환한다.
+`PlaybackPlan.measures`는 `buildPlaybackPlan`이 만드는 선택적 실행 중 탐색 정보이며 저장·공유·digest에는 들어가지 않는다.
+
+`defaultLeadOctave(plan): 0 | -1`은 `src/product/playback-plan.ts`의 순수 함수다.
+upper가 있고 lower가 없으며 Lead를 내린 최저음이 E2 이상이면 -1, 그 외는 0이다(음이 없거나 역할 정보가 없으면 0).
+훅은 이를 처음 값으로 쓰고 공유 화면도 같은 함수를 쓸 수 있다. `setLeadOctave`는 소리에서만 Lead를 옮기며,
+재생 중에는 현재 위치부터 이어 재생한다. 악보·plan·프로젝트·공유 payload는 바뀌지 않는다.
 지원되는 브라우저에서는 재생 버튼으로 시작할 때만 `navigator.audioSession.type = "playback"`을 요청한다.
 페이지를 열 때는 설정하지 않는다. 기존 suspend → 음 예약 → resume 순서를 유지한다.
 resume 거부 또는 3초 시간 초과 시 ready로 돌아가고 “소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요.”를 표시한다.
+실기기 점검: iPhone에서 재생 중 막대를 탭한 직후 소리가 나는지, 연속 탭·빠르기 변경·멜로디 옥타브 변경 후에도 이어지는지 확인한다.
 
 속도는 `PracticeSpeed`의 50·75·100·125·150이다. 파트 음량은 0–2, 전체 음량은 0–1로 제한한다.
 솔로는 한 트랙만 켜지고 음소거는 여러 트랙에 적용할 수 있다. 믹서는 재생 중에도 적용된다.
@@ -298,14 +332,178 @@ C2·G2는 Cadd2·Gadd2로, C2/G는 Cadd2/G로 정규화되어 major + degree add
 
 원본 멜로디에 이음줄이 있으면 `materializePracticeShare`는 V5를 반환한다. V5는 V4를 바탕으로 원본 note/rhythm 이벤트의 선택 필드 `slurs: { number, type: "start" | "stop" | "continue" }[]`를 보존한다. 번호·중복·시작/끝 연결을 검증하며, 공유 악보에도 같은 이음줄을 표시한다. 이음줄만으로 재생 음을 붙임줄처럼 합치지 않는다.
 
-이음줄이 없는 출력은 기존 V4 바이트를 유지하고, V3·V4 읽기도 유지한다. 크기 제한은 그대로다. 승인된 1-14의 `tuplets`도 같은 V5에 선택 필드로 통합할 예정이며, 생성·표시·검증 경로가 완성되기 전에는 미지원 필드를 허용하거나 버리지 않는다. 첫 코드 선행 적용 정책과 별도 원본 리듬 성부는 아직 공유할 수 없다.
+이음줄·셋잇단·첫 코드 선행 적용 정책이 없는 출력은 기존 V4 바이트를 유지하고, V3·V4 읽기도 유지한다. 크기 제한은 그대로다. `tuplets`도 같은 V5의 선택 필드로 통합하며, 잘못된 비율·묶음·알 수 없는 필드와 V4의 새 필드는 거부한다. 별도 원본 리듬 성부는 아직 공유할 수 없다.
+
+첫 코드 선행 적용 정책이 있는 출력은 V5의 선택 필드 `resolutionPolicy`와
+`chords[].origin`으로 정책·출처·연결을 보존한다(1-21). 출처의 source/followingSource는
+공유 안에서만 쓰는 번호이며 원본 workspace 식별자는 보내지 않는다.
+정책 구간은 첫 짧은 마디에만 있고, 바로 뒤 마디 시작의 같은 코드와 연결된다.
+명시 코드와 이후 이어지는 코드(carried)의 출처도 구별해 복원하므로 ABC·MusicXML의
+“편곡 정책” 표시와 반주 digest가 유지된다. 받는 쪽에서 정책을 새로 적용하지 않는다.
+명시 코드가 있는 못갖춘마디는 정책을 붙이지 않고 기존 형식을 유지한다.
+정책/연결이 모순되면 `SHARE_ARRANGEMENT_POLICY_INCONSISTENT`로 내보내기를 거부한다.
+기존 V5에는 이 필드가 없어도 되며, 새 필드를 넣은 V4는 거부한다.
+현재 엔진은 코드 없는 못갖춘마디 뒤의 첫 온마디부터 반복하는 구조도
+첫 코드 선행 정책의 대상으로 허용하지 않는다(`repeated-pickup-or-anchor`).
+못갖춘마디가 반복 밖에 있어도 생성 단계에서 막히므로 이번 공유 확장은 이 규칙을 넓히지 않는다.
+운영 배포 전에는 승인된 V5 선택 필드 확장을 허용하지만, 운영 배포 뒤 공유 형식을
+바꿀 때에는 새 schemaVersion을 사용한다.
 
 ## 연습 음원 파일 (1-20)
 
-`src/product/render-practice-audio.ts`의 `renderPracticeAudio({ plan, tempo, speed, mix, bandEnabled, signal? })`는 `{ blob, seconds, bytes }`를 비동기로 반환한다. `projectPracticeView`의 plan·tempo와 플레이어의 speed를 그대로 전달한다. mix는 `{ kind: "full" }` 또는 `{ kind: "emphasize", trackId }`이며, 강조할 성부는 기본 크기, 다른 성부는 0.35배다. 반주는 bandEnabled일 때만 기본 크기로 들어간다. 없는 트랙이나 반주를 강조 대상으로 주면 `PRACTICE_AUDIO_MIX_INVALID`로 거부한다.
+`src/product/render-practice-audio.ts`의 `renderPracticeAudio({ plan, tempo, speed, mix, bandEnabled, leadOctave?, signal? })`는 `{ blob, seconds, bytes }`를 비동기로 반환한다. `projectPracticeView`의 plan·tempo와 플레이어의 speed를 그대로 전달한다. `leadOctave`는 0(기본) 또는 -1이며 플레이어의 값을 전달하면 WAV도 같은 Lead 높이를 쓴다. mix는 `{ kind: "full" }` 또는 `{ kind: "emphasize", trackId }`이며, 강조할 성부는 기본 크기, 다른 성부는 0.35배다. 반주는 bandEnabled일 때만 기본 크기로 들어간다. 없는 트랙이나 반주를 강조 대상으로 주면 `PRACTICE_AUDIO_MIX_INVALID`로 거부한다.
 
 실시간 재생과 같은 음색·엔벨로프·리미터를 OfflineAudioContext로 렌더한다. WAV는 PCM 16-bit 모노 22,050 Hz이고 최대값을 -1 dBFS로 맞춘다(전부 무음이면 무음 유지). 길이는 곡 끝까지이며 프레임 단위로 올림한다. Blob의 MIME은 audio/wav다. 서버 전송과 저장은 하지 않으며 파일 이름과 다운로드 UI는 호출자가 정한다.
 
 signal 취소는 AbortError로 끝나고 파일을 반환하지 않는다. OfflineAudioContext에는 close API가 없으므로 렌더 중에는 1초 분량 간격의 오디오 시각 체크포인트에서 일시정지하고 다시 시작하지 않는다. PCM 변환 중에도 취소를 확인한다. 각 호출은 독립 컨텍스트를 사용한다. API 미지원·렌더 실패는 reject되므로 화면에서 오류를 처리한다.
 
-H3 참고: 화면에서 같은 생성을 재시도해도 라이브러리에 중복 항목이 생기지 않도록 저장 id를 정하는 방법은 H3에서 정한다.
+## 셋잇단음표 (1-14, WAG v1.2)
+
+멜로디 한 보이스의 4분·8분·16분 3:2 셋잇단(쉼표·붙임줄 포함)을 지원한다. `duration/divisions`와 적힌 음가, 3:2 비율, 연속 묶음의 정확한 합계를 검증한다. 명시적 start/stop이 없으면 같은 마디의 같은 음가 3개만 복원한다. 중첩·다른 비율·불일치·모호한 묶음·꾸밈음·cue·장식음은 지원 안 함이다.
+
+검증된 셋잇단이 있는 **새 생성**만 WAG v1.2를 선택한다. 셋잇단 없는 요청은 v1.0.1/v1.1 선택과 결과 바이트를 유지한다. 기존 프로젝트를 열거나 편집·저장하는 것으로 버전이 바뀌지 않으며, 미등록 버전은 차단한다. 화음은 기존 Lead 결합 리듬·음역·배치·attack cap·탐색 범위를 사용한다. 부족한 파트는 partial/missing으로 보고한다.
+
+원본 이벤트·atom·V5 원본 이벤트의 선택 필드 `tuplets`는 단일 묶음의 `{number, actualNotes:3, normalNotes:2, normalType:"quarter"|"eighth"|"16th", start?:true, stop?:true}[]`다. 전체 묶음과 분수 시간은 저장·MusicXML·PlaybackPlan에서 보존한다. ABC만 마디별 `(3:2:r` 구간으로 나누므로 마디를 넘는 묶음은 각 표시 구간마다 “3”이 붙는다. abcjs 6.7은 한 음짜리 `(3:2:1`의 종료를 처리하지 못하므로, 마디를 넘는 원본 묶음에서 한 마디에 음이 하나뿐인 경우는 가져오기에서 지원 안 함으로 판정한다. 정확히 나타낼 수 없는 표시를 근사하지 않는다. 생성된 이진 길이 유지음은 보통 음표로 표시하며 재타격을 추가하지 않는다.
+
+`/score-workspace`는 분수 시간을 보존하고 음높이 편집이 가능하다. 묶음 시간을 깨뜨리는 편집은 `WORKSPACE_TUPLET_EDIT_UNSUPPORTED`로 거부한다. 가져오기 복구(`recovery.ts`)도 원래 셋잇단 음가를 유지하는 음높이·쉼표 수정을 지원한다. 고정 64 격자를 쓰는 예전 구조 복구 편집기는 “셋잇단음표가 있는 악보는 구조 복구 편집을 아직 지원하지 않아요.”로 명시적으로 거부한다. 그 편집기의 저장 형식은 확장하지 않는다.
+
+## Worker 클라이언트 초안 (1-11, A등급 검토 대상)
+
+`src/product/harmony-worker/client.ts`에서 `createHarmonyWorkerClient()`를 가져온다.
+호출만으로 Worker를 시작하지 않는다. 첫 명령이나 `start()`에서 같은 출처의 정적 파일을
+로드한다. Next.js 16 빌드와 `worker-src 'self'` 환경을 대상으로 하며 blob Worker나
+메인 스레드 실행으로의 자동 대체는 없다. 기존 화면 전환은 H3 3-8에서 따로 한다.
+
+```ts
+type WorkerRequestOptions = {
+  signal?: AbortSignal;
+  onStage?: (stage: "loading" | "preparing" | "generating" |
+    "verifying" | "committing" | "view") => void;
+};
+type PreparationView = {
+  handle: PreparationHandle; // Worker 세대 안에서만 유효한 불투명 문자열
+  status: "ready" | "needs-input" | "unsupported";
+  summary?: QuickHarmonySummary; // summary.tempo 포함
+  questions: readonly QuickHarmonyNotice[];
+  reasons: readonly QuickHarmonyNotice[];
+  notes: readonly QuickHarmonyNotice[];
+};
+type ProjectView = {
+  handle: ProjectHandle;
+  projectId: string | null; // 파일 import 직후에는 null
+  updatedAt: string | null;
+  rightsBasis: RightsBasis; // 기존 공유 네트워크 요청용
+  description: HarmonyProjectDescription;
+  practice: ProjectPracticeView; // available이면 abc, plan, tempo, identity
+};
+type GenerationView =
+  | { status: "saved"; project: ProjectView }
+  | { status: "needs-input" | "unsupported" | "blocked";
+      preparation: PreparationView; parts: readonly QuickHarmonyPartResult[] };
+type QuickHarmonyAnswer = Pick<QuickHarmonyChoice, "answers" | "tempo" | "confirmedAt">;
+type ShareConfirmation = {
+  rightsConfirmed: true;
+  confirmedAt: string;
+  playbackDefaults?: PracticeSettings;
+};
+```
+
+모든 메서드는 Promise를 반환한다(`cancel` 제외). 아래의 `options?`는 같은
+`WorkerRequestOptions`이며, 타입 원본은 `harmony-worker/protocol.ts`다.
+
+| 메서드 | 반환 |
+|---|---|
+| `start(options?)` | `{ startupMs: number }`: Worker 엔진 모듈 로드부터 준비 완료까지 |
+| `prepare({ bytes: Uint8Array, fileName: string }, options?)` | `PreparationView` |
+| `answer(handle, answer: QuickHarmonyAnswer, options?)` | `PreparationView` |
+| `generate(handle, choice: QuickHarmonyChoice, options?)` | `GenerationView` |
+| `open(projectId: string, options?)` | `ProjectView \| null` |
+| `list(options?)` | `readonly { projectId: string; updatedAt: string }[]` |
+| `delete(projectId: string, options?)` | `null` |
+| `importProject(encoded: string, options?)` | 검증한 파일의 `ProjectView`; 아직 저장하지 않음 |
+| `saveProject(handle, { projectId, updatedAt }, options?)` | `ProjectView`; 기존 id를 덮어쓰지 않는 add-only 저장 |
+| `exportProject(handle, options?)` | 기존 프로젝트 파일 문자열 |
+| `exportMusicXml(handle, options?)` | 기존 MusicXML 문자열 |
+| `sharePayload(handle, confirmation: ShareConfirmation, options?)` | `PracticeSharePayload`; 전송은 하지 않음 |
+| `openShare(payload: unknown, options?)` | 검증한 공유의 `ProjectPracticeView` |
+| `release(handle, options?)` | `null`; 더 쓰지 않는 준비/프로젝트 handle 해제 |
+| `cancel()` | `"cancelled" \| "committing" \| "idle"` |
+| `dispose()` | `void`; 저장 시작 후에는 실제 결과를 기다린 뒤 종료 |
+
+`answer`는 미리보기다. 매번 답변 전체를 보내며 같은 handle을 반환한다. 원래 준비
+상태나 저장 기록을 바꾸지 않는다. `generate`에는 최종 answers·tempo·confirmedAt과
+명시적인 권리 확인을 모두 보내야 한다. 미리보기에서 사용한 시각과 최종 확정 시각이
+달라도 최종 선택의 journal은 생성 시 한 번만 기록된다. `tempo`를 생략한 생성은
+기존 결과 바이트를 유지한다. 범위는 기존 `QUICK_HARMONY_TEMPO_MIN/MAX`를 사용한다.
+
+생성 저장 id는 `src/product/quick-harmony-identity.ts`의
+`quickHarmonyProjectId(preparation: QuickHarmonyPreparation, choice: QuickHarmonyChoice): Promise<string>`로 계산한다.
+Worker가 이 함수를 쓰며 현재 H3 정책과 같은 `quick-` + semanticDigest다. 준비 workspace digest,
+정렬한 parts(auto이면 추천 파트), confirmedAt, answers를 사용하고, 명시적으로 빠르기를
+선택한 경우만 tempo를 더한다. 같은 선택의 재시도는 기존 항목을 검증해 반환한다.
+다른 탭이 먼저 저장한 경우에도 그 항목을 다시 읽고 덮어쓰지 않는다.
+부분 결과의 파트별 상태·사유는 `project.description.parts`에 있다.
+
+DTO는 표시·재생용이다. 프로젝트 그래프·workspace·검증 표식은 반환하지 않으며, DTO를
+저장 입력으로 받지 않는다. `exportProject` 파일을 다시 쓰려면 `importProject`로 검증해야
+한다. 파일을 열거나 저장하는 것으로 WAG 버전이 바뀌지 않는다. `renderPracticeAudio`는
+메인 스레드에 두고 `practice.plan/tempo`와 현재 `speed/leadOctave`를 전달한다.
+
+명령은 순차 실행한다. 계산 중 취소는 Worker 종료·재생성으로 처리하며 해당 세대의
+handle과 대기 명령도 무효가 된다. 취소된 Promise는 AbortError로 끝나므로 파일을
+다시 prepare하거나 저장 항목을 open한다. 대기 중인 개별 요청의 signal만 취소하면
+현재 실행 중인 명령에는 영향이 없다. 이전 요청 id·세대의 응답은 무시한다.
+
+`committing`에서는 “저장 마무리”를 표시한다. 이 단계는 실제 write transaction을
+시작하기 직전에 클라이언트가 승인한 뒤 전달된다. 이후 signal 취소는 저장 결과를
+기다리며, `cancel()`도 `committing`을 반환한다. 저장 후 화면 DTO 준비까지 이 상태를
+유지한다. Worker 오류로 결과를 잃으면 `WORKER_COMMIT_OUTCOME_UNKNOWN`으로
+실패하고 라이브러리를 다시 확인한다. 취소 성공이나 저장 성공으로 추정하지 않는다.
+
+Worker 시작·메시지 오류는 `HarmonyWorkerError`의 code와 한국어 message로 끝난다.
+사용이 끝난 handle은 release한다. 준비/프로젝트 각각 최근 사용한 32개를 보관하며,
+한도를 넘으면 가장 오래 사용하지 않은 handle을 비운다(LRU). 비워진 handle은
+`WORKER_HANDLE_EXPIRED`로 끝나므로 다시 prepare/open한다.
+저장 공간 부족으로 아무것도 저장되지 않은 경우 `STORAGE_QUOTA_EXCEEDED`와
+“기기 저장 공간이 부족해 저장하지 못했어요. 공간을 비운 뒤 다시 시도해 주세요.”를 반환한다.
+commit 성공 뒤 표시 준비가 실패하면 `WORKER_SAVED_VIEW_FAILED`와
+`HarmonyWorkerError.projectId: string`을 반환한다. 해당 id는 이미 저장된 항목이므로
+다시 생성하는 대신 내 악보에서 열 수 있다.
+Worker가 재시작되면 모든 검증을 기존 파일·IndexedDB 바이트에서 다시 수행한다.
+
+H3 참고: 재시도의 저장 id는 위 공통 함수로 정한다. H3의 기존 계산 사본은 3-8 Worker 연결 때 제거한다.
+
+### 화면 연결 추가 API (1-11b)
+
+기존 명령에 다음을 추가한다. 모두 같은 클라이언트의 `options?: WorkerRequestOptions`를
+마지막 인자로 받는다. 표시 DTO의 역할 정보는 색을 정하는 용도이며 저장 권위가 아니다.
+
+```ts
+// ProductTrackRoleRegistry: src/product/track-roles.ts의 기존 타입
+// practice.status === "available"인 ProjectView에 trackRoles가 있다.
+type ProjectViewRoles = { readonly trackRoles?: ProductTrackRoleRegistry };
+type SharedPracticeView = Extract<ProjectPracticeView, { status: "available" }>
+  & { readonly trackRoles: ProductTrackRoleRegistry };
+type ProjectListEntry = {
+  readonly projectId: string;
+  readonly updatedAt: string;
+  readonly description?: HarmonyProjectDescription;
+  readonly error?: { readonly code: string; readonly messageKo: string };
+};
+
+prepareFromProject(handle: ProjectHandle, options?): Promise<PreparationView | null>;
+saveEditableWorkspace(handle: PreparationHandle, options?): Promise<{ workspaceId: string }>;
+listSummaries(options?): Promise<readonly ProjectListEntry[]>;
+openShare(payload: unknown, options?): Promise<SharedPracticeView>;
+```
+
+`open`·`generate`·`importProject` 등의 ProjectView와 `openShare`의 trackRoles를
+기존 `scoreVoiceRoles`에 넘길 수 있다. 표시 이름으로 역할을 추측하지 않는다.
+프로젝트 재준비는 저장된 workspace proof를 다시 검증한다. workspace 출처가
+없으면 null이며, 있으면 새 준비 handle을 반환한다. 원본 프로젝트는 바뀌지 않는다.
+
+편집 사본은 매번 새 UUID로 만들고 기존 고급 편집 열기와 같은 command·id·note·actor·at
+journal 복사 규칙을 쓴다. quick:<digest> 원본은 저장하거나 바꾸지 않는다.
+저장 직전 commit 승인을 기다리며, 이후 취소는 기존 저장 명령과 같이 완료를 기다린다.
+목록 요약은 항목별 기존 검증을 거쳐 설명 또는 오류를 반환하고 handle·ABC·plan을 만들지 않는다.
+다른 탭에서 이미 삭제한 항목은 생략한다. 기존 `list()`도 그대로 사용할 수 있다.
