@@ -5,6 +5,7 @@ import type { ProjectPracticeView } from "../../product/project-view";
 import { usePracticePlayer } from "../../product/use-practice-player";
 import { renderPracticeAudio } from "../../product/render-practice-audio";
 import { AudioSheet } from "../_ui/AudioSheet";
+import { playerNavigation } from "../_ui/player-navigation";
 import { Icon } from "../_ui/Icon";
 import { PracticePanel, MiniPlayerBar, type PlayerController } from "../_ui/practice";
 import { stripAbcTitle, voiceColorVars } from "../_ui/score-colors";
@@ -39,6 +40,7 @@ export function LivePractice({ view, title, actions, initialSettings, voiceRoles
   }, []);
   const controls: PlayerController = {
     phase: player.phase, seconds: player.positionQuarter * player.secondsPerQuarter, totalSeconds: player.totalQuarter * player.secondsPerQuarter,
+    tempo: view.tempo, navigation: playerNavigation(view.plan, player), leadOctave: player.leadOctave, setLeadOctave: player.setLeadOctave,
     speed: player.speed, solo: player.solo, muted: [...player.muted], bandEnabled: player.bandEnabled,
     hasBand: player.tracks.some(track => track.kind === "band"), tracks: player.tracks.filter(track => track.kind === "voice").map(track => ({ ...track, hint: track.role === "lead" ? "원래 악보" : track.role === "lower" ? "멜로디 아래" : track.role === "upper" ? (view.abc.includes("clef=treble-8") ? "멜로디 위 · 한 옥타브 낮게 들려요" : "멜로디 위") : "저장된 파트" })),
     togglePlay: () => player.phase === "playing" ? player.pause() : player.play(), restart: player.restart,

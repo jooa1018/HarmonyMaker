@@ -5,7 +5,7 @@ import { formatClock } from "./format";
 /** UI uses seconds; the live adapter maps them to the engine's quarter positions. */
 export interface SeekController {
   seek: (seconds: number) => void;
-  measureAt: (seconds: number) => string | number;
+  measureAt: (seconds: number) => string | number | undefined;
   stepMeasure: (seconds: number, direction: -1 | 1) => number;
 }
 export function SeekBar({ seconds, totalSeconds, controller, previewDrag }: {
@@ -17,6 +17,7 @@ export function SeekBar({ seconds, totalSeconds, controller, previewDrag }: {
   const pointer = useRef<number | undefined>(undefined);
   const clamp = (value: number) => Math.max(0, Math.min(totalSeconds, value));
   const position = clamp(draft ?? previewDrag ?? seconds), dragging = draft !== undefined || previewDrag !== undefined;
+  const measure = controller.measureAt(position);
   const percent = totalSeconds > 0 ? position / totalSeconds * 100 : 0;
   useLayoutEffect(() => {
     if (!dragging || !root.current || !tip.current) return;
@@ -32,7 +33,7 @@ export function SeekBar({ seconds, totalSeconds, controller, previewDrag }: {
     return box.width > 0 ? clamp((clientX - box.left) / box.width * totalSeconds) : 0;
   }
   function cancel() { pointer.current = undefined; setDraft(undefined); }
-  return <div ref={root} className={`hm-seek${dragging ? " is-dragging" : ""}`} role="slider" tabIndex={0} aria-label="재생 위치" aria-valuemin={0} aria-valuemax={totalSeconds} aria-valuenow={position} aria-valuetext={`${formatClock(position)}, ${controller.measureAt(position)}번째 마디`}
+  return <div ref={root} className={`hm-seek${dragging ? " is-dragging" : ""}`} role="slider" tabIndex={0} aria-label="재생 위치" aria-valuemin={0} aria-valuemax={totalSeconds} aria-valuenow={position} aria-valuetext={`${formatClock(position)}${measure === undefined ? "" : `, ${measure}번째 마디`}`}
     onPointerDown={event => {
       if (!event.isPrimary || event.button !== 0 || pointer.current !== undefined) return;
       event.preventDefault(); event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId);
@@ -58,6 +59,6 @@ export function SeekBar({ seconds, totalSeconds, controller, previewDrag }: {
     }}>
     <span className="hm-seek-track"><span className="hm-seek-fill" style={{ width: `${percent}%` }} /></span>
     <span className="hm-seek-thumb" style={{ left: `${percent}%` }} />
-    <span ref={tip} className="hm-seek-tip" hidden={!dragging} style={{ left: tipLeft === undefined ? `${percent}%` : `${tipLeft}px` }}>{controller.measureAt(position)}번째 마디 · {formatClock(position)}</span>
+    <span ref={tip} className="hm-seek-tip" hidden={!dragging} style={{ left: tipLeft === undefined ? `${percent}%` : `${tipLeft}px` }}>{measure !== undefined && `${measure}번째 마디 · `}{formatClock(position)}</span>
   </div>;
 }
