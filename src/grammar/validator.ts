@@ -18,6 +18,8 @@ import { durationRate } from "../domain/rates";
 import { comparePositions, compareRanges, type MusicalPosition, type MusicalRange } from "../domain/time";
 import { loadFrozenWagAuthority } from "./authority";
 import type { WagLifecycleInput } from "./lifecycle";
+import { canonicalPhrases } from "../domain/digest/plan-order";
+import { partitionEventsByPhrase } from "./phrase-partition";
 
 export interface WagCandidateValidationReport {
   readonly candidateId: string;
@@ -281,10 +283,7 @@ function checkTrack(
     if (!activity || (event.kind === "note") !== (activity.state === "independent-note")) {
       diagnostics.push(rawDiagnostic("ACTIVITY_SPAN_INVALID", candidate.id, { trackPlanId }, event.range));
     }
-    if (event.kind === "rest") {
-      if (previous?.kind === "note" && previous.tieStart) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { reason: "TIE_INTO_REST", trackPlanId }, event.range));
-      continue;
-    }
+    if (event.kind === "rest") continue;
     if (event.source !== "anchor") diagnostics.push(rawDiagnostic("GENERATED_ILLEGAL_NCT", candidate.id, { reason: "NON_ANCHOR_AUTOMATIC_SOURCE", trackPlanId }, event.range));
     if (!containsPitch(performer.hardRange, event.pitch)) diagnostics.push(rawDiagnostic("GENERATED_OUT_OF_RANGE", candidate.id, { trackPlanId }, event.range));
     const atom = atomAt(context, event.range);
@@ -312,24 +311,35 @@ function checkTrack(
       diagnostics.push(rawDiagnostic("LYRIC_POLICY_VIOLATION", candidate.id, { trackPlanId }, event.range));
     }
     if (previous?.kind === "note") {
-      const same = pitchEqual(previous.pitch, event.pitch);
-      const expectedTie = positionEqual(previous.range.end, event.range.start) && same && event.lyricTokenIds.length === 0;
-      if (previous.tieStart !== expectedTie || event.tieStop !== expectedTie) {
-        diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { trackPlanId }, event.range));
-      }
       if (phraseAt(context, previous.range)?.id === phrase?.id) {
         const leap = Math.abs(pitchMidiNumber(event.pitch) - pitchMidiNumber(previous.pitch));
         if (leap > context.input.effectiveConfig.hardMaxLeapSemitones) {
           diagnostics.push(rawDiagnostic("GRAMMAR_BLOCKED", candidate.id, { reason: "CONTINUOUS_HARD_LEAP", trackPlanId, leap }, event.range));
         }
       }
-    } else if (event.tieStop) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { trackPlanId }, event.range));
+    }
     const matchingAnchor = candidate.realizedAnchors.find((anchor) => anchor.directiveId === event.originDirectiveId
       && anchor.trackPlanId === trackPlanId && positionEqual(anchor.position, event.range.start) && pitchEqual(anchor.pitch, event.pitch));
     if (!matchingAnchor) diagnostics.push(rawDiagnostic("WAG_V1_ANCHOR_SOLVER_SELECTION_PARITY_MISMATCH", candidate.id, { reason: "REALIZED_ANCHOR_MISSING", trackPlanId }, event.range));
   }
-  const finalEvent = ordered.at(-1);
-  if (finalEvent?.kind === "note" && finalEvent.tieStart) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { reason: "UNTERMINATED_TIE", trackPlanId }, finalEvent.range));
+  // WAG §§9.7, 20.1: ordinary phrase boundaries release/reenter.
+  // Share only the structural partition, never the solver's tie calculation.
+  for (const group of partitionEventsByPhrase(canonicalPhrases(context.input.source), ordered)) {
+    for (const [index, event] of group.events.entries()) {
+      const previous = group.events[index - 1];
+      if (event.kind === "rest") {
+        if (previous?.kind === "note" && previous.tieStart) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { reason: "TIE_INTO_REST", trackPlanId }, event.range));
+      } else if (previous?.kind === "note") {
+        const expectedTie = positionEqual(previous.range.end, event.range.start)
+          && pitchEqual(previous.pitch, event.pitch) && event.lyricTokenIds.length === 0;
+        if (previous.tieStart !== expectedTie || event.tieStop !== expectedTie) {
+          diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { trackPlanId }, event.range));
+        }
+      } else if (event.tieStop) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { trackPlanId }, event.range));
+    }
+    const finalEvent = group.events.at(-1);
+    if (finalEvent?.kind === "note" && finalEvent.tieStart) diagnostics.push(rawDiagnostic("INPUT_INVALID_TIE", candidate.id, { reason: "UNTERMINATED_TIE", trackPlanId }, finalEvent.range));
+  }
   for (const atom of context.input.sourceLeadAtomization.atoms) {
     const atomEvents = ordered.filter((event) => rangeContains(atom.range, event.range));
     const contiguous = atomEvents.every((event, index) => index === 0
