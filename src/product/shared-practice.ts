@@ -74,7 +74,14 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     );
     const parseResult = chord.kind === "no-chord" ? { status: "no-chord" as const, sourceText: "N.C." } : parseChord(chord.symbol);
     if (parseResult.status !== "ok" && parseResult.status !== "no-chord") throw new RangeError("SHARE_PAYLOAD_INVALID");
-    return { id: `share:chord:${index}`, range, parseResult, origin: { kind: "source-event" as const, sourceChordEventId: `share:chord-source:${index}` } };
+    const o = payload.schemaVersion === 5 ? chord.origin : undefined;
+    const origin: PerformanceChordSpan["origin"] = o?.kind === "arrangement-policy"
+      ? {kind:o.kind,policy:o.policy,followingSourceChordEventId:`share:chord-source:${o.followingSource}`}
+      : o?.kind === "carried"
+        ? {kind:o.kind,carrySource:o.carrySource,originatingSourceChordEventId:`share:chord-source:${o.source}`,previousSpanId:`share:chord:${o.previous}`,
+          ...(o.tokenSource !== undefined ? {carryTokenSourceChordEventId:`share:chord-source:${o.tokenSource}`} : {})}
+        : {kind:"source-event",sourceChordEventId:`share:chord-source:${o?.source ?? index}`};
+    return { id: `share:chord:${index}`, range, parseResult, origin };
   });
   // Compact links, not array order, identify the owning melody event. Older
   // payloads may contain unlinked verses; never attach them to the first note.
@@ -89,7 +96,7 @@ export function materializeSharedPractice(payload: PracticeSharePayload): Shared
     effectiveChordTimeline: {
       sourceChordProjectionDigest: payload.effectiveChordTimelineDigest,
       performanceSequenceDigest: payload.effectiveChordTimelineDigest,
-      resolutionPolicy: { gapPolicy: "block-gap" },
+      resolutionPolicy: payload.schemaVersion === 5 && payload.resolutionPolicy ? {...payload.resolutionPolicy} : { gapPolicy: "block-gap" },
       chordTimelineResolverVersion: "share-read-v3",
       spans,
       digest: payload.effectiveChordTimelineDigest,

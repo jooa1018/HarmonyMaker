@@ -176,7 +176,7 @@ describe("arrangement pickup policy export boundaries", () => {
       } },
     };
     const project = caseName === "project-option" ? { ...fixture.project, chordTimelineState: { status: "resolved" as const, timeline: policyTimeline, diagnostics: [] } } : fixture.project;
-    expect(() => materializePracticeShare({ ...fixture, project, materialized })).toThrow("SHARE_ARRANGEMENT_CHORD_POLICY_UNSUPPORTED");
+    expect(() => materializePracticeShare({ ...fixture, project, materialized })).toThrow("SHARE_ARRANGEMENT_POLICY_INCONSISTENT");
   });
 
   it("continues to materialize the existing compact share for an ordinary fixture", async () => {
