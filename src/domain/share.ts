@@ -6,6 +6,8 @@ import type { RightsBasis, TempoSpec } from "./source/model";
 import { isSourceSlurMarks, type SourceSlurMark } from "./source/notation";
 import { isSourceTuplets, validTupletSequence, type SourceTuplet } from "./source/tuplets";
 import { addFractions, compareFractions, fraction } from "./fraction";
+import { isCompactChordOrigin, validCompactChordPolicy, type CompactChordOrigin } from "./share-chord-policy";
+import type { ChordResolutionPolicy } from "./harmony/chord-timeline";
 import {
   hasExactKeys, hasUniqueStrings, isCanonicalId, isCanonicalKeySignature,
   isPlainRecord, isSemanticDigest,
@@ -24,16 +26,17 @@ export type LegacyCompactTrack = { readonly kind: "source-lead" | "generated-har
 export type CompactTrack =
   | { readonly kind: "source-lead"; readonly label: string; readonly events: readonly CompactVocalEvent[] }
   | { readonly kind: "generated-harmony"; readonly label: string; readonly notationOctaveShift?: -1 | 0; readonly harmonyRole: CompactHarmonyRole; readonly placementRoles: readonly CompactPlacementRole[]; readonly events: readonly CompactVocalEvent[] };
-export type CompactChord =
+export type CompactChord = (
   | { readonly kind: "chord"; readonly startOccurrenceIndex: number; readonly startOffset: CompactFraction; readonly endOccurrenceIndex: number; readonly endOffset: CompactFraction; readonly symbol: string }
-  | { readonly kind: "no-chord"; readonly startOccurrenceIndex: number; readonly startOffset: CompactFraction; readonly endOccurrenceIndex: number; readonly endOffset: CompactFraction };
+  | { readonly kind: "no-chord"; readonly startOccurrenceIndex: number; readonly startOffset: CompactFraction; readonly endOccurrenceIndex: number; readonly endOffset: CompactFraction }
+) & { readonly origin?: CompactChordOrigin };
 export interface CompactLyricToken { readonly id: string; readonly text: string; readonly verse: number; readonly syllabic: "single" | "begin" | "middle" | "end"; readonly extend: boolean }
 export interface CompactArrangement<TTrack extends LegacyCompactTrack | CompactTrack = CompactTrack> { readonly measures: readonly CompactMeasureOccurrence[]; readonly tracks: readonly TTrack[] }
 export interface PracticeSettings { readonly selectedTrackIndex?: number; readonly speedPercent?: 50 | 75 | 100 | 125 | 150; readonly accompanimentEnabled?: boolean }
 interface PracticeSharePayloadBase { readonly title: string; readonly tempo: TempoSpec; readonly key: KeySignature; readonly presetId: ArrangementPresetId; readonly arrangementArtifactDigest: SemanticDigest; readonly effectiveChordTimelineDigest: SemanticDigest; readonly lyrics: readonly CompactLyricToken[]; readonly chords?: readonly CompactChord[]; readonly playbackDefaults?: PracticeSettings; readonly rightsShareConfirmed: true }
 export interface PracticeSharePayloadV3 extends PracticeSharePayloadBase { readonly schemaVersion: 3; readonly arrangement: CompactArrangement<LegacyCompactTrack> }
 export interface PracticeSharePayloadV4 extends PracticeSharePayloadBase { readonly schemaVersion: 4; readonly arrangement: CompactArrangement<CompactTrack> }
-export interface PracticeSharePayloadV5 extends PracticeSharePayloadBase { readonly schemaVersion: 5; readonly arrangement: CompactArrangement<CompactTrack> }
+export interface PracticeSharePayloadV5 extends PracticeSharePayloadBase { readonly schemaVersion: 5; readonly arrangement: CompactArrangement<CompactTrack>; readonly resolutionPolicy?: ChordResolutionPolicy }
 export type PracticeSharePayload = PracticeSharePayloadV3 | PracticeSharePayloadV4 | PracticeSharePayloadV5;
 export interface ShareStoreRecord { readonly opaqueTokenHash: string; readonly payloadDigest: SemanticDigest; readonly encryptedPayload: Uint8Array; readonly createdAt: string; readonly expiresAt: string; readonly rightsBasis: RightsBasis }
 
@@ -149,7 +152,7 @@ function isCompactEvent(value: unknown, measureCount: number, allowSlurs: boolea
 }
 export function isPracticeSharePayload(value: unknown): value is PracticeSharePayload {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["schemaVersion", "title", "tempo", "key", "presetId", "arrangementArtifactDigest", "effectiveChordTimelineDigest", "arrangement", "lyrics", "rightsShareConfirmed"], ["chords", "playbackDefaults"])
+    || !hasExactKeys(value, ["schemaVersion", "title", "tempo", "key", "presetId", "arrangementArtifactDigest", "effectiveChordTimelineDigest", "arrangement", "lyrics", "rightsShareConfirmed"], ["chords", "playbackDefaults", ...(value.schemaVersion === 5 ? ["resolutionPolicy"] : [])])
     || (value.schemaVersion !== 3 && value.schemaVersion !== 4 && value.schemaVersion !== 5)
     || value.rightsShareConfirmed !== true
     || typeof value.title !== "string"
@@ -247,7 +250,8 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
     || value.chords.length > PRACTICE_SHARE_LIMITS.maxChords
     || !value.chords.every((chord) => isPlainRecord(chord)
     && (chord.kind === "chord" || chord.kind === "no-chord")
-    && hasExactKeys(chord, chord.kind === "chord" ? ["kind", "startOccurrenceIndex", "startOffset", "endOccurrenceIndex", "endOffset", "symbol"] : ["kind", "startOccurrenceIndex", "startOffset", "endOccurrenceIndex", "endOffset"])
+    && hasExactKeys(chord, chord.kind === "chord" ? ["kind", "startOccurrenceIndex", "startOffset", "endOccurrenceIndex", "endOffset", "symbol"] : ["kind", "startOccurrenceIndex", "startOffset", "endOccurrenceIndex", "endOffset"], schemaVersion === 5 ? ["origin"] : [])
+    && (chord.origin === undefined || isCompactChordOrigin(chord.origin, (value.chords as unknown[]).length))
     && isCompactPosition(chord.startOccurrenceIndex, chord.startOffset, measures, false)
     && isCompactPosition(chord.endOccurrenceIndex, chord.endOffset, measures, true)
     && compactPositionBefore(
@@ -257,6 +261,9 @@ export function isPracticeSharePayload(value: unknown): value is PracticeSharePa
       chord.endOffset,
     )
     && (chord.kind !== "chord" || isConsumableChordSymbol(chord.symbol, schemaVersion >= 4))))) return false;
+  const chords = (value.chords ?? []) as readonly CompactChord[];
+  if ((value.resolutionPolicy !== undefined || chords.some(chord => chord.origin !== undefined))
+    && (schemaVersion !== 5 || !validCompactChordPolicy(value.resolutionPolicy, chords, measures as unknown as readonly CompactMeasureOccurrence[]))) return false;
   if (value.playbackDefaults !== undefined && (!isPlainRecord(value.playbackDefaults)
     || !hasExactKeys(value.playbackDefaults, [], ["selectedTrackIndex", "speedPercent", "accompanimentEnabled"])
     || (value.playbackDefaults.selectedTrackIndex !== undefined && (!Number.isSafeInteger(value.playbackDefaults.selectedTrackIndex) || (value.playbackDefaults.selectedTrackIndex as number) < 0 || (value.playbackDefaults.selectedTrackIndex as number) >= tracks.length))
