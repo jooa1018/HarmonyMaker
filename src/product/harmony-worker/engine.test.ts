@@ -61,6 +61,7 @@ it("answer previews do not grant rights, mutate the base or duplicate tempo jour
     const c = { ...choice, ...(tempo ? { tempo } : {}) }, generated = await h.call("generate", { handle: prep.handle, choice: c });
     const direct = await generateQuickHarmony(directPrep, c);
     if (generated.status !== "saved" || (direct.status !== "complete" && direct.status !== "partial")) throw Error("generation failed");
+    expect(generated.project.projectId).toBe(await quickProjectId(directPrep, c));
     expect(await h.call("exportProject", { handle: generated.project.handle })).toBe(await exportHarmonyProject(direct.project));
   }
   expect(await h.call("list", null)).toHaveLength(2);
