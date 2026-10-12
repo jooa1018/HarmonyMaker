@@ -18,10 +18,10 @@ import { fraction } from "../domain/fraction";
 const original = readFileSync(new URL("./fixtures/wag11/4-4-1.musicxml",import.meta.url),"utf8");
 const attributes = /<attributes>[\s\S]*?<\/attributes>/u.exec(original)![0];
 const chord = "<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>";
-function score(printed = false, repeated = false) {
-  const pickup = `<measure number="0" implicit="yes">${attributes}${repeated ? '<barline location="left"><repeat direction="forward"/></barline>' : ""}${printed ? chord : ""}<note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type><lyric number="1"><text>하나</text></lyric><lyric number="2"><text>둘</text></lyric></note></measure>`;
+function score(printed = false) {
+  const pickup = `<measure number="0" implicit="yes">${attributes}${printed ? chord : ""}<note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><type>eighth</type><lyric number="1"><text>하나</text></lyric><lyric number="2"><text>둘</text></lyric></note></measure>`;
   const xml = original.replace('<part id="P1">',`<part id="P1">${pickup}`);
-  return repeated ? xml.replace("</part>","<barline location=\"right\"><repeat direction=\"backward\"/></barline></part>") : xml;
+  return xml;
 }
 async function generated(xml = score()) {
   const prep = await prepareQuickHarmony({bytes:new TextEncoder().encode(xml),fileName:"public-pickup.musicxml"});
@@ -78,6 +78,7 @@ it("does not extend the engine's initial exception to repeated pickups",async()=
 
 it("preserves lyric verse indices without applying the pickup policy to a later occurrence",()=>{
   const payload=structuredClone(fixture.payload);
+  if (payload.schemaVersion !== 5) throw Error("V5 fixture");
   const secondVerse={...payload,arrangement:{...payload.arrangement,measures:payload.arrangement.measures.map(m=>({...m,lyricVerseIndex:2}))}};
   expect(isPracticeSharePayload(secondVerse)).toBe(true);
   expect(decodePracticeShare(encodePracticeShare(secondVerse)).arrangement.measures.map(m=>m.lyricVerseIndex)).toEqual(secondVerse.arrangement.measures.map(()=>2));
