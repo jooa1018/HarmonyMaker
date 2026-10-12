@@ -16,6 +16,7 @@ import {
   type CanonicalTrackProjection,
 } from "./digest/stages";
 import { digestMusicalSource } from "./digest/source";
+import { canonicalSections, canonicalPhrases, canonicalAtoms, canonicalChordSpans } from "./digest/plan-order";
 import type { Diagnostic, DiagnosticCode } from "./diagnostics";
 import {
   digestAppliedOutputEditSet, validateOutputEdits,
@@ -339,17 +340,17 @@ function buildProjectOrdinals(project: HarmonyProject): ProjectOrdinals {
   const lyricEntries = project.source.sourceMeasures.flatMap((measure) => measure.lyricTokens);
   return {
     sectionOccurrenceOrdinalById: Object.fromEntries(
-      project.source.sectionOccurrences.map((section, ordinal) => [section.id, ordinal]),
+      canonicalSections(project.source).map((section, ordinal) => [section.id, ordinal]),
     ),
     phraseOrdinalById: Object.fromEntries(
-      project.source.phraseRegions.map((phrase, ordinal) => [phrase.id, ordinal]),
+      canonicalPhrases(project.source).map((phrase, ordinal) => [phrase.id, ordinal]),
     ),
     trackOrdinalById,
     leadAtomOrdinalById: Object.fromEntries(
-      (atomization?.atoms ?? []).map((atom, ordinal) => [atom.id, ordinal]),
+      (atomization ? canonicalAtoms(atomization) : []).map((atom, ordinal) => [atom.id, ordinal]),
     ),
     chordSpanOrdinalById: Object.fromEntries(
-      (timeline?.spans ?? []).map((span, ordinal) => [span.id, ordinal]),
+      (timeline ? canonicalChordSpans(timeline) : []).map((span, ordinal) => [span.id, ordinal]),
     ),
     performerOrdinalById: performerOrdinalRegistry(project),
     lyricOrdinalById: Object.fromEntries(lyricEntries.map((token, ordinal) => [token.id, ordinal])),

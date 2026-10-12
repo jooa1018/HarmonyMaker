@@ -1,4 +1,5 @@
 import { prepareWagPolicy } from "./versions";
+import { canonicalSections, canonicalPhrases, canonicalAtoms, canonicalChordSpans } from "../domain/digest/plan-order";
 import { resolveEffectiveArrangementConfig, type EffectiveArrangementConfig, type UserArrangementCaps } from "../domain/config";
 import { createDiagnostics, type Diagnostic, type DiagnosticCode } from "../domain/diagnostics";
 import {
@@ -207,25 +208,6 @@ export function primaryPulseAt(
     return fraction(3, 2);
   }
   throw new RangeError("UNSUPPORTED_BEAT_GROUPING");
-}
-
-function canonicalSections(source: SongSourceDocument): readonly SectionOccurrence[] {
-  return [...source.sectionOccurrences].sort((left, right) =>
-    left.startPerformanceMeasureIndex - right.startPerformanceMeasureIndex
-    || left.endPerformanceMeasureIndexExclusive - right.endPerformanceMeasureIndexExclusive
-    || left.occurrenceIndex - right.occurrenceIndex);
-}
-
-function canonicalPhrases(source: SongSourceDocument): readonly PhraseRegion[] {
-  return [...source.phraseRegions].sort((left, right) => compareRanges(left.range, right.range));
-}
-
-function canonicalAtoms(atomization: SourceLeadAtomization): readonly TimelineAtom[] {
-  return [...atomization.atoms].sort((left, right) => compareRanges(left.range, right.range));
-}
-
-function canonicalChordSpans(timeline: EffectiveChordTimeline): readonly PerformanceChordSpan[] {
-  return [...timeline.spans].sort((left, right) => compareRanges(left.range, right.range));
 }
 
 function createOrdinals(input: WagLifecycleInput): PlanOrdinalRegistry {
