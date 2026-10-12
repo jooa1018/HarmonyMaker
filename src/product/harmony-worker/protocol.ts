@@ -2,6 +2,7 @@ import type { PracticeSettings, PracticeSharePayload } from "../../domain/share"
 import type { RightsBasis } from "../../domain/source/model";
 import type { QuickHarmonyAnswer, QuickHarmonyChoice, QuickHarmonyNotice, QuickHarmonyPartResult, QuickHarmonySummary } from "../quick-harmony";
 import type { HarmonyProjectDescription, ProjectPracticeView } from "../project-view";
+import type { ProductTrackRoleRegistry } from "../track-roles";
 
 /** Opaque, realm-local references; never serialized as project authority. */
 export type PreparationHandle = string & { readonly __preparation: unique symbol };
@@ -21,6 +22,14 @@ export interface ProjectView {
   readonly rightsBasis: RightsBasis;
   readonly description: HarmonyProjectDescription;
   readonly practice: ProjectPracticeView;
+  readonly trackRoles?: ProductTrackRoleRegistry;
+}
+export type SharedPracticeView = Extract<ProjectPracticeView, { status: "available" }> & { readonly trackRoles: ProductTrackRoleRegistry };
+export interface ProjectListEntry {
+  readonly projectId: string;
+  readonly updatedAt: string;
+  readonly description?: HarmonyProjectDescription;
+  readonly error?: { readonly code: string; readonly messageKo: string };
 }
 export type GenerationView =
   | { readonly status: "saved"; readonly project: ProjectView }
@@ -37,6 +46,9 @@ export interface WorkerOperations {
   answer: { input: { readonly handle: PreparationHandle; readonly answer: QuickHarmonyAnswer }; output: PreparationView };
   generate: { input: { readonly handle: PreparationHandle; readonly choice: QuickHarmonyChoice }; output: GenerationView };
   open: { input: { readonly projectId: string }; output: ProjectView | null };
+  prepareFromProject: { input: { readonly handle: ProjectHandle }; output: PreparationView | null };
+  saveEditableWorkspace: { input: { readonly handle: PreparationHandle }; output: { readonly workspaceId: string } };
+  listSummaries: { input: null; output: readonly ProjectListEntry[] };
   list: { input: null; output: readonly { readonly projectId: string; readonly updatedAt: string }[] };
   delete: { input: { readonly projectId: string }; output: null };
   importProject: { input: { readonly encoded: string }; output: ProjectView };
@@ -44,7 +56,7 @@ export interface WorkerOperations {
   exportProject: { input: { readonly handle: ProjectHandle }; output: string };
   exportMusicXml: { input: { readonly handle: ProjectHandle }; output: string };
   sharePayload: { input: { readonly handle: ProjectHandle; readonly confirmation: ShareConfirmation }; output: PracticeSharePayload };
-  openShare: { input: { readonly payload: unknown }; output: ProjectPracticeView };
+  openShare: { input: { readonly payload: unknown }; output: SharedPracticeView };
   release: { input: { readonly handle: PreparationHandle | ProjectHandle }; output: null };
 }
 export type Operation = keyof WorkerOperations;

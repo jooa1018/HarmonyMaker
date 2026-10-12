@@ -1,7 +1,7 @@
 "use client";
 import { createWorkerTransport, type WorkerLike, type WorkerRequestOptions } from "./transport";
 import type { PreparationHandle, ProjectHandle, WorkerOperations } from "./protocol";
-export type { PreparationView, ProjectView, GenerationView, PreparationHandle, ProjectHandle, WorkerStage, ShareConfirmation } from "./protocol";
+export type { PreparationView, ProjectView, SharedPracticeView, ProjectListEntry, GenerationView, PreparationHandle, ProjectHandle, WorkerStage, ShareConfirmation } from "./protocol";
 export { HarmonyWorkerError } from "./protocol";
 export type { WorkerRequestOptions } from "./transport";
 
@@ -14,6 +14,9 @@ export function createHarmonyWorkerClient() {
     answer: (handle: PreparationHandle, answer: WorkerOperations["answer"]["input"]["answer"], options?: WorkerRequestOptions) => t.request("answer", { handle, answer }, options),
     generate: (handle: PreparationHandle, choice: WorkerOperations["generate"]["input"]["choice"], options?: WorkerRequestOptions) => t.request("generate", { handle, choice }, options),
     open: (projectId: string, options?: WorkerRequestOptions) => t.request("open", { projectId }, options),
+    prepareFromProject: (handle: ProjectHandle, options?: WorkerRequestOptions) => t.request("prepareFromProject", { handle }, options),
+    saveEditableWorkspace: (handle: PreparationHandle, options?: WorkerRequestOptions) => t.request("saveEditableWorkspace", { handle }, options),
+    listSummaries: (options?: WorkerRequestOptions) => t.request("listSummaries", null, options),
     list: (options?: WorkerRequestOptions) => t.request("list", null, options),
     delete: (projectId: string, options?: WorkerRequestOptions) => t.request("delete", { projectId }, options),
     importProject: (encoded: string, options?: WorkerRequestOptions) => t.request("importProject", { encoded }, options),
