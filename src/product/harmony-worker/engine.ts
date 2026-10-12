@@ -6,7 +6,6 @@ import { IndexedDbProjectStore } from "../local-project-store";
 import { answerQuickHarmony, generateQuickHarmony, prepareQuickHarmony, prepareQuickHarmonyWorkspace, validateQuickHarmonyChoice, type QuickHarmonyPreparation } from "../quick-harmony";
 import { applyWorkspaceCommand, createScoreWorkspace, parseScoreWorkspace } from "../../import/workspace/journal";
 import { ScoreWorkspaceStore } from "../../import/workspace/store";
-import { productTrackRoles } from "../track-roles";
 import { describeHarmonyProject, projectPracticeView } from "../project-view";
 import { importHarmonyProject, exportHarmonyProject } from "../project-transfer";
 import { materializeActiveArrangement } from "../render";
@@ -48,8 +47,8 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore(), w
   async function projectView(project: HarmonyProject, projectId: string | null, updatedAt: string | null, execution: WorkerExecution): Promise<ProjectView> {
     execution.stage("view");
     const description = describeHarmonyProject(project), practice = await projectPracticeView(project);
-    const trackRoles = practice.status === "available" ? productTrackRoles(project, project.selectedPresetId ?? "standard",
-      practice.plan.trackIds.filter(id => id !== "track:source-lead" && id !== "track:band")) : undefined;
+    const trackRoles = practice.status === "available"
+      ? materializeActiveArrangement(project, project.selectedPresetId ?? "standard").trackRoles : undefined;
     return { handle: allocate<ProjectHandle>(projects, project), projectId, updatedAt, rightsBasis: project.source.rights.basis, description, practice,
       ...(trackRoles ? { trackRoles } : {}) };
   }

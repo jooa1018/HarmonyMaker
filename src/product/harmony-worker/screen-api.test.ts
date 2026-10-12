@@ -56,6 +56,15 @@ it("returns identical project display roles and re-preparation without altering 
   expect(regenerated.status).toBe("saved");
 });
 
+it("takes score colors from the render registry even when playback includes a separate rhythm track", async () => {
+  const h = harness(), practice = await views.projectPracticeView(data.project);
+  if (practice.status !== "available") throw Error(practice.code);
+  vi.spyOn(views, "projectPracticeView").mockResolvedValue({ ...practice,
+    plan: { ...practice.plan, trackIds: [...practice.plan.trackIds, "track:source-rhythm"] } });
+  const opened = await h.call("importProject", { encoded: data.encoded });
+  expect(opened.trackRoles).toEqual(materializeActiveArrangement(data.project, "standard").trackRoles);
+});
+
 it("returns null for a verified project without a workspace origin", async () => {
   const h = harness();
   // The store boundary supplies an already loaded project, as it does in production.
