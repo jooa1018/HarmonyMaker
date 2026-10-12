@@ -26,24 +26,24 @@ export async function createResultShare(record: LocalProjectRecord, explicitFres
   const response = await fetcher("/api/session", { method: "POST" });
   const session = await response.json() as { csrfToken?: string; sessionAuthority?: string; expiresAt?: string };
   if (!response.ok || !session.csrfToken || !session.sessionAuthority || !session.expiresAt) throw new Error("SHARE_SESSION_UNAVAILABLE");
+  // Read presentation-only expiry without changing the durable recovery schema.
+  let expiresAt: string | undefined;
+  const withExpiry: typeof fetch = async (input, init) => {
+    const result = await fetcher(input, init);
+    if (result.ok) {
+      try { const body = await result.clone().json(); const value = body.share?.expiresAt ?? body.expiresAt; if (typeof value === "string" && Number.isFinite(Date.parse(value))) expiresAt = value; } catch { /* The public API classifier handles uncertain responses. */ }
+    }
+    return result;
+  };
   if (completedShareRecoveryTransport(envelope, session.sessionAuthority) === "owner-reconcile") {
-    const outcome = await dispatchShareOwnerReconciliation({ envelope, fetcher });
-    if (outcome.kind === "active" && envelope.createdResponse) return { status: "created", stored: true, url: `${dependencies.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}` };
+    const outcome = await dispatchShareOwnerReconciliation({ envelope, fetcher: withExpiry });
+    if (outcome.kind === "active" && envelope.createdResponse) return { status: "created", stored: true, url: `${dependencies.origin}/share?token=${encodeURIComponent(envelope.createdResponse.token)}`, ...(expiresAt ? { expiresAt } : {}) };
     if (outcome.kind === "fresh-allowed") {
       await allowShareCreateFreshIntent({ store, envelope, reason: outcome.reason === "owner-deleted" ? "owner-deleted" : "retired-replay", now: new Date() });
       return { status: "fresh", code: outcome.code };
     }
     return { status: "retry", code: "code" in outcome ? outcome.code : "SHARE_RECONCILE_UNCERTAIN" };
   }
-  // Read presentation-only expiry without changing the durable recovery schema.
-  let expiresAt: string | undefined;
-  const withExpiry: typeof fetch = async (input, init) => {
-    const result = await fetcher(input, init);
-    if (result.ok) {
-      try { const body = await result.clone().json(); if (typeof body.share?.expiresAt === "string" && Number.isFinite(Date.parse(body.share.expiresAt))) expiresAt = body.share.expiresAt; } catch { /* The public API classifier handles uncertain responses. */ }
-    }
-    return result;
-  };
   const crossSession = pendingShareRecoveryTransport(envelope, session.sessionAuthority) === "cross-session-recovery";
   if (!crossSession) envelope = await bindShareCreateSession({ store, envelope, sessionAuthority: session.sessionAuthority, sessionExpiresAt: session.expiresAt, now: new Date() });
   const outcome = await (crossSession ? dispatchShareCreateReadOnlyRecovery : dispatchShareCreateRecovery)({ envelope, csrfToken: session.csrfToken, fetcher: withExpiry });
