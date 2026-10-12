@@ -65,12 +65,13 @@ async function setup(rate = 1) {
     await route.fulfill({ response, headers: { ...response.headers(), "content-security-policy": "worker-src 'self'" } });
   });
   const cdp = await context.newCDPSession(page); await cdp.send("Emulation.setCPUThrottlingRate", { rate });
-  await page.goto(base, { timeout: 120000 }); await page.getByRole("button", { name: "파일 고르기" }).waitFor();
+  await page.goto(base, { timeout: 120000, waitUntil: "networkidle" }); await page.getByRole("button", { name: "파일 고르기" }).waitFor();
   return { page, context, errors, api };
 }
 async function upload(page, score = original) {
   await page.locator('input[type="file"]').setInputFiles({ name: "worker-test.musicxml", mimeType: "application/xml", buffer: Buffer.from(score) });
-  await expect(page.getByRole("heading", { name: "화음 파트를 고르세요" })).toBeVisible({ timeout: 120000 });
+  try { await expect(page.getByRole("heading", { name: "화음 파트를 고르세요" })).toBeVisible({ timeout: 120000 }); }
+  catch (error) { console.log(JSON.stringify(await page.evaluate(() => globalThis.hmWorkerEvidence))); throw error; }
 }
 async function begin(page) {
   await page.locator(".hm-part").filter({ has: page.getByRole("radio", { name: /둘 다/ }) }).click();
