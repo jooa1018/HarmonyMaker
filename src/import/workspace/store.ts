@@ -31,12 +31,13 @@ export class ScoreWorkspaceStore {
     r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains("drafts"))r.result.createObjectStore("drafts",{keyPath:"id"});};
     return requestResult(r);
   }
-  async save(value:StoredScoreWorkspace,expectedStorageRevision?:number):Promise<void> {
+  async save(value:StoredScoreWorkspace,expectedStorageRevision?:number,beforeCommit?:()=>Promise<void>):Promise<void> {
     if(!Number.isSafeInteger(value.storageRevision)||value.storageRevision<0||!Number.isFinite(Date.parse(value.updatedAt))||!validGeneration(value.workspace,value.generation)) throw new RangeError("WORKSPACE_STORAGE_INVALID");
     const {encoded,evidenceDigest}=await serializeScoreWorkspace(value.workspace);
     const row:Row={id:value.workspace.id,storageRevision:value.storageRevision,updatedAt:value.updatedAt,encoded,encodedDigest:await binaryDigest(enc.encode(encoded)),evidenceDigest,...(value.generation?{generation:value.generation}:{})};
     const db=await this.database();
     try {
+      if(beforeCommit)await beforeCommit();
       await new Promise<void>((resolve,reject)=>{
         const tx=db.transaction("drafts","readwrite"),store=tx.objectStore("drafts"),get=store.get(row.id);
         let failure:Error|undefined;

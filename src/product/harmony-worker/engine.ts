@@ -3,7 +3,10 @@ import type { HarmonyProject } from "../../domain/project";
 import { isPracticeSharePayload } from "../../domain/share";
 import { generateDeterministicAccompaniment } from "../../accompaniment/deterministic";
 import { IndexedDbProjectStore } from "../local-project-store";
-import { answerQuickHarmony, generateQuickHarmony, prepareQuickHarmony, validateQuickHarmonyChoice, type QuickHarmonyPreparation } from "../quick-harmony";
+import { answerQuickHarmony, generateQuickHarmony, prepareQuickHarmony, prepareQuickHarmonyWorkspace, validateQuickHarmonyChoice, type QuickHarmonyPreparation } from "../quick-harmony";
+import { applyWorkspaceCommand, createScoreWorkspace, parseScoreWorkspace } from "../../import/workspace/journal";
+import { ScoreWorkspaceStore } from "../../import/workspace/store";
+import { productTrackRoles } from "../track-roles";
 import { describeHarmonyProject, projectPracticeView } from "../project-view";
 import { importHarmonyProject, exportHarmonyProject } from "../project-transfer";
 import { materializeActiveArrangement } from "../render";
@@ -12,7 +15,7 @@ import { confirmShareRights, materializePracticeShare } from "../practice-share"
 import { materializeSharedPractice } from "../shared-practice";
 import { arrangementRenderDocumentToAbc } from "../score-adapter";
 import { buildPlaybackPlan } from "../playback-plan";
-import { HarmonyWorkerError, type Request, type PreparationHandle, type ProjectHandle, type PreparationView, type ProjectView, type WorkerStage } from "./protocol";
+import { HarmonyWorkerError, type Request, type PreparationHandle, type ProjectHandle, type PreparationView, type ProjectView, type ProjectListEntry, type WorkerStage } from "./protocol";
 
 export interface WorkerExecution {
   stage(stage: WorkerStage): void;
@@ -23,7 +26,7 @@ const MAX_HANDLES = 32;
 function failure(code: string): never { throw new HarmonyWorkerError(code, "이 작업을 계속할 수 없어요. 악보나 프로젝트를 다시 열어 주세요."); }
 
 /** Instantiated only by the worker entry (and tests). No project leaves this realm. */
-export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
+export function createWorkerEngine(store: Store = new IndexedDbProjectStore(), workspaceStore: Pick<ScoreWorkspaceStore, "save" | "load"> = new ScoreWorkspaceStore()) {
   const preparations = new Map<string, QuickHarmonyPreparation>();
   const projects = new Map<string, HarmonyProject>();
   function allocate<T extends string>(map: Map<string, unknown>, value: unknown): T {
@@ -45,7 +48,10 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
   async function projectView(project: HarmonyProject, projectId: string | null, updatedAt: string | null, execution: WorkerExecution): Promise<ProjectView> {
     execution.stage("view");
     const description = describeHarmonyProject(project), practice = await projectPracticeView(project);
-    return { handle: allocate<ProjectHandle>(projects, project), projectId, updatedAt, rightsBasis: project.source.rights.basis, description, practice };
+    const trackRoles = practice.status === "available" ? productTrackRoles(project, project.selectedPresetId ?? "standard",
+      practice.plan.trackIds.filter(id => id !== "track:source-lead" && id !== "track:band")) : undefined;
+    return { handle: allocate<ProjectHandle>(projects, project), projectId, updatedAt, rightsBasis: project.source.rights.basis, description, practice,
+      ...(trackRoles ? { trackRoles } : {}) };
   }
   async function savedProjectView(project: HarmonyProject, projectId: string, updatedAt: string, execution: WorkerExecution): Promise<ProjectView> {
     try { return await projectView(project, projectId, updatedAt, execution); }
@@ -102,6 +108,43 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
           return record ? projectView(record.project, record.projectId, record.updatedAt, execution) : null;
         }
         case "list": return store.list();
+        case "listSummaries": {
+          execution.stage("verifying");
+          const entries: ProjectListEntry[] = [];
+          for (const row of await store.list()) {
+            try {
+              const record = await store.load(row.projectId);
+              if (!record) continue; // Another tab deleted it after the list read.
+              entries.push({ ...row, description: describeHarmonyProject(record.project) });
+            } catch (error) {
+              const code = error instanceof Error && /^[A-Z][A-Z0-9_:-]{0,120}$/u.test(error.message) ? error.message : "WORKER_PROJECT_LOAD_FAILED";
+              entries.push({ ...row, error: { code, messageKo: "저장된 악보를 확인하지 못했어요. 다시 열거나 원본을 올려 주세요." } });
+            }
+          }
+          return entries;
+        }
+        case "prepareFromProject": {
+          const info = get(projects, request.input.handle).source.importInfo;
+          if (info?.sourceKind !== "score-workspace") return null;
+          execution.stage("preparing");
+          return preparationView(await prepareQuickHarmonyWorkspace(await parseScoreWorkspace(info.workspaceMetadata.proof)));
+        }
+        case "saveEditableWorkspace": {
+          const workspace = get(preparations, request.input.handle).workspace;
+          if (!workspace) failure("QUICK_HARMONY_WORKSPACE_REQUIRED");
+          execution.stage("verifying");
+          const workspaceId = crypto.randomUUID();
+          let copy = await createScoreWorkspace(workspace.origin, workspace.algorithmVersions, workspaceId);
+          for (const operation of workspace.operations) copy = await applyWorkspaceCommand(copy, copy, operation.command,
+            { id: operation.id, note: operation.note, actor: operation.actor, at: operation.at });
+          try {
+            await workspaceStore.save({ workspace: copy, storageRevision: 0, updatedAt: new Date().toISOString() }, undefined, execution.beforeCommit);
+          } catch (error) {
+            if (!await workspaceStore.load(workspaceId)) unsavedFailure(error);
+            throw error;
+          }
+          return { workspaceId };
+        }
         case "delete": {
           await store.delete(request.input.projectId, execution.beforeCommit);
           return null;
@@ -151,7 +194,7 @@ export function createWorkerEngine(store: Store = new IndexedDbProjectStore()) {
           if (!isPracticeSharePayload(request.input.payload)) failure("SHARE_PAYLOAD_INVALID");
           const payload = request.input.payload, { document, trackRoles } = materializeSharedPractice(payload);
           const accompaniment = await generateDeterministicAccompaniment(document.effectiveChordTimeline);
-          return { status: "available", abc: arrangementRenderDocumentToAbc(document, trackRoles, payload),
+          return { status: "available", trackRoles, abc: arrangementRenderDocumentToAbc(document, trackRoles, payload),
             plan: buildPlaybackPlan(document, trackRoles, accompaniment), tempo: payload.tempo, identity: `${payload.arrangementArtifactDigest}:full` };
         }
         case "release": {

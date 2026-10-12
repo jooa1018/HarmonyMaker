@@ -21,10 +21,11 @@ const object = (x: unknown): x is Record<string, unknown> => typeof x === "objec
 function validResult(operation: Operation, value: unknown): boolean {
   if (["ping", "delete", "release"].includes(operation)) return value === null;
   if (["exportProject", "exportMusicXml"].includes(operation)) return typeof value === "string";
-  if (operation === "list") return Array.isArray(value) && value.every(v => object(v) && typeof v.projectId === "string" && typeof v.updatedAt === "string");
-  if (operation === "open" && value === null) return true;
+  if (operation === "list" || operation === "listSummaries") return Array.isArray(value) && value.every(v => object(v) && typeof v.projectId === "string" && typeof v.updatedAt === "string");
+  if ((operation === "open" || operation === "prepareFromProject") && value === null) return true;
   if (!object(value)) return false;
-  if (operation === "prepare" || operation === "answer") return typeof value.handle === "string" && ["ready","needs-input","unsupported"].includes(String(value.status)) && ["questions","reasons","notes"].every(k => Array.isArray(value[k]));
+  if (operation === "prepare" || operation === "answer" || operation === "prepareFromProject") return typeof value.handle === "string" && ["ready","needs-input","unsupported"].includes(String(value.status)) && ["questions","reasons","notes"].every(k => Array.isArray(value[k]));
+  if (operation === "saveEditableWorkspace") return typeof value.workspaceId === "string";
   if (operation === "open" || operation === "importProject" || operation === "saveProject") return typeof value.handle === "string" && object(value.description) && object(value.practice);
   if (operation === "generate") return value.status === "saved" ? validResult("importProject", value.project)
     : ["needs-input","unsupported","blocked"].includes(String(value.status)) && validResult("prepare", value.preparation) && Array.isArray(value.parts);
@@ -69,7 +70,7 @@ export function createWorkerTransport(factory: () => WorkerLike, loadTimeoutMs =
       // Commit remains uncancellable through post-commit view construction.
       if (!committing) stage(p, data.stage as WorkerStage);
     } else if (data.kind === "commit-ready") {
-      if (committing || !["generate","delete","saveProject"].includes(p.operation)) { fail("WORKER_RESPONSE_INVALID"); return; }
+      if (committing || !["generate","delete","saveProject","saveEditableWorkspace"].includes(p.operation)) { fail("WORKER_RESPONSE_INVALID"); return; }
       committing = true; stage(p, "committing");
       try { worker?.postMessage({ kind: "commit", generation, id: p.id }); }
       catch { fail("WORKER_COMMIT_OUTCOME_UNKNOWN"); }
