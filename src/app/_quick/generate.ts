@@ -7,7 +7,7 @@ export function generatedParts(projectId: string) { return recentParts.get(proje
 export async function quickProjectId(preparation: QuickHarmonyPreparation, choice: QuickHarmonyChoice) {
   if (!preparation.workspace) throw new Error("QUICK_WORKSPACE_UNAVAILABLE");
   const parts = Array.isArray(choice.parts) ? [...new Set(choice.parts)].sort() : [preparation.summary?.recommendedPart ?? "alto"];
-  return `quick-${await semanticDigest({ workspaceDigest: preparation.workspace.digest, parts, confirmedAt: choice.confirmedAt, answers: choice.answers ?? {} })}`;
+  return `quick-${await semanticDigest({ workspaceDigest: preparation.workspace.digest, parts, confirmedAt: choice.confirmedAt, answers: choice.answers ?? {}, ...(choice.tempo === undefined ? {} : { tempo: choice.tempo }) })}`;
 }
 export async function generateAndSave(preparation: QuickHarmonyPreparation, choice: QuickHarmonyChoice, dependencies: {
   store?: Pick<IndexedDbProjectStore, "load" | "saveNew">;

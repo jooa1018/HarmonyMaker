@@ -3,6 +3,7 @@ import type { PartChoice } from "../_ui/format";
 
 export interface QuickSelection {
   readonly part?: PartChoice;
+  readonly tempoOverride?: number;
   readonly rights: boolean;
   readonly confirmedAt?: string;
   readonly answers: NonNullable<QuickHarmonyChoice["answers"]>;
@@ -31,5 +32,6 @@ export function harmonyChoice(preparation: QuickHarmonyPreparation, selection: Q
     rightsConfirmed: true, confirmedAt: selection.confirmedAt,
     parts: selection.part === "both" ? ["alto", "tenor"] : [selection.part],
     answers: selection.answers,
+    ...(selection.tempoOverride === undefined ? {} : { tempo: { bpm: selection.tempoOverride } }),
   };
 }

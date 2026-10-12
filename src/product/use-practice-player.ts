@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PracticeSettings } from "../domain/share";
 import type { TempoSpec } from "../domain/source/model";
-import { audibleTrackIds, quarterSeconds, type PlaybackPlan, type PracticeSpeed } from "./playback-plan";
+import { audibleTrackIds, defaultLeadOctave, practiceMeasureAt, practiceSeekQuarter, quarterSeconds, type LeadOctave, type PlaybackPlan, type PracticeSpeed } from "./playback-plan";
 import { PRACTICE_AUDIO_START_LEAD_SECONDS, practiceVolume, releasePracticeAudio, schedulePracticeAudio, updatePracticeAudioMix, type PracticeAudioGraph } from "./practice-audio";
 import {
   PracticeAudioOwnershipController,
@@ -51,6 +51,7 @@ export interface PracticePlayerController {
   readonly secondsPerQuarter: number;
   readonly speed: PracticeSpeed;
   readonly tracks: readonly PracticeTrackView[];
+  readonly leadOctave: LeadOctave;
   readonly muted: ReadonlySet<string>;
   readonly solo: string | undefined;
   readonly bandEnabled: boolean;
@@ -60,7 +61,10 @@ export interface PracticePlayerController {
   play(): void;
   pause(): void;
   restart(): void;
+  seek(quarter: number): void;
+  measureAt(quarter: number): { readonly number: number; readonly startQuarter: number } | undefined;
   setSpeed(speed: PracticeSpeed): void;
+  setLeadOctave(octave: LeadOctave): void;
   toggleMute(trackId: string): void;
   toggleSolo(trackId: string): void;
   setBandEnabled(on: boolean): void;
@@ -101,6 +105,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
   const [phase, setPhaseState] = useState<"ready" | "starting" | "playing" | "paused" | "finished">("ready");
   const [positionQuarter, setPositionState] = useState(0);
   const [speed, setSpeed] = useState<PracticeSpeed>(resolvedInitial.speed);
+  const [leadOctave, setLeadOctave] = useState<LeadOctave>(() => defaultLeadOctave(plan));
   const [muted, setMuted] = useState<ReadonlySet<string>>(new Set());
   const [solo, setSolo] = useState<string | undefined>(resolvedInitial.solo);
   const [bandEnabled, setBandEnabled] = useState(resolvedInitial.bandEnabled);
@@ -109,17 +114,18 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
   const [error, setError] = useState<string>();
   // Event handlers update the transport ref synchronously, so restart(); play()
   // preserves the legacy Play-from-start button as well as the hook's resume API.
-  const transport = useRef<{phase: PracticePlayerController["phase"]; positionQuarter: number}>({phase:"ready",positionQuarter:0});
+  const transport = useRef<{phase: PracticePlayerController["phase"]; positionQuarter: number; speed: PracticeSpeed; leadOctave: LeadOctave}>({phase:"ready",positionQuarter:0,speed:resolvedInitial.speed,leadOctave});
   const setPhase = useCallback((value: PracticePlayerController["phase"]) => { transport.current.phase=value; setPhaseState(value); }, []);
   const setPositionQuarter = useCallback((value: number) => { transport.current.positionQuarter=value; setPositionState(value); }, []);
   const [sessionIdentity, setSessionIdentity] = useState(identity);
   if (sessionIdentity !== identity) {
     setSessionIdentity(identity);
     setPhaseState("ready"); setPositionState(0); setSpeed(resolvedInitial.speed);
+    setLeadOctave(defaultLeadOctave(plan));
     setMuted(new Set()); setSolo(resolvedInitial.solo); setBandEnabled(resolvedInitial.bandEnabled);
     setLevels({}); setMasterLevel(1); setError(undefined);
   }
-  useEffect(() => { transport.current={phase:"ready",positionQuarter:0}; }, [identity]);
+  useEffect(() => { transport.current={phase:"ready",positionQuarter:0,speed:resolvedInitial.speed,leadOctave:defaultLeadOctave(plan)}; }, [identity]); // eslint-disable-line react-hooks/exhaustive-deps -- only a new identity resets the transport
   const audible = useMemo(() => new Set(audibleTrackIds(plan, { muted, ...(solo ? { solo } : {}), bandEnabled })), [bandEnabled, muted, plan, solo]);
 
   useEffect(() => {
@@ -176,13 +182,14 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
   const begin = async (fromQuarter: number) => {
     stopNodes("replacement");
     setError(undefined);
+    setPositionQuarter(fromQuarter);
     setPhase("starting");
     let pending: ActiveAudio | undefined;
     try {
       requestPlaybackAudioSession();
       const AudioContextConstructor = window.AudioContext;
       const context = new AudioContextConstructor({ latencyHint: "playback" });
-      const secondsPerQuarter = quarterSeconds(tempo, speed);
+      const secondsPerQuarter = quarterSeconds(tempo, transport.current.speed);
       const session: ActiveAudio = {
         context, get nodes() { return session.graph?.nodes ?? []; }, startedAt: 0,
         positionQuarter: fromQuarter, secondsPerQuarter, disposed: false,
@@ -199,7 +206,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
       if (!audioOwner.isCurrent(session)) return;
       session.startedAt = context.currentTime + PRACTICE_AUDIO_START_LEAD_SECONDS;
       session.graph = schedulePracticeAudio(context, plan, { fromQuarter, secondsPerQuarter,
-        startedAt: session.startedAt, audible, levels, masterLevel, lookahead: true });
+        startedAt: session.startedAt, audible, levels, masterLevel, lookahead: true, leadOctave: transport.current.leadOctave });
       await resumeWithDeadline(context);
       if (!audioOwner.isCurrent(session)) return;
       setPhase("playing");
@@ -211,7 +218,7 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
           setError("소리를 켜지 못했어요. 재생 버튼을 다시 눌러 주세요."); return;
         }
         const nextPosition = current.positionQuarter + Math.max(0, current.context.currentTime - current.startedAt) / secondsPerQuarter;
-        if (nextPosition >= plan.totalQuarter) {
+        if (current.context.currentTime >= current.startedAt + (plan.totalQuarter - current.positionQuarter) * secondsPerQuarter) {
           stopNodes("finish");
           setPhase("finished");
           setPositionQuarter(0);
@@ -237,9 +244,16 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
     setPhase("paused");
   };
 
+  const currentPosition = () => {
+    const current = audioOwner.active;
+    return current?.graph ? Math.min(plan.totalQuarter, current.positionQuarter + Math.max(0, current.context.currentTime - current.startedAt) / current.secondsPerQuarter)
+      : transport.current.positionQuarter;
+  };
+  const isActive = () => transport.current.phase === "playing" || transport.current.phase === "starting";
+
   return {
     scoreRef, scoreReady, phase, positionQuarter, totalQuarter:plan.totalQuarter,
-    secondsPerQuarter:quarterSeconds(tempo,speed), speed, muted, solo, bandEnabled, levels, masterLevel, error,
+    secondsPerQuarter:quarterSeconds(tempo,speed), speed, leadOctave, muted, solo, bandEnabled, levels, masterLevel, error,
     tracks:plan.trackIds.map(id=>({id,label:plan.trackLabels[id],kind:id === "track:band" ? "band" : "voice",
       role:id === "track:source-lead" ? "lead" : id === "track:band" ? "band" : plan.trackRoles?.[id] ?? "other"})),
     play() {
@@ -248,7 +262,25 @@ export function usePracticePlayer({abc, plan, tempo, identity, initialSettings, 
     },
     pause,
     restart:()=>reset("reset"),
-    setSpeed(value) { reset("speed"); setSpeed(value); },
+    seek(quarter) {
+      const next = practiceSeekQuarter(plan, quarter);
+      if (isActive()) void begin(next);
+      else { stopNodes("replacement"); setPositionQuarter(next); setPhase("paused"); }
+    },
+    measureAt(quarter) {
+      const measure = practiceMeasureAt(plan, quarter);
+      return measure ? { number: measure.number, startQuarter: measure.startQuarter } : undefined;
+    },
+    setSpeed(value) {
+      const next = currentPosition();
+      transport.current.speed = value; setSpeed(value); setPositionQuarter(next);
+      if (isActive()) void begin(next);
+    },
+    setLeadOctave(value) {
+      const next = currentPosition();
+      transport.current.leadOctave = value; setLeadOctave(value); setPositionQuarter(next);
+      if (isActive()) void begin(next);
+    },
     toggleMute(id) { setMuted(current=>{ const next=new Set(current); if(next.has(id))next.delete(id);else next.add(id); return next; }); },
     toggleSolo(id) { setSolo(current=>current === id ? undefined : id); },
     setBandEnabled,

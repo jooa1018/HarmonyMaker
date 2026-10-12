@@ -39,3 +39,10 @@ describe("quick selection", () => {
     expect(harmonyChoice(unsupported, { ...confirmRights(emptySelection(), true, () => now), part: "alto" })).toBeUndefined();
   });
 });
+it("sends tempo only after an edit and clears it for a newly prepared file", async () => {
+  const prep = await load(), selected = confirmRights({ ...preparedSelection(prep), part: "alto" }, true, () => now);
+  expect(harmonyChoice(prep, selected)).not.toHaveProperty("tempo");
+  expect(harmonyChoice(prep, { ...selected, tempoOverride: 72 })).toMatchObject({ tempo: { bpm: 72 }, confirmedAt: now });
+  expect(harmonyChoice(prep, { ...selected, tempoOverride: undefined })).not.toHaveProperty("tempo");
+  expect(preparedSelection(prep).tempoOverride).toBeUndefined();
+});

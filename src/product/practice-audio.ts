@@ -78,9 +78,10 @@ export function updatePracticeAudioMix(graph: PracticeAudioGraph, mix: PracticeA
 export function schedulePracticeAudio(
   context: BaseAudioContext,
   plan: PlaybackPlan,
-  options: PracticeAudioMix & { readonly fromQuarter: number; readonly secondsPerQuarter: number; readonly startedAt: number; readonly lookahead?: boolean },
+  options: PracticeAudioMix & { readonly fromQuarter: number; readonly secondsPerQuarter: number; readonly startedAt: number; readonly lookahead?: boolean; readonly leadOctave?: 0 | -1 },
 ): PracticeAudioGraph {
   const { fromQuarter, secondsPerQuarter, startedAt } = options;
+  if (options.leadOctave !== undefined && options.leadOctave !== 0 && options.leadOctave !== -1) throw new RangeError("PLAYBACK_LEAD_OCTAVE_INVALID");
   if (![fromQuarter, secondsPerQuarter, startedAt, plan.totalQuarter].every(Number.isFinite)
     || fromQuarter < 0 || fromQuarter > plan.totalQuarter || secondsPerQuarter <= 0 || startedAt < context.currentTime
     || !Number.isFinite(startedAt + plan.totalQuarter * secondsPerQuarter)) throw new RangeError("PLAYBACK_TIMING_INVALID");
@@ -123,7 +124,8 @@ export function schedulePracticeAudio(
       cursor++;
       const end = startedAt + (event.startQuarter + event.durationQuarter - fromQuarter) * secondsPerQuarter;
       if (end <= now) { expiredCount++; continue; }
-      const frequency = 440 * 2 ** ((event.midi - 69) / 12);
+      const midi = event.midi + (event.trackId === "track:source-lead" ? 12 * (options.leadOctave ?? 0) : 0);
+      const frequency = 440 * 2 ** ((midi - 69) / 12);
       // Whole cycles from one graph clock keep unisons and octave harmonics
       // in phase, even when their musical attacks happen at different times.
       const aligned = startedAt + Math.floor((originalStart - startedAt) * frequency) / frequency;

@@ -30,6 +30,7 @@ export function useQuickPreparation(initial?: { preparation: QuickHarmonyPrepara
   }
   return {
     fileName, preparation, selection, reading, error, reset, chooseFile, setPreparation, setError,
+    setTempo(tempoOverride: number | undefined) { setSelection(previous => ({ ...previous, tempoOverride })); },
     setPart(part: PartChoice) { setSelection(previous => ({ ...previous, part })); },
     setRights(checked: boolean) { const at = selection.confirmedAt ?? new Date().toISOString(); setSelection(previous => confirmRights(previous, checked, () => at)); },
     setLead(lead: string) { setSelection(previous => ({ ...previous, answers: { ...previous.answers, lead } })); },

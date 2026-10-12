@@ -1,0 +1,36 @@
+"use client";
+import { useEffect, useState } from "react";
+import abcjs from "abcjs";
+import { createHarmonyWorkerClient } from "../../product/harmony-worker/client";
+
+// Temporary local-only route, copied by the browser check instructions.
+export default function WorkerProbe() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    Object.assign(globalThis, {
+      h1WorkerProbe: {
+        createClient: createHarmonyWorkerClient,
+        render(abc: string, oneSvgPerLine = false) {
+          const element = document.getElementById("score")!;
+          return abcjs.renderAbc(element, abc, { responsive: "resize", staffwidth: 366, add_classes: true,
+            oneSvgPerLine, wrap: { minSpacing: 1.8, maxSpacing: 2.7, preferredMeasuresPerLine: 2 } });
+        },
+        async baseline(file: { bytes: Uint8Array; fileName: string }, choice: import("../../product/quick-harmony").QuickHarmonyChoice) {
+          const { prepareQuickHarmony, generateQuickHarmony } = await import("../../product/quick-harmony");
+          const { IndexedDbProjectStore } = await import("../../product/local-project-store");
+          const { projectPracticeView } = await import("../../product/project-view");
+          const start = performance.now();
+          const prep = await prepareQuickHarmony(file), prepared = performance.now();
+          const result = await generateQuickHarmony(prep, choice), generated = performance.now();
+          if (result.status !== "complete" && result.status !== "partial") throw Error(result.status);
+          await new IndexedDbProjectStore().saveNew({ projectId: "baseline", updatedAt: choice.confirmedAt, project: result.project });
+          const saved = performance.now(), practice = await projectPracticeView(result.project), viewed = performance.now();
+          return { practice, stages: { prepare: prepared-start, generate: generated-prepared, save: saved-generated, view: viewed-saved } };
+        },
+      },
+    });
+    setReady(true);
+  }, []);
+  return <><button id="ping" onClick={e => { e.currentTarget.textContent = "응답함"; }}>응답 확인</button>
+    <span>{ready ? "ready" : "loading"}</span><div id="score" style={{width:390}} /></>;
+}

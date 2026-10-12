@@ -8,6 +8,23 @@ import type { Fraction } from "../domain/fraction";
 import type { MaterializedArrangement } from "./render";
 import { canonicalRangeDuration } from "./timing";
 import { displayLyricsByAtom } from "./display-lyrics";
+import { validCompactChordPolicy, type CompactChordOrigin } from "../domain/share-chord-policy";
+import type { EffectiveChordTimeline } from "../domain/harmony/chord-timeline";
+
+function compactOrigins(timeline: EffectiveChordTimeline): readonly CompactChordOrigin[] {
+  const sources = new Map<string, number>(), spans = new Map(timeline.spans.map((span,index) => [span.id,index]));
+  if (spans.size !== timeline.spans.length) throw new RangeError("SHARE_ARRANGEMENT_POLICY_INCONSISTENT");
+  const source = (id: string) => { if (!sources.has(id)) sources.set(id,sources.size); return sources.get(id)!; };
+  return timeline.spans.map(span => {
+    const o = span.origin;
+    if (o.kind === "source-event") return { kind:o.kind, source:source(o.sourceChordEventId) };
+    if (o.kind === "arrangement-policy") return { kind:o.kind, policy:o.policy, followingSource:source(o.followingSourceChordEventId) };
+    const previous = spans.get(o.previousSpanId);
+    if (previous === undefined) throw new RangeError("SHARE_ARRANGEMENT_POLICY_INCONSISTENT");
+    return { kind:o.kind, carrySource:o.carrySource, source:source(o.originatingSourceChordEventId), previous,
+      ...(o.carryTokenSourceChordEventId !== undefined ? {tokenSource:source(o.carryTokenSourceChordEventId)} : {}) };
+  });
+}
 
 function compact(value: Fraction): CompactFraction { return [value.n, value.d]; }
 function lyricMap(document: ArrangementRenderDocument): { readonly tokens: PracticeSharePayload["lyrics"]; readonly sourceToLocal: Readonly<Record<string, string>> } {
@@ -46,12 +63,12 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
     && input.workspaceShareConfirmedForThisExport === true;
   if (!workspaceConfirmation && !input.project.source.rights.allowedUses.includes("share")) throw new RangeError("SHARE_RIGHTS_REQUIRED");
   const document = input.materialized.document;
-  // V4 compact chords have no arrangement-policy origin. Do not erase that distinction.
-  if (document.effectiveChordTimeline.resolutionPolicy.initialPickup
-    || document.effectiveChordTimeline.spans.some((span) => span.origin.kind === "arrangement-policy")
-    || (input.project.chordTimelineState.status === "resolved" && input.project.chordTimelineState.timeline.resolutionPolicy.initialPickup)) {
-    throw new RangeError("SHARE_ARRANGEMENT_CHORD_POLICY_UNSUPPORTED");
-  }
+  const timeline = document.effectiveChordTimeline;
+  const hasPolicy = timeline.resolutionPolicy.initialPickup !== undefined || timeline.spans.some(span => span.origin.kind === "arrangement-policy");
+  const projectPolicy = input.project.chordTimelineState.status === "resolved" ? input.project.chordTimelineState.timeline.resolutionPolicy : undefined;
+  if (projectPolicy?.initialPickup && (!hasPolicy || projectPolicy.initialPickup !== timeline.resolutionPolicy.initialPickup
+    || projectPolicy.gapPolicy !== timeline.resolutionPolicy.gapPolicy)) throw new RangeError("SHARE_ARRANGEMENT_POLICY_INCONSISTENT");
+  const origins = hasPolicy ? compactOrigins(timeline) : undefined;
   // V4 share has one Source voice. Refuse a lossy public payload until that schema expands.
   if (document.sourceRhythmTracks?.length) throw new RangeError("SHARE_SEPARATE_RHYTHM_VOICES_UNSUPPORTED");
   const hasNotation = document.sourceLeadTrack.atoms.some((atom) => atom.slurs?.length || atom.tuplets?.length);
@@ -72,17 +89,19 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
       };
     }),
   ];
-  const chords: CompactChord[] = document.effectiveChordTimeline.spans.map((span) => {
+  const chords: CompactChord[] = document.effectiveChordTimeline.spans.map((span,index) => {
     const common = {
       startOccurrenceIndex: span.range.start.performanceMeasureIndex, startOffset: compact(span.range.start.offset),
       endOccurrenceIndex: span.range.end.performanceMeasureIndex, endOffset: compact(span.range.end.offset),
+      ...(origins ? {origin:origins[index]} : {}),
     };
     return span.parseResult.status === "ok"
       ? { ...common, kind: "chord", symbol: span.parseResult.chord.canonicalSymbol }
       : { ...common, kind: "no-chord" };
   });
   const payload: PracticeSharePayload = {
-    schemaVersion: hasNotation ? 5 : 4, title: input.project.source.title, tempo: input.project.source.defaultTempo,
+    schemaVersion: hasNotation || hasPolicy ? 5 : 4, title: input.project.source.title, tempo: input.project.source.defaultTempo,
+    ...(hasPolicy ? {resolutionPolicy:{...timeline.resolutionPolicy}} : {}),
     key: input.project.source.defaultKey, presetId: input.presetId,
     arrangementArtifactDigest: input.materialized.artifactDigest,
     effectiveChordTimelineDigest: document.effectiveChordTimeline.digest,
@@ -91,6 +110,8 @@ export function materializePracticeShare(input: { readonly project: HarmonyProje
     ...(input.playbackDefaults ? { playbackDefaults: input.playbackDefaults } : {}),
     rightsShareConfirmed: true,
   };
+  if (hasPolicy && !validCompactChordPolicy(timeline.resolutionPolicy,chords,payload.arrangement.measures))
+    throw new RangeError("SHARE_ARRANGEMENT_POLICY_INCONSISTENT");
   if (!isPracticeSharePayload(payload)) throw new RangeError("SHARE_PAYLOAD_INVALID");
   return payload;
 }
