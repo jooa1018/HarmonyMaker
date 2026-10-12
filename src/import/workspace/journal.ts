@@ -3,7 +3,7 @@ import { exactJson,asciiProofJson } from "./encoding";
 import { isCanonicalId, isSemanticDigest } from "../../domain/validation";
 import type { Step3ImportVersions } from "../musicxml/types";
 import { seedWorkspace, workspaceEvidenceDigest } from "./input";
-import { changedWorkspaceTargets, clean, reduceWorkspaceEdit, requireMeasure } from "./edit";
+import { changedWorkspaceTargets, clean, normalizeNewWorkspaceChord, reduceWorkspaceEdit, requireMeasure } from "./edit";
 import { retainWorkspaceReviewsV3, workspaceReviewFingerprint } from "./review";
 import { createReplayStateDigester } from "./replay-digest";
 import { SCORE_WORKSPACE_VERSION, type ScoreWorkspace, type WorkspaceState, type WorkspaceCommand, type WorkspaceOperation, type WorkspaceAttestation, type WorkspaceOrigin, type WorkspaceEdit } from "./model";
@@ -254,7 +254,11 @@ export async function applyWorkspaceCommands(value: ScoreWorkspace, expected: {r
   const operations=entries.map(({command,meta})=>{
     // Own metadata as well as the command before any await. Unknown nested
     // metadata must not retain a caller alias into a private replay lineage.
-    const operation=clean({...meta,command,reviewDependencyVersion:3 as const});
+    const captured=clean({...meta,command,reviewDependencyVersion:3 as const});
+    checkMeta(captured);
+    const normalized = normalizeNewWorkspaceChord(captured.command);
+    const note = normalized !== captured.command && captured.command.kind === "chord" ? `${captured.note}\n원래 코드 입력: ${captured.command.text}` : captured.note;
+    const operation={...captured,note,command:normalized};
     checkMeta(operation);if(ids.has(operation.id))throw new RangeError("WORKSPACE_OPERATION_INVALID");ids.add(operation.id);
     return operation;
   });
